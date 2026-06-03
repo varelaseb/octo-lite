@@ -12,6 +12,18 @@ not an implementer/reviewer role.
 Issue shaping is intentionally thorough. The final GitHub issue is intentionally
 concise.
 
+## Role Skills
+
+Use only the Issue Shaper role skills from `role-skills.json`:
+
+- `$octo-lite-issue-shaper` for the operator-facing shaping workflow.
+- `$grill-with-docs` for docs-backed clarification.
+- `$octo-lite-github` for approved GitHub issue, label, and context
+  operations.
+
+Do not load implementer or reviewer role skills while shaping unless the
+operator explicitly changes roles.
+
 ## Core Rule
 
 During shaping, `.octo-lite/drafts/<slug>.md` is the canonical working artifact.
@@ -33,8 +45,8 @@ Read only the template needed for the current operation:
 
 ## Target Repo Initialization
 
-When a target repo lacks octo-lite-compatible durable surfaces, initialize only
-the missing minimal files:
+When a target repo lacks octo-lite durable surfaces, initialize only the missing
+minimal files:
 
 - `README.md`
 - `AGENTS.md`
@@ -93,9 +105,10 @@ unresolved, represent it as `TBD` in the relevant final section.
 
 ### 3. Grill With Docs
 
-Stress-test the work against target repo instructions, README, specs, ADRs,
-code, package scripts, provider docs already present in the repo, and existing
-GitHub issue/PR context.
+Load and follow `$grill-with-docs` for the clarification pass. Stress-test the
+work against target repo instructions, README, specs, ADRs, code, package
+scripts, provider docs already present in the repo, and existing GitHub issue/PR
+context.
 
 Ask one question at a time only after checking available durable sources. Every
 question should include a recommended answer. Challenge fuzzy terms, overloaded
@@ -104,6 +117,16 @@ runtime or env expectations.
 
 As answers crystallize, update the draft and any affected spec/ADR/repo doc
 immediately. Do not rely on final conversation distillation.
+
+Use these shaping thoroughness patterns:
+
+- Keep unresolved behavior questions visible as `TBD` in the draft and relevant
+  specs until answered.
+- Resolve discoverable gaps from durable context before asking the operator.
+- Update durable spec, ADR, README, or AGENTS.md behavior at the moment the
+  decision becomes clear.
+- Record deliberate follow-up work in the issue body or shape a separate issue
+  only after operator approval.
 
 ### 4. Resolve Spikes, Env, And Architecture
 
@@ -116,6 +139,8 @@ whether local/mock evidence is acceptable. Never record raw secrets.
 
 Discuss architecture before final acceptance review. Record durable behavior in
 `spec/`; record hard-to-reverse, surprising trade-offs in `spec/adr/`.
+State the ADR checkpoint result explicitly, even when the result is "no ADR
+required."
 
 ### 5. Maintain Specs And ADRs
 
@@ -154,8 +179,22 @@ Walk acceptance criteria one by one with the operator. Classify each as:
 
 Ask only about gaps or ambiguities that cannot be resolved from durable sources.
 Do not mark criteria clear while any behavior-affecting `TBD` remains.
+Record the compact review result in the draft's `## Context` section when it is
+useful for implementer/reviewer evidence, but keep the final issue concise.
 
-### 7. Final Ready Gate
+### 7. Finalize Follow-Up Scope
+
+When shaping discovers adjacent or prerequisite work:
+
+- Propose a separate issue only when the work is independently valuable or a
+  real blocker for the current issue.
+- Show the proposed title, relationship to current scope, blocker status, and
+  whether it should be created now or deferred.
+- Do not create child, related, or follow-up GitHub issues without explicit
+  operator approval.
+- Do not use blocking relationships as a priority mechanism.
+
+### 8. Final Ready Gate
 
 Before applying `octo-lite:ready`, all of this must be true:
 
@@ -170,8 +209,10 @@ Before applying `octo-lite:ready`, all of this must be true:
 - Durable artifacts are ready to commit.
 - The operator has reviewed the issue draft and relevant repo diff.
 - The operator explicitly approved final GitHub mutation.
+- The Issue Shaper role used `$grill-with-docs` or recorded why docs-backed
+  grilling was not applicable.
 
-### 8. Commit Durable Artifacts
+### 9. Commit Durable Artifacts
 
 Use a shaping branch:
 
@@ -186,7 +227,7 @@ specs, ADRs, repo docs, and `.gitignore` updates. Do not commit
 Do not open a separate artifact-only PR. The implementer later creates the
 implementation branch from the shaping branch commit.
 
-### 9. Finalize GitHub
+### 10. Finalize GitHub
 
 After approval and durable commit:
 
@@ -214,4 +255,3 @@ If GitHub mutation fails, keep the draft and report the exact blocker.
 - Do not create child issues unless the operator explicitly asks for that
   separate GitHub mutation. Prefer recording split recommendations in the issue
   or shaping a separate issue one at a time.
-

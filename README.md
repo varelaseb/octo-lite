@@ -22,10 +22,9 @@ at them with symlinks:
 
 ```text
 ~/.codex/AGENTS.md -> profile/AGENTS.md
-~/.codex/skills/octo-lite-issue-shaper -> skills/octo-lite-issue-shaper
-~/.codex/skills/octo-lite-loop -> skills/octo-lite-loop
-~/.agents/skills/octo-lite-issue-shaper -> skills/octo-lite-issue-shaper
-~/.agents/skills/octo-lite-loop -> skills/octo-lite-loop
+~/.codex/octo-lite-role-skills.json -> role-skills.json
+~/.codex/skills/<skill> -> skills/<skill>
+~/.agents/skills/<skill> -> skills/<skill>
 ~/.codex/agents/octo-lite-implementer.toml -> agents/octo-lite-implementer.toml
 ~/.codex/agents/octo-lite-reviewer.toml -> agents/octo-lite-reviewer.toml
 ```
@@ -33,6 +32,23 @@ at them with symlinks:
 `~/.codex/skills` is supported by the current local profile. `$HOME/.agents/skills`
 is the documented user-skill location in the current Codex manual, so both are
 installed.
+
+Install every directory under `skills/`; the role-specific mapping in
+`role-skills.json` determines which skills each workflow role should load.
+
+Current octo-lite role skills:
+
+```text
+Issue Shaper:
+  octo-lite-issue-shaper, grill-with-docs, octo-lite-github
+
+Implementer:
+  commit, frontend-design, octo-lite-github, nodejs, pnpm, pnpm-patching,
+  pull, push, python, tdd, typescript
+
+Reviewer:
+  octo-lite-debug, octo-lite-github, pull
+```
 
 ## Workflow
 
@@ -52,6 +68,11 @@ idea or rough GitHub issue
 During shaping, the draft file is the canonical working artifact. After the
 approved draft is written to GitHub and labeled `octo-lite:ready`, the GitHub
 issue becomes canonical and the local draft is deleted.
+
+Issue Shaper uses `$grill-with-docs` during shaping to preserve the useful
+thoroughness octo-lite needs: docs-first clarification, one question at a time
+with a recommendation, acceptance-criteria classification, ADR checkpoint,
+spec/doc updates, and explicit ready-gate review.
 
 ## Target Repositories
 
@@ -81,4 +102,3 @@ gh repo view
 ```
 
 GitHub mutations happen only after explicit operator approval.
-

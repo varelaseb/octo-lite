@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "octo-lite": {
+      "kind": "repo",
+      "path": "skills",
+      "install_paths": [
+        "~/.codex/skills",
+        "~/.agents/skills"
+      ]
+    }
+  },
+  "roles": {
+    "issue-shaper": [
+      { "source": "octo-lite", "skill": "octo-lite-issue-shaper" },
+      { "source": "octo-lite", "skill": "grill-with-docs" },
+      { "source": "octo-lite", "skill": "octo-lite-github" }
+    ],
+    "implementer": [
+      { "source": "octo-lite", "skill": "commit" },
+      { "source": "octo-lite", "skill": "frontend-design" },
+      { "source": "octo-lite", "skill": "octo-lite-github" },
+      { "source": "octo-lite", "skill": "nodejs" },
+      { "source": "octo-lite", "skill": "pnpm" },
+      { "source": "octo-lite", "skill": "pnpm-patching" },
+      { "source": "octo-lite", "skill": "pull" },
+      { "source": "octo-lite", "skill": "push" },
+      { "source": "octo-lite", "skill": "python" },
+      { "source": "octo-lite", "skill": "tdd" },
+      { "source": "octo-lite", "skill": "typescript" }
+    ],
+    "reviewer": [
+      { "source": "octo-lite", "skill": "octo-lite-debug" },
+      { "source": "octo-lite", "skill": "octo-lite-github" },
+      { "source": "octo-lite", "skill": "pull" }
+    ]
+  }
+}

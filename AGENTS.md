@@ -9,6 +9,8 @@ target repositories.
 ## Durable Sources
 
 - `README.md` explains the product and install shape.
+- `role-skills.json` records the Issue Shaper, implementer, and reviewer skill
+  mapping.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
 - `skills/` contains reusable octo-lite skills and their bundled templates.
 - `agents/` contains custom Codex subagent profiles.
@@ -30,4 +32,3 @@ target repositories.
 - Prefer concise skills with progressive disclosure.
 - Use target repo `AGENTS.md` files only for target repo conventions.
 - Use skills for reusable octo-lite procedure.
-

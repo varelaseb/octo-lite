@@ -43,19 +43,50 @@ If the custom agent names are unavailable in the current Codex surface, spawn a
 include the corresponding role instructions from the installed agent profile in
 the prompt.
 
+## Role Skill Expectations
+
+Use `role-skills.json` as the role-skill source of truth.
+
+Implementer agents may load or follow only these implementer role skills during
+normal loop execution:
+
+- `$commit`
+- `$frontend-design`
+- `$octo-lite-github`
+- `$nodejs`
+- `$pnpm`
+- `$pnpm-patching`
+- `$pull`
+- `$push`
+- `$python`
+- `$tdd`
+- `$typescript`
+
+Reviewer agents may load or follow only these reviewer role skills during
+normal loop execution:
+
+- `$octo-lite-debug`
+- `$octo-lite-github`
+- `$pull`
+
+When using fallback agents, include the appropriate list above and tell the
+agent not to use Issue Shaper or opposite-role skills unless the loop stops and
+routes back to the operator.
+
 ## Loop
 
 Use at most 3 reviewer fix cycles by default.
 
 1. Spawn `octo-lite-implementer` with the issue number, repo path, branch
-   convention, PR convention, and any latest reviewer findings.
+   convention, PR convention, implementer role skill expectations, and any
+   latest reviewer findings.
 2. Wait for the implementer to finish.
 3. Require the implementer to report PR URL/number, branch, HEAD, validation,
    and whether any ambiguity blocked implementation.
 4. If implementation is blocked by ambiguity, env/config, or conflicting
    durable sources, stop and route back to `$octo-lite-issue-shaper`.
-5. Spawn `octo-lite-reviewer` with the issue number, PR number, repo path, and
-   expected review outcome format.
+5. Spawn `octo-lite-reviewer` with the issue number, PR number, repo path,
+   reviewer role skill expectations, and expected review outcome format.
 6. Wait for the reviewer to finish.
 7. Require the reviewer to post a real GitHub PR review and return one of:
    `blocking`, `clear`, or `ambiguous`.
@@ -104,4 +135,3 @@ Final summary should include:
 - Do not continue past ambiguity by guessing.
 - Do not run issue shaping inside the loop except to recommend returning to the
   Issue Shaper.
-
