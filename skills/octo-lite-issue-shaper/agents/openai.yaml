@@ -1,0 +1,5 @@
+interface:
+  display_name: "octo-lite Issue Shaper"
+  short_description: "Shape GitHub issues into concise, spec-backed octo-lite work."
+  default_prompt: "Use $octo-lite-issue-shaper to shape this idea or rough GitHub issue into ready octo-lite work."
+

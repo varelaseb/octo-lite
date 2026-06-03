@@ -1,0 +1,5 @@
+interface:
+  display_name: "octo-lite Loop"
+  short_description: "Run the implementer-reviewer subagent loop for ready GitHub issues."
+  default_prompt: "Use $octo-lite-loop to run the implementer/reviewer loop for this octo-lite-ready issue."
+
