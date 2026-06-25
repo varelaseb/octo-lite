@@ -5,6 +5,10 @@ work. It is not a service, daemon, CLI, or project dependency. It installs into
 the user's Codex profile and operates on target repositories through normal
 GitHub issues, pull requests, specs, ADRs, and repo instructions.
 
+This repository contains general-purpose development workflows and tooling
+maintained as reusable personal/background IP. It is not specific to any one
+client, product, or engagement.
+
 ## What It Provides
 
 - A user-facing Issue Shaper workflow for turning ideas or rough GitHub issues
@@ -102,3 +106,7 @@ gh repo view
 ```
 
 GitHub mutations happen only after explicit operator approval.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
