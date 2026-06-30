@@ -11,7 +11,7 @@ implementation changes.
 ## Inputs
 
 - Session history for intent and rationale.
-- GitHub issue or draft context for scope.
+- Linear issue, explicitly GitHub-first issue, or draft context for scope.
 - `git status`, `git diff`, and `git diff --staged`.
 - Target repo commit conventions from `AGENTS.md`, README, or contributing
   docs.
@@ -43,4 +43,3 @@ Validation:
 
 Add `Co-authored-by: Codex <codex@openai.com>` unless the operator requests a
 different identity.
-

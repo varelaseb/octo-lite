@@ -1,33 +1,33 @@
 ---
 name: grill-with-docs
-description: Run a docs-backed grilling session for octo-lite issue shaping; stress-test a draft or rough GitHub issue against target repo specs, ADRs, code, repo instructions, and domain language before implementation.
+description: Run a docs-backed grilling session for octo-lite issue shaping; stress-test a draft or rough Linear/GitHub issue against target repo specs, ADRs, code, repo instructions, and domain language before implementation.
 ---
 
 # Grill With Docs
 
-Use this skill from `$octo-lite-issue-shaper` when a new idea, rough GitHub
-issue, or issue draft needs clarification before it can be labeled
-`octo-lite:ready`.
+Use this skill from `$octo-lite-issue-shaper` when a new idea, rough Linear or
+GitHub issue, or issue draft needs clarification before it can be marked ready.
 
 This skill keeps issue shaping grounded in the target repo's durable context:
-GitHub issues, `.octo-lite` drafts, specs, ADRs, repo docs, code, and
-configuration.
+Linear issues, GitHub PRs, explicitly requested GitHub issues, `.octo-lite`
+drafts, specs, ADRs, repo docs, code, and configuration.
 
 ## Operating Rules
 
 - Ask one question at a time and wait for the operator's answer.
 - Include a recommended answer with each question.
-- Explore code, specs, ADRs, repo docs, package scripts, existing GitHub
-  issues/PRs, and the active `.octo-lite/drafts/<slug>.md` before asking when
-  the answer is discoverable.
+- Explore code, specs, ADRs, repo docs, package scripts, existing Linear issue
+  context, GitHub PRs, explicitly requested GitHub issues, and the active
+  `.octo-lite/drafts/<slug>.md` before asking when the answer is discoverable.
 - Challenge fuzzy or overloaded terms against existing specs and repo language.
 - Use concrete scenarios to stress-test boundaries, edge cases, ordering,
   dependencies, evidence, runtime expectations, and env/config needs.
 - Update the active draft and any affected spec, ADR, README, or AGENTS.md as
   decisions crystallize.
 - Do not batch durable terminology or behavior updates until the end.
-- Do not mutate GitHub issues, labels, comments, or PRs unless Issue Shaper has
-  reached its approved GitHub mutation step.
+- Do not mutate Linear or GitHub tracker state unless Issue Shaper has reached
+  its approved final mutation step. In Linear-first repos, do not mutate GitHub
+  issues unless the operator explicitly requested a GitHub issue operation.
 
 ## Domain Awareness
 
@@ -41,8 +41,9 @@ Start with the smallest useful context set:
    docs.
 6. Code, tests, configuration, and package scripts directly related to the
    planned change.
-7. Existing GitHub issue or PR context when shaping an existing issue or a
-   follow-up from PR review.
+7. Existing Linear issue context and GitHub PR context when shaping an existing
+   issue or a follow-up from PR review. Use GitHub issue context only when the
+   repo is GitHub-first or the operator explicitly names a GitHub issue.
 
 When a term conflicts with existing domain language, call out the conflict and
 ask which meaning should become canonical. When a term is vague, recommend a

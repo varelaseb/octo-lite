@@ -5,7 +5,7 @@ description: Apply production-quality frontend design practice during octo-lite 
 
 # Frontend Design
 
-Use this skill only when the GitHub issue, specs, ADRs, repo instructions, or
+Use this skill only when the Linear/GitHub issue, specs, ADRs, repo instructions, or
 code clearly put UI/frontend work in scope.
 
 ## Scope
@@ -25,4 +25,3 @@ code clearly put UI/frontend work in scope.
 - Do not hide incomplete behavior behind decorative UI.
 - Stop for Issue Shaper/operator clarification when visual requirements,
   brand constraints, or acceptance evidence are ambiguous.
-

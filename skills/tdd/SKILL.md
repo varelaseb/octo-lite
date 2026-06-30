@@ -5,7 +5,7 @@ description: Apply a red-green-refactor loop during octo-lite implementer work w
 
 # Test-Driven Development
 
-Use this skill when the GitHub issue, specs, ADRs, or operator explicitly asks
+Use this skill when the Linear/GitHub issue, specs, ADRs, or operator explicitly asks
 for TDD, test-first work, red-green-refactor, or integration-test-first
 development.
 
@@ -21,4 +21,3 @@ development.
 
 Do not write brittle tests around implementation details when a user-visible
 contract, API behavior, or durable spec can be tested directly.
-

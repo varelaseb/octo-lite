@@ -1,16 +1,17 @@
 ---
 name: octo-lite-issue-shaper
-description: Shape new ideas or rough GitHub issues into concise, spec-backed octo-lite work. Use for operator-driven issue intake, repo initialization, .octo-lite draft maintenance, GitHub issue creation/update, octo-lite:ready labeling, and spec/ADR decisions before implementation.
+description: Shape new ideas or rough Linear/GitHub issues into concise, spec-backed octo-lite work. Use for operator-driven issue intake, repo initialization, .octo-lite draft maintenance, Linear-first scope updates, explicitly requested GitHub issue operations, readiness approval, and spec/ADR decisions before implementation.
 ---
 
 # octo-lite Issue Shaper
 
 Use this skill when the user wants to create, clarify, refine, or finalize
-GitHub-issue-based work with octo-lite. This is a user-facing operator workflow,
-not an implementer/reviewer role.
+Linear-first or explicitly GitHub-first work with octo-lite. This is a
+user-facing operator workflow, not an implementer/reviewer role.
 
 Issue shaping is intentionally thorough. The final GitHub issue is intentionally
-concise.
+concise when the target repo is GitHub-first; in Linear-first repos, the final
+Linear issue/spec updates are intentionally concise.
 
 ## Role Skills
 
@@ -18,8 +19,8 @@ Use only the Issue Shaper role skills from `role-skills.json`:
 
 - `$octo-lite-issue-shaper` for the operator-facing shaping workflow.
 - `$grill-with-docs` for docs-backed clarification.
-- `$octo-lite-github` for approved GitHub issue, label, and context
-  operations.
+- `$octo-lite-github` for approved GitHub PR operations and explicitly
+  requested GitHub issue/label/context operations.
 
 Do not load implementer or reviewer role skills while shaping unless the
 operator explicitly changes roles.
@@ -27,15 +28,18 @@ operator explicitly changes roles.
 ## Core Rule
 
 During shaping, `.octo-lite/drafts/<slug>.md` is the canonical working artifact.
-Conversation is scratch. GitHub is mutated only after explicit operator
-approval. After successful GitHub finalization, the GitHub issue is canonical
-and the draft is deleted.
+Conversation is scratch. Linear or GitHub is mutated only after explicit
+operator approval. In Linear-first repos, Linear is canonical after finalization
+and GitHub issues are not mutated unless the operator explicitly requested a
+GitHub issue operation. In GitHub-first repos, the GitHub issue is canonical
+after finalization and the draft is deleted.
 
 ## Bundled Templates
 
 Read only the template needed for the current operation:
 
-- `assets/github-issue.md` for the active draft and final GitHub issue body.
+- `assets/github-issue.md` for the active draft and, only in GitHub-first
+  repos, the final GitHub issue body.
 - `assets/readme.md` for target repo README initialization.
 - `assets/repo-agents.md` for target repo `AGENTS.md` initialization.
 - `assets/spec-index.md` for target repo `spec/index.md`.
@@ -66,27 +70,32 @@ over time.
 
 ### 1. Establish Scope
 
-Start from exactly one new idea or one existing GitHub issue.
+Start from exactly one new idea, one existing Linear issue, or one explicitly
+requested GitHub issue.
 
-If an existing issue is named, fetch focused context with `gh issue view`.
-If the work is a new idea, shape locally first and create the GitHub issue only
+If an existing Linear issue is named, fetch focused context from Linear first.
+If an existing GitHub issue is explicitly named or the repo is GitHub-first,
+fetch focused context with `gh issue view`. If the work is a new idea in a
+Linear-first repo, shape locally first and create/update the Linear issue only
 at finalization.
 
-Preflight GitHub identity early:
+Preflight the relevant tracker early. For GitHub operations:
 
 ```bash
 gh auth status
 gh repo view
 ```
 
-Do not create labels, edit issues, create issues, or post comments until the
-final approved mutation step.
+Do not create labels, edit issues, create issues, close issues, or post tracker
+comments until the final approved mutation step. In Linear-first repos, this
+restriction applies to Linear; GitHub issue mutation remains out of scope unless
+explicitly requested.
 
 ### 2. Create Or Refresh The Draft
 
 Create `.octo-lite/drafts/<slug>.md` from `assets/github-issue.md`. If shaping
-an existing rough issue, seed the draft from its current title/body, then
-normalize it to the template.
+an existing rough Linear or GitHub issue, seed the draft from its current
+title/body, then normalize it to the template.
 
 The draft must use exactly these headings:
 
@@ -99,16 +108,17 @@ The draft must use exactly these headings:
 ## Context
 ```
 
-Keep the draft clean enough to paste directly into GitHub. Do not add an intake
-diary, long transcript, raw logs, secrets, or scratch notes. If a decision is
-unresolved, represent it as `TBD` in the relevant final section.
+Keep the draft clean enough to paste directly into Linear or GitHub. Do not add
+an intake diary, long transcript, raw logs, secrets, or scratch notes. If a
+decision is unresolved, represent it as `TBD` in the relevant final section.
 
 ### 3. Grill With Docs
 
 Load and follow `$grill-with-docs` for the clarification pass. Stress-test the
 work against target repo instructions, README, specs, ADRs, code, package
-scripts, provider docs already present in the repo, and existing GitHub issue/PR
-context.
+scripts, provider docs already present in the repo, existing Linear issue
+context, and relevant GitHub PR context. Use GitHub issue context only when
+explicitly requested or when the repo is GitHub-first.
 
 Ask one question at a time only after checking available durable sources. Every
 question should include a recommended answer. Challenge fuzzy terms, overloaded
@@ -125,8 +135,9 @@ Use these shaping thoroughness patterns:
 - Resolve discoverable gaps from durable context before asking the operator.
 - Update durable spec, ADR, README, or AGENTS.md behavior at the moment the
   decision becomes clear.
-- Record deliberate follow-up work in the issue body or shape a separate issue
-  only after operator approval.
+- Record deliberate follow-up work in the Linear issue/specs or shape a
+  separate issue only after operator approval. Use GitHub issue bodies only for
+  GitHub-first work or explicitly requested GitHub issue updates.
 
 ### 4. Resolve Spikes, Env, And Architecture
 
@@ -150,7 +161,7 @@ Use the same spec file rules as Octo:
 - ADRs live under `spec/adr/0001-slug.md`.
 - `spec/index.md` links canonical specs and ADRs.
 - File names describe durable areas, not issue IDs.
-- Issue IDs belong in references and decision logs.
+- Linear/GitHub issue IDs belong in references and decision logs.
 
 Canonical specs use this structure:
 
@@ -190,15 +201,15 @@ When shaping discovers adjacent or prerequisite work:
   real blocker for the current issue.
 - Show the proposed title, relationship to current scope, blocker status, and
   whether it should be created now or deferred.
-- Do not create child, related, or follow-up GitHub issues without explicit
-  operator approval.
+- Do not create child, related, or follow-up Linear or GitHub issues without
+  explicit operator approval.
 - Do not use blocking relationships as a priority mechanism.
 
 ### 8. Final Ready Gate
 
-Before applying `octo-lite:ready`, all of this must be true:
+Before marking work ready, all of this must be true:
 
-- The draft has the exact final GitHub issue headings.
+- The draft has the exact final issue headings.
 - No unresolved `TBD` remains.
 - Acceptance criteria were reviewed and are observable.
 - Relevant specs/ADRs are updated, or no-change rationale is explicit.
@@ -208,7 +219,7 @@ Before applying `octo-lite:ready`, all of this must be true:
 - `.octo-lite/drafts/` is ignored.
 - Durable artifacts are ready to commit.
 - The operator has reviewed the issue draft and relevant repo diff.
-- The operator explicitly approved final GitHub mutation.
+- The operator explicitly approved final tracker mutation.
 - The Issue Shaper role used `$grill-with-docs` or recorded why docs-backed
   grilling was not applicable.
 
@@ -227,16 +238,25 @@ specs, ADRs, repo docs, and `.gitignore` updates. Do not commit
 Do not open a separate artifact-only PR. The implementer later creates the
 implementation branch from the shaping branch commit.
 
-### 10. Finalize GitHub
+### 10. Finalize Tracker
 
-After approval and durable commit:
+For Linear-first repos, after approval and durable commit:
+
+1. Create or update the Linear issue using the approved draft body.
+2. Set or confirm the Linear status/labels/dependencies requested by the
+   operator.
+3. Leave GitHub issues untouched unless the operator explicitly requested a
+   GitHub issue operation.
+4. Delete `.octo-lite/drafts/<slug>.md` when finalization succeeds.
+
+For GitHub-first repos, after approval and durable commit:
 
 1. Create or update the GitHub issue using the approved draft body.
 2. Create the label `octo-lite:ready` if missing.
 3. Apply `octo-lite:ready` to the issue.
 4. Delete `.octo-lite/drafts/<slug>.md`.
 
-Use the GitHub CLI. Examples:
+GitHub-first examples:
 
 ```bash
 gh issue create --title "<title>" --body-file .octo-lite/drafts/<slug>.md
@@ -245,13 +265,14 @@ gh label create "octo-lite:ready" --description "Shaped by octo-lite and ready f
 gh issue edit <number> --add-label "octo-lite:ready"
 ```
 
-If GitHub mutation fails, keep the draft and report the exact blocker.
+If tracker mutation fails, keep the draft and report the exact blocker.
 
 ## Boundaries
 
 - Do not implement the shaped work.
 - Do not start the implementer/reviewer loop.
-- Do not create extra workflow labels beyond `octo-lite:ready`.
+- Do not create extra workflow labels beyond the target tracker's established
+  readiness/status convention.
 - Do not create child issues unless the operator explicitly asks for that
-  separate GitHub mutation. Prefer recording split recommendations in the issue
-  or shaping a separate issue one at a time.
+  separate tracker mutation. Prefer recording split recommendations in the
+  issue or shaping a separate issue one at a time.

@@ -1,17 +1,21 @@
 ---
 name: octo-lite-loop
-description: Run the native octo-lite implementer-reviewer subagent loop for a GitHub issue that has octo-lite:ready. Use when the user asks to execute shaped work, spawn implementer/reviewer agents, or run the implementer -> reviewer -> implementer cycle.
+description: Run the native octo-lite implementer-reviewer subagent loop for shaped Linear-first work or an explicitly GitHub-first issue. Use when the user asks to execute shaped work, spawn implementer/reviewer agents, or run the implementer -> reviewer -> implementer cycle.
 ---
 
 # octo-lite Loop
 
-Use this skill after an issue has been shaped and labeled `octo-lite:ready`.
+Use this skill after an issue has been shaped and marked ready.
+
+In Linear-first repos, start from the Linear issue key and specs; do not require
+or create GitHub issue mirrors. In GitHub-first repos, the existing
+`octo-lite:ready` GitHub issue label remains the readiness gate.
 This skill orchestrates Codex subagents. It is not a daemon, CLI, polling loop,
 or background service.
 
 ## Inputs
 
-- GitHub issue number or URL.
+- Linear issue key or explicitly GitHub-first issue number/URL.
 - Optional existing PR number or URL.
 - Optional max cycle override. Default max is 3 reviewer fix cycles.
 
@@ -25,8 +29,10 @@ gh repo view
 gh issue view <issue> --json number,title,labels,url,body
 ```
 
-Refuse to proceed unless the issue has `octo-lite:ready`, unless the operator
-explicitly overrides this guard.
+For GitHub-first issues, refuse to proceed unless the issue has
+`octo-lite:ready`, unless the operator explicitly overrides this guard. For
+Linear-first work, require the parent/operator to confirm the Linear issue is
+ready and use Linear/specs as scope.
 
 Read target repo `AGENTS.md`, `spec/index.md`, relevant specs, and ADRs before
 spawning agents when they are needed to build the initial task prompt.
@@ -130,7 +136,8 @@ Final summary should include:
 
 ## Boundaries
 
-- Do not create new GitHub workflow labels.
+- Do not create new GitHub workflow labels. Do not create or update GitHub
+  issue mirrors for Linear-first work unless the operator explicitly asks.
 - Do not create extra PRs for the same issue.
 - Do not continue past ambiguity by guessing.
 - Do not run issue shaping inside the loop except to recommend returning to the

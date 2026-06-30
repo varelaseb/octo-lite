@@ -1,9 +1,10 @@
 # octo-lite
 
-octo-lite is a local Codex personalization for GitHub-issue-driven product
-work. It is not a service, daemon, CLI, or project dependency. It installs into
-the user's Codex profile and operates on target repositories through normal
-GitHub issues, pull requests, specs, ADRs, and repo instructions.
+octo-lite is a local Codex personalization for Linear-first product and
+development work, with GitHub used primarily for pull requests and code review.
+It is not a service, daemon, CLI, or project dependency. It installs into the
+user's Codex profile and operates on target repositories through normal Linear
+issues, GitHub pull requests, specs, ADRs, and repo instructions.
 
 This repository contains general-purpose development workflows and tooling
 maintained as reusable personal/background IP. It is not specific to any one
@@ -11,8 +12,8 @@ client, product, or engagement.
 
 ## What It Provides
 
-- A user-facing Issue Shaper workflow for turning ideas or rough GitHub issues
-  into clear, spec-backed work.
+- A user-facing Issue Shaper workflow for turning ideas or rough Linear/GitHub
+  issues into clear, spec-backed work.
 - A native Codex subagent loop for implementer and reviewer passes.
 - Templates bundled inside skills, not copied as top-level target repo
   template files.
@@ -59,19 +60,20 @@ Reviewer:
 Issue shaping is the most important step.
 
 ```text
-idea or rough GitHub issue
+idea or rough Linear/GitHub issue
   -> .octo-lite/drafts/<slug>.md
   -> specs/ADRs/repo init where needed
   -> operator approval
-  -> GitHub issue body
-  -> octo-lite:ready
+  -> Linear issue/spec updates, or GitHub issue body for GitHub-first work
+  -> ready status/approval
   -> implementer/reviewer loop
   -> human PR review
 ```
 
-During shaping, the draft file is the canonical working artifact. After the
-approved draft is written to GitHub and labeled `octo-lite:ready`, the GitHub
-issue becomes canonical and the local draft is deleted.
+During shaping, the draft file is the canonical working artifact. In
+Linear-first repos, Linear becomes canonical after finalization and specs remain
+the durable behavior source. In GitHub-first repos, the approved draft may be
+written to GitHub and labeled `octo-lite:ready`.
 
 Issue Shaper uses `$grill-with-docs` during shaping to preserve the useful
 thoroughness octo-lite needs: docs-first clarification, one question at a time
@@ -95,17 +97,22 @@ spec/adr/
 `README.md` is human/product-facing. `AGENTS.md` is Codex-facing and records
 repo-specific conventions that can diverge from the initial octo-lite scaffold.
 
-## GitHub
+## Trackers And GitHub
 
-octo-lite uses the GitHub CLI. Issue Shaper verifies GitHub auth and repo
-identity early with:
+Linear is the default source of truth for issue identity, product/dev scope,
+status, and dependencies. GitHub issues are used only for GitHub-first repos or
+explicit operator requests.
+
+octo-lite uses the GitHub CLI for pull requests and code review. Issue Shaper or
+Implementer verifies GitHub auth and repo identity when GitHub operations are
+needed:
 
 ```bash
 gh auth status
 gh repo view
 ```
 
-GitHub mutations happen only after explicit operator approval.
+GitHub issue mutations happen only after explicit operator approval.
 
 ## License
 
