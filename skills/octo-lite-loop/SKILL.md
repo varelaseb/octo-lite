@@ -176,14 +176,20 @@ round's redone artifacts in a SUPERSEDED glob file so they collapse out of
 the default view.
 
 The evidence-site gallery (Turbo target: `/root/codex-uploads/
-build-evidence-index.py`) is issue-aware and operator-facing: light
-product-themed UI, mobile-optimized, each issue heading hyperlinks to its
-Linear issue, compact context chips (epic membership, related issues with
-live state dots, `loop ≈Nk tok` spend summed from workflow journals),
-Desktop/Mobile viewport tabs over the artifacts, lightbox with prev/next
-arrows + keyboard navigation, and a right rail showing the Linear roadmap
-grouped by epic (progress bar, in-flight/up-next rows, done collapsed).
-Linear metadata is fetched at build time and cached for offline rebuilds.
+build-evidence-index.py`) is issue-aware, VERDICT-FIRST, and operator-facing.
+Each issue section is structured around the operator's acceptance flow:
+(1) verdict pill + per-AC checklist from `qa-verdicts/<ISSUE>.json` (each row
+expands to its evidence and fix instruction), (2) "Watch the proof" — the
+current video per use case, human-labeled, side by side, (3) screenshots
+collapsed, (4) "Capture details & history" collapsed (rounds, capture notes,
+check badges, superseded/deprecated). Rounds never structure the default
+view — they are forensic plumbing. Plus: light product theme,
+mobile-optimized, Linear-linked titles, context chips (epic/related/token
+spend), Desktop/Mobile tabs, lightbox arrows, and a right rail with the
+Linear roadmap grouped by epic (progress bars, in-flight/up-next, done
+collapsed). Linear metadata is fetched at build time and cached for offline
+rebuilds. A header hint spells out the review flow: verdict → AC checklist →
+videos → accept in the CLI to merge.
 
 QA verdicts are durable, per-issue artifacts: the reviewer writes
 `/root/codex-uploads/qa-verdicts/<ISSUE>.json` (canonical) in addition to the
