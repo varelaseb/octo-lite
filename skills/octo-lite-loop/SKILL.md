@@ -39,7 +39,8 @@ operator-led grilling) and the operator walked through the user story and
 acceptance criteria and signed them off. Do not start implementation from a
 self-written or ungrilled scope — a body the agent wrote itself is not shaped
 work. If the grill or AC walkthrough has not happened, stop and route back to
-`$octo-lite-issue-shaper`.
+`$octo-lite-issue-shaper`. Ready also means the issue carries a feature-level,
+user-voiced user story — loops never invent or repair stories.
 
 Read target repo `AGENTS.md`, `spec/index.md`, relevant specs, and ADRs before
 spawning agents when they are needed to build the initial task prompt.
