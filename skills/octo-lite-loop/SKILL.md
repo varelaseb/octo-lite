@@ -152,10 +152,28 @@ part of the merge gate: the operator watches the evidence before the PR
 merges. Neither the loop nor the operator's agent merges ahead of that
 acceptance.
 
+The QA verdict MUST be produced by a spawned QA-review agent that visually
+judges the artifacts (reads screenshots, extracts and reads video frames) —
+never by the orchestrator or the operator's agent reviewing inline. A manual
+review is not a verdict. If a loop dies after capture but before review
+(killed workflow, session end), re-enter the loop in qa-only mode or spawn
+the QA reviewer directly with the same prompt and artifacts before anything
+else happens. The reviewer writes its structured verdict to
+`<artifacts_dir>/round-N/qa-verdict.json`; the merge gate takes that file as
+a REQUIRED input — no verdict artifact, no merge, regardless of what a
+handoff says.
+
 Upon merging, drop a comment on the tracker issue (Linear for Linear-first
 work) containing the evidence-site link and the report packet (per-AC proof,
 edge cases/regressions checked, merge commit). Link video URLs rather than
 uploading video files to the tracker.
+
+Evidence-site hierarchy is coverage-first: the default view of an issue shows
+exactly one current video per use case — all of them side by side — never a
+"latest run only" view that hides use cases, and never a stale video for a
+flow that was redone. When a fix round re-captures a flow, mark the older
+round's redone artifacts in a SUPERSEDED glob file so they collapse out of
+the default view.
 
 QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
 that completes onboarding burns the fixture. Verify fixture state (e.g. the
