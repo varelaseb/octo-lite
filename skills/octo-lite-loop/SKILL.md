@@ -136,8 +136,13 @@ is the default loop, implemented as `workflows/octo-loop-qa.js` (installed at
 1. **QA capture** — after the code-review verdict is clear, a QA-evidence
    agent exercises the operator-signed QA flows against the ACTUAL running
    app on the PR branch and records durable artifacts: at least one video
-   walking the user story end to end, full-page screenshots of each key state
-   (desktop and mobile where UI changed), and a manifest. Broken or
+   walking the user story end to end, full-page screenshots of each key
+   state, and a manifest. BOTH viewports are mandatory for UI work — every
+   user-visible flow is captured on desktop AND mobile; missing mobile
+   evidence means the render/regression criteria are not_evidenced, never
+   waved through. Each artifact addresses ONE explicitly stated user-voiced
+   story, recorded in `story-map.json` ({story, videos, acs} entries) so the
+   evidence site can lay each story out next to its video. Broken or
    uncapturable flows are reported honestly, never papered over.
 2. **QA review** — a strict judge (Fable) evaluates the artifacts against the
    user story and EVERY acceptance criterion: `pass` / `fail` /
