@@ -150,8 +150,12 @@ paths INCLUDING browsable evidence-site URLs for every video (the operator
 reviews in a browser, not on the box). Human acceptance of the artifacts is
 part of the merge gate: the operator watches the evidence before the PR
 merges. Neither the loop nor the operator's agent merges ahead of that
-acceptance. Do not post video artifacts to the tracker; the report links
-suffice.
+acceptance.
+
+Upon merging, drop a comment on the tracker issue (Linear for Linear-first
+work) containing the evidence-site link and the report packet (per-AC proof,
+edge cases/regressions checked, merge commit). Link video URLs rather than
+uploading video files to the tracker.
 
 QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
 that completes onboarding burns the fixture. Verify fixture state (e.g. the
