@@ -174,6 +174,15 @@ work) containing the evidence-site link and the report packet (per-AC proof,
 edge cases/regressions checked, merge commit). Link video URLs rather than
 uploading video files to the tracker.
 
+Operator acceptance is a DURABLE LEDGER, not a chat vibe: accepted issues
+live in `qa-verdicts/accepted.json` ({issue: {accepted_at, by, note}}),
+written by the operator's agent on an explicit chat accept ("accept TUR-XX" /
+"flag TUR-XX: reason" — flags route back into the loop). The evidence site
+splits on it: "Needs your review (n)" queue first (ordered by epic rank in
+the roadmap, then verdict age — NEVER by capture recency), accepted archive
+below, plus a generated `review.html` story-mode (one pending issue per
+screen, arrow-key navigation) for one-sitting review sessions.
+
 Evidence-site hierarchy is coverage-first: the default view of an issue shows
 exactly one current video per use case — all of them side by side — never a
 "latest run only" view that hides use cases, and never a stale video for a
