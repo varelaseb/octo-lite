@@ -175,6 +175,30 @@ flow that was redone. When a fix round re-captures a flow, mark the older
 round's redone artifacts in a SUPERSEDED glob file so they collapse out of
 the default view.
 
+The evidence-site gallery (Turbo target: `/root/codex-uploads/
+build-evidence-index.py`) is issue-aware and operator-facing: light
+product-themed UI, mobile-optimized, each issue heading hyperlinks to its
+Linear issue, compact context chips (epic membership, related issues with
+live state dots, `loop ≈Nk tok` spend summed from workflow journals),
+Desktop/Mobile viewport tabs over the artifacts, lightbox with prev/next
+arrows + keyboard navigation, and a right rail showing the Linear roadmap
+grouped by epic (progress bar, in-flight/up-next rows, done collapsed).
+Linear metadata is fetched at build time and cached for offline rebuilds.
+
+QA verdicts are durable, per-issue artifacts: the reviewer writes
+`/root/codex-uploads/qa-verdicts/<ISSUE>.json` (canonical) in addition to the
+round-level copy. Issues that shipped before this process get BACKFILLED
+verdicts: spawn the same visual QA reviewer over their existing artifacts so
+every shipped story has an evidence-graded verdict on file.
+
+Downstream (design agreed 2026-07-03, generator to be built): a user-story
+catalog is GENERATED from Linear stories/AC joined with the qa-verdicts —
+QA-proven stories only, organized by app surface — and published from one
+generator run to BOTH Notion (business agents) and the target repo's `spec/`
+dir (dev agents). Neither copy is hand-edited; regeneration happens as part
+of the post-acceptance merge routine (the same operator-agent step that
+merges and drops the tracker comment).
+
 QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
 that completes onboarding burns the fixture. Verify fixture state (e.g. the
 progress row in the database) before trusting a first-run flow's result, and
