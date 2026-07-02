@@ -13,7 +13,12 @@ target repositories.
   mapping.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
 - `skills/` contains reusable octo-lite skills and their bundled templates.
-- `agents/` contains custom Codex subagent profiles.
+- `agents/` contains custom subagent profiles: Codex `*.toml` and the parallel
+  Claude Code `*.md` (Markdown + YAML frontmatter) profiles. Keep both in sync
+  when changing implementer/reviewer behavior.
+- `workflows/` contains Claude Code Workflow scripts (currently
+  `octo-loop-qa.js`, the loop-with-QA implementation); their conventions
+  blocks are per-target configuration.
 
 ## Local Workflow
 

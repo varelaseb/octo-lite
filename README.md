@@ -34,6 +34,24 @@ at them with symlinks:
 ~/.codex/agents/octo-lite-reviewer.toml -> agents/octo-lite-reviewer.toml
 ```
 
+The Claude Code surface reuses the same source repo. Skills share the SKILL.md
+format and symlink directly, but subagents use a different format
+(Markdown + YAML frontmatter instead of Codex TOML), so the repo carries
+parallel `agents/*.md` profiles that install the same way:
+
+```text
+~/.claude/CLAUDE.md -> profile/AGENTS.md
+~/.claude/skills/<skill> -> skills/<skill>
+~/.claude/agents/octo-lite-implementer.md -> agents/octo-lite-implementer.md
+~/.claude/agents/octo-lite-reviewer.md -> agents/octo-lite-reviewer.md
+~/.claude/workflows/octo-loop-qa.js (copy of workflows/octo-loop-qa.js)
+```
+
+`workflows/octo-loop-qa.js` is the Claude Code Workflow implementation of the
+loop with QA stages (see `skills/octo-lite-loop/SKILL.md`). Its CONVENTIONS
+and QA_APP blocks are per-target configuration (currently Turbo-Outreach), so
+copy it rather than symlinking and rewrite those blocks per target repo.
+
 `~/.codex/skills` is supported by the current local profile. `$HOME/.agents/skills`
 is the documented user-skill location in the current Codex manual, so both are
 installed.

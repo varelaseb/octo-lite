@@ -34,6 +34,13 @@ For GitHub-first issues, refuse to proceed unless the issue has
 Linear-first work, require the parent/operator to confirm the Linear issue is
 ready and use Linear/specs as scope.
 
+Ready means grilled: the issue passed `$grill-with-docs` (or equivalent
+operator-led grilling) and the operator walked through the user story and
+acceptance criteria and signed them off. Do not start implementation from a
+self-written or ungrilled scope — a body the agent wrote itself is not shaped
+work. If the grill or AC walkthrough has not happened, stop and route back to
+`$octo-lite-issue-shaper`.
+
 Read target repo `AGENTS.md`, `spec/index.md`, relevant specs, and ADRs before
 spawning agents when they are needed to build the initial task prompt.
 
@@ -44,10 +51,14 @@ Spawn these custom agents when available:
 - `octo-lite-implementer`
 - `octo-lite-reviewer`
 
-If the custom agent names are unavailable in the current Codex surface, spawn a
-`worker` for implementation and a `worker` or `default` agent for review, and
-include the corresponding role instructions from the installed agent profile in
-the prompt.
+On the Codex surface these are the installed `agents/*.toml` profiles. On the
+Claude Code surface they are the installed `~/.claude/agents/*.md` subagents;
+spawn them with the Agent tool using `subagent_type` set to the agent name.
+
+If the custom agent names are unavailable in the current surface, fall back to a
+generic worker (Codex `worker`/`default`, or Claude `general-purpose`) for each
+role and include the corresponding role instructions from the installed agent
+profile in the prompt.
 
 ## Role Skill Expectations
 
@@ -113,6 +124,39 @@ Use the PR as the durable loop surface:
 - Fix cycles update the same branch and PR.
 
 Use `assets/handoff.md` for the implementer handoff shape.
+
+## QA Stages (default on surfaces that support them)
+
+When the target repo has a runnable app and the surface can drive a browser,
+the loop extends past the code review with two QA stages; on Claude Code this
+is the default loop, implemented as `workflows/octo-loop-qa.js` (installed at
+`~/.claude/workflows/octo-loop-qa.js`, invoked as the `octo-loop-qa` workflow).
+
+1. **QA capture** — after the code-review verdict is clear, a QA-evidence
+   agent exercises the operator-signed QA flows against the ACTUAL running
+   app on the PR branch and records durable artifacts: at least one video
+   walking the user story end to end, full-page screenshots of each key state
+   (desktop and mobile where UI changed), and a manifest. Broken or
+   uncapturable flows are reported honestly, never papered over.
+2. **QA review** — a strict judge (Fable) evaluates the artifacts against the
+   user story and EVERY acceptance criterion: `pass` / `fail` /
+   `not_evidenced`, where missing evidence is not a pass. Any failure sends
+   concrete fix instructions back to the implementer on the same branch and
+   PR (bounded fix rounds), then QA repeats.
+
+The loop ends with a concise operator report: what was built, per-AC proof
+with evidence, edge cases and regressions actively checked, and artifact
+paths. The operator (or their agent) runs the merge gate; the loop still does
+not merge.
+
+QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
+that completes onboarding burns the fixture. Verify fixture state (e.g. the
+progress row in the database) before trusting a first-run flow's result, and
+prefer re-verifying with a genuinely fresh user over re-using a named login.
+
+The workflow script's conventions blocks (repo paths, base branch, demo
+logins, QA app topology) are per-target configuration — see the header
+comment in `workflows/octo-loop-qa.js`.
 
 ## Stop Conditions
 
