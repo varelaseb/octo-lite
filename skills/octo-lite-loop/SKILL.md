@@ -146,8 +146,12 @@ is the default loop, implemented as `workflows/octo-loop-qa.js` (installed at
 
 The loop ends with a concise operator report: what was built, per-AC proof
 with evidence, edge cases and regressions actively checked, and artifact
-paths. The operator (or their agent) runs the merge gate; the loop still does
-not merge.
+paths INCLUDING browsable evidence-site URLs for every video (the operator
+reviews in a browser, not on the box). Human acceptance of the artifacts is
+part of the merge gate: the operator watches the evidence before the PR
+merges. Neither the loop nor the operator's agent merges ahead of that
+acceptance. Do not post video artifacts to the tracker; the report links
+suffice.
 
 QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
 that completes onboarding burns the fixture. Verify fixture state (e.g. the

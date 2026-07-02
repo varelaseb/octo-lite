@@ -27,7 +27,7 @@ WORKTREE (never touch the main tree): git -C /root/Turbo-Outreach-staging worktr
 Validation: client vitest run + tsc -p client/tsconfig.json --noEmit; backend node --test for touched suites; scripts/lint-architecture.js when boundaries move.
 COMMITS end with:
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-PR body references the Linear key ("Tracks <ISSUE>"). Do NOT merge — the operator's agent merges after its gate.
+PR body references the Linear key ("Tracks <ISSUE>"). Do NOT merge — the operator watches the QA evidence videos (see EVIDENCE SITE) and the merge happens only after that human acceptance plus the merge-gate checks.
 SPECS are law: read the relevant spec/domains/*.md decision logs before changing behavior. Return ONLY the structured result.`
 
 const QA_APP = `
@@ -36,7 +36,8 @@ QA APP (shared demo stack — reuse it, do not build a parallel one):
 - To QA a PR branch: git -C /tmp/qa2-wt fetch origin <branch> && git -C /tmp/qa2-wt checkout -f -B qa-under-test origin/<branch>. Vite picks it up live. If backend files changed, restart the API: find it (ss -tlnp | grep :3000), kill it, then from /tmp/qa2-wt/tools/prospect-report run: nohup node src/index.js > /tmp/qa-api.log 2>&1 & (env loads from its .env). Verify http://127.0.0.1:3000/api/health then http://127.0.0.1:5173.
 - AFTER QA: leave the branch checked out (the operator's agent restores tur-50 after merge).
 - Demo login: client@local.test / LocalDevPass123! (post-first-run user, role=client). Pre-first-run logins (verify first-run chrome): qa-topicfinder-full-20260630b@local.test or ...c@local.test / LocalDevPass123!. These fixtures are CONSUMABLE — completing onboarding/first-run burns them (qa-topicfinder-full-20260630d is already burned, completed 2026-07-01). Verify state first: SELECT current_step, completed_at FROM topicfinder_onboarding_progress (docker exec turbo-outreach-postgres psql -U postgres -d prospect_report).
-- Playwright is installed at /tmp/qa-evidence-playwright (import { chromium } from 'playwright'; launch args ['--no-sandbox']). Record video via context recordVideo + convert webm→mp4 with ffmpeg (-c:v libx264 -pix_fmt yuv420p -movflags +faststart). Full-page screenshots for key states; mobile = viewport 390x844, desktop = 1440x1000.`
+- Playwright is installed at /tmp/qa-evidence-playwright (import { chromium } from 'playwright'; launch args ['--no-sandbox']). Record video via context recordVideo + convert webm→mp4 with ffmpeg (-c:v libx264 -pix_fmt yuv420p -movflags +faststart). Full-page screenshots for key states; mobile = viewport 390x844, desktop = 1440x1000.
+- EVIDENCE SITE: python3 -m http.server 8080 serves /root/codex-uploads/topicfinder-FINAL-20260701 at http://147.182.226.89:8080. Symlink the issue's artifacts dir into that root (ln -sfn <artifacts_dir> /root/codex-uploads/topicfinder-FINAL-20260701/<basename>) so every video gets a browsable URL. The operator reviews videos at these URLs BEFORE any merge — human acceptance of the artifacts is part of the merge gate. Include the URLs in the returned artifact list; do not post videos to Linear.`
 
 // ---------- schemas ----------
 const IMPL_SCHEMA = { type: 'object', required: ['pr_url', 'branch', 'validation', 'blocked'], properties: {
