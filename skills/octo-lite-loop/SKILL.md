@@ -229,6 +229,30 @@ The workflow script's conventions blocks (repo paths, base branch, demo
 logins, QA app topology) are per-target configuration — see the header
 comment in `workflows/octo-loop-qa.js`.
 
+## Batch Execution (multiple shaped issues)
+
+Two rules exist because their absence created an avoidable merge-conflict
+train and a pointlessly serialized night (operator correction 2026-07-03):
+
+- **Stack sequential batches.** When loops run in a dictated order, loop N+1's
+  branch forks from loop N's final head (pass `base` in the workflow args),
+  never as siblings off one shared base commit. Review flags are fix-forward
+  on the same branch in this workflow — nothing is ever reverted out of the
+  line — so stacking costs nothing at review time and eliminates the
+  cross-PR conflict surface entirely. PRs still target the trunk; merge them
+  in stack order and each PR's diff collapses to its own work. If a loop is
+  skipped or blocked mid-batch, continue the stack from the last good head
+  and note the gap in the operator report.
+- **Cluster same-file issues.** If two shaped issues edit the same files,
+  prefer one loop carrying both AC sets (with operator sign-off at intake)
+  over two loops that will collide.
+- **Parallelize only disjoint work.** Issues with no file overlap and no
+  exclusive-DB-state needs may run as parallel loops — safe because every QA
+  pass provisions its own isolated env (own worktree + ports; see the QA ENV
+  conventions in the workflow). The genuinely shared budgets to watch are the
+  Postgres fixture supply and external API spend (e.g. scraping/AI credits),
+  not the app stack.
+
 ## Stop Conditions
 
 Stop and summarize when:

@@ -7,7 +7,7 @@
 export const meta = {
   name: 'octo-loop-qa',
   description: 'Default octo-lite loop with QA: implement → code review → QA video/artifacts → Fable QA review vs user story + AC → fix loop → concise operator report',
-  whenToUse: 'Default loop for shaped+ready Linear issues in Turbo-Outreach. args: {issue, branch, pr?, mode: "full"|"qa-only", user_story, acceptance_criteria: [], qa_flows: [], context, artifacts_dir}',
+  whenToUse: 'Default loop for shaped+ready Linear issues in Turbo-Outreach. args: {issue, branch, base?, pr?, mode: "full"|"qa-only", user_story, acceptance_criteria: [], qa_flows: [], context, artifacts_dir}. In sequential batches pass base = the PREVIOUS loop\'s branch head (stacked branches, zero sibling conflicts); omit base only for the first loop or genuinely independent work.',
   phases: [
     { title: 'Implement' },
     { title: 'Code Review' },
@@ -17,12 +17,18 @@ export const meta = {
   ],
 }
 
+// ---------- args (parsed early: conventions interpolate the branch base) ----------
+const A = typeof args === 'string' ? JSON.parse(args) : (args ?? {})
+const TRUNK = 'tur-50-topicfinder-alpha-video-remix-golden-path'
+const BASE = A.base ?? TRUNK
+
 // ---------- shared conventions ----------
 const CONVENTIONS = `
-REPO: /root/Turbo-Outreach-staging (base branch: origin/tur-50-topicfinder-alpha-video-remix-golden-path — PRs target it, NOT main).
+REPO: /root/Turbo-Outreach-staging (PRs target origin/${TRUNK}, NOT main).
+BRANCH BASE: fork your branch from origin/${BASE}${BASE !== TRUNK ? ' (STACKED batch base — the previous loop\'s head; your diff builds on it conflict-free. PRs still target the trunk; the PR diff shrinks as predecessors merge in stack order)' : ''}.
 WORKTREE (never touch the main tree): git -C /root/Turbo-Outreach-staging worktree add --detach <WT> origin/<branch-or-base>
   Backend deps: ln -s /root/Turbo-Outreach-staging/tools/prospect-report/node_modules <WT>/tools/prospect-report/node_modules
-  Client deps:  ln -s /tmp/qa2-wt/tools/prospect-report/client/node_modules <WT>/tools/prospect-report/client/node_modules
+  Client deps:  ln -s /root/Turbo-Outreach-staging/tools/prospect-report/client/node_modules <WT>/tools/prospect-report/client/node_modules
   Env: cp /root/Turbo-Outreach-staging/tools/prospect-report/.env <WT>/tools/prospect-report/.env
 Validation: client vitest run + tsc -p client/tsconfig.json --noEmit; backend node --test for touched suites; scripts/lint-architecture.js when boundaries move.
 COMMITS end with:
@@ -31,10 +37,10 @@ PR body references the Linear key ("Tracks <ISSUE>"). Do NOT merge — the opera
 SPECS are law: read the relevant spec/domains/*.md decision logs before changing behavior. Return ONLY the structured result.`
 
 const QA_APP = `
-QA APP (shared demo stack — reuse it, do not build a parallel one):
-- Worktree /tmp/qa2-wt serves the app: Vite dev on :5173 (live-reloads on checkout), API on :3000.
-- To QA a PR branch: git -C /tmp/qa2-wt fetch origin <branch> && git -C /tmp/qa2-wt checkout -f -B qa-under-test origin/<branch>. Vite picks it up live. If backend files changed, restart the API: find it (ss -tlnp | grep :3000), kill it, then from /tmp/qa2-wt/tools/prospect-report run: nohup node src/index.js > /tmp/qa-api.log 2>&1 & (env loads from its .env). Verify http://127.0.0.1:3000/api/health then http://127.0.0.1:5173.
-- AFTER QA: leave the branch checked out (the operator's agent restores tur-50 after merge).
+QA ENV (ISOLATED PER QA PASS — never rely on a shared app stack; loops must be able to capture in parallel):
+- Provision YOUR OWN env: worktree of the PR branch (see WORKTREE conventions: deps symlinks + .env copy), then pick two FREE ports (check ss -tln; e.g. vite 5200-5999, api 3200-3999) and start your own stack from <WT>/tools/prospect-report: API via PORT=<api_port> nohup node server.js > /tmp/qa-api-<issue>.log 2>&1 &, client via its dev server on <vite_port> with the API proxy pointed at YOUR api port (env override or a one-off vite config wrapper — the isolation is the requirement; record the exact mechanics in the manifest). Verify http://127.0.0.1:<api_port>/api/health then http://127.0.0.1:<vite_port> before capturing. Record app_url + ports + worktree path in manifest.json.
+- TEARDOWN when done: kill only YOUR two processes (record PIDs at launch), git worktree remove YOUR worktree. NEVER kill other processes on 5173/3000 and never touch /tmp/qa2-wt — that is the operator's demo stack, not yours.
+- DB is the shared Docker Postgres (turbo-outreach-postgres / prospect_report): use DEDICATED fixture users for consumable flows; never run migrations, truncations, or resets of global/other-loops' state from a QA pass. If the issue genuinely needs exclusive DB state, say so in issues_hit and stop rather than assuming exclusivity.
 - Demo login: client@local.test / LocalDevPass123! (post-first-run user, role=client). Pre-first-run logins (verify first-run chrome): qa-topicfinder-full-20260630b@local.test or ...c@local.test / LocalDevPass123!. These fixtures are CONSUMABLE — completing onboarding/first-run burns them (qa-topicfinder-full-20260630d is already burned, completed 2026-07-01). Verify state first: SELECT current_step, completed_at FROM topicfinder_onboarding_progress (docker exec turbo-outreach-postgres psql -U postgres -d prospect_report).
 - Playwright is installed at /tmp/qa-evidence-playwright (import { chromium, webkit, devices } from 'playwright'; launch args ['--no-sandbox']). Record video via context recordVideo + convert webm→mp4 with ffmpeg (-c:v libx264 -pix_fmt yuv420p -movflags +faststart). Full-page screenshots for key states. Desktop = 1440x1000 (chromium). MOBILE BASELINE = modern iPhone: webkit.launch() + devices['iPhone 15'] (393x852, real WebKit + touch) — this is the primary mobile target; Android (chromium + devices['Pixel 7']) is secondary, capture it when the issue calls out Android or the flow is input/navigation-heavy (e.g. back-button behavior).
 - EVIDENCE SITE: python3 -m http.server 8080 serves /root/codex-uploads/topicfinder-FINAL-20260701 at http://147.182.226.89:8080. Symlink the issue's artifacts dir into that root (ln -sfn <artifacts_dir> /root/codex-uploads/topicfinder-FINAL-20260701/<basename>), then REBUILD THE GALLERY: python3 /root/codex-uploads/build-evidence-index.py (regenerates index.html + video posters; the operator browses the gallery, not raw listings). The operator reviews videos at these URLs BEFORE any merge — human acceptance of the artifacts is part of the merge gate. Include the URLs in the returned artifact list.
@@ -65,8 +71,7 @@ const QA_VERDICT_SCHEMA = { type: 'object', required: ['satisfied', 'ac_results'
   regressions_checked: { type: 'array', items: { type: 'string' } },
   summary: { type: 'string' } } }
 
-// ---------- args ----------
-const A = typeof args === 'string' ? JSON.parse(args) : (args ?? {})
+// ---------- args (A parsed above conventions) ----------
 const issue = A.issue
 const mode = A.mode ?? 'full'
 const userStory = A.user_story ?? '(none provided)'
@@ -116,7 +121,7 @@ for (let round = 1; round <= MAX_QA_ROUNDS; round += 1) {
 
   phase('QA Review')
   qaVerdict = await agent(
-    `You are the QA REVIEWER for ${issue}. Judge whether the shipped work satisfies the user story and EVERY acceptance criterion, using the QA artifacts as primary evidence (Read the screenshots; for videos, extract frames with ffmpeg -i <mp4> -vf fps=1 <dir>/f%03d.png and Read those). You may also open the PR diff (gh pr diff ${impl.pr_url}) and the running app (${'http://127.0.0.1:5173'}) to verify claims — but the ARTIFACTS must stand on their own as proof for the operator.\n\nTHREAD CONTEXT (from the operator's session — goals and decisions):\n${threadContext}\nUSER STORY: ${userStory}\nACCEPTANCE CRITERIA:\n${ac.map((c, i) => `${i + 1}. ${c}`).join('\n')}\nCAPTURE RESULT: ${JSON.stringify(capture).slice(0, 3000)}\n\nFor each criterion: pass / fail / not_evidenced (missing evidence = NOT a pass). List the edge cases and regressions you actively checked (e.g. role gating, mobile, empty states, existing flows still intact). If ANY criterion fails or lacks evidence, satisfied=false with a concrete fix_instruction per failure. Be strict — a plausible screenshot is not proof if the flow wasn't exercised. Before returning, WRITE your full verdict JSON to ${artifactsDir}/round-${round}/qa-verdict.json and /root/codex-uploads/qa-verdicts/${issue}.json (mkdir -p first) — the merge gate requires these files.`,
+    `You are the QA REVIEWER for ${issue}. Judge whether the shipped work satisfies the user story and EVERY acceptance criterion, using the QA artifacts as primary evidence (Read the screenshots; for videos, extract frames with ffmpeg -i <mp4> -vf fps=1 <dir>/f%03d.png and Read those). You may also open the PR diff (gh pr diff ${impl.pr_url}) and the running app (use the app_url/ports recorded in the capture manifest — each QA pass runs its own isolated env; if it was torn down, provision your own per the QA ENV conventions) to verify claims — but the ARTIFACTS must stand on their own as proof for the operator.\n\nTHREAD CONTEXT (from the operator's session — goals and decisions):\n${threadContext}\nUSER STORY: ${userStory}\nACCEPTANCE CRITERIA:\n${ac.map((c, i) => `${i + 1}. ${c}`).join('\n')}\nCAPTURE RESULT: ${JSON.stringify(capture).slice(0, 3000)}\n\nFor each criterion: pass / fail / not_evidenced (missing evidence = NOT a pass). List the edge cases and regressions you actively checked (e.g. role gating, mobile, empty states, existing flows still intact). If ANY criterion fails or lacks evidence, satisfied=false with a concrete fix_instruction per failure. Be strict — a plausible screenshot is not proof if the flow wasn't exercised. Before returning, WRITE your full verdict JSON to ${artifactsDir}/round-${round}/qa-verdict.json and /root/codex-uploads/qa-verdicts/${issue}.json (mkdir -p first) — the merge gate requires these files.`,
     { model: 'fable', effort: 'high', phase: 'QA Review', label: `qa-review:${issue} r${round}`, schema: QA_VERDICT_SCHEMA })
   if (!qaVerdict) return { stage: 'qa-review', impl, capture, report: null }
   if (qaVerdict.satisfied) break
