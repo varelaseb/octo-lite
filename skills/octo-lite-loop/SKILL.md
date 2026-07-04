@@ -220,6 +220,14 @@ dir (dev agents). Neither copy is hand-edited; regeneration happens as part
 of the post-acceptance merge routine (the same operator-agent step that
 merges and drops the tracker comment).
 
+Acceptance + merge = Done (operator convention 2026-07-04): the post-acceptance
+merge routine transitions the Linear issue to Done in the same step as the
+merge comment — never leave a separate state-sweep for later. The only
+exception is an issue carrying explicitly-deferred remaining scope (e.g. a
+deliverable re-homed to another epic's slice); leave it open and say why in
+the merge comment. The acceptance ledger and Linear state must never disagree
+about shipped work.
+
 QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
 that completes onboarding burns the fixture. Verify fixture state (e.g. the
 progress row in the database) before trusting a first-run flow's result, and
