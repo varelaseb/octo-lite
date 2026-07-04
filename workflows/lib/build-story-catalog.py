@@ -200,7 +200,10 @@ def main() -> None:
                          f"([evidence]({EVIDENCE_BASE}/#{e['key']}))")
         lines.append("")
 
-    md = "\n".join(lines)
+    # rstrip every line (story-map source text and empty link slots can leave
+    # trailing spaces) + single trailing newline, so the repo twin passes the
+    # `git diff --check` PR gate.
+    md = "\n".join(line.rstrip() for line in lines).rstrip("\n") + "\n"
     OUT_MD.write_text(md)
     print(f"wrote {OUT_MD} ({len(proven)} proven, {len(partial)} partial)")
 
