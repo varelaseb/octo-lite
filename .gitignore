@@ -1,3 +1,6 @@
 .DS_Store
 .octo-lite/drafts/
 
+
+__pycache__/
+*.pyc
