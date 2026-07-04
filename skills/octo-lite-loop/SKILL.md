@@ -220,13 +220,25 @@ dir (dev agents). Neither copy is hand-edited; regeneration happens as part
 of the post-acceptance merge routine (the same operator-agent step that
 merges and drops the tracker comment).
 
-Acceptance + merge = Done (operator convention 2026-07-04): the post-acceptance
-merge routine transitions the Linear issue to Done in the same step as the
-merge comment — never leave a separate state-sweep for later. The only
-exception is an issue carrying explicitly-deferred remaining scope (e.g. a
-deliverable re-homed to another epic's slice); leave it open and say why in
-the merge comment. The acceptance ledger and Linear state must never disagree
-about shipped work.
+Linear state model (operator convention 2026-07-04): states are LIFECYCLE
+ONLY — `Todo → In Progress → In Review → Done` — and no state may duplicate
+the meaning of another artifact. Concretely:
+
+- The loop moves the issue to In Progress when implementation starts, and to
+  In Review when a satisfied evidence packet lands in the operator's queue.
+- Evidence acceptance is NOT a state. It is the operator's chat-accept,
+  recorded in the acceptance ledger (`qa-verdicts/accepted.json`) — an audit
+  log and site index, never a second source of truth. Do not create an
+  "Accepted" workflow state or label; two states describing the same fact
+  make the tracker feel wrong (operator, verbatim intent).
+- Done is GATED, not granted: the post-acceptance merge routine — and only
+  it — transitions the issue to Done, in the same step as the merge and the
+  evidence-link comment. No ledger entry, no merge, no Done; and never a
+  separate state-sweep later. The only exception is an issue carrying
+  explicitly-deferred remaining scope (e.g. a deliverable re-homed to another
+  epic's slice); leave it open and say why in the merge comment.
+- Invariant: the ledger and Linear must never disagree about shipped work —
+  Done ⟺ accepted AND merged.
 
 QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
 that completes onboarding burns the fixture. Verify fixture state (e.g. the
