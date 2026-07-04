@@ -234,11 +234,15 @@ the meaning of another artifact. Concretely:
 - Done is GATED, not granted: the post-acceptance merge routine — and only
   it — transitions the issue to Done, in the same step as the merge and the
   evidence-link comment. No ledger entry, no merge, no Done; and never a
-  separate state-sweep later. The only exception is an issue carrying
-  explicitly-deferred remaining scope (e.g. a deliverable re-homed to another
-  epic's slice); leave it open and say why in the merge comment.
-- Invariant: the ledger and Linear must never disagree about shipped work —
-  Done ⟺ accepted AND merged.
+  separate state-sweep later.
+- No half-open issues: an accepted issue never stays open to carry remaining
+  scope. TRANSFER the remainder to the issue that will build it (comments on
+  both sides recording the hand-off), then close the accepted issue Done —
+  operator rule 2026-07-04, set when TUR-81 straddled a shipped slice and an
+  unshipped deliverable and broke the accepted/Done reconciliation.
+- Invariant: accepted ⇒ merged ⇒ Done, always; the ledger, the tracker, and
+  the evidence site must reconcile exactly (packets without Linear identity
+  are counted apart, never blended into issue counts).
 
 QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
 that completes onboarding burns the fixture. Verify fixture state (e.g. the
