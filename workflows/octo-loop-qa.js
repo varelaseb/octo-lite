@@ -103,9 +103,14 @@ if (mode === 'full') {
   if (!impl || impl.blocked || !impl.pr_url) return { stage: 'implement', impl, report: null }
 
   phase('Code Review')
+  // Reviewer is ALWAYS GPT-5.5 @ xhigh via the codex relay (operator directive
+  // 2026-07-07) — cross-model review, never a same-model reviewer. The relay
+  // passes the message to `codex exec -m gpt-5.5 -c model_reasoning_effort=
+  // "xhigh"` verbatim and returns the reply; the role contract must therefore
+  // ride inside the message (codex loads no Claude agent profiles).
   const review = await agent(
-    `You are the octo-lite reviewer. Audit PR ${impl.pr_url} (branch ${impl.branch}) for ${issue} in Turbo-Video/Turbo-Outreach. Build your own worktree from the PR branch (fetch + worktree add --detach), symlink deps + cp .env per the conventions, run the validation yourself.\n${CONVENTIONS}\nAudit against the scope below + the relevant spec decision logs. Hunt for contract breaks, spec violations, silently skipped scope, weak tests.\nSCOPE: ${userStory}\nAC:\n${ac.join('\n')}\nImplementer handoff: ${JSON.stringify(impl).slice(0, 1400)}\nPost a real GitHub PR review (gh pr review --comment / --request-changes). Do NOT approve as the human reviewer, do NOT merge. Return the structured verdict.`,
-    { agentType: 'octo-lite-reviewer', model: 'opus', effort: 'xhigh', phase: 'Code Review', label: `review:${issue}`, schema: REVIEW_SCHEMA })
+    `Run with model gpt-5.5 at reasoning effort xhigh.\n\nYou are the octo-lite reviewer for PR ${impl.pr_url} (branch ${impl.branch}, issue ${issue}) in Turbo-Video/Turbo-Outreach. You have local repo + gh access. Build your own worktree from the PR branch (fetch + worktree add --detach), symlink deps + cp .env per the conventions, run the validation yourself.\n${CONVENTIONS}\nAudit against the scope below + the relevant spec decision logs. Hunt for contract breaks, spec violations, silently skipped scope, weak tests.\nSCOPE: ${userStory}\nAC:\n${ac.join('\n')}\nImplementer handoff: ${JSON.stringify(impl).slice(0, 1400)}\nRole contract: post a real GitHub PR review (gh pr review --comment / --request-changes). Do NOT approve as the human reviewer, do NOT merge. Findings first, ordered by severity, precise file:line references.\nEnd your reply with a fenced json block exactly matching: {"verdict": "clear"|"blocking"|"ambiguous", "findings": [{"severity": "blocking"|"important"|"nit", "title": "...", "detail": "..."}], "review_url": "..."}.`,
+    { agentType: 'codex', phase: 'Code Review', label: `review:${issue}`, schema: REVIEW_SCHEMA })
 
   if (review && review.verdict === 'blocking') {
     phase('Fix')

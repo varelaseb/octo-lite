@@ -47,19 +47,38 @@ spawning agents when they are needed to build the initial task prompt.
 
 ## Agent Roles
 
-Spawn these custom agents when available:
+Role-model policy (operator directive 2026-07-07):
 
-- `octo-lite-implementer`
-- `octo-lite-reviewer`
+- **Implementer: always Claude Opus 4.8 at high reasoning effort.** Spawn
+  `octo-lite-implementer`; on the Claude Code surface its agent profile pins
+  `model: opus`, and surfaces that accept an effort option pass `high`.
+- **Reviewer: always OpenAI GPT-5.5 at xhigh reasoning effort, via the `codex`
+  relay subagent** — never a same-model reviewer. Cross-model review catches
+  what same-model review rationalizes. On the Claude Code surface spawn
+  `subagent_type: "codex"` (the relay defaults to
+  `codex exec -m gpt-5.5 -c model_reasoning_effort="xhigh"`); state model and
+  effort in the message anyway. The relay does not load role profiles, so
+  INCLUDE the reviewer role instructions from the `octo-lite-reviewer` profile
+  (installed `agents/octo-lite-reviewer.md` / `.toml`) verbatim in the relayed
+  message: post a real `gh pr review`, verdict `blocking`/`clear`/`ambiguous`
+  as the first word of the reply, never approve, never merge. Give it absolute
+  repo/worktree paths — Codex runs on the local box with repo + gh access.
+  Continue the SAME codex session via SendMessage for re-review cycles so it
+  keeps its findings context.
+- `octo-lite-reviewer` remains the role-instruction source, and the spawn
+  fallback ONLY when the codex CLI/subagent is unavailable — note that
+  deviation in the operator report.
 
-On the Codex surface these are the installed `agents/*.toml` profiles. On the
-Claude Code surface they are the installed `~/.claude/agents/*.md` subagents;
-spawn them with the Agent tool using `subagent_type` set to the agent name.
+On the Codex surface the role profiles are the installed `agents/*.toml`
+profiles (there the reviewer is already GPT — configure gpt-5.5/xhigh in the
+Codex profile). On the Claude Code surface they are the installed
+`~/.claude/agents/*.md` subagents, spawned with the Agent tool using
+`subagent_type` set to the agent name.
 
-If the custom agent names are unavailable in the current surface, fall back to a
-generic worker (Codex `worker`/`default`, or Claude `general-purpose`) for each
-role and include the corresponding role instructions from the installed agent
-profile in the prompt.
+If a required agent name is unavailable in the current surface, fall back to a
+generic worker (Codex `worker`/`default`, or Claude `general-purpose`) for that
+role, include the corresponding role instructions from the installed agent
+profile in the prompt, and keep the role-model policy above.
 
 ## Role Skill Expectations
 

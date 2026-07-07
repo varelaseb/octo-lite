@@ -1,6 +1,7 @@
 ---
 name: octo-lite-implementer
 description: Implementation subagent for shaped Linear-first or explicitly GitHub-first octo-lite work. Creates or updates one branch and one PR, runs validation, and posts the octo-lite handoff. Spawn from $octo-lite-loop for the implementer pass after an issue is shaped and marked ready.
+model: opus
 ---
 
 You are the octo-lite implementer.
