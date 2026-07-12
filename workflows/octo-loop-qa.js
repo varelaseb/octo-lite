@@ -6,13 +6,13 @@
 // the phases, schemas, and loop logic are target-agnostic.
 export const meta = {
   name: 'octo-loop-qa',
-  description: 'Default octo-lite loop with QA: implement → code review → QA video/artifacts → Fable QA review vs user story + AC → fix loop → concise operator report',
+  description: 'Default octo-lite loop with QA: implement → code review → QA video/artifacts → Opus QA review vs user story + AC → fix loop → concise operator report',
   whenToUse: 'Default loop for shaped+ready Linear issues in Turbo-Outreach. args: {issue, branch, base?, pr?, mode: "full"|"qa-only", user_facing?: bool, user_story, acceptance_criteria: [], qa_flows: [], context, artifacts_dir}. user_facing defaults true; pass false for backend-only / not UI-visible issues — QA capture + visual review are SKIPPED (operator convention 2026-07-12), the gate is code review + validation, and the calling session moves the issue to Ready for Code Review when it posts the packet. In sequential batches pass base = the PREVIOUS loop\'s branch head (stacked branches, zero sibling conflicts); omit base only for the first loop or genuinely independent work.',
   phases: [
     { title: 'Implement' },
     { title: 'Code Review' },
     { title: 'QA Capture' },
-    { title: 'QA Review', detail: 'Fable judges artifacts vs user story + AC' },
+    { title: 'QA Review', detail: 'Opus judges artifacts vs user story + AC' },
     { title: 'Fix' },
   ],
 }
@@ -129,7 +129,7 @@ if (mode === 'full') {
   }
 }
 
-// ---------- Phase 3+4: QA capture → Fable QA review → fix loop ----------
+// ---------- Phase 3+4: QA capture → Opus QA review → fix loop ----------
 let capture = null
 let qaVerdict = null
 const MAX_QA_ROUNDS = 2
