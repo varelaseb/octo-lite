@@ -119,7 +119,22 @@ Keep the draft clean enough to paste directly into Linear or GitHub. Do not add
 an intake diary, long transcript, raw logs, secrets, or scratch notes. If a
 decision is unresolved, represent it as `TBD` in the relevant final section.
 
-### 3. Grill With Docs
+### 3. Cross-Model Debate (Fable × Sol)
+
+Once the draft stabilizes and before the grill pass, run a two-model debate on
+it (operator convention 2026-07-12, order fixed same day: debate first, then
+grill): Fable (Claude) and Sol (`gpt-5.6-sol`, reasoning effort high) each
+attack the draft — cheapest-viable scope, missing or unobservable ACs, hidden
+dependencies, spec conflicts, and what the other side rationalized. Whichever
+runtime hosts the shaping session relays to the other model (Claude host →
+`codex` relay / `codex exec -m gpt-5.6-sol -c model_reasoning_effort="high"`;
+Codex host → Claude subagent). Fold each side's surviving objections into the
+draft or the grill agenda; record material disagreements and their resolutions
+in the issue's Context/decision log, and carry unresolved splits into the
+grill as operator questions with recommended answers — never silently pick a
+side.
+
+### 4. Grill With Docs
 
 Load and follow `$grill-with-docs` for the clarification pass. Stress-test the
 work against target repo instructions, README, specs, ADRs, code, package
@@ -146,7 +161,7 @@ Use these shaping thoroughness patterns:
   separate issue only after operator approval. Use GitHub issue bodies only for
   GitHub-first work or explicitly requested GitHub issue updates.
 
-### 4. Resolve Spikes, Env, And Architecture
+### 5. Resolve Spikes, Env, And Architecture
 
 Run a bounded spike only when a behavior-affecting question cannot be answered
 from durable sources or direct operator input and the answer is needed before
@@ -160,7 +175,7 @@ Discuss architecture before final acceptance review. Record durable behavior in
 State the ADR checkpoint result explicitly, even when the result is "no ADR
 required."
 
-### 5. Maintain Specs And ADRs
+### 6. Maintain Specs And ADRs
 
 Use the same spec file rules as Octo:
 
@@ -185,7 +200,7 @@ Canonical specs use this structure:
 ## References to source issues
 ```
 
-### 6. Review Acceptance Criteria
+### 7. Review Acceptance Criteria
 
 Walk acceptance criteria one by one with the operator. Classify each as:
 
@@ -200,7 +215,7 @@ Do not mark criteria clear while any behavior-affecting `TBD` remains.
 Record the compact review result in the draft's `## Context` section when it is
 useful for implementer/reviewer evidence, but keep the final issue concise.
 
-### 7. Finalize Follow-Up Scope
+### 8. Finalize Follow-Up Scope
 
 When shaping discovers adjacent or prerequisite work:
 
@@ -212,7 +227,7 @@ When shaping discovers adjacent or prerequisite work:
   explicit operator approval.
 - Do not use blocking relationships as a priority mechanism.
 
-### 8. Final Ready Gate
+### 9. Final Ready Gate
 
 Before marking work ready, all of this must be true:
 
@@ -230,7 +245,7 @@ Before marking work ready, all of this must be true:
 - The Issue Shaper role used `$grill-with-docs` or recorded why docs-backed
   grilling was not applicable.
 
-### 9. Commit Durable Artifacts
+### 10. Commit Durable Artifacts
 
 Use a shaping branch:
 
@@ -245,7 +260,7 @@ specs, ADRs, repo docs, and `.gitignore` updates. Do not commit
 Do not open a separate artifact-only PR. The implementer later creates the
 implementation branch from the shaping branch commit.
 
-### 10. Finalize Tracker
+### 11. Finalize Tracker
 
 For Linear-first repos, after approval and durable commit:
 

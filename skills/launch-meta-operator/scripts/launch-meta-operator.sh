@@ -6,7 +6,7 @@ usage() {
 Usage: launch-meta-operator.sh [options]
 
 Options:
-  --runtime codex|claude   Child runtime (default: codex)
+  --runtime codex|claude   Child runtime (default: claude — Fable only; codex is an explicit operator override)
   --cwd PATH               Starting directory (default: current directory)
   --workspace ID           Herdr workspace (default: current/focused workspace)
   --name NAME              Unique Herdr agent name
@@ -20,7 +20,7 @@ Options:
 EOF
 }
 
-runtime="codex"
+runtime="claude"
 start_cwd="$PWD"
 workspace="${HERDR_WORKSPACE_ID:-}"
 name=""

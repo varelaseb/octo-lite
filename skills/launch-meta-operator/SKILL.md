@@ -14,11 +14,13 @@ a background orchestration session.
 
 ## Choose the Runtime
 
-- Default to `codex`; it inherits the user's configured model and reasoning
-  effort and launches with `--yolo` so Herdr and background supervision do not
-  stall on runtime permission prompts.
-- Use `claude` when the user requests Claude. The launcher pins Fable at xhigh
-  effort and uses `--permission-mode auto`.
+- Always use `claude` (operator directive 2026-07-12): meta-operators run on
+  Fable only — the launcher pins Fable at xhigh effort and uses
+  `--permission-mode auto`. Sol/Codex is a poor meta-orchestrator; do not
+  launch a `codex` meta-operator even if a Codex session is the caller.
+- The `codex` runtime remains in the launcher only as an explicit operator
+  override; it inherits the user's configured model and launches with
+  `--yolo`.
 - Treat these permissive runtime modes as execution plumbing, not expanded
   authority. The child still performs a read-only bootstrap and preserves every
   operator gate in its prompt.
@@ -34,7 +36,7 @@ a background orchestration session.
 
 ```bash
 scripts/launch-meta-operator.sh \
-  --runtime codex \
+  --runtime claude \
   --cwd "$PWD" \
   --handoff "<compact caller handoff>"
 ```
@@ -42,10 +44,9 @@ scripts/launch-meta-operator.sh \
 Useful overrides:
 
 ```bash
-scripts/launch-meta-operator.sh --runtime claude --cwd /root
 scripts/launch-meta-operator.sh --objective "<known starting objective>"
 scripts/launch-meta-operator.sh --workspace w1 --name meta-operator-launch
-scripts/launch-meta-operator.sh --dry-run --runtime codex
+scripts/launch-meta-operator.sh --dry-run --runtime claude
 ```
 
 The launcher creates private durable state under

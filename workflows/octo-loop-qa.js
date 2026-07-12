@@ -7,7 +7,7 @@
 export const meta = {
   name: 'octo-loop-qa',
   description: 'Default octo-lite loop with QA: implement → code review → QA video/artifacts → Fable QA review vs user story + AC → fix loop → concise operator report',
-  whenToUse: 'Default loop for shaped+ready Linear issues in Turbo-Outreach. args: {issue, branch, base?, pr?, mode: "full"|"qa-only", user_story, acceptance_criteria: [], qa_flows: [], context, artifacts_dir}. In sequential batches pass base = the PREVIOUS loop\'s branch head (stacked branches, zero sibling conflicts); omit base only for the first loop or genuinely independent work.',
+  whenToUse: 'Default loop for shaped+ready Linear issues in Turbo-Outreach. args: {issue, branch, base?, pr?, mode: "full"|"qa-only", user_facing?: bool, user_story, acceptance_criteria: [], qa_flows: [], context, artifacts_dir}. user_facing defaults true; pass false for backend-only / not UI-visible issues — QA capture + visual review are SKIPPED (operator convention 2026-07-12), the gate is code review + validation, and the calling session moves the issue to Ready for Code Review when it posts the packet. In sequential batches pass base = the PREVIOUS loop\'s branch head (stacked branches, zero sibling conflicts); omit base only for the first loop or genuinely independent work.',
   phases: [
     { title: 'Implement' },
     { title: 'Code Review' },
@@ -32,7 +32,7 @@ WORKTREE (never touch the main tree): git -C /root/Turbo-Outreach-staging worktr
   Env: cp /root/Turbo-Outreach-staging/tools/prospect-report/.env <WT>/tools/prospect-report/.env
 Validation: client vitest run + tsc -p client/tsconfig.json --noEmit; backend node --test for touched suites; scripts/lint-architecture.js when boundaries move.
 COMMITS end with:
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Co-Authored-By: GPT-5.6 Luna (Codex) <noreply@openai.com>
 PR body references the Linear key ("Tracks <ISSUE>"). Do NOT merge — the operator watches the QA evidence videos (see EVIDENCE SITE) and the merge happens only after that human acceptance plus the merge-gate checks.
 SPECS are law: read the relevant spec/domains/*.md decision logs before changing behavior. Return ONLY the structured result.
 LINEAR STATES are lifecycle-only (operator convention 2026-07-04): the loop moves the issue Todo -> In Progress when implementation starts (linear issue update <ISSUE> -s "In Progress"); the QA reviewer moves it to "Ready for Code Review" when a satisfied evidence packet lands in the operator queue (that is the review-queue state for team TUR — there is no "In Review" state). NEVER set Done and NEVER invent states like "Accepted" — Done is reserved for the post-acceptance merge routine (acceptance ledger entry + merge = Done, in that step only).`
@@ -83,6 +83,10 @@ const QA_VERDICT_SCHEMA = { type: 'object', required: ['satisfied', 'ac_results'
 // ---------- args (A parsed above conventions) ----------
 const issue = A.issue
 const mode = A.mode ?? 'full'
+// QA capture/visual review run ONLY for user-facing / UI-visible issues
+// (operator convention 2026-07-12): backend-only work gains nothing from
+// browser videos — its gate is code review + validation.
+const userFacing = A.user_facing !== false
 const userStory = A.user_story ?? '(none provided)'
 const ac = Array.isArray(A.acceptance_criteria) ? A.acceptance_criteria : []
 const qaFlows = Array.isArray(A.qa_flows) ? A.qa_flows : []
@@ -97,27 +101,30 @@ let impl = A.pr && A.branch
 
 if (mode === 'full') {
   phase('Implement')
+  // Roles (operator directive 2026-07-12, supersedes 2026-07-07): implementer
+  // and all fix passes = GPT-5.6 Luna @ ultra; code reviewer = GPT-5.6 Sol @
+  // high — both via the codex relay (fast service tier from the box codex
+  // config). Luna builds, Sol reviews: still cross-model, never the same
+  // model reviewing its own work. QA capture/review stay Claude Opus. The
+  // relay passes the message to codex exec verbatim and returns the reply;
+  // the role contract must ride inside the message (codex loads no Claude
+  // agent profiles).
   impl = await agent(
-    `You are the octo-lite implementer for ${issue}. Branch: ${A.branch}. Worktree /tmp/${String(issue).toLowerCase()}-wt.\n${CONVENTIONS}\n\nOPERATOR-SIGNED SCOPE (grilled + AC walkthrough done; do not re-scope):\nUSER STORY: ${userStory}\nACCEPTANCE CRITERIA:\n${ac.map((c, i) => `${i + 1}. ${c}`).join('\n')}\nTHREAD CONTEXT:\n${threadContext}\n\nFirst move the issue to In Progress (linear issue update ${issue} -s "In Progress"). TDD where practical. Open the PR. If truly blocked by ambiguity, return blocked=true with the question instead of guessing.`,
-    { agentType: 'octo-lite-implementer', model: 'opus', effort: 'high', phase: 'Implement', label: `impl:${issue}`, schema: IMPL_SCHEMA })
+    `Run with model gpt-5.6-luna at reasoning effort ultra.\n\nYou are the octo-lite implementer for ${issue}. Branch: ${A.branch}. Worktree /tmp/${String(issue).toLowerCase()}-wt. Role contract: one branch, one PR, run the target repo validation yourself, never merge, return ONLY the structured handoff.\n${CONVENTIONS}\n\nOPERATOR-SIGNED SCOPE (grilled + AC walkthrough done; do not re-scope):\nUSER STORY: ${userStory}\nACCEPTANCE CRITERIA:\n${ac.map((c, i) => `${i + 1}. ${c}`).join('\n')}\nTHREAD CONTEXT:\n${threadContext}\n\nFirst move the issue to In Progress (linear issue update ${issue} -s "In Progress"). TDD where practical. Open the PR. If truly blocked by ambiguity, return blocked=true with the question instead of guessing.\nEnd your reply with a fenced json block exactly matching: {"pr_url": "...", "branch": "...", "head": "...", "validation": "...", "summary": "...", "blocked": false, "blocker": ""}.`,
+    { agentType: 'codex', phase: 'Implement', label: `impl:${issue}`, schema: IMPL_SCHEMA })
   if (!impl || impl.blocked || !impl.pr_url) return { stage: 'implement', impl, report: null }
 
   phase('Code Review')
-  // Reviewer is ALWAYS GPT-5.5 @ xhigh via the codex relay (operator directive
-  // 2026-07-07) — cross-model review, never a same-model reviewer. The relay
-  // passes the message to `codex exec -m gpt-5.5 -c model_reasoning_effort=
-  // "xhigh"` verbatim and returns the reply; the role contract must therefore
-  // ride inside the message (codex loads no Claude agent profiles).
   const review = await agent(
-    `Run with model gpt-5.5 at reasoning effort xhigh.\n\nYou are the octo-lite reviewer for PR ${impl.pr_url} (branch ${impl.branch}, issue ${issue}) in Turbo-Video/Turbo-Outreach. You have local repo + gh access. Build your own worktree from the PR branch (fetch + worktree add --detach), symlink deps + cp .env per the conventions, run the validation yourself.\n${CONVENTIONS}\nAudit against the scope below + the relevant spec decision logs. Hunt for contract breaks, spec violations, silently skipped scope, weak tests.\nSCOPE: ${userStory}\nAC:\n${ac.join('\n')}\nImplementer handoff: ${JSON.stringify(impl).slice(0, 1400)}\nRole contract: post a real GitHub PR review (gh pr review --comment / --request-changes). Do NOT approve as the human reviewer, do NOT merge. Findings first, ordered by severity, precise file:line references.\nEnd your reply with a fenced json block exactly matching: {"verdict": "clear"|"blocking"|"ambiguous", "findings": [{"severity": "blocking"|"important"|"nit", "title": "...", "detail": "..."}], "review_url": "..."}.`,
+    `Run with model gpt-5.6-sol at reasoning effort high.\n\nYou are the octo-lite reviewer for PR ${impl.pr_url} (branch ${impl.branch}, issue ${issue}) in Turbo-Video/Turbo-Outreach. You have local repo + gh access. Build your own worktree from the PR branch (fetch + worktree add --detach), symlink deps + cp .env per the conventions, run the validation yourself.\n${CONVENTIONS}\nAudit against the scope below + the relevant spec decision logs. Hunt for contract breaks, spec violations, silently skipped scope, weak tests.\nSCOPE: ${userStory}\nAC:\n${ac.join('\n')}\nImplementer handoff: ${JSON.stringify(impl).slice(0, 1400)}\nRole contract: post a real GitHub PR review (gh pr review --comment / --request-changes). Do NOT approve as the human reviewer, do NOT merge. Findings first, ordered by severity, precise file:line references.\nEnd your reply with a fenced json block exactly matching: {"verdict": "clear"|"blocking"|"ambiguous", "findings": [{"severity": "blocking"|"important"|"nit", "title": "...", "detail": "..."}], "review_url": "..."}.`,
     { agentType: 'codex', phase: 'Code Review', label: `review:${issue}`, schema: REVIEW_SCHEMA })
 
   if (review && review.verdict === 'blocking') {
     phase('Fix')
     const blocking = (review.findings || []).filter(f => f.severity === 'blocking')
     const fix = await agent(
-      `Continue ${issue} on existing branch ${impl.branch} (PR ${impl.pr_url}). Fix the reviewer's BLOCKING findings on the SAME branch, push, re-validate.\n${CONVENTIONS}\nBLOCKING FINDINGS:\n${JSON.stringify(blocking, null, 1)}`,
-      { agentType: 'octo-lite-implementer', model: 'opus', effort: 'high', phase: 'Fix', label: `fix:${issue}`, schema: IMPL_SCHEMA })
+      `Run with model gpt-5.6-luna at reasoning effort ultra.\n\nContinue ${issue} on existing branch ${impl.branch} (PR ${impl.pr_url}). Fix the reviewer's BLOCKING findings on the SAME branch, push, re-validate.\n${CONVENTIONS}\nBLOCKING FINDINGS:\n${JSON.stringify(blocking, null, 1)}\nEnd your reply with a fenced json block exactly matching: {"pr_url": "...", "branch": "...", "head": "...", "validation": "...", "summary": "...", "blocked": false, "blocker": ""}.`,
+      { agentType: 'codex', phase: 'Fix', label: `fix:${issue}`, schema: IMPL_SCHEMA })
     if (fix?.pr_url) impl = fix
   }
 }
@@ -126,10 +133,11 @@ if (mode === 'full') {
 let capture = null
 let qaVerdict = null
 const MAX_QA_ROUNDS = 2
-for (let round = 1; round <= MAX_QA_ROUNDS; round += 1) {
+if (!userFacing) log(`${issue} is backend-only (user_facing=false) — skipping QA capture + visual review; gate = code review + validation. Calling session sets Ready for Code Review with the packet.`)
+for (let round = 1; userFacing && round <= MAX_QA_ROUNDS; round += 1) {
   phase('QA Capture')
   capture = await agent(
-    `You are the QA-evidence agent for ${issue} (PR ${impl.pr_url}, branch ${impl.branch}). Capture browser evidence of the ACTUAL running app on this branch.\n${QA_APP}\nArtifacts go under ${artifactsDir}/round-${round}/ : at least one narrated-by-action VIDEO (mp4) walking the user story end to end, full-page SCREENSHOTS of each key state, and a manifest.json (url, viewport, flows, artifact list). Name files by what they show — include 'mobile' in mobile artifact filenames. BOTH VIEWPORTS ARE MANDATORY for any UI-touching issue: capture desktop (1440x1000) AND mobile (390x844) for every user-visible flow — a flow without mobile evidence cannot pass its render/regression criteria. Also write ${artifactsDir}/story-map.json: [{story, videos: [relative paths], acs: [numbers], viewports?: ["desktop","mobile"]}] — every video addresses ONE explicitly stated user-voiced story (a video may serve multiple entries), and EVERY STORY carries proof on BOTH viewports (desktop + mobile videos in its list); declare "viewports": ["mobile"] (or ["desktop"]) only for stories inherently single-viewport (e.g. bottom tab bar). The evidence site renders one card per story with a slot per viewport — a missing slot shows an amber "no proof yet" placeholder, so gaps are visible, never hidden. If this round RE-CAPTURES flows from an earlier round (fix round), write a SUPERSEDED file into the earlier round's dir (glob patterns, one per line, '#' comments) matching the redone artifacts — the evidence site's default view must show exactly one current video per use case, covering ALL of them side by side.\nUSER STORY: ${userStory}\nACCEPTANCE CRITERIA (capture evidence FOR EACH):\n${ac.map((c, i) => `${i + 1}. ${c}`).join('\n')}\nQA FLOWS TO EXERCISE:\n${qaFlows.map((f, i) => `${i + 1}. ${f}`).join('\n')}\nBe honest in issues_hit — anything broken, odd, or uncapturable goes there, not papered over. Return the structured result with every artifact path.`,
+    `You are the QA-evidence agent for ${issue} (PR ${impl.pr_url}, branch ${impl.branch}). Capture browser evidence of the ACTUAL running app on this branch.\nLEAN CAPTURE (operator convention 2026-07-12): the shortest video per story that proves its ACs — no filler navigation, no flows that no AC or qa_flow references, screenshots only for AC-relevant key states. Lean means fewer/shorter artifacts, never skipped viewports or unproven ACs.\n${QA_APP}\nArtifacts go under ${artifactsDir}/round-${round}/ : at least one narrated-by-action VIDEO (mp4) walking the user story end to end, full-page SCREENSHOTS of each key state, and a manifest.json (url, viewport, flows, artifact list). Name files by what they show — include 'mobile' in mobile artifact filenames. BOTH VIEWPORTS ARE MANDATORY for any UI-touching issue: capture desktop (1440x1000) AND mobile (390x844) for every user-visible flow — a flow without mobile evidence cannot pass its render/regression criteria. Also write ${artifactsDir}/story-map.json: [{story, videos: [relative paths], acs: [numbers], viewports?: ["desktop","mobile"]}] — every video addresses ONE explicitly stated user-voiced story (a video may serve multiple entries), and EVERY STORY carries proof on BOTH viewports (desktop + mobile videos in its list); declare "viewports": ["mobile"] (or ["desktop"]) only for stories inherently single-viewport (e.g. bottom tab bar). The evidence site renders one card per story with a slot per viewport — a missing slot shows an amber "no proof yet" placeholder, so gaps are visible, never hidden. If this round RE-CAPTURES flows from an earlier round (fix round), write a SUPERSEDED file into the earlier round's dir (glob patterns, one per line, '#' comments) matching the redone artifacts — the evidence site's default view must show exactly one current video per use case, covering ALL of them side by side.\nUSER STORY: ${userStory}\nACCEPTANCE CRITERIA (capture evidence FOR EACH):\n${ac.map((c, i) => `${i + 1}. ${c}`).join('\n')}\nQA FLOWS TO EXERCISE:\n${qaFlows.map((f, i) => `${i + 1}. ${f}`).join('\n')}\nBe honest in issues_hit — anything broken, odd, or uncapturable goes there, not papered over. Return the structured result with every artifact path.`,
     { agentType: 'general-purpose', model: 'opus', effort: 'high', phase: 'QA Capture', label: `qa-capture:${issue} r${round}`, schema: CAPTURE_SCHEMA })
   if (!capture) return { stage: 'qa-capture', impl, report: null }
 
@@ -144,8 +152,8 @@ for (let round = 1; round <= MAX_QA_ROUNDS; round += 1) {
     phase('Fix')
     const failures = (qaVerdict.ac_results || []).filter(r => r.status !== 'pass')
     const fix = await agent(
-      `Continue ${issue} on existing branch ${impl.branch} (PR ${impl.pr_url}). The QA reviewer rejected the work — fix these on the SAME branch, push, re-validate:\n${JSON.stringify(failures, null, 1)}\n${CONVENTIONS}`,
-      { agentType: 'octo-lite-implementer', model: 'opus', effort: 'high', phase: 'Fix', label: `qa-fix:${issue}`, schema: IMPL_SCHEMA })
+      `Run with model gpt-5.6-luna at reasoning effort ultra.\n\nContinue ${issue} on existing branch ${impl.branch} (PR ${impl.pr_url}). The QA reviewer rejected the work — fix these on the SAME branch, push, re-validate:\n${JSON.stringify(failures, null, 1)}\n${CONVENTIONS}\nEnd your reply with a fenced json block exactly matching: {"pr_url": "...", "branch": "...", "head": "...", "validation": "...", "summary": "...", "blocked": false, "blocker": ""}.`,
+      { agentType: 'codex', phase: 'Fix', label: `qa-fix:${issue}`, schema: IMPL_SCHEMA })
     if (fix?.pr_url) impl = fix
   }
 }
@@ -155,7 +163,8 @@ return {
   issue,
   pr: impl.pr_url,
   branch: impl.branch,
-  qa_satisfied: qaVerdict?.satisfied ?? false,
+  qa_mode: userFacing ? 'visual' : 'skipped-backend-only',
+  qa_satisfied: userFacing ? (qaVerdict?.satisfied ?? false) : null,
   report: {
     goals: userStory,
     built: impl.summary,
