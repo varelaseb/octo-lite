@@ -1,0 +1,4 @@
+interface:
+  display_name: "Launch Meta-Operator"
+  short_description: "Launch a persistent Herdr operator agent"
+  default_prompt: "Use $launch-meta-operator to inspect active Herdr work and launch a persistent operator session."
