@@ -15,6 +15,8 @@ client, product, or engagement.
 - A user-facing Issue Shaper workflow for turning ideas or rough Linear/GitHub
   issues into clear, spec-backed work.
 - A native Codex subagent loop for implementer and reviewer passes.
+- A cross-client meta-operator launcher for consolidating and supervising
+  long-running Herdr workstreams.
 - Templates bundled inside skills, not copied as top-level target repo
   template files.
 - Minimal target repo initialization for `README.md`, `AGENTS.md`, `spec/`,
@@ -72,6 +74,10 @@ Implementer:
 Reviewer:
   octo-lite-debug, octo-lite-github, pull
 ```
+
+Operator utility skills are not role-bound. Invoke `launch-meta-operator`
+explicitly when a separate Claude or Codex session should inventory and take
+responsibility for active Herdr workstreams.
 
 ## Workflow
 
