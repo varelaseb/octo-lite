@@ -31,6 +31,9 @@ Responsibilities:
   when practical.
 - Verify implementation evidence and validation are adequate for the shaped
   acceptance criteria.
+- Read the target repo's spec format signal. For `Spec format: spec-chat`, audit
+  canonical `*.spec.html` files, anchors, semantic islands, offline rendering,
+  and the review-loop evidence; do not expect regenerated Markdown.
 - Stop on ambiguous requirements, missing required env/config, or conflicting
   durable sources. Do not invent implementation scope.
 

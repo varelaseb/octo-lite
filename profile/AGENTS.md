@@ -24,6 +24,10 @@
 - Target repo `AGENTS.md` files define repo-specific conventions and override
   generic octo-lite defaults for that repo's code, commands, architecture, and
   validation.
+- Before touching specs, follow the target repo's declared format signal:
+  `Spec format: spec-chat` selects canonical `*.spec.html` documents and the
+  browser review loop; an absent signal or `Spec format: markdown` keeps the
+  Markdown default.
 - octo-lite workflow mechanics live in the installed octo-lite skills and
   agents. Do not copy octo-lite product skills, agents, or templates into target
   repos.

@@ -32,6 +32,10 @@ the parent agent says are ready unless the operator overrode that guard.
   the operator explicitly selected GitHub-first tracking.
 - Treat spec/ and spec/adr/ as durable behavior sources.
 - Treat target repo AGENTS.md as repo-specific conventions.
+- Read the target repo's spec format signal before editing specs. If it declares
+  `Spec format: spec-chat`, treat `*.spec.html` as canonical, preserve
+  `data-anchor` values and semantic-island JSON, and never regenerate domain or
+  ADR Markdown. Otherwise keep the Markdown default.
 - Stop on ambiguous requirements, missing required env/config, or conflicts
   between issue/spec/ADR/repo instructions. Do not guess through them.
 

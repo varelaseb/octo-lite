@@ -18,6 +18,19 @@ this repository's code, commands, architecture, and validation.
 - GitHub issues are not the canonical tracking surface for Linear-tracked work
   unless the operator explicitly asks for a GitHub issue operation.
 
+## Spec Format
+
+- Omit the format signal, or declare `Spec format: markdown`, to use the
+  backward-compatible Markdown spec layout.
+- Declare the exact signal `Spec format: spec-chat` only when this repo commits
+  spec-chat scaffolding and treats `*.spec.html` as its canonical spec source.
+- Spec-chat repos keep prose one sentence per line, anchor every meaningful
+  block with `data-anchor`, store visual state in pretty-printed semantic-island
+  JSON, vendor the shared `.viz/` runtime for offline rendering, and ignore
+  `*.review/` event spools.
+- Shaping runs the spec-chat review loop (serve, annotate, hand off, drain,
+  edit, reply) before readiness; agents do not regenerate Markdown counterparts.
+
 ## Local Workflow
 
 - Shape work with octo-lite before implementation.

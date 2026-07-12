@@ -13,6 +13,14 @@ or create GitHub issue mirrors. In GitHub-first repos, the existing
 This skill orchestrates Codex subagents. It is not a daemon, CLI, polling loop,
 or background service.
 
+Target repos may declare `Spec format: spec-chat` in `AGENTS.md`. The absent
+signal and `Spec format: markdown` preserve the Markdown default. When the
+signal is present, the loop and its agents read canonical `*.spec.html` files,
+respect their anchors and semantic islands, and never regenerate domain/ADR
+Markdown. Spec-chat shaping owns the serve → annotate → hand off → drain → edit
+→ reply review loop before the issue is ready; implementation and review then
+use the resulting HTML as law.
+
 ## Inputs
 
 - Linear issue key or explicitly GitHub-first issue number/URL.
@@ -42,7 +50,8 @@ work. If the grill or AC walkthrough has not happened, stop and route back to
 `$octo-lite-issue-shaper`. Ready also means the issue carries a feature-level,
 user-voiced user story — loops never invent or repair stories.
 
-Read target repo `AGENTS.md`, `spec/index.md`, relevant specs, and ADRs before
+Read target repo `AGENTS.md`, its declared spec format, the matching
+`spec/index.md` or `spec/index.spec.html`, relevant specs, and ADRs before
 spawning agents when they are needed to build the initial task prompt.
 
 ## Agent Roles

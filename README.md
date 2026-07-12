@@ -115,6 +115,25 @@ spec/adr/
 `README.md` is human/product-facing. `AGENTS.md` is Codex-facing and records
 repo-specific conventions that can diverge from the initial octo-lite scaffold.
 
+### Spec format capability
+
+Target repos declare their canonical spec format in `AGENTS.md` with the exact
+signal `Spec format: spec-chat`. Repos without that signal, or with
+`Spec format: markdown`, continue to use the existing Markdown layout and
+templates unchanged.
+
+Spec-chat repos keep `*.spec.html` as the only canonical spec source under the
+declared `spec/` root. Each document uses one sentence per prose line, a stable
+`data-anchor` on every meaningful block, and pretty-printed JSON semantic
+islands for charts or other visual state. They commit a shared `.viz/` runtime
+with vendored libraries so rendering works offline, ignore `*.review/` event
+spools, and run the browser review loop during shaping: serve, annotate, hand
+off, drain, edit, and reply.
+
+The shaper, grill, loop, and role profiles read this signal before touching a
+spec. They preserve the repo's declared format, and spec-chat work never
+regenerates a Markdown counterpart.
+
 ## Trackers And GitHub
 
 Linear is the default source of truth for issue identity, product/dev scope,

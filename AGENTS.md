@@ -20,6 +20,22 @@ target repositories.
   `octo-loop-qa.js`, the loop-with-QA implementation); their conventions
   blocks are per-target configuration.
 
+## Target Spec Format Capability
+
+- A target repo may opt into native spec-chat documents by declaring the exact
+  signal `Spec format: spec-chat` in its `AGENTS.md`.
+- An absent signal, or `Spec format: markdown`, keeps Markdown specs as the
+  backward-compatible default.
+- In a spec-chat repo, `*.spec.html` files are canonical under the repo's
+  declared spec root, with one sentence per prose line, stable `data-anchor`
+  attributes on every meaningful block, and pretty-printed semantic-island
+  JSON for visual state.
+- The shared `.viz/` runtime and vendored libraries are committed for offline
+  rendering, `*.review/` spools are ignored, and shaping includes the
+  serve/annotate/hand-off/drain/edit/reply review loop before readiness.
+- Agents must follow the target repo's declared format and must not generate a
+  Markdown counterpart for a spec-chat canonical document.
+
 ## Local Workflow
 
 - Do not add a CLI, daemon, polling service, or runtime stack for v1.

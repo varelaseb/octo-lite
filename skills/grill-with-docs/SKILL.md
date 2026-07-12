@@ -34,14 +34,17 @@ drafts, specs, ADRs, repo docs, code, and configuration.
 Start with the smallest useful context set:
 
 1. Target repo `AGENTS.md` for repo-specific Codex conventions.
-2. `spec/index.md`, when present.
-3. Relevant canonical specs under `spec/domains/`.
-4. Existing ADRs under `spec/adr/`, when present.
-5. Repo docs such as `README.md`, `CONTRIBUTING.md`, `WORKFLOW.md`, or setup
+2. The target repo's spec format signal (`Spec format: spec-chat`, or the
+   Markdown default when absent).
+3. `spec/index.md` or `spec/index.spec.html`, when present.
+4. Relevant canonical specs under `spec/domains/` as Markdown or
+   `*.spec.html`.
+5. Existing ADRs under `spec/adr/`, in the declared format, when present.
+6. Repo docs such as `README.md`, `CONTRIBUTING.md`, `WORKFLOW.md`, or setup
    docs.
-6. Code, tests, configuration, and package scripts directly related to the
+7. Code, tests, configuration, and package scripts directly related to the
    planned change.
-7. Existing Linear issue context and GitHub PR context when shaping an existing
+8. Existing Linear issue context and GitHub PR context when shaping an existing
    issue or a follow-up from PR review. Use GitHub issue context only when the
    repo is GitHub-first or the operator explicitly names a GitHub issue.
 
@@ -66,7 +69,8 @@ Use these shaping patterns:
 ## Spec Updates
 
 Record resolved product or system behavior in the relevant canonical spec.
-Use octo-lite's target repo spec structure:
+Follow the target repo's declared format. Use octo-lite's target repo spec
+structure in either Markdown or spec-chat HTML:
 
 - `## Intended behavior`
 - `## Domain concepts`
@@ -81,7 +85,13 @@ Use octo-lite's target repo spec structure:
 
 Keep unresolved behavior questions visible in both the draft and spec until the
 operator answers them. If no canonical spec exists for the area, create one
-lazily under `spec/domains/<durable-area>.md` and update `spec/index.md`.
+lazily under `spec/domains/<durable-area>.md` for Markdown repos or the matching
+`*.spec.html` path for spec-chat repos, then update the matching index.
+
+For a spec-chat repo, run the review loop as part of shaping: serve the HTML,
+let the operator annotate it, hand off the batch, drain the events, edit the
+canonical HTML in place, and reply on the anchored threads. Never regenerate a
+domain or ADR Markdown counterpart after conversion.
 
 ## ADRs
 

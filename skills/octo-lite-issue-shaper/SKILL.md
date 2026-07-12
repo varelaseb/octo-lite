@@ -34,6 +34,28 @@ and GitHub issues are not mutated unless the operator explicitly requested a
 GitHub issue operation. In GitHub-first repos, the GitHub issue is canonical
 after finalization and the draft is deleted.
 
+## Target Spec Format
+
+Before reading or writing a target repo's specs, inspect its `AGENTS.md` for the
+exact signal `Spec format: spec-chat`.
+
+- With no signal or `Spec format: markdown`, keep the existing Markdown
+  canonical sources and Markdown templates.
+- With `Spec format: spec-chat`, write and maintain `*.spec.html` under the
+  repo's declared spec root as the only canonical sources.
+- Spec-chat documents use one sentence per prose line, stable `data-anchor`
+  attributes on every meaningful block, and pretty-printed parseable JSON in
+  semantic islands for visual state.
+- Ensure the shared `.viz/` runtime and vendored libraries are present for
+  offline rendering, and keep `*.review/` event spools ignored.
+- Include the browser review loop in shaping: serve the spec, annotate it,
+  hand off the batch, drain comments, edit the HTML in place, and reply through
+  the review channel before readiness.
+
+Follow the target declaration when updating specs. Do not create a Markdown
+counterpart for a spec-chat document or regenerate domain/ADR Markdown after
+conversion.
+
 ## Bundled Templates
 
 Read only the template needed for the current operation:
@@ -179,9 +201,12 @@ required."
 
 Use the same spec file rules as Octo:
 
-- Canonical specs live under `spec/domains/<durable-area>.md`.
-- ADRs live under `spec/adr/0001-slug.md`.
-- `spec/index.md` links canonical specs and ADRs.
+- In Markdown repos, canonical specs live under
+  `spec/domains/<durable-area>.md`, ADRs live under `spec/adr/0001-slug.md`,
+  and `spec/index.md` links canonical specs and ADRs.
+- In spec-chat repos, use the corresponding `*.spec.html` files under the
+  repo's declared spec root, with `index.spec.html` as the navigation surface.
+  Keep the same durable section structure and valid internal links.
 - File names describe durable areas, not issue IDs.
 - Linear/GitHub issue IDs belong in references and decision logs.
 
@@ -199,6 +224,11 @@ Canonical specs use this structure:
 ## Decision log or links to ADRs
 ## References to source issues
 ```
+
+For spec-chat, each section and meaningful block in this structure becomes an
+anchored HTML block. Prose remains one sentence per line, and any chart or
+diagram is represented by a pretty-printed semantic island rather than copied
+rendered output.
 
 ### 7. Review Acceptance Criteria
 
