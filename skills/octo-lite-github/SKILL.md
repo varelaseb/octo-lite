@@ -35,8 +35,9 @@ gh issue view <issue> --json number,title,labels,url,body,state
 gh pr view <pr> --json number,title,url,body,state,headRefName,baseRefName,files,reviews,comments
 ```
 
-Read target repo `AGENTS.md`, `spec/index.md`, relevant specs, ADRs, and repo
-docs before changing durable workflow artifacts.
+Read target repo `AGENTS.md`, its declared canonical index (`spec/index.md` or
+`spec/index.spec.html`), relevant specs, ADRs, and repo docs before changing
+durable workflow artifacts.
 
 ## Issue Shaper Mutations
 

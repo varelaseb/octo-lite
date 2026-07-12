@@ -64,7 +64,8 @@ Read only the template needed for the current operation:
   repos, the final GitHub issue body.
 - `assets/readme.md` for target repo README initialization.
 - `assets/repo-agents.md` for target repo `AGENTS.md` initialization.
-- `assets/spec-index.md` for target repo `spec/index.md`.
+- `assets/spec-index.md` for the target repo's canonical index: `spec/index.md`
+  in Markdown repos or `spec/index.spec.html` in spec-chat repos.
 - `assets/spec-domain.md` for canonical domain specs.
 - `assets/adr.md` for ADRs.
 - `assets/gitignore-entry.txt` for target repo draft ignore coverage.
@@ -76,7 +77,8 @@ minimal files:
 
 - `README.md`
 - `AGENTS.md`
-- `spec/index.md`
+- the canonical spec index (`spec/index.md` for Markdown repos or
+  `spec/index.spec.html` for spec-chat repos)
 - `spec/domains/`
 - `spec/adr/`
 - `.gitignore` entry for `.octo-lite/drafts/`

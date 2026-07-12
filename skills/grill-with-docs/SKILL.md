@@ -101,7 +101,8 @@ Offer an ADR only when all three are true:
 2. The decision would be surprising without context.
 3. The decision is the result of a real trade-off.
 
-ADRs live in `spec/adr/`, use the next sequential `0001-slug.md` style name,
-and may be short. Record context, decision, and rationale. Do not create an ADR
+ADRs live in `spec/adr/` and use the next sequential `0001-slug.md` style name
+in Markdown repos or the matching `0001-slug.spec.html` name in spec-chat repos.
+They may be short. Record context, decision, and rationale. Do not create an ADR
 for ordinary priority ordering, obvious implementation details, or choices that
 are easy to change.
