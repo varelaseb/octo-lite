@@ -142,6 +142,20 @@ kernel.
 
 - Prefer supported Herdr agent, pane, status, read, send, and wait interfaces
   over blind terminal injection.
+- Send EVERY inter-agent/pane message via `herdr-say` from the herdr-comms
+  skill — never raw `herdr agent send` + `herdr pane run`. The raw pair has
+  submitted half-typed text and answered the operator's open question modals
+  on his behalf. `herdr-say` enforces paste→settle→Enter, refuses to inject
+  while a dialog is visible, and queues to
+  `~/.local/state/herdr-inbox/<target>/` on timeout (exit 75 = queued, not
+  failed). Check your own inbox directory on every wake; require the same
+  protocol of every session you spawn.
+- Spawn sessions ONLY via `herdr-spawn` from the herdr-comms skill: it ends
+  with a single-pane tab (closes the root shell pane tab-create ships),
+  auto-accepts the folder-trust dialog fresh sessions stall on, passes the
+  cwd explicitly (agent start does not inherit the tab's), and verifies the
+  REPL is up. On `startup=unverified`, read the pane yourself before
+  assuming anything.
 - Name spawned workers and tabs by bounded role. Give them non-overlapping
   ownership and require concise durable handoffs instead of importing all of
   their detail into your context.
