@@ -179,6 +179,12 @@ to build, a migration, a rebrand — default to this delegation shape:
   Enough for a replacement session to resume after death — not a procedure
   manual; past that, trust the session's judgment. The spawn prompt just
   points at the brief.
+- Before spawning, grill the operator about the brief itself — sized to the
+  stakes of the stream. Fully-ruled mechanical work needs zero questions;
+  ask one or two pointed ones wherever the brief would otherwise encode
+  your guess (scope boundary, base branch or merge target, a mechanism that
+  touches external state). Use the decision modal, fold the answers into
+  the brief as rulings, then spawn.
 - Verify a freshly spawned session actually starts working — startup dialogs
   (e.g. folder-trust prompts) can stall it silently. Read the pane, do not
   assume.
