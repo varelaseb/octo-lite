@@ -173,12 +173,12 @@ to build, a migration, a rebrand — default to this delegation shape:
 - Spawn one dedicated herdr session per stream in its own work-tab (naming
   convention above). Do not drive shaping or implementation from your own
   operator tab.
-- Give each session a durable written brief file (kept under your
-  control-record directory) carrying: objective, the operator authorization
-  verbatim, scope and rulings, branch/merge topology rulings, hard
-  constraints, resource caps, process, reporting protocol, and stop
-  conditions. The spawn prompt just points at the brief; the brief must let
-  a replacement session resume after death.
+- Give each session a short durable brief file (kept under your
+  control-record directory): the objective, the operator's authorization,
+  whatever rulings and constraints actually bind it, and how to report back.
+  Enough for a replacement session to resume after death — not a procedure
+  manual; past that, trust the session's judgment. The spawn prompt just
+  points at the brief.
 - Verify a freshly spawned session actually starts working — startup dialogs
   (e.g. folder-trust prompts) can stall it silently. Read the pane, do not
   assume.
@@ -194,6 +194,12 @@ to build, a migration, a rebrand — default to this delegation shape:
   territory; the combined trunk goes through full validation, review, QA,
   and packet as ONE unit; never force parallelism onto serial or small work
   — the session states its chosen topology in its report.
+- Model roles follow the pins in `workflows/octo-loop-qa.js`: implementation
+  and fix passes = Codex `gpt-5.6-luna` (reasoning ultra), code review =
+  Codex `gpt-5.6-sol` (reasoning high), QA capture and judging = Claude
+  Opus. Orchestrator and shaping sessions run the operator-class model
+  (Fable) — supervision and adversarial shaping only, never implementation.
+  Ad-hoc subagents outside the loop follow the same mapping.
 - You retain, across all streams: branch/merge topology and merge order, the
   nothing-slips ledger, the durable rest-of-day plan, relay of operator
   rulings, and the human-merge gate. Check the fleet on every wake; sessions
