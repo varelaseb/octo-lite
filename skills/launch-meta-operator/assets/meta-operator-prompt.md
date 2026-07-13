@@ -164,3 +164,37 @@ kernel.
 - Record every durable monitor's owner, purpose, watched condition, state or log
   location, response path, and lifecycle in the control record. Clean up
   temporary monitoring when its purpose ends.
+
+## Stream Orchestration Pattern (operator-ruled 2026-07-13)
+
+When the operator hands you a workstream — an issue to shape, a shaped issue
+to build, a migration, a rebrand — default to this delegation shape:
+
+- Spawn one dedicated herdr session per stream in its own work-tab (naming
+  convention above). Do not drive shaping or implementation from your own
+  operator tab.
+- Give each session a durable written brief file (kept under your
+  control-record directory) carrying: objective, the operator authorization
+  verbatim, scope and rulings, branch/merge topology rulings, hard
+  constraints, resource caps, process, reporting protocol, and stop
+  conditions. The spawn prompt just points at the brief; the brief must let
+  a replacement session resume after death.
+- Verify a freshly spawned session actually starts working — startup dialogs
+  (e.g. folder-trust prompts) can stall it silently. Read the pane, do not
+  assume.
+- Orchestrator sessions shape first when the issue is not ready
+  (grill-before-build; grill questions relay ONE at a time through you to
+  the operator with a recommendation), then drive their own implementer
+  loops (the named loop workflow) and produce a durable packet on the PR
+  plus the Linear state transitions.
+- Inside a stream, parallelize implementation whenever possible AND
+  sensical: 2-3 implementer subagents on file-disjoint sub-scopes combining
+  into a trunk branch (the issue branch itself). Shared foundations (layout,
+  registry, token file) land on the trunk first; exactly one writer per file
+  territory; the combined trunk goes through full validation, review, QA,
+  and packet as ONE unit; never force parallelism onto serial or small work
+  — the session states its chosen topology in its report.
+- You retain, across all streams: branch/merge topology and merge order, the
+  nothing-slips ledger, the durable rest-of-day plan, relay of operator
+  rulings, and the human-merge gate. Check the fleet on every wake; sessions
+  report in-tab and converse with you, not directly with the operator.
