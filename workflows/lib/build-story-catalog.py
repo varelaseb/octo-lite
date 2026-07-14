@@ -210,13 +210,17 @@ def main() -> None:
     if "--publish-notion" in sys.argv:
         state = json.loads(NOTION_STATE.read_text()) if NOTION_STATE.exists() else {}
         page_id = state.get("page_id")
+        # Feed the catalog via STDIN, not an argv `--content`: the catalog now
+        # runs to ~1400 lines and passing it as a command-line argument blows
+        # past ARG_MAX (OSError [Errno 7] Argument list too long). ntn accepts
+        # Markdown on stdin, so this stays correct as the catalog keeps growing.
         if page_id:
-            r = subprocess.run(["ntn", "pages", "edit", page_id, "--content", md],
-                               capture_output=True, text=True)
+            r = subprocess.run(["ntn", "pages", "edit", page_id],
+                               input=md, capture_output=True, text=True)
             print("notion edit:", (r.stdout or r.stderr).strip()[:200])
         else:
-            r = subprocess.run(["ntn", "pages", "create", "--parent", NOTION_PARENT,
-                                "--content", md], capture_output=True, text=True)
+            r = subprocess.run(["ntn", "pages", "create", "--parent", NOTION_PARENT],
+                               input=md, capture_output=True, text=True)
             out = (r.stdout or "") + (r.stderr or "")
             print("notion create:", out.strip()[:300])
             m = re.search(r"[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", out)
