@@ -252,9 +252,11 @@ of the post-acceptance merge routine (the same operator-agent step that
 merges and drops the tracker comment).
 
 Linear state model (operator convention 2026-07-04, 8-state model
-2026-07-15): the TUR workflow has exactly eight states — `Backlog`, `Todo`,
+2026-07-15): the TUR workflow has exactly nine states — `Ideas`, `Shaped`, `Todo`,
 `In Progress`, `Awaiting Accept`, `In Staging`, `In Preprod`, `Live`,
-`Canceled` — with the loop happy path `Todo → In Progress → Awaiting Accept`.
+`Canceled` — (v3 2026-07-15: shaped-ness lives in the STATE: Ideas =
+unshaped bucket; Shaped = grilled+shaped awaiting operator pull; Todo =
+operator-pulled, loop-eligible; `Backlog` is dead) — with the loop happy path `Todo → In Progress → Awaiting Accept`.
 Semantics: `Todo` = shaped + operator-ready (loop-eligible); `Backlog` =
 not-loop-eligible (unshaped OR shaped-but-unpulled). Deployment position IS
 state (operator reversal 2026-07-15): the post-acceptance merge routine sets
