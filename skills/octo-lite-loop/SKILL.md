@@ -173,7 +173,7 @@ is the default loop, implemented as `workflows/octo-loop-qa.js` (installed at
    evidence means the render/regression criteria are not_evidenced, never
    waved through. Each artifact addresses ONE explicitly stated user-voiced
    story, recorded in `story-map.json` ({story, videos, acs} entries) so the
-   evidence site can lay each story out next to its video. Broken or
+   octo-lite dashboard can lay each story out next to its video. Broken or
    uncapturable flows are reported honestly, never papered over.
 2. **QA review** — a strict judge (Fable) evaluates the artifacts against the
    user story and EVERY acceptance criterion: `pass` / `fail` /
@@ -183,7 +183,7 @@ is the default loop, implemented as `workflows/octo-loop-qa.js` (installed at
 
 The loop ends with a concise operator report: what was built, per-AC proof
 with evidence, edge cases and regressions actively checked, and artifact
-paths INCLUDING browsable evidence-site URLs for every video (the operator
+paths INCLUDING browsable octo-lite dashboard URLs for every video (the operator
 reviews in a browser, not on the box). Human acceptance of the artifacts is
 part of the merge gate: the operator watches the evidence before the PR
 merges. Neither the loop nor the operator's agent merges ahead of that
@@ -201,27 +201,27 @@ a REQUIRED input — no verdict artifact, no merge, regardless of what a
 handoff says.
 
 Upon merging, drop a comment on the tracker issue (Linear for Linear-first
-work) containing the evidence-site link and the report packet (per-AC proof,
+work) containing the octo-lite dashboard link and the report packet (per-AC proof,
 edge cases/regressions checked, merge commit). Link video URLs rather than
 uploading video files to the tracker.
 
 Operator acceptance is a DURABLE LEDGER, not a chat vibe: accepted issues
 live in `qa-verdicts/accepted.json` ({issue: {accepted_at, by, note}}),
 written by the operator's agent on an explicit chat accept ("accept TUR-XX" /
-"flag TUR-XX: reason" — flags route back into the loop). The evidence site
+"flag TUR-XX: reason" — flags route back into the loop). The octo-lite dashboard
 splits on it: "Needs your review (n)" queue first (ordered by epic rank in
 the roadmap, then verdict age — NEVER by capture recency), accepted archive
 below, plus a generated `review.html` story-mode (one pending issue per
 screen, arrow-key navigation) for one-sitting review sessions.
 
-Evidence-site hierarchy is coverage-first: the default view of an issue shows
+octo-lite dashboard hierarchy is coverage-first: the default view of an issue shows
 exactly one current video per use case — all of them side by side — never a
 "latest run only" view that hides use cases, and never a stale video for a
 flow that was redone. When a fix round re-captures a flow, mark the older
 round's redone artifacts in a SUPERSEDED glob file so they collapse out of
 the default view.
 
-The evidence-site gallery (Turbo target: `/root/codex-uploads/
+The octo-lite dashboard gallery (Turbo target: `/root/codex-uploads/
 build-evidence-index.py`) is issue-aware, VERDICT-FIRST, and operator-facing.
 Each issue section is structured around the operator's acceptance flow:
 (1) verdict pill + per-AC checklist from `qa-verdicts/<ISSUE>.json` (each row
@@ -251,18 +251,20 @@ dir (dev agents). Neither copy is hand-edited; regeneration happens as part
 of the post-acceptance merge routine (the same operator-agent step that
 merges and drops the tracker comment).
 
-Linear state model (operator convention 2026-07-04, 6-state consolidation
+Linear state model (operator convention 2026-07-04, 8-state model
 2026-07-15): the TUR workflow has exactly eight states — `Backlog`, `Todo`,
 `In Progress`, `Awaiting Accept`, `In Staging`, `In Preprod`, `Live`,
 `Canceled` — with the loop happy path `Todo → In Progress → Awaiting Accept`.
-Deployment position IS state (operator reversal 2026-07-15): the
-post-acceptance merge routine sets `In Staging` (merged to main, staging
-carries it); candidate promotion at 0% traffic sets `In Preprod`; the
-traffic shift sets `Live`. Loops never set the three deployment states —
-they belong to the merge routine and promote/shift ops. States are LIFECYCLE
-ONLY and no state may duplicate the meaning of another artifact; blocking is
-a `blocked` label plus blocking relations, not a state, and deploy position
-is not a state. Concretely:
+Semantics: `Todo` = shaped + operator-ready (loop-eligible); `Backlog` =
+not-loop-eligible (unshaped OR shaped-but-unpulled). Deployment position IS
+state (operator reversal 2026-07-15): the post-acceptance merge routine sets
+`In Staging` (merged to main, staging carries it); candidate promotion at 0%
+traffic sets `In Preprod`; the traffic shift sets `Live`. Loops never set the
+three deployment states — they belong to the merge routine and promote/shift
+ops. States are LIFECYCLE ONLY and no state may duplicate the meaning of
+another artifact; blocking is a `blocked` label plus blocking relations, not a
+state. Dead names — never write them: `Ready for Code Review`, `Ready for
+Staging`, `In Review`, `Done`, `Blocked`-as-a-state. Concretely:
 
 - The loop moves the issue to In Progress when implementation starts, and to
   Awaiting Accept when a satisfied evidence packet lands in the operator's
@@ -272,18 +274,20 @@ is not a state. Concretely:
   log and site index, never a second source of truth. Do not create an
   "Accepted" workflow state or label; two states describing the same fact
   make the tracker feel wrong (operator, verbatim intent).
-- Done is GATED, not granted: the post-acceptance merge routine — and only
-  it — transitions the issue to Done, in the same step as the merge and the
-  evidence-link comment. No ledger entry, no merge, no Done; and never a
-  separate state-sweep later.
+- The merge transition is GATED, not automatic: the post-acceptance merge
+  routine — and only it — transitions the issue to `In Staging`, in the same
+  step as the merge and the evidence-link comment. No ledger entry, no merge,
+  no `In Staging`; and never a separate state-sweep later.
 - No half-open issues: an accepted issue never stays open to carry remaining
   scope. TRANSFER the remainder to the issue that will build it (comments on
-  both sides recording the hand-off), then close the accepted issue Done —
-  operator rule 2026-07-04, set when TUR-81 straddled a shipped slice and an
-  unshipped deliverable and broke the accepted/Done reconciliation.
-- Invariant: accepted ⇒ merged ⇒ Done, always; the ledger, the tracker, and
-  the evidence site must reconcile exactly (packets without Linear identity
-  are counted apart, never blended into issue counts).
+  both sides recording the hand-off), then advance the accepted issue to `In
+  Staging` — operator rule 2026-07-04, set when TUR-81 straddled a shipped
+  slice and an unshipped deliverable and broke the accepted/staged
+  reconciliation.
+- Invariant: accepted ⇒ merged ⇒ `In Staging` (then promoted to `In Preprod`
+  and shifted to `Live` by deployment ops), always; the ledger, the tracker,
+  and the octo-lite dashboard must reconcile exactly (packets without Linear
+  identity are counted apart, never blended into issue counts).
 
 QA fixture hygiene: onboarding/first-run demo users are consumable — a QA run
 that completes onboarding burns the fixture. Verify fixture state (e.g. the

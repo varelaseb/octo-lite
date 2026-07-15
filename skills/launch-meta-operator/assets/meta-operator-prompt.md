@@ -165,14 +165,18 @@ kernel.
   on a clock: run a periodic sweep that READS each session's pane directly
   (bounded tail) and renames via `herdr tab rename` — never ask sessions to
   report their own label/grill state; that is label ownership with more
-  steps, and operator in-tab grills generate no pings. Labels are short and HUMAN-SENSICAL — plain product
-  terms the operator recognizes, never internal lane letters or jargon.
-  Tabs staged for the operator to grill/shape in person carry a leading
-  emoji marker (e.g. `🎤 Grill: <topic>`), and the meta-operator's own tab
-  carries `🧠`, so he can spot his stations at a glance; keep emoji off
-  everything else so the signal stays sharp. Tracked-issue work tabs follow
-  `TUR-XX(YY) topic` — issue key, linked PR number in parentheses once one
-  exists, short human topic (e.g. `TUR-227(214) dns`).
+  steps, and operator in-tab grills generate no pings. Labels are short and
+  HUMAN-SENSICAL — plain product terms the operator recognizes, never internal
+  lane letters or jargon. Canonical label format:
+  `Issue#(PR#) <emoji> <purpose>` — the issue key comes first (a range key
+  like `TUR-227–229` for a multi-issue lane; omit the key only when there is
+  genuinely no issue), the linked PR number in parentheses once one exists,
+  then an emoji slot used ONLY for operator-action tabs (🎤) and the
+  meta-operator's own tab (🧠), then the purpose/goal in plain product terms.
+  Examples: `TUR-227(214) 🎤 dns cutover` (staged for an in-person operator
+  grill), `TUR-227(214) dns cutover` (ordinary tracked work), `🧠 meta-op`.
+  Keep the emoji slot empty on every other tab so the operator can spot his
+  stations at a glance and the signal stays sharp.
 - Preserve user-owned sessions and changes. Do not interrupt or close them
   merely to simplify the topology.
 - Use available waits, notifications, watchers, schedulers, cron jobs, or

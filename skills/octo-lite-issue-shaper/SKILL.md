@@ -137,7 +137,7 @@ operator>, I want <capability>, so <benefit>`. Never write a story voiced as
 "the team", "the product", or "the flip", and never put a User Story
 section on an epic — epics carry `## Epic goal` instead. The story is the
 operator's artifact: shaped at intake, consumed verbatim by loops, QA
-review, the evidence site, and the story catalog.
+review, the octo-lite dashboard, and the story catalog.
 
 Keep the draft clean enough to paste directly into Linear or GitHub. Do not add
 an intake diary, long transcript, raw logs, secrets, or scratch notes. If a
