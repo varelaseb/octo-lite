@@ -253,8 +253,8 @@ merges and drops the tracker comment).
 
 Linear state model (operator convention 2026-07-04, 6-state consolidation
 2026-07-15): the TUR workflow has exactly six states — `Backlog`, `Todo`,
-`In Progress`, `Awaiting Accept`, `Done`, `Canceled` — with the loop happy
-path `Todo → In Progress → Awaiting Accept → Done`. States are LIFECYCLE
+`In Progress`, `Awaiting Accept`, `Live`, `Canceled` — with the loop happy
+path `Todo → In Progress → Awaiting Accept → Live`. States are LIFECYCLE
 ONLY and no state may duplicate the meaning of another artifact; blocking is
 a `blocked` label plus blocking relations, not a state, and deploy position
 is not a state. Concretely:
