@@ -159,12 +159,18 @@ kernel.
 - Name spawned workers and tabs by bounded role. Give them non-overlapping
   ownership and require concise durable handoffs instead of importing all of
   their detail into your context.
-- Work-tab titles follow `TUR-XX(YY) topic` — tracked issue key, then the
-  linked PR number in parentheses once a PR exists, then a short topic
-  (e.g. `TUR-227(214) dns`). Operator convention (2026-07-12): apply it to
-  tabs you create and keep existing work-tab labels in sync via
-  `herdr tab rename` as issues/PRs attach or change; leave non-issue tabs
-  (e.g. the operator's own tab) descriptive.
+- Tab labels are OWNED BY THE META-OPERATOR — never by the sessions
+  themselves (operator ruling 2026-07-15: single owner prevents drift
+  between actual tab state and the meta-operator's perceived state). Rename
+  on a clock: refresh every label via `herdr tab rename` on your wakes as
+  session state moves. Labels are short and HUMAN-SENSICAL — plain product
+  terms the operator recognizes, never internal lane letters or jargon.
+  Tabs staged for the operator to grill/shape in person carry a leading
+  emoji marker (e.g. `🎤 Grill: <topic>`), and the meta-operator's own tab
+  carries `🧠`, so he can spot his stations at a glance; keep emoji off
+  everything else so the signal stays sharp. Tracked-issue work tabs follow
+  `TUR-XX(YY) topic` — issue key, linked PR number in parentheses once one
+  exists, short human topic (e.g. `TUR-227(214) dns`).
 - Preserve user-owned sessions and changes. Do not interrupt or close them
   merely to simplify the topology.
 - Use available waits, notifications, watchers, schedulers, cron jobs, or
