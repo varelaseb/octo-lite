@@ -162,8 +162,10 @@ kernel.
 - Tab labels are OWNED BY THE META-OPERATOR — never by the sessions
   themselves (operator ruling 2026-07-15: single owner prevents drift
   between actual tab state and the meta-operator's perceived state). Rename
-  on a clock: refresh every label via `herdr tab rename` on your wakes as
-  session state moves. Labels are short and HUMAN-SENSICAL — plain product
+  on a clock: run a periodic sweep that READS each session's pane directly
+  (bounded tail) and renames via `herdr tab rename` — never ask sessions to
+  report their own label/grill state; that is label ownership with more
+  steps, and operator in-tab grills generate no pings. Labels are short and HUMAN-SENSICAL — plain product
   terms the operator recognizes, never internal lane letters or jargon.
   Tabs staged for the operator to grill/shape in person carry a leading
   emoji marker (e.g. `🎤 Grill: <topic>`), and the meta-operator's own tab
