@@ -211,14 +211,23 @@ def main() -> None:
         state = json.loads(NOTION_STATE.read_text()) if NOTION_STATE.exists() else {}
         page_id = state.get("page_id")
         if page_id:
-            r = subprocess.run(["ntn", "pages", "edit", page_id, "--content", md],
-                               capture_output=True, text=True)
+            # content via stdin (ntn reads stdin when --content is omitted):
+            # the catalog is >128KB and growing, and a single argv element
+            # that large blows the kernel's per-arg execve limit (Errno 7).
+            r = subprocess.run(["ntn", "pages", "edit", page_id],
+                               input=md, capture_output=True, text=True)
             print("notion edit:", (r.stdout or r.stderr).strip()[:200])
+            if r.returncode != 0:
+                print(r.stderr, file=sys.stderr)
+                sys.exit(1)
         else:
-            r = subprocess.run(["ntn", "pages", "create", "--parent", NOTION_PARENT,
-                                "--content", md], capture_output=True, text=True)
+            r = subprocess.run(["ntn", "pages", "create", "--parent", NOTION_PARENT],
+                               input=md, capture_output=True, text=True)
             out = (r.stdout or "") + (r.stderr or "")
             print("notion create:", out.strip()[:300])
+            if r.returncode != 0:
+                print(r.stderr, file=sys.stderr)
+                sys.exit(1)
             m = re.search(r"[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}", out)
             if m:
                 NOTION_STATE.write_text(json.dumps({"page_id": m.group(0)}))
