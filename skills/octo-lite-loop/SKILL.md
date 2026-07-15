@@ -251,12 +251,17 @@ dir (dev agents). Neither copy is hand-edited; regeneration happens as part
 of the post-acceptance merge routine (the same operator-agent step that
 merges and drops the tracker comment).
 
-Linear state model (operator convention 2026-07-04): states are LIFECYCLE
-ONLY — `Todo → In Progress → In Review → Done` — and no state may duplicate
-the meaning of another artifact. Concretely:
+Linear state model (operator convention 2026-07-04, 6-state consolidation
+2026-07-15): the TUR workflow has exactly six states — `Backlog`, `Todo`,
+`In Progress`, `Awaiting Accept`, `Done`, `Canceled` — with the loop happy
+path `Todo → In Progress → Awaiting Accept → Done`. States are LIFECYCLE
+ONLY and no state may duplicate the meaning of another artifact; blocking is
+a `blocked` label plus blocking relations, not a state, and deploy position
+is not a state. Concretely:
 
 - The loop moves the issue to In Progress when implementation starts, and to
-  In Review when a satisfied evidence packet lands in the operator's queue.
+  Awaiting Accept when a satisfied evidence packet lands in the operator's
+  queue.
 - Evidence acceptance is NOT a state. It is the operator's chat-accept,
   recorded in the acceptance ledger (`qa-verdicts/accepted.json`) — an audit
   log and site index, never a second source of truth. Do not create an
