@@ -252,9 +252,14 @@ of the post-acceptance merge routine (the same operator-agent step that
 merges and drops the tracker comment).
 
 Linear state model (operator convention 2026-07-04, 6-state consolidation
-2026-07-15): the TUR workflow has exactly six states — `Backlog`, `Todo`,
-`In Progress`, `Awaiting Accept`, `Live`, `Canceled` — with the loop happy
-path `Todo → In Progress → Awaiting Accept → Live`. States are LIFECYCLE
+2026-07-15): the TUR workflow has exactly eight states — `Backlog`, `Todo`,
+`In Progress`, `Awaiting Accept`, `In Staging`, `In Preprod`, `Live`,
+`Canceled` — with the loop happy path `Todo → In Progress → Awaiting Accept`.
+Deployment position IS state (operator reversal 2026-07-15): the
+post-acceptance merge routine sets `In Staging` (merged to main, staging
+carries it); candidate promotion at 0% traffic sets `In Preprod`; the
+traffic shift sets `Live`. Loops never set the three deployment states —
+they belong to the merge routine and promote/shift ops. States are LIFECYCLE
 ONLY and no state may duplicate the meaning of another artifact; blocking is
 a `blocked` label plus blocking relations, not a state, and deploy position
 is not a state. Concretely:
