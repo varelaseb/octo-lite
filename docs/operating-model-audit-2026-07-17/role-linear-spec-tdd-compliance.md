@@ -2,7 +2,7 @@
 
 Status: historical audit evidence. Current required behavior lives in
 `../../spec/domains/operating-model.spec.html`; candidate remedies below do not
-override Decisions 1 through 94.
+override Decisions 1 through 101.
 
 ## Audit question
 

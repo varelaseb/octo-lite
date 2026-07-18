@@ -3,7 +3,7 @@
 ## Status
 
 This backlog is reconciled to the canonical operating-model spec through
-Decision 94. It separates the coordinated octo-lite cutover from target-repo
+Decision 101. It separates the coordinated octo-lite cutover from target-repo
 follow-up. The canonical spec wins if wording here drifts.
 
 ## Approved P0 reliability work

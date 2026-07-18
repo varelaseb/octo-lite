@@ -924,6 +924,35 @@ timeout or automatic failover may transfer authority.
 The operator may enter any Opus orchestrator's Herdr tab and hold a deeper
 conversation without routing every sentence through Fable.
 
+Herdr reserves `🧠` for the sole Fable operator tab and temporarily prefixes
+`🎤` only while the operator must remain engaged in a direct investigation,
+grill, diagnosis, or decision conversation. Reporting, commands,
+acknowledgments, handoffs, and parent-child updates do not qualify. Fable judges
+from bounded pane context and message provenance, not focus, keywords, turn
+counts, or timeouts. The mic must disappear as soon as the Opus has enough
+direction to begin autonomous work and the operator can look away. This is
+required behavior, not optional cleanup.
+
+Normal unattended tabs use no status emoji. Labels stay as short as possible
+while remaining unique and human-readable. `◆` immediately precedes an epic
+identity; normal issue identities are unmarked. Labels order the optional
+operator signal, compact issue and PR numbers, then the very short outcome. The
+tab omits the tracker team prefix; durable artifacts and receipts retain the full
+issue key. The identity token is bare `issue/pr`, or only `issue` before a PR
+exists. Only persistent Fable and Opus orchestrator sessions receive Herdr tabs.
+Workflow subagents run inside the owning Opus session and never create tabs.
+The sole Fable label is exactly `🧠 operator`, with no issue, PR, or outcome
+suffix.
+
+```text
+🧠 operator
+🎤 ◆443/6 · operating model
+◆443/6 · operating model
+🎤 446/6 · modal messaging
+446/6 · modal messaging
+445 · role contracts
+```
+
 - The orchestrator remains owner of its stream.
 - The generic role contract remains pinned.
 - An explicit operator ruling that affects only that stream is recorded in the

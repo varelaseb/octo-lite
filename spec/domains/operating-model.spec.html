@@ -363,6 +363,26 @@ handoffs/0001.md</code></pre>
 <p data-anchor="stream-trace-writer">Only deterministic workflow and gate helpers append trace events.</p>
 <p data-anchor="stream-mutation-caller">Operator-owned mutation helpers verify the exact caller against <code>operator-owner.toml</code>; ordinary read-only commands do not.</p>
 </section>
+<section data-anchor="herdr-label-interface">
+<h3>Herdr session labels</h3>
+<p data-anchor="herdr-label-fable">The sole Fable tab is exactly <code>🧠 operator</code>, with no issue, PR, or outcome suffix.</p>
+<p data-anchor="herdr-label-direct"><code>🎤</code> temporarily prefixes an Opus tab while the operator must remain engaged in a direct investigation, grill, diagnosis, or decision conversation.</p>
+<p data-anchor="herdr-label-direct-exclusions">Ordinary reporting, commands, acknowledgments, handoffs, and parent-child updates do not receive <code>🎤</code>.</p>
+<p data-anchor="herdr-label-direct-owner">Fable judges the conversation mode from bounded pane context and message provenance, without keyword, turn-count, focus, or timeout rules.</p>
+<p data-anchor="herdr-label-direct-clear">Fable must remove <code>🎤</code> as soon as the Opus has enough direction to begin autonomous work and the operator can look away; this is required behavior, not optional cleanup.</p>
+<p data-anchor="herdr-label-epic"><code>◆</code> immediately precedes an epic identity; normal issue identities are unmarked.</p>
+<p data-anchor="herdr-label-order">Labels order the optional operator signal, compact issue and PR numbers, then the very short human-readable outcome.</p>
+<p data-anchor="herdr-label-prefix">The presentation label omits the tracker team prefix; durable artifacts and receipts retain the full issue key.</p>
+<p data-anchor="herdr-label-numbers">The identity token is <code>issue/pr</code> with bare numbers, or only <code>issue</code> before a PR exists.</p>
+<p data-anchor="herdr-label-scope">Only persistent Fable and Opus orchestrator sessions receive Herdr tab labels; workflow subagents run inside the owning Opus session and never create tabs.</p>
+<p data-anchor="herdr-label-sparse">Normal unattended tabs use no status emoji, and every label uses the fewest characters that remain unique and human-readable.</p>
+<pre data-anchor="herdr-label-examples"><code>🧠 operator
+🎤 ◆443/6 · operating model
+◆443/6 · operating model
+🎤 446/6 · modal messaging
+446/6 · modal messaging
+445 · role contracts</code></pre>
+</section>
 </section>
 
 <section data-anchor="edge-cases">
@@ -404,7 +424,7 @@ handoffs/0001.md</code></pre>
 <h2>Decision log and references</h2>
 <p data-anchor="source-issue">The coordinated cutover carrier is <a href="https://linear.app/martellventures/issue/TUR-443">TUR-443</a>.</p>
 <p data-anchor="source-slices">Bounded delivery slices are <a href="https://linear.app/martellventures/issue/TUR-445">TUR-445</a>, <a href="https://linear.app/martellventures/issue/TUR-447">TUR-447</a>, <a href="https://linear.app/martellventures/issue/TUR-449">TUR-449</a>, <a href="https://linear.app/martellventures/issue/TUR-446">TUR-446</a>, <a href="https://linear.app/martellventures/issue/TUR-444">TUR-444</a>, and <a href="https://linear.app/martellventures/issue/TUR-448">TUR-448</a>.</p>
-<p data-anchor="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 94.</p>
+<p data-anchor="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 101.</p>
 <p data-anchor="audit-draft">The integrated working narrative is preserved in <a href="../../docs/operating-model-audit-2026-07-17/operating-model-draft.md">operating-model-draft.md</a>.</p>
 <p data-anchor="failure-catalog">Observed failure modes are preserved in <a href="../../docs/operating-model-audit-2026-07-17/failure-catalog.md">failure-catalog.md</a>.</p>
 <p data-anchor="symphony-assessment">The reference-only Symphony comparison is preserved in <a href="../../docs/operating-model-audit-2026-07-17/symphony-assessment.md">symphony-assessment.md</a>.</p>

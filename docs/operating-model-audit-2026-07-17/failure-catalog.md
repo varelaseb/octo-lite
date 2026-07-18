@@ -1,7 +1,7 @@
 # Failure Catalog
 
 Status: historical audit evidence with reconciled fix directions. The
-canonical operating-model spec and Decisions 1 through 94 win on any conflict.
+canonical operating-model spec and Decisions 1 through 101 win on any conflict.
 
 ## How to read this catalog
 
@@ -17,7 +17,7 @@ The operating-model gap is that recovery depended on vigilance rather than a
 hard gate.
 
 Fix directions are reconciled to the canonical operating-model spec through
-Decision 94. Incident mechanisms and counts remain historical evidence.
+Decision 101. Incident mechanisms and counts remain historical evidence.
 
 ## Instruction and prompt failures
 
