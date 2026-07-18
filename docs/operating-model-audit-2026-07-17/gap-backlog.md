@@ -26,6 +26,9 @@ follow-up. The canonical spec wins if wording here drifts.
 - Treat evidence publication and QA verdict changes as meaningful stream
   status deltas. Notify upward and let Fable alone reconcile the operation
   dashboard.
+
+#### Turbo target follow-up, not TUR-443
+
 - Extract TopicFinder user-story catalog maintenance from generic octo-lite
   workflow code. Preserve it as a product surface and full-pipeline QA
   contract, not QA evidence. Turbo owns its indexed spec-chat content;
@@ -55,6 +58,9 @@ follow-up. The canonical spec wins if wording here drifts.
 - Curate the 82-story legacy Markdown catalog rather than converting it
   mechanically. Dedupe durable outcomes, strip QA-derived fields, add stable
   IDs and spec links, review in spec-chat, then remove the old file.
+
+#### octo-lite cutover resumes
+
 - Refuse an empty high-level objective, missing spec behavior/acceptance rules,
   and missing readiness identity.
 - Refuse implementation when the PR shaping verdict does not match the current
