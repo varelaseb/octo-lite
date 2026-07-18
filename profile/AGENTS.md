@@ -12,7 +12,8 @@ Use octo-lite for Linear-first product and development work.
   code discussion, and merge readiness.
 - Target root `AGENTS.md` exclusively owns repo-specific commands,
   architecture, validation, deployment, fixtures, and conventions.
-- `roles.toml` and `roles/*.md` own generic role runtime and prose.
+- `roles.toml` and `roles/*.md` own generic role runtime and prose. Every role
+  launch uses the resolver. Generated adapters are not raw spawn paths.
 
 Stop on source conflict. Conversation and memory never silently override these
 sources. Memory may retain only dated, evidence-backed gotchas with a durable

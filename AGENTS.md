@@ -9,13 +9,12 @@ target repositories.
 ## Durable Sources
 
 - `README.md` explains the product and install shape.
-- `role-skills.json` records the Issue Shaper, implementer, and reviewer skill
-  mapping.
+- `roles.toml` records every role's runtime and skill mapping.
+- `roles/` contains the sole canonical prose contract for each LLM role.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
 - `skills/` contains reusable octo-lite skills and their bundled templates.
-- `agents/` contains custom subagent profiles: Codex `*.toml` and the parallel
-  Claude Code `*.md` (Markdown + YAML frontmatter) profiles. Keep both in sync
-  when changing implementer/reviewer behavior.
+- `agents/` contains generated Claude Markdown and Codex TOML launch adapters.
+  Never edit or spawn them raw. Regenerate through the role resolver.
 - `workflows/` contains Claude Code Workflow scripts (currently
   `octo-loop-qa.js`, the loop-with-QA implementation); their conventions
   blocks are per-target configuration.
@@ -49,6 +48,8 @@ target repositories.
 ## Validation
 
 - Check Markdown and TOML syntax after edits.
+- Run `python3 workflows/lib/role_resolver.py check` and
+  `python3 -m unittest tests/test_role_resolver.py` after role changes.
 - Verify skill symlinks point at this source repo when installing locally.
 
 ## Conventions

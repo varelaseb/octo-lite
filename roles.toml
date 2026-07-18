@@ -1,0 +1,164 @@
+schema_version = 1
+
+[policy]
+concise = true
+forbid_unicode_dashes = true
+raw_adapter_spawn = false
+
+[skill_sources.octo-lite]
+kind = "repo"
+path = "skills"
+
+[skill_sources.profile]
+kind = "profile"
+
+[roles.meta-operator]
+contract = "roles/meta-operator.md"
+provider = "anthropic"
+model = "claude-fable-5"
+effort = "xhigh"
+mode = "auto"
+session = "persistent"
+service_tier = "default"
+tools = ["Read", "Grep", "Glob", "Bash", "Skill", "Workflow"]
+required_skills = ["herdr-comms"]
+
+[[roles.meta-operator.conditional_skills]]
+skill = "launch-meta-operator"
+when = "operator-launch"
+
+[roles.orchestrator]
+contract = "roles/orchestrator.md"
+provider = "anthropic"
+model = "claude-opus-4-8[1m]"
+effort = "high"
+mode = "auto"
+session = "persistent"
+service_tier = "default"
+tools = ["Read", "Grep", "Glob", "Bash", "Skill", "Workflow"]
+required_skills = ["herdr-comms"]
+
+[[roles.orchestrator.conditional_skills]]
+skill = "octo-lite-loop"
+when = "delivery"
+
+[roles.issue-shaper]
+contract = "roles/issue-shaper.md"
+provider = "anthropic"
+model = "claude-opus-4-8[1m]"
+effort = "high"
+mode = "auto"
+session = "persistent"
+service_tier = "default"
+tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
+required_skills = ["octo-lite-issue-shaper", "grill-with-docs", "octo-lite-github"]
+conditional_skills = []
+
+[roles.shaping-reviewer]
+contract = "roles/shaping-reviewer.md"
+provider = "openai"
+model = "gpt-5.6-sol"
+effort = "xhigh"
+mode = "never"
+session = "fresh"
+service_tier = "fast"
+tools = ["repo-read", "linear-read", "github-read", "session-log-read"]
+required_skills = []
+
+[[roles.shaping-reviewer.conditional_skills]]
+skill = "octo-lite-debug"
+when = "workflow-blocker"
+
+[roles.implementer]
+contract = "roles/implementer.md"
+provider = "anthropic"
+model = "claude-sonnet-5"
+effort = "xhigh"
+mode = "auto"
+session = "fresh"
+service_tier = "default"
+tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"]
+required_skills = ["tdd", "commit", "octo-lite-github", "push"]
+
+[[roles.implementer.conditional_skills]]
+skill = "frontend-design"
+when = "ui"
+
+[[roles.implementer.conditional_skills]]
+skill = "nodejs"
+when = "nodejs"
+
+[[roles.implementer.conditional_skills]]
+skill = "pnpm"
+when = "pnpm"
+
+[[roles.implementer.conditional_skills]]
+skill = "pnpm-patching"
+when = "pnpm-patching"
+
+[[roles.implementer.conditional_skills]]
+skill = "pull"
+when = "branch-sync"
+
+[[roles.implementer.conditional_skills]]
+skill = "python"
+when = "python"
+
+[[roles.implementer.conditional_skills]]
+skill = "typescript"
+when = "typescript"
+
+[roles.code-reviewer]
+contract = "roles/code-reviewer.md"
+provider = "openai"
+model = "gpt-5.6-sol"
+effort = "high"
+mode = "never"
+session = "fresh"
+service_tier = "default"
+tools = ["repo-read", "shell-read", "linear-read", "github-read", "github-verdict-write"]
+required_skills = ["octo-lite-github"]
+
+[[roles.code-reviewer.conditional_skills]]
+skill = "octo-lite-debug"
+when = "workflow-blocker"
+
+[[roles.code-reviewer.conditional_skills]]
+skill = "pull"
+when = "branch-sync"
+
+[roles.qa-capture]
+contract = "roles/qa-capture.md"
+provider = "anthropic"
+model = "claude-sonnet-5"
+effort = "high"
+mode = "auto"
+session = "fresh"
+service_tier = "default"
+tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"]
+required_skills = ["qa-evidence-capture"]
+conditional_skills = []
+
+[roles.qa-reviewer]
+contract = "roles/qa-reviewer.md"
+provider = "openai"
+model = "gpt-5.6-sol"
+effort = "high"
+mode = "never"
+session = "fresh"
+service_tier = "fast"
+tools = ["repo-read", "artifact-read", "image-read", "video-frame-read"]
+required_skills = []
+conditional_skills = []
+
+[roles.reconciler]
+contract = "roles/reconciler.md"
+provider = "anthropic"
+model = "claude-sonnet-5"
+effort = "high"
+mode = "auto"
+session = "fresh"
+service_tier = "default"
+tools = ["Read"]
+required_skills = []
+conditional_skills = []

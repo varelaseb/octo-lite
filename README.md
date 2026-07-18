@@ -29,11 +29,11 @@ at them with symlinks:
 
 ```text
 ~/.codex/AGENTS.md -> profile/AGENTS.md
-~/.codex/octo-lite-role-skills.json -> role-skills.json
+~/.codex/octo-lite/roles.toml -> roles.toml
+~/.codex/octo-lite/roles/<role>.md -> roles/<role>.md
+~/.codex/octo-lite/adapters/<role>.toml -> agents/<role>.toml
 ~/.codex/skills/<skill> -> skills/<skill>
 ~/.agents/skills/<skill> -> skills/<skill>
-~/.codex/agents/octo-lite-implementer.toml -> agents/octo-lite-implementer.toml
-~/.codex/agents/octo-lite-reviewer.toml -> agents/octo-lite-reviewer.toml
 ```
 
 The Claude Code surface reuses the same source repo. Skills share the SKILL.md
@@ -43,9 +43,10 @@ parallel `agents/*.md` profiles that install the same way:
 
 ```text
 ~/.claude/CLAUDE.md -> profile/AGENTS.md
+~/.claude/octo-lite/roles.toml -> roles.toml
+~/.claude/octo-lite/roles/<role>.md -> roles/<role>.md
+~/.claude/octo-lite/adapters/<role>.md -> agents/<role>.md
 ~/.claude/skills/<skill> -> skills/<skill>
-~/.claude/agents/octo-lite-implementer.md -> agents/octo-lite-implementer.md
-~/.claude/agents/octo-lite-reviewer.md -> agents/octo-lite-reviewer.md
 ~/.claude/workflows/octo-loop-qa.js (copy of workflows/octo-loop-qa.js)
 ```
 
@@ -58,21 +59,16 @@ copy it rather than symlinking and rewrite those blocks per target repo.
 is the documented user-skill location in the current Codex manual, so both are
 installed.
 
-Install every directory under `skills/`; the role-specific mapping in
-`role-skills.json` determines which skills each workflow role should load.
+Install every directory under `skills/`. `roles.toml` defines required and
+conditional skills for all nine roles. `roles/<role>.md` is the sole prose
+contract. `agents/` is generated and must match the resolver exactly.
 
-Current octo-lite role skills:
+Validate or regenerate after role changes:
 
-```text
-Issue Shaper:
-  octo-lite-issue-shaper, grill-with-docs, octo-lite-github
-
-Implementer:
-  commit, frontend-design, octo-lite-github, nodejs, pnpm, pnpm-patching,
-  pull, push, python, tdd, typescript
-
-Reviewer:
-  octo-lite-debug, octo-lite-github, pull
+```bash
+python3 workflows/lib/role_resolver.py check
+python3 workflows/lib/role_resolver.py generate
+python3 -m unittest tests/test_role_resolver.py
 ```
 
 Operator utility skills are not role-bound. Invoke `launch-meta-operator`
