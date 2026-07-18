@@ -139,23 +139,23 @@ Resolve:
 **Problem:** Long-lived sessions accumulate unrelated context, while disposable
 workers lose repo and role instructions.
 
-**Approved answer:** One persistent orchestrator per bounded stream; every
+**Current approved answer:** Decisions 5 and 93 require exactly one dedicated
+Opus issue orchestrator per implementation issue. A multi-issue epic adds one
+separate Opus epic orchestrator above those issue orchestrators. Every
 post-grill shaping review, implementation, fix, review, re-review, QA capture,
 and QA-review pass uses a fresh disposable instance. No worker session is
 resumed for a later cycle.
 Continuity lives in the canonical spec, Linear issue, evolving PR, exact HEAD,
 review artifact, and durable handoff, making every worker independently
-replaceable. A bounded stream may contain multiple issues only when they share
-one coherent epic or release train and delivery topology. Unrelated epics never
-share an orchestrator. When the bounded stream completes, its control record is
-archived and the orchestrator session is terminated; it is never recycled for
-later work, including a related follow-on stream.
+replaceable. An issue orchestrator terminates when its issue completes; an epic
+orchestrator terminates when its epic completes. Neither session is recycled
+for later work, including a related follow-on issue or epic.
 
 Resolve:
 
 - When is a stream large enough to deserve an orchestrator?
 - Should a completed session always be killed rather than reused?
-- Can one orchestrator own several small same-epic issues?
+- Superseded by Decision 93: one issue orchestrator never owns several issues.
 - What context belongs in the brief versus the decision ledger?
 - Should every Claude orchestrator be required to launch in auto mode while
   retaining only the authority granted by its signed brief? Recommended: yes,
@@ -567,7 +567,7 @@ Record each ruling here during the grill:
 | 10 | Authority model | Approved: use the simple four-section authority brief. Nested parents flatten the effective rules for each child; the child acknowledges the brief at spawn. Routine messages need no policy metadata. | Implement the minimum contract first and add inheritance machinery only in response to observed failures. | Decision 5 |
 | 11 | Implementer/reviewer model split | Approved: implementation and every fix pass use exact Anthropic `claude-sonnet-5` at xhigh effort; code review and re-review remain Codex `gpt-5.6-sol` at high effort. Do not use rolling aliases. | Preserve cross-provider review while replacing Luna Ultra. Runtime metadata must attest the actual model; a fresh-session probe distinguishes stale session auth from provider/fleet outage. | Decision 5 |
 | 12 | Worker session lifecycle | Approved: every implementation, fix, review, re-review, QA-capture, and QA-review pass is a new instance. Never resume a worker for a later cycle and never use `--last`. The shared draft PR persists, but agent context does not. | Each new worker must receive a complete durable envelope: issue/spec revisions, authority brief, repo/instruction manifest, PR/base/topology, exact HEAD, prior handoff, and current findings. Orchestrators may persist for their bounded stream. | Decision 5a |
-| 13 | Orchestrator stream boundary | Approved: one persistent orchestrator may own multiple issues when they belong to the same coherent epic or release train and share delivery topology. An orchestrator must not span unrelated epics. | Avoid one-session-per-issue sprawl without creating unbounded context. The stream brief and train manifest enumerate owned issues; new unrelated work requires another orchestrator. | Decision 5b |
+| 13 | Orchestrator stream boundary | Superseded by Decision 93. The earlier ruling allowed one persistent orchestrator to own multiple same-epic issues with shared delivery topology. | Current rule: exactly one dedicated Opus issue orchestrator per implementation issue. A multi-issue epic adds a separate Opus epic orchestrator above them. | Decision 5b |
 | 14 | Orchestrator retirement | Approved: when a bounded epic/release-train stream completes, archive its durable control record and terminate the orchestrator. Never recycle the session for subsequent work, even a related follow-on stream. | Follow-on work starts a fresh orchestrator from explicit durable inputs, preventing stale rulings, hidden context, and accumulated session state from leaking forward. | Decision 5c |
 | 15 | Orchestrator runtime mode | Approved from the operator's prior ruling: every newly spawned orchestrator launches in auto mode and bootstrap must verify it. Auto mode changes interaction friction, not authority; the four-section authority brief still bounds permissible actions. | The canonical spawn helper must pin and attest auto mode. A child that cannot verify mode is not ready and must not silently continue or wait at a permission prompt. | Decision 6 |
 | 16 | Linear/spec conflict handling | Approved: if Linear's high-level objective, material decisions/context, or non-goals conflict with the canonical spec/ADR, implementation stops and returns to shaping. Neither source silently wins. | Reconcile Linear, spec/ADR, and the evolving draft-PR contract; obtain operator approval; issue a new readiness revision before implementation resumes. | Decision 6a |

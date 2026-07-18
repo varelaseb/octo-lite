@@ -300,10 +300,13 @@ preproduction promotion, and live traffic shift remain deterministic
 operator-authorized helpers rather than LLM roles. The control panel displays
 those gates and helpers separately from the role roster.
 
-One persistent orchestrator may own several issues only when they form one
-coherent epic or release train with shared delivery topology. It may not span
-unrelated epics. When the stream finishes, its durable state is archived and
-the orchestrator terminates; the session is never recycled for later work.
+Every implementation issue has exactly one dedicated Opus issue orchestrator.
+A multi-issue epic adds one separate Opus epic orchestrator above those issue
+orchestrators. The epic Opus owns cross-issue dependencies, topology, carrier
+integration, and the epic outcome. Each issue Opus owns only its issue scope,
+branch, gates, fresh workers, and status. When the issue or epic finishes, its
+durable state is archived and its orchestrator terminates; the session is never
+recycled for later work.
 
 ## Role loading without a framework
 
