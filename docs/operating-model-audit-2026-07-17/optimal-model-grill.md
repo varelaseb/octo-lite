@@ -1,6 +1,6 @@
 # Optimal Operating Model Grill
 
-Status: complete through Decision 101. The decision table is the chronological
+Status: complete through Decision 102. The decision table is the chronological
 authority for this audit. Earlier questions and recommendations are historical
 grill material and may be superseded by later rulings.
 
@@ -656,3 +656,4 @@ Record each ruling here during the grill:
 | 99 | Herdr tab scope | Approved correction: only persistent Fable and Opus orchestrator sessions receive Herdr tabs. Sonnet, Sol, QA, fix, and other workflow subagents run inside the owning Opus session and never create tabs. | Remove worker-role label disambiguation. The Herdr label grammar covers only the operator, epic Opus, and issue Opus layers. | Direct-interaction lifetime |
 | 100 | Semantic direct-conversation marker | Approved: `🎤` marks only an active direct investigation, grill, diagnosis, or decision conversation in which the operator must remain engaged. Reporting, commands, acknowledgments, handoffs, and parent-child updates do not qualify. Fable judges from bounded pane context and message provenance without keyword, turn-count, focus, or timeout rules. | Fable must remove `🎤` as soon as the Opus has enough direction to begin autonomous work and the operator can look away. This is required behavior, not optional cleanup. Do not wait for task completion, reporting, or a conversation delta. | Fable label identity |
 | 101 | Fable label identity | Approved: the sole Fable tab is exactly `🧠 operator`, with no issue, PR, or outcome suffix. | The operator spans the operation rather than one issue or PR. Epic and issue Opus tabs carry the compact identity and outcome grammar. Label grill complete. | Grill complete |
+| 102 | Remote session launch context | Approved: remote operation is current runtime state, not standing `AGENTS.md` law. Every persistent session receives three initial facts: execution location, operator loopback reachability, and required review delivery path. Unless loopback access is explicitly confirmed, roles treat it as unreachable and never present localhost as usable operator access. | The launch helper injects the facts from turn one and copies them into the receipt. Children receive only needed facts in their briefs. Current routes stay in stream status. Target `AGENTS.md` may hold only durable target-specific remote conventions. Memory never owns current access state. | Post-grill bootstrap clarification |
