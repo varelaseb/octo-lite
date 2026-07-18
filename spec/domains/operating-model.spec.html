@@ -30,7 +30,11 @@
 <dt data-anchor="concept-operator">Operator</dt>
 <dd>Fable is the persistent meta-operator and sole writer of the reconciled whole-operation view.</dd>
 <dt data-anchor="concept-orchestrator">Stream orchestrator</dt>
-<dd>One persistent Claude Opus session owns one coherent epic or release train and reports to exactly one parent.</dd>
+<dd>One persistent Claude Opus session owns exactly one issue or one epic coordination layer and reports to exactly one parent.</dd>
+<dt data-anchor="concept-epic-orchestrator">Epic orchestrator</dt>
+<dd>For a multi-issue epic, one dedicated Opus parents the issue orchestrators and owns cross-issue dependencies, topology, carrier integration, and epic outcome.</dd>
+<dt data-anchor="concept-issue-orchestrator">Issue orchestrator</dt>
+<dd>Every implementation issue has exactly one dedicated Opus that owns its issue scope, branch, gates, workers, and status.</dd>
 <dt data-anchor="concept-worker">Worker pass</dt>
 <dd>One fresh disposable instance performs one implementation, fix, review, re-review, QA capture, or QA review pass.</dd>
 <dt data-anchor="concept-brief">Brief</dt>
@@ -89,6 +93,9 @@
 <p data-anchor="role-roster">The complete LLM role roster is meta-operator, orchestrator, issue-shaper, shaping-reviewer, implementer, code-reviewer, qa-capture, qa-reviewer, and reconciler.</p>
 <p data-anchor="role-fix-reuse">Every fix uses a fresh implementer instance and every re-review uses a fresh code-reviewer instance rather than separate role contracts.</p>
 <p data-anchor="role-nested-reuse">Every nested stream owner uses the same orchestrator contract.</p>
+<p data-anchor="role-issue-cardinality">Every issue has one and only one dedicated Opus issue orchestrator.</p>
+<p data-anchor="role-epic-layer">A multi-issue epic adds a separate Opus epic orchestrator above its issue orchestrators, producing two Opus layers below Fable.</p>
+<p data-anchor="role-reporting-chain">Fresh workers report to their issue orchestrator; issue orchestrators report to the epic orchestrator; the epic orchestrator reports upward to Fable or its declared parent.</p>
 <p data-anchor="role-nested-rules">A parent flattens relevant effective rules into the child brief; the child acknowledges them only at spawn or after a material brief revision.</p>
 <p data-anchor="role-helper-boundary">Acceptance recording, merge, evidence publication, Linear transition, preproduction promotion, and live traffic shift are deterministic operator-authorized helpers rather than LLM roles.</p>
 <p data-anchor="role-control-view">The control panel displays deterministic gates and helpers separately from LLM roles.</p>
@@ -165,7 +172,8 @@
 <h3>Branch and release topology</h3>
 <p data-anchor="branch-single-pr">The same draft PR continues from shaping through implementation.</p>
 <p data-anchor="branch-readiness-head">The shaping readiness HEAD remains immutable evidence while implementation advances the PR HEAD.</p>
-<p data-anchor="branch-carrier-default">A coordinated cutover defaults to sequential slices on the carrier head; short-lived stacked member PRs exist only where parallelism has tangible value.</p>
+<p data-anchor="branch-topology-judgment">Sequential, stacked, or parallel issue delivery is chosen by the accountable epic orchestrator from actual dependencies, collision risk, review cost, and throughput, never by a fixed programmatic default.</p>
+<p data-anchor="branch-manifest-observation">The train manifest records the current chosen topology and revision; it does not select or enforce topology.</p>
 <p data-anchor="branch-member-target">Member PRs integrate into the declared carrier or predecessor, never directly into main; the carrier is the train's sole final-main PR.</p>
 <p data-anchor="branch-integration-proof">After member integration, the orchestrator proves reviewed-HEAD ancestry and effective diff before preserving downstream gates.</p>
 <p data-anchor="branch-authority">The stream orchestrator has standing authority to select and revise main, stacked-branch, or integration-train topology without per-change approval.</p>
@@ -396,7 +404,7 @@ handoffs/0001.md</code></pre>
 <h2>Decision log and references</h2>
 <p data-anchor="source-issue">The coordinated cutover carrier is <a href="https://linear.app/martellventures/issue/TUR-443">TUR-443</a>.</p>
 <p data-anchor="source-slices">Bounded delivery slices are <a href="https://linear.app/martellventures/issue/TUR-445">TUR-445</a>, <a href="https://linear.app/martellventures/issue/TUR-447">TUR-447</a>, <a href="https://linear.app/martellventures/issue/TUR-449">TUR-449</a>, <a href="https://linear.app/martellventures/issue/TUR-446">TUR-446</a>, <a href="https://linear.app/martellventures/issue/TUR-444">TUR-444</a>, and <a href="https://linear.app/martellventures/issue/TUR-448">TUR-448</a>.</p>
-<p data-anchor="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 92.</p>
+<p data-anchor="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 94.</p>
 <p data-anchor="audit-draft">The integrated working narrative is preserved in <a href="../../docs/operating-model-audit-2026-07-17/operating-model-draft.md">operating-model-draft.md</a>.</p>
 <p data-anchor="failure-catalog">Observed failure modes are preserved in <a href="../../docs/operating-model-audit-2026-07-17/failure-catalog.md">failure-catalog.md</a>.</p>
 <p data-anchor="symphony-assessment">The reference-only Symphony comparison is preserved in <a href="../../docs/operating-model-audit-2026-07-17/symphony-assessment.md">symphony-assessment.md</a>.</p>

@@ -1,7 +1,7 @@
 # Operating Model Audit — 2026-07-17
 
 Status: historical audit evidence. The operator grill is complete through
-Decision 92. Canonical current behavior lives in
+Decision 94. Canonical current behavior lives in
 `../../spec/domains/operating-model.spec.html`; it wins over proposals and
 pre-decision language in this packet. The coordinated octo-lite cutover is
 tracked by `TUR-443`.
@@ -182,7 +182,7 @@ now contain the approved resolution.
   scheduler/service spec and Elixir implementation, with adopt/adapt/reject
   mappings against the approved octo-lite and Turbo operating-model direction.
 - [Reconciled gap backlog](gap-backlog.md) — approved and deferred
-  implementation work after Decisions 1 through 92.
+  implementation work after Decisions 1 through 94.
 - [Target promotion map](target-promotion-map.md) — approved repo-specific
   decisions that must be shaped and implemented in the target repo rather than
   generic octo-lite.
