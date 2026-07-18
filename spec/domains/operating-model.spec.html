@@ -165,6 +165,9 @@
 <h3>Branch and release topology</h3>
 <p data-anchor="branch-single-pr">The same draft PR continues from shaping through implementation.</p>
 <p data-anchor="branch-readiness-head">The shaping readiness HEAD remains immutable evidence while implementation advances the PR HEAD.</p>
+<p data-anchor="branch-carrier-default">A coordinated cutover defaults to sequential slices on the carrier head; short-lived stacked member PRs exist only where parallelism has tangible value.</p>
+<p data-anchor="branch-member-target">Member PRs integrate into the declared carrier or predecessor, never directly into main; the carrier is the train's sole final-main PR.</p>
+<p data-anchor="branch-integration-proof">After member integration, the orchestrator proves reviewed-HEAD ancestry and effective diff before preserving downstream gates.</p>
 <p data-anchor="branch-authority">The stream orchestrator has standing authority to select and revise main, stacked-branch, or integration-train topology without per-change approval.</p>
 <p data-anchor="branch-escalation">Topology changes escalate only when ship grouping, product scope, or material risk changes.</p>
 <p data-anchor="branch-retarget">Authorized PR retargeting preserves stacking and release trains but must record topology revision, merge base, ancestry, effective diff, and invalidated downstream gates.</p>
