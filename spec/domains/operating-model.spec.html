@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>octo-lite operating model</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header">
+<h1>octo-lite operating model</h1>
+<nav><a href="../index.spec.html">Specifications</a> / operating model</nav>
+<p>Canonical workflow behavior for lightweight, trustworthy, spec-driven delivery.</p>
+</header>
+
+<section data-anchor="intended-behavior">
+<h2>Intended behavior</h2>
+<p data-anchor="intent-trust">octo-lite makes delivery trustworthy and observable without becoming a service or a second operational state machine.</p>
+<p data-anchor="intent-latency">The optimization order is trustworthy delivery, low operator latency, throughput, then token and compute cost.</p>
+<p data-anchor="intent-source">Linear owns high-level issue identity, decisions, context, non-goals, dependencies, and lifecycle state.</p>
+<p data-anchor="intent-spec">Canonical specs and ADRs own detailed behavior, acceptance rules, interfaces, edge cases, and constraints.</p>
+<p data-anchor="intent-pr">One evolving draft pull request carries shaping and implementation without creating divergent branches of truth.</p>
+<p data-anchor="intent-tdd">Every behavior-changing implementation follows spec-driven red, green, refactor unless shaping records a narrow operator-approved waiver.</p>
+</section>
+
+<section data-anchor="domain-concepts">
+<h2>Domain concepts</h2>
+<dl>
+<dt data-anchor="concept-operator">Operator</dt>
+<dd>Fable is the persistent meta-operator and sole writer of the reconciled whole-operation view.</dd>
+<dt data-anchor="concept-orchestrator">Stream orchestrator</dt>
+<dd>One persistent Claude Opus session owns one coherent epic or release train and reports to exactly one parent.</dd>
+<dt data-anchor="concept-worker">Worker pass</dt>
+<dd>One fresh disposable instance performs one implementation, fix, review, re-review, QA capture, or QA review pass.</dd>
+<dt data-anchor="concept-brief">Brief</dt>
+<dd>A parent-owned Markdown artifact containing hard invariants, owned scope, standing authority, and must-escalate conditions.</dd>
+<dt data-anchor="concept-status">Status</dt>
+<dd>A child-owned Markdown artifact containing current gate, health, exact issue and PR facts, material change, and next action.</dd>
+<dt data-anchor="concept-receipt">Receipt</dt>
+<dd>A compact machine-readable fact binding a session or gate to exact role, model, instructions, repo, issue, spec, PR, and HEAD inputs.</dd>
+<dt data-anchor="concept-gate">Gate</dt>
+<dd>A durable exact-revision artifact required before a downstream workflow transition.</dd>
+</dl>
+</section>
+
+<section data-anchor="rules-invariants">
+<h2>Rules and invariants</h2>
+
+<section data-anchor="runtime-boundary">
+<h3>Runtime boundary</h3>
+<p data-anchor="runtime-tooling">octo-lite is optional installed developer tooling, not a product dependency or service.</p>
+<p data-anchor="runtime-no-service">It owns no daemon, API, database, scheduler, queue, mirror, poller, cache service, or unowned background runtime.</p>
+<p data-anchor="runtime-foreground">Small helpers execute inside explicit operator, orchestrator, or workflow sessions.</p>
+<p data-anchor="runtime-target-independence">A target product must build, test, deploy, and remain understandable if octo-lite, spec-chat, and the optional control panel are removed.</p>
+<p data-anchor="runtime-control-panel-package">The optional control panel lives inside octo-lite under <code>control-panel/</code>, with frontend dependencies and build output isolated from the core workflow.</p>
+<p data-anchor="runtime-control-panel-no-sibling">It is not a sibling repository and does not require independent schema-version coordination with octo-lite.</p>
+<p data-anchor="runtime-control-panel-optional">Core installation and workflow execution do not build, launch, or depend on the panel unless explicitly invoked.</p>
+<p data-anchor="runtime-control-panel-static">Hosted mode remains a static read-only projection; local operator mode may edit only approved canonical octo-lite files, validate, and show a git diff.</p>
+<p data-anchor="runtime-control-panel-edit-allowlist">Local edit paths are exactly <code>roles/*.md</code>, <code>roles.toml</code>, <code>profile/AGENTS.md</code>, and <code>skills/*/SKILL.md</code>.</p>
+<p data-anchor="runtime-control-panel-edit-readonly">Generated adapters, workflows, target-repo instructions, specs, and runtime state remain read-only in the panel.</p>
+<p data-anchor="runtime-control-panel-edit-effects">A save validates and shows the git diff but never commits or pushes; no per-file edit registry exists.</p>
+<p data-anchor="runtime-control-panel-inspector">The role inspector shows current roles, model, effort, mode, Linear mappings, actual resolved skills, workflow spawn graph, symlink health, editable canonical role prompts, and the generic system or profile prompt.</p>
+<p data-anchor="runtime-control-panel-pinning">Validated prompt or mapping changes affect only newly spawned sessions; existing sessions remain pinned to their launch contract.</p>
+<p data-anchor="runtime-control-panel-target-discovery">The panel derives target values from existing repo instructions, specs, git, Linear, PRs, and evidence manifests; a target has no control-panel adapter by default.</p>
+<p data-anchor="runtime-control-panel-target-override">Only a shaped, proven non-derivable presentation mapping may add <code>.octo-lite/control-panel.toml</code>; it contains no agent instructions, lifecycle state, secrets, or product dependency.</p>
+</section>
+
+<section data-anchor="instruction-ownership">
+<h3>Instruction ownership</h3>
+<p data-anchor="instruction-generic">octo-lite owns generic lifecycle, roles, gates, TDD, review mechanics, model policy, and reusable skills.</p>
+<p data-anchor="instruction-target">A target repo root <code>AGENTS.md</code> exclusively owns repo-specific commands, architecture, validation, deployment, fixtures, and conventions.</p>
+<p data-anchor="instruction-target-exclusive">A target root <code>AGENTS.md</code> contains only that target's instructions and is its sole repo instruction source.</p>
+<p data-anchor="instruction-claude">A target root <code>CLAUDE.md</code> is a tracked relative symlink to root <code>AGENTS.md</code> when Claude tooling needs that entry point.</p>
+<p data-anchor="instruction-worktree">Target instructions remain versioned inside each worktree while generic octo-lite skills, roles, and workflows install by symlink from one canonical source.</p>
+<p data-anchor="instruction-memory">Claude and Codex memory is non-authoritative and may contain only dated evidence-backed gotchas plus durable source links.</p>
+<p data-anchor="instruction-memory-fields">A memory entry contains only date, scope, observed failure, and durable source or fix link.</p>
+<p data-anchor="instruction-memory-owner">Any role may write a qualifying gotcha; the bounded stream orchestrator prunes or promotes entries when the stream closes.</p>
+<p data-anchor="instruction-concise">Every LLM-facing role, skill, launch instruction, brief, handoff, verdict, receipt, and status artifact is extremely concise and may sacrifice grammar for concision.</p>
+<p data-anchor="instruction-dash-style">LLM-facing instructions and generated text use no em dash or en dash characters.</p>
+<p data-anchor="instruction-reference">Generated artifacts reference pinned canonical sources and exact revisions rather than restating specs, issues, roles, logs, or earlier artifacts.</p>
+<p data-anchor="instruction-minimum-complete">Each artifact carries only fields needed for its authority, gate, recovery, or next consumer, but never omits a correctness-critical fact.</p>
+<p data-anchor="instruction-expand-on-demand">Detailed prose appears only for a finding, failure, ambiguity, operator decision, or explicit request.</p>
+<p data-anchor="instruction-no-length-cap">No arbitrary word, character, or token cap may truncate required facts; compact schemas and source references enforce leanness.</p>
+</section>
+
+<section data-anchor="role-topology">
+<h3>Role and model topology</h3>
+<p data-anchor="role-roster">The complete LLM role roster is meta-operator, orchestrator, issue-shaper, shaping-reviewer, implementer, code-reviewer, qa-capture, qa-reviewer, and reconciler.</p>
+<p data-anchor="role-fix-reuse">Every fix uses a fresh implementer instance and every re-review uses a fresh code-reviewer instance rather than separate role contracts.</p>
+<p data-anchor="role-nested-reuse">Every nested stream owner uses the same orchestrator contract.</p>
+<p data-anchor="role-nested-rules">A parent flattens relevant effective rules into the child brief; the child acknowledges them only at spawn or after a material brief revision.</p>
+<p data-anchor="role-helper-boundary">Acceptance recording, merge, evidence publication, Linear transition, preproduction promotion, and live traffic shift are deterministic operator-authorized helpers rather than LLM roles.</p>
+<p data-anchor="role-control-view">The control panel displays deterministic gates and helpers separately from LLM roles.</p>
+<p data-anchor="role-fable">The meta-operator uses exact <code>claude-fable-5</code> at xhigh effort in auto permission mode.</p>
+<p data-anchor="role-fable-context">Fable 5 uses its default 1M context without a redundant <code>[1m]</code> suffix.</p>
+<p data-anchor="role-fable-no-fallback">An unavailable Fable 5 fails visibly and is never silently replaced by Opus or another model.</p>
+<p data-anchor="role-opus">Every stream or subordinate orchestrator uses exact <code>claude-opus-4-8[1m]</code> at high effort in auto permission mode.</p>
+<p data-anchor="role-opus-no-fallback">An unavailable orchestrator model fails visibly and is never silently replaced by another version or family.</p>
+<p data-anchor="role-implementer">Implementation and every fix pass use a fresh exact Anthropic Sonnet 5 instance at xhigh effort.</p>
+<p data-anchor="role-reviewer">Code review and every re-review use a fresh GPT-5.6 Sol instance at high effort.</p>
+<p data-anchor="role-shaping-reviewer">The final post-grill shaping review uses a fresh GPT-5.6 Sol instance at xhigh effort on the fast service tier.</p>
+<p data-anchor="role-qa-capture">QA capture uses a fresh exact Anthropic Sonnet 5 instance at high effort.</p>
+<p data-anchor="role-qa-reviewer">QA review uses a fresh GPT-5.6 Sol instance at high effort on the fast service tier.</p>
+<p data-anchor="role-reconciler">Each reconciliation sweep uses a fresh exact <code>claude-sonnet-5</code> instance at high effort with no fallback.</p>
+<p data-anchor="role-reconciler-input">Deterministic helpers perform exact checks and provide one compact normalized read-only snapshot; Sonnet classifies only changed, missing, stale, contradictory, or <code>needs_fable</code>.</p>
+<p data-anchor="role-reconciler-authority">Sonnet cannot mutate sources, override deterministic mismatches, investigate open-endedly, or silently resolve ambiguity.</p>
+<p data-anchor="role-reconciler-escalation">Missing or unparseable input and semantic ambiguity return <code>needs_fable</code>; Fable judges the case.</p>
+<p data-anchor="role-claude-native">Orchestrated Claude Workflows are the primary loop runtime rather than an adapter target.</p>
+<p data-anchor="role-contract-source">Each <code>roles/&lt;role&gt;.md</code> is the sole canonical prose contract for that role.</p>
+<p data-anchor="role-machine-map"><code>roles.toml</code> exclusively owns provider, exact model, effort, permission mode, tools, required and conditional skills, and contract path.</p>
+<p data-anchor="role-authority-split">Role prose owns responsibilities, authority, stop conditions, inputs, and outputs without repeating machine configuration.</p>
+<p data-anchor="role-resolver">One small resolver combines the canonical role contract and machine mapping before every Workflow agent invocation or Sol relay.</p>
+<p data-anchor="role-adapters">Claude Markdown and Codex TOML adapters are generated launcher inputs and diagnostic surfaces, never alternate role-bearing spawn paths.</p>
+<p data-anchor="role-no-prompt-copy">Claude Workflows load canonical role prose verbatim and Sol relays receive the same prose without copied workflow literals.</p>
+<p data-anchor="role-skill-map">The launcher loads every required skill plus only matched conditional skills and records the actual resolved set.</p>
+<p data-anchor="role-receipt">The launch receipt records role path and git blob, <code>roles.toml</code> revision, exact runtime values, and resolved skills.</p>
+<p data-anchor="role-adapter-loss">Adapter generation fails if a target platform cannot express a required tool, mode, or contract field.</p>
+<p data-anchor="role-map-boundary"><code>roles.toml</code> contains no target rules, issue scope, live state, secrets, or operator decisions.</p>
+<p data-anchor="role-ci">One path-filtered CI dry run proves role blob, map revision, model, mode, skills, target instruction blob, repo, worktree, and starting HEAD reached the spawned session.</p>
+<p data-anchor="role-runtime-fallback">If the Workflow runtime cannot read canonical files directly, a deterministic prebuilt Workflow injects the exact role text and source blob without handwritten prompt literals.</p>
+<p data-anchor="role-no-reuse">A worker instance is never resumed for another pass and <code>--last</code> is prohibited.</p>
+<p data-anchor="role-retirement">A completed orchestrator stream archives its control record and terminates rather than accepting later work.</p>
+</section>
+
+<section data-anchor="shaping-contract">
+<h3>Shaping contract</h3>
+<p data-anchor="shaping-linear">Shaping begins from the complete current Linear issue for Linear-tracked work.</p>
+<p data-anchor="shaping-grill">The issue shaper grills one unresolved question at a time with a recommended answer and records each resolved behavior immediately.</p>
+<p data-anchor="shaping-complete">Shaping is not complete without an aligned Linear issue, canonical spec, evolving draft PR, and final fresh shaping-review verdict.</p>
+<p data-anchor="shaping-review-inputs">The shaping reviewer reads canonical specs and ADRs, relevant conversation logs through a pinned cutoff, Linear, repo instructions, the same draft-PR readiness HEAD, and the TDD contract.</p>
+<p data-anchor="shaping-state">Linear <code>Shaped</code> is the canonical readiness state and is set only after a clear final shaping verdict.</p>
+<p data-anchor="shaping-verdict-location">The final shaping verdict is a durable artifact on the evolving draft PR, not a separate readiness file.</p>
+<p data-anchor="shaping-verdict-bindings">The verdict binds the relevant Linear content fingerprint, PR and shaping HEAD, spec and ADR blobs, conversation-log references and cutoff, clear or blocking result, and reviewer receipt reference.</p>
+<p data-anchor="shaping-verdict-link">Linear links the PR verdict without duplicating its exact-revision proof.</p>
+<p data-anchor="shaping-verdict-readback">Implementation launch refetches Linear, the PR, HEAD, specs, logs, and verdict; any mismatch returns the issue to shaping.</p>
+<p data-anchor="review-comment-artifact">Shaping and code review each publish one concise machine-readable PR verdict comment through a deterministic helper.</p>
+<p data-anchor="review-comment-fields">The comment records review type, clear or blocking verdict, exact HEAD, bound inputs, findings, and reviewer receipt reference.</p>
+<p data-anchor="review-comment-only">No formal GitHub Review API operation, reviewer-identity preflight, check run, or fallback tree is required for workflow correctness.</p>
+<p data-anchor="shaping-reconcile">Documentary gaps return to the shaper, missing judgments return to the operator grill, and material reconciliation requires another fresh shaping review.</p>
+<p data-anchor="shaping-implementation-source">The implementer treats the spec as detailed behavioral law and Linear as high-level decision, context, identity, non-goal, and status law.</p>
+<p data-anchor="shaping-chat">Conversation logs are shaping-review evidence, not implementation instructions.</p>
+<p data-anchor="shaping-conflict">If Linear high-level law conflicts with canonical spec or ADR law, neither silently wins: stop implementation and return to shaping until both and the evolving PR agree.</p>
+</section>
+
+<section data-anchor="delivery-loop">
+<h3>Delivery loop</h3>
+<pre data-anchor="delivery-flow"><code>shape and reconcile
+  -&gt; fresh shaping review
+  -&gt; implement with spec-derived red and green proof
+  -&gt; fresh code review
+  -&gt; fresh fix when blocking
+  -&gt; fresh re-review
+  -&gt; QA capture when user-facing
+  -&gt; fresh QA review
+  -&gt; operator acceptance
+  -&gt; merge and lifecycle transition</code></pre>
+<p data-anchor="delivery-fix-review">Every fix changes HEAD and requires a fresh code review before QA.</p>
+<p data-anchor="delivery-cycle-limit">At most three fresh review and fix cycles may run before the issue returns to shaping.</p>
+<p data-anchor="delivery-invalidation">Behavior or contract changes invalidate review and QA while packet-only wording changes do not.</p>
+<p data-anchor="delivery-merge">No agent may infer human acceptance, approve as the human, or merge without the operator-owned acceptance artifact for the same verdict and HEAD.</p>
+</section>
+
+<section data-anchor="branch-topology">
+<h3>Branch and release topology</h3>
+<p data-anchor="branch-single-pr">The same draft PR continues from shaping through implementation.</p>
+<p data-anchor="branch-readiness-head">The shaping readiness HEAD remains immutable evidence while implementation advances the PR HEAD.</p>
+<p data-anchor="branch-authority">The stream orchestrator has standing authority to select and revise main, stacked-branch, or integration-train topology without per-change approval.</p>
+<p data-anchor="branch-escalation">Topology changes escalate only when ship grouping, product scope, or material risk changes.</p>
+<p data-anchor="branch-retarget">Authorized PR retargeting preserves stacking and release trains but must record topology revision, merge base, ancestry, effective diff, and invalidated downstream gates.</p>
+<p data-anchor="branch-train">A multi-PR train has one carrier PR and one machine-readable manifest listing member Linear issues, PRs, pinned HEADs, order, topology revision, integration branch, target, owner, and gate state.</p>
+<p data-anchor="branch-no-divergence">The train manifest owns topology only and never duplicates product scope or lifecycle truth.</p>
+</section>
+
+<section data-anchor="linear-lifecycle">
+<h3>Linear lifecycle</h3>
+<p data-anchor="linear-exact-read">Gate-critical reads use one exact Linear helper returning the complete issue, stable identity, revision, and current state.</p>
+<p data-anchor="linear-transition">A mechanical transition compares expected state, mutates once, reads back, updates stream status, and notifies the parent before reporting success.</p>
+<p data-anchor="linear-transition-retry">A partial transition failure retries only unfinished idempotent steps and never blindly repeats a completed state mutation.</p>
+<p data-anchor="linear-stream-authority">Stream orchestrators may perform only <code>Todo -&gt; In Progress -&gt; Awaiting Accept</code> through that helper.</p>
+<p data-anchor="linear-operator-authority">Acceptance, merge, staging, preproduction, and live transitions remain operator-owned.</p>
+<p data-anchor="linear-staging">Merged to <code>main</code> means deployed to staging and therefore <code>In Staging</code>.</p>
+<p data-anchor="linear-train">Acceptance inside a stack or release train remains an acceptance-ledger fact while Linear stays <code>Awaiting Accept</code> until the commit reaches <code>main</code>.</p>
+<p data-anchor="linear-preprod">In Preprod means a verified candidate exists at zero percent live traffic.</p>
+<p data-anchor="linear-live">Live requires the actual operator-authorized traffic shift.</p>
+</section>
+
+<section data-anchor="user-story-surface">
+<h3>User-story surface</h3>
+<p data-anchor="story-dual-purpose">The user-story catalog is a product-surface artifact and a QA verification contract for full-pipeline checks.</p>
+<p data-anchor="story-not-evidence">The story record is not QA evidence and does not embed screenshots, videos, verdicts, proof links, or acceptance state.</p>
+<p data-anchor="story-canonical-file">A participating target owns one indexed canonical spec-chat user-story document at a target-defined path.</p>
+<p data-anchor="story-stable-links">Each story has a stable anchored ID and links directly to the canonical spec anchors that define its detailed behavior.</p>
+<p data-anchor="story-id-format">A target defines one stable story-ID prefix and combines it with the origin Linear number and a two-digit per-issue ordinal.</p>
+<p data-anchor="story-id-origin">The Linear number records origin only; later issues may evolve the story without changing its ID.</p>
+<p data-anchor="story-id-stability">Story IDs are never renamed, renumbered, or reused.</p>
+<p data-anchor="story-id-allocation">The issue shaper selects the next unused ordinal for that issue by reading the canonical story document; no registry or allocation service exists.</p>
+<p data-anchor="story-retirement">Retirement preserves the anchored story in place with status <code>retired</code> and an optional successor story link.</p>
+<p data-anchor="story-record-fields">An active story record contains only stable ID, short title, status, one user-voiced story sentence, exact spec-anchor links, and origin Linear issue.</p>
+<p data-anchor="story-record-retired-field">A retired record may additionally contain one successor story link.</p>
+<p data-anchor="story-record-no-extra">Product-surface sections provide grouping and Git provides history; records carry no acceptance criteria, QA fields, owners, metrics, dates, or implementation detail.</p>
+<p data-anchor="story-migration-curated">The legacy QA-derived Markdown catalog is candidate source material for one curated migration, never a mechanically converted authority.</p>
+<p data-anchor="story-migration-dedupe">Migration groups bug-level and duplicate entries into durable user outcomes.</p>
+<p data-anchor="story-migration-strip">Migration removes QA evidence, verdicts, acceptance-criterion dumps, proven counts, and generated QA status.</p>
+<p data-anchor="story-migration-review">Retained stories receive stable IDs and exact spec links, then undergo direct spec-chat review.</p>
+<p data-anchor="story-migration-retire-old">The legacy <code>spec/user-stories.md</code> file is deleted only after the curated spec-chat replacement is approved.</p>
+<p data-anchor="story-control-panel">The optional control panel discovers and renders the story document through the same read-only spec path as every other spec.</p>
+<p data-anchor="story-no-mirror">There is no user-story mirror, publisher, synchronization state, or external-document failure gate.</p>
+<p data-anchor="story-no-subsystem">There is no separate user-story service, database, control-panel backend, mandatory graph, or hand-maintained visualization dataset.</p>
+<p data-anchor="story-optional-visuals">A small journey graph or coverage view may be added only when it materially improves comprehension and derives from the story document itself.</p>
+<p data-anchor="story-shaper-owner">The issue shaper updates the story document during shaping when approved work creates, changes, or retires a user outcome.</p>
+<p data-anchor="story-same-pr">The story update and linked behavior specs remain on the same evolving draft PR before final shaping review.</p>
+<p data-anchor="story-review-gate">The fresh shaping reviewer verifies story-to-spec alignment and blocks readiness on a material mismatch.</p>
+<p data-anchor="story-downstream-readonly">Implementers, code reviewers, QA roles, acceptance helpers, and merge helpers consume the pinned story revision but do not maintain it.</p>
+<p data-anchor="story-panel-main">After merge, the control panel reflects the story document from <code>main</code> through normal spec discovery, with no publication job.</p>
+<p data-anchor="story-qa-input">Full-pipeline QA consumes a pinned catalog revision and may produce separate coverage, evidence, and verdict artifacts that reference stable story identifiers.</p>
+<p data-anchor="story-qa-issue-scope">Issue-level QA verifies only active story IDs changed or claimed by the shaped issue.</p>
+<p data-anchor="story-qa-full-scope">An explicit full-pipeline QA run verifies every active story at one pinned story and spec revision.</p>
+<p data-anchor="story-qa-retired">Retired stories are excluded, while missing or unexecutable active stories are reported as not evidenced rather than silently skipped.</p>
+<p data-anchor="story-qa-no-suite">No suite tags or secondary test catalog select stories.</p>
+<p data-anchor="story-qa-no-authority">QA capture and QA review do not author or silently rewrite product-story truth.</p>
+</section>
+
+<section data-anchor="qa-evidence">
+<h3>QA and evidence</h3>
+<p data-anchor="qa-review-head">QA consumes only a clear code-review artifact for the same exact HEAD.</p>
+<p data-anchor="qa-evidence-plan">Before capture, QA capture records a small per-criterion evidence plan selecting the minimum honest proof set.</p>
+<p data-anchor="qa-screenshot">Screenshots are the default proof for stable states.</p>
+<p data-anchor="qa-screenshot-group">One screenshot or a concise ordered group may prove a stable state or state sequence when each image has a distinct purpose.</p>
+<p data-anchor="qa-video">Video is required only when motion, sequence, timing, media playback, or interaction cannot be proved honestly with still images.</p>
+<p data-anchor="qa-no-ceremony">Do not capture both screenshots and video unless each format proves a distinct criterion or risk.</p>
+<p data-anchor="qa-manifest">Evidence records exact app identity, runtime, HEAD, viewports, fixtures, artifacts, and per-criterion evidence rationale.</p>
+<p data-anchor="qa-verdict">A fresh QA reviewer visually inspects the artifacts and grades every criterion pass, fail, or not evidenced.</p>
+<p data-anchor="qa-publication-boundary">QA capture produces artifacts and a manifest; a deterministic publication helper updates the evidence site and its index.</p>
+<p data-anchor="qa-publication-performance">Routine publication is incremental; full-archive repair is explicit and never the normal readiness path. Target specs own concrete service-level objectives.</p>
+<p data-anchor="qa-site-purpose">The evidence site is the operator's acceptance-review surface for QA artifacts and the fresh QA reviewer's satisfied or blocking verdict.</p>
+<p data-anchor="qa-served">Every issue entering Awaiting Accept has a served evidence card, including backend-only work, and readiness is not claimed until the card is readable for the exact issue, PR, HEAD, verdict, story IDs, and criterion coverage.</p>
+<p data-anchor="qa-acceptance-chain">Every acceptance packet requires a satisfied fresh QA-review verdict before it is offered for operator acceptance.</p>
+<p data-anchor="qa-human-acceptance">The operator reviews the served QA artifacts and verdict, then explicitly accepts or rejects; a QA-review verdict never substitutes for operator acceptance.</p>
+<p data-anchor="qa-dashboard-boundary">Evidence publication and QA verdict changes are meaningful gate changes: the orchestrator updates stream status and notifies its parent, then Fable reconciles the whole-operation dashboard.</p>
+<p data-anchor="qa-no-direct-dashboard">QA workers never directly mutate the evidence-site index or whole-operation dashboard.</p>
+<p data-anchor="qa-backend">Backend-only work skips browser capture, screenshots, video, and app boot unless the contract itself requires them.</p>
+<p data-anchor="qa-backend-packet">A deterministic helper assembles the clear code-review verdict, exact HEAD, affected story IDs, spec criteria, real unskipped validation, and contract-check outputs into a nonvisual packet.</p>
+<p data-anchor="qa-backend-review">A fresh QA reviewer checks only nonvisual evidence sufficiency and per-criterion coverage, without repeating code review.</p>
+<p data-anchor="qa-backend-site">The evidence site serves the backend packet and QA verdict through the same operator acceptance path.</p>
+<p data-anchor="qa-hosting-boundary">Evidence hosting remains target-repo operations; octo-lite adds no access-control, redaction, retention, or recurring broken-link subsystem.</p>
+<p data-anchor="qa-publication-readback">Publication performs one exact-card and linked-artifact readback before readiness; no periodic evidence sweeper is required.</p>
+<p data-anchor="qa-no-secrets">Known secrets and credentials are never intentionally published.</p>
+</section>
+
+<section data-anchor="messaging">
+<h3>Messaging</h3>
+<p data-anchor="message-herdr-say">Every Herdr message uses <code>herdr-say</code>, which submits at a verified safe prompt or durably queues without acting on a modal.</p>
+<p data-anchor="message-queued-submit">Queued text may auto-submit when the recipient reaches a verified safe prompt.</p>
+<p data-anchor="message-visible">Visible, injected, or queued TUI text is not acknowledgment.</p>
+<p data-anchor="message-ack">Commands, operator rulings, ownership transfers, and blocking questions require explicit recipient acknowledgment before dependent action.</p>
+<p data-anchor="message-no-timeout">Acknowledgment has no arbitrary timeout because dependency, not duration, determines blocking.</p>
+<p data-anchor="message-complete">Completion requires the named durable artifact or observable outcome, not acknowledgment alone.</p>
+</section>
+
+<section data-anchor="supervision">
+<h3>Operator supervision</h3>
+<p data-anchor="supervision-view">Fable is the sole writer of the reconciled whole-operation view but does not ingest every raw log.</p>
+<p data-anchor="supervision-report-order">Upward status leads with product outcome, current gate, blocker, and next operator action; tracker and run identifiers are secondary.</p>
+<p data-anchor="supervision-notifications">Proactive operator messages are limited to required decisions, blockers, failures, and meaningful gate or outcome changes.</p>
+<p data-anchor="supervision-primary-surface">A target operations view becomes primary only when it is accurate and digestible across all workstreams; until then Fable supplies the complete operation update.</p>
+<p data-anchor="supervision-files">Each stream uses one parent-owned <code>brief.md</code> and one child-owned <code>status.md</code> in the operator control directory.</p>
+<p data-anchor="supervision-compaction">Status compacts upward one parent at a time, and leaf workers do not all message Fable.</p>
+<p data-anchor="supervision-timer">One session-durable host timer invokes <code>operator-say sweep</code> throughout the operator lifecycle, including idle periods.</p>
+<p data-anchor="supervision-sweep">A wake runs deterministic exact checks and may spawn one fresh Sonnet reconciler over the compact normalized snapshot.</p>
+<p data-anchor="supervision-noop">A wake with no delta is a cheap no-op and does not remove the timer.</p>
+<p data-anchor="supervision-direct">The human may converse directly with an orchestrator, and stream-local rulings apply after durable status capture while cross-stream effects wait for Fable reconciliation.</p>
+</section>
+
+<section data-anchor="operator-handoff">
+<h3>Operator handoff</h3>
+<p data-anchor="handoff-explicit">Only an explicit operator request starts a Fable-to-Fable handoff.</p>
+<p data-anchor="handoff-artifact">The outgoing Fable writes one concise immutable Markdown handoff at <code>handoffs/&lt;zero-padded-revision&gt;.md</code> containing objective, stream tree, exact facts, pending decisions, authorities, blockers, control path, timer, and reply routes.</p>
+<p data-anchor="handoff-reconcile">The fresh successor loads canonical instructions, reconciles the handoff against source systems, and declares readiness before cutover.</p>
+<p data-anchor="handoff-owner">One <code>operator-owner.toml</code> stores schema version, exact owner session ID, handoff revision, and control-directory identity.</p>
+<p data-anchor="handoff-atomic">A locked expected-owner and revision check plus atomic TOML rename is the sole authority commit.</p>
+<p data-anchor="handoff-routing">The timer and top-level child notifications resolve the owner through <code>operator-say</code>, so the next message observes the same atomic commit.</p>
+<p data-anchor="handoff-old-owner">The old operator becomes read-only at commit and may only forward late direct messages until cleanup.</p>
+<p data-anchor="handoff-dead-owner">Dead-owner takeover requires explicit operator authorization, verified dead or absent exact session identity, fresh reconciliation, and the same atomic replace.</p>
+<p data-anchor="handoff-no-failover">Ambiguous liveness blocks and no timeout or automatic failover transfers authority.</p>
+</section>
+
+<section data-anchor="workspace-retry">
+<h3>Workspace and retry</h3>
+<p data-anchor="workspace-control-clone">One clean control clone supplies shared Git objects to fresh per-pass worktrees.</p>
+<p data-anchor="workspace-cache">Targets may reuse native safe download caches while mutable dependency trees and build outputs remain worktree-local.</p>
+<p data-anchor="workspace-bootstrap">Target-owned bootstrap fails fast on wrong repo, base, remote, tools, dependencies, environment, database access, disk health, or validation capability.</p>
+<p data-anchor="workspace-admission">Before spawn, check disk health, isolated worktree, conflicting ownership of branch, fixture, port, or deployment resource, and active provider overload; unsafe work waits.</p>
+<p data-anchor="workspace-fixture">State-mutating QA verifies starting state, avoids fixtures under concurrent mutation, and records its fixture; read-only QA may share stable fixtures.</p>
+<p data-anchor="workspace-cleanup">Completed worker worktrees are removed only after durable handoff, commit, and push state exists, while dirty worktrees stop for inspection.</p>
+<p data-anchor="retry-record">Only failed or interrupted passes add a compact failure record with exact attempt, original error, category, useful work, owner, and next action.</p>
+<p data-anchor="retry-categories">The category is exactly one of input or contract, environment, provider or session, implementation or validation, or external dependency.</p>
+<p data-anchor="retry-timeout">Timeout alone is not failure and cannot launch duplicate work.</p>
+<p data-anchor="retry-fresh">The owner inspects and preserves useful work before launching a fresh retry instance.</p>
+<p data-anchor="retry-outage">A fleet outage requires the original error, workspace inspection, a fresh exact-model probe, and lane, session, account, provider, or fleet classification.</p>
+</section>
+
+<section data-anchor="artifact-formats">
+<h3>Artifact formats</h3>
+<p data-anchor="format-spec">octo-lite and participating target repos use spec-chat HTML for canonical human-reviewed domain behavior and ADRs.</p>
+<p data-anchor="format-markdown">Markdown remains canonical for agent-native instructions and lifecycle-bound human context.</p>
+<p data-anchor="format-toml">TOML is the default for octo-lite-owned machine configuration and current control state.</p>
+<p data-anchor="format-jsonl">JSONL is the append-only workflow telemetry format.</p>
+<p data-anchor="format-json">JSON or another native format remains only at an external tool, API, schema, or target-consumer boundary.</p>
+<p data-anchor="format-media">Screenshots and necessary video remain native media, and generated HTML views remain non-authoritative projections.</p>
+<p data-anchor="format-version">Machine state and events carry schema versions, TOML updates atomically, and JSONL appends under a small lock.</p>
+<p data-anchor="format-authority">Format never determines authority.</p>
+</section>
+
+<section data-anchor="tracing">
+<h3>Lightweight tracing</h3>
+<p data-anchor="trace-shape">Tracing aligns to Langfuse session, trace, and observation concepts at the data-contract level only.</p>
+<p data-anchor="trace-no-runtime">No Langfuse deployment, SDK, collector, exporter, service, or trace database is installed.</p>
+<p data-anchor="trace-file">Each bounded stream may have one append-only <code>trace.jsonl</code> in its existing control directory.</p>
+<p data-anchor="trace-session">A session is one bounded orchestrator stream or release train.</p>
+<p data-anchor="trace-trace">A trace is one issue-delivery execution.</p>
+<p data-anchor="trace-observation">An observation is one meaningful workflow boundary such as bootstrap, pass completion, verdict, retry, transition, accepted control message, merge, or deployment fact.</p>
+<p data-anchor="trace-writer">Only deterministic workflow and named gate helpers write traces, and language-model agents never write them directly.</p>
+<p data-anchor="trace-content">Records contain portable IDs, timing, status, compact role and issue attributes, and artifact references but no raw prompts, responses, logs, transcripts, secrets, evidence bodies, or product data.</p>
+<p data-anchor="trace-lifecycle">A trace inherits its stream control-directory lifecycle and has no separate archive, retention timer, or pruning system.</p>
+<p data-anchor="trace-failure">Runtime append failure writes one <code>trace degraded</code> status warning and continues without retrying or blocking gates.</p>
+<p data-anchor="trace-ci">One path-filtered CI checker validates generated happy, failure and retry, and invalid traces without mutating external systems.</p>
+<p data-anchor="trace-tdd">Trace conformance does not replace spec-driven TDD or target-repo tests.</p>
+</section>
+</section>
+
+<section data-anchor="interfaces-contracts">
+<h2>Interfaces and contracts</h2>
+<section data-anchor="launch-interface">
+<h3>Role launch</h3>
+<p data-anchor="launch-readback">The launch helper performs final exact Linear and PR and HEAD readback before dispatch.</p>
+<p data-anchor="launch-worktree">It provisions a fresh contained worktree from the declared base and starts the exact role, model, effort, mode, and skill set.</p>
+<p data-anchor="launch-identity">It captures the exact provider session ID and requires a compact bootstrap acknowledgment before mutation.</p>
+<p data-anchor="launch-containment">Workspace containment is checked exactly at provisioning and child bootstrap, not before every command.</p>
+<p data-anchor="launch-receipt">The receipt binds spawn, parent and reply route, role, runtime, repo, instructions, issue, spec, PR, topology, starting HEAD, and required prior gates.</p>
+</section>
+<section data-anchor="stream-interface">
+<h3>Stream control</h3>
+<pre data-anchor="stream-files"><code>streams/&lt;stream&gt;/brief.md
+streams/&lt;stream&gt;/status.md
+streams/&lt;stream&gt;/trace.jsonl
+operator-owner.toml
+handoffs/0001.md</code></pre>
+<p data-anchor="stream-brief-owner">Only the parent writes a child brief.</p>
+<p data-anchor="stream-status-owner">Only the child writes its status.</p>
+<p data-anchor="stream-owner-writer">Only the owner-transfer helper replaces <code>operator-owner.toml</code>.</p>
+<p data-anchor="stream-trace-writer">Only deterministic workflow and gate helpers append trace events.</p>
+<p data-anchor="stream-mutation-caller">Operator-owned mutation helpers verify the exact caller against <code>operator-owner.toml</code>; ordinary read-only commands do not.</p>
+</section>
+</section>
+
+<section data-anchor="edge-cases">
+<h2>Edge cases</h2>
+<p data-anchor="edge-modal">A modal or question dialog causes <code>herdr-say</code> to queue rather than inject or submit.</p>
+<p data-anchor="edge-stale-head">A changed implementation HEAD that changes behavior or contract invalidates review and QA; packet-only or evidence-wording changes do not.</p>
+<p data-anchor="edge-db-skip">A test command that silently skips required database coverage is not green validation.</p>
+<p data-anchor="edge-evidence-missing">A generated packet that is not readable on the served evidence site is not ready for acceptance.</p>
+<p data-anchor="edge-self-review">A PR-owning GitHub identity does not block review because the canonical gate is the exact-HEAD verdict comment, never a fabricated formal review state.</p>
+<p data-anchor="edge-trace-corrupt">A malformed trace blocks the relevant CI contract check but does not retroactively invalidate authoritative gate artifacts.</p>
+<p data-anchor="edge-owner-corrupt">A missing or ambiguous owner record blocks operator-owned mutations until explicit recovery.</p>
+</section>
+
+<section data-anchor="constraints">
+<h2>Constraints</h2>
+<p data-anchor="constraint-concise">Prompts, roles, skills, and receipts remain extremely concise and use progressive disclosure.</p>
+<p data-anchor="constraint-no-dashes">Skills use no em dash or en dash characters.</p>
+<p data-anchor="constraint-no-copy">Generic octo-lite mechanics are not copied into target repos.</p>
+<p data-anchor="constraint-no-turbo">Turbo-specific paths, credentials, fixtures, states, and dashboard mechanics do not live in generic octo-lite prompts or skills.</p>
+<p data-anchor="constraint-control-panel">The optional hosted control panel is read-only and never becomes a second control plane.</p>
+<p data-anchor="constraint-static-view">Source systems and control artifacts remain authoritative if every generated view is unavailable.</p>
+</section>
+
+<section data-anchor="non-goals">
+<h2>Non-goals</h2>
+<p data-anchor="non-goal-service">Building an octo-lite service, scheduler, event bus, tracker mirror, orchestration database, or watcher fleet is out of scope.</p>
+<p data-anchor="non-goal-policy-engine">Building a policy compiler, role registry service, giant spawn manifest, or inheritance engine is out of scope.</p>
+<p data-anchor="non-goal-langfuse">Running Langfuse or OpenTelemetry infrastructure is out of scope.</p>
+<p data-anchor="non-goal-test-matrix">Building a broad Cartesian workflow conformance matrix is out of scope.</p>
+<p data-anchor="non-goal-transcript">Making transcript replay, memory, pane pixels, or queued text a correctness dependency is out of scope.</p>
+</section>
+
+<section data-anchor="open-questions">
+<h2>Open questions about system behavior</h2>
+<p data-anchor="open-none">None.</p>
+</section>
+
+<section data-anchor="decision-references">
+<h2>Decision log and references</h2>
+<p data-anchor="source-issue">The coordinated cutover is tracked by <a href="https://linear.app/martellventures/issue/TUR-443">TUR-443</a>.</p>
+<p data-anchor="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 92.</p>
+<p data-anchor="audit-draft">The integrated working narrative is preserved in <a href="../../docs/operating-model-audit-2026-07-17/operating-model-draft.md">operating-model-draft.md</a>.</p>
+<p data-anchor="failure-catalog">Observed failure modes are preserved in <a href="../../docs/operating-model-audit-2026-07-17/failure-catalog.md">failure-catalog.md</a>.</p>
+<p data-anchor="symphony-assessment">The reference-only Symphony comparison is preserved in <a href="../../docs/operating-model-audit-2026-07-17/symphony-assessment.md">symphony-assessment.md</a>.</p>
+<p data-anchor="target-promotion">Repo-specific rulings awaiting target shaping are preserved in <a href="../../docs/operating-model-audit-2026-07-17/target-promotion-map.md">target-promotion-map.md</a>.</p>
+</section>
+</article>
+</body>
+</html>

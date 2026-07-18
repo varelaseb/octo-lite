@@ -123,6 +123,9 @@ repo-specific conventions that can diverge from the initial octo-lite scaffold.
 
 ### Spec format capability
 
+octo-lite itself declares `Spec format: spec-chat`; its canonical domain specs
+and ADRs live under `spec/` as `*.spec.html`.
+
 Target repos declare their canonical spec format in `AGENTS.md` with the exact
 signal `Spec format: spec-chat`. Repos without that signal, or with
 `Spec format: markdown`, continue to use the existing Markdown layout and

@@ -22,6 +22,9 @@ target repositories.
 
 ## Target Spec Format Capability
 
+- Spec format: spec-chat
+- octo-lite's own canonical specifications and ADRs use native spec-chat
+  `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact
   signal `Spec format: spec-chat` in its `AGENTS.md`.
 - An absent signal, or `Spec format: markdown`, keeps Markdown specs as the
