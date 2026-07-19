@@ -58,22 +58,32 @@ def _agents_md_text(repo: Path, head: str) -> str:
     ).stdout
 
 
-def _signal_value(text: str, signal: str) -> str | None:
+def _signal_lines(text: str, signal: str) -> list[str]:
+    values = []
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("- "):
             stripped = stripped[2:].strip()
         if stripped.startswith(signal):
-            return stripped[len(signal):].strip()
-    return None
+            values.append(stripped[len(signal):].strip())
+    return values
 
 
-def _declared_paths(text: str, signal: str, *, label: str) -> list[str]:
-    value = _signal_value(text, signal)
+def _declared_paths(text: str, signal: str, *, label: str, allow_none: bool = False) -> list[str]:
+    values = _signal_lines(text, signal)
+    if len(values) == 0:
+        raise SystemExit(f"operator-sweep: no canonical {label} paths declared")
+    if len(values) > 1:
+        raise SystemExit(f"operator-sweep: repeated canonical {label} paths declaration")
+    value = values[0]
+    if allow_none and value == "none":
+        return []
     if not value:
         raise SystemExit(f"operator-sweep: no canonical {label} paths declared")
     entries = [entry.strip() for entry in value.split(",")]
     if any(not entry for entry in entries):
+        raise SystemExit(f"operator-sweep: malformed canonical {label} declaration")
+    if allow_none and any(entry == "none" for entry in entries):
         raise SystemExit(f"operator-sweep: malformed canonical {label} declaration")
     if len(set(entries)) != len(entries):
         raise SystemExit(f"operator-sweep: duplicate canonical {label} path declared")
@@ -99,9 +109,9 @@ def _tree_entry(repo: Path, head: str, relative: str) -> tuple[str, str]:
 def canonical_blobs(repo: Path, head: str) -> tuple[list[str], list[str]]:
     text = _agents_md_text(repo, head)
 
-    def bind(signal: str, label: str) -> list[str]:
+    def bind(signal: str, label: str, *, allow_none: bool = False) -> list[str]:
         bound = []
-        for relative in _declared_paths(text, signal, label=label):
+        for relative in _declared_paths(text, signal, label=label, allow_none=allow_none):
             mode, kind = _tree_entry(repo, head, relative)
             if not kind:
                 raise SystemExit(f"operator-sweep: canonical {label} path missing: {relative}")
@@ -123,7 +133,7 @@ def canonical_blobs(repo: Path, head: str) -> tuple[list[str], list[str]]:
         return bound
 
     spec_bound = bind(CANONICAL_SPEC_SIGNAL, "spec")
-    adr_bound = bind(CANONICAL_ADR_SIGNAL, "ADR")
+    adr_bound = bind(CANONICAL_ADR_SIGNAL, "ADR", allow_none=True)
     spec_paths = {entry.split(":", 1)[0] for entry in spec_bound}
     adr_paths = {entry.split(":", 1)[0] for entry in adr_bound}
     if spec_paths & adr_paths:
@@ -214,35 +224,49 @@ def main() -> int:
     snapshot_path = sweep_dir / "snapshot.md"
     receipt_path = sweep_dir / "receipt.toml"
     result_path = sweep_dir / "result.md"
-    atomic_write(snapshot_path, snapshot)
 
     root = Path(__file__).resolve().parents[1]
     worktree_root = control / "worktrees"
     worktree = worktree_root / fingerprint
 
-    # Sole reconciler launch gateway: same worktree provisioning, containment, and
-    # receipt binding as scripts/octo-launch, narrowed to the reconciler's aggregate
-    # read-only shape. Fails closed before any provider call on stale or substituted
-    # Linear, PR, spec, ADR, or repo HEAD input.
-    prepared = prepare_reconcile_launch(
-        root=root,
-        spawn_id=str(uuid.uuid4()),
-        parent=owner_route,
-        reply_route="operator-say",
-        repo=repo,
-        worktree_root=worktree_root,
-        worktree=worktree,
-        receipt_path=receipt_path,
-        execution_location=os.environ.get("OCTO_EXECUTION_LOCATION", "remote"),
-        operator_loopback=os.environ.get("OCTO_OPERATOR_LOOPBACK", "false") == "true",
-        review_delivery=os.environ.get("OCTO_REVIEW_DELIVERY", "reachable_url_required"),
-        snapshot_path=snapshot_path,
-        snapshot_digest=fingerprint,
-        streams=streams,
-        spec_blobs=spec_blobs,
-        adr_blobs=adr_blobs,
-        conversation_state_refs=[str(path.relative_to(control)) for path in paths],
-    )
+    # snapshot.md is never persisted under the final sweep directory before the
+    # gateway validates Linear, PR, HEAD, spec, and ADR facts, so a failing
+    # gateway leaves no sweep artifact directory or state behind. A pending copy
+    # outside that directory backs only the gateway's own independent digest
+    # check and is removed on every failure.
+    pending_snapshot_path = control / f".sweep-pending-{fingerprint}.md"
+    atomic_write(pending_snapshot_path, snapshot)
+    try:
+        # Sole reconciler launch gateway: same worktree provisioning, containment,
+        # and receipt binding as scripts/octo-launch, narrowed to the reconciler's
+        # aggregate read-only shape. Fails closed before any provider call on
+        # stale or substituted Linear, PR, spec, ADR, or repo HEAD input,
+        # including a target HEAD that changed since head was captured above.
+        prepared = prepare_reconcile_launch(
+            root=root,
+            spawn_id=str(uuid.uuid4()),
+            parent=owner_route,
+            reply_route="operator-say",
+            repo=repo,
+            worktree_root=worktree_root,
+            worktree=worktree,
+            receipt_path=receipt_path,
+            execution_location=os.environ.get("OCTO_EXECUTION_LOCATION", "remote"),
+            operator_loopback=os.environ.get("OCTO_OPERATOR_LOOPBACK", "false") == "true",
+            review_delivery=os.environ.get("OCTO_REVIEW_DELIVERY", "reachable_url_required"),
+            expected_head=head,
+            snapshot_path=pending_snapshot_path,
+            snapshot_digest=fingerprint,
+            streams=streams,
+            spec_blobs=spec_blobs,
+            adr_blobs=adr_blobs,
+            conversation_state_refs=[str(path.relative_to(control)) for path in paths],
+        )
+    except BaseException:
+        pending_snapshot_path.unlink(missing_ok=True)
+        raise
+    atomic_write(snapshot_path, snapshot)
+    pending_snapshot_path.unlink(missing_ok=True)
 
     judgment_prompt = (
         f"Bootstrap verified. Read snapshot {snapshot_path}. "

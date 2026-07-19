@@ -763,6 +763,7 @@ def prepare_reconcile_launch(
     execution_location: str,
     operator_loopback: bool,
     review_delivery: str,
+    expected_head: str,
     snapshot_path: Path,
     snapshot_digest: str,
     streams: list[Mapping[str, Any]],
@@ -779,7 +780,10 @@ def prepare_reconcile_launch(
     and receipt machinery as prepare_launch, narrowed to the reconciler's aggregate
     multi-stream read-only shape. Every declared stream's Linear and PR facts are
     refetched and compared to the caller's declared bindings before any worktree or
-    provider call, so a stale or substituted snapshot input fails closed."""
+    provider call, so a stale or substituted snapshot input fails closed. The current
+    repo HEAD is also compared to the caller's expected_head before any of that
+    validation, so a target commit landing between snapshot capture and gateway
+    dispatch fails closed even when every declared blob is still unchanged."""
     root = root.resolve()
     repo = repo.resolve()
     worktree_root = worktree_root.resolve()
@@ -799,6 +803,8 @@ def prepare_reconcile_launch(
     if Path(_git(repo, "rev-parse", "--show-toplevel")).resolve() != repo:
         raise GateError("repo must be control git root")
     control_head = _git(repo, "rev-parse", "HEAD")
+    if control_head != expected_head:
+        raise GateError(f"target HEAD changed: expected {expected_head}, found {control_head}")
 
     verified_streams: list[dict[str, Any]] = []
     for stream in streams:

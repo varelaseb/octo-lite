@@ -784,6 +784,7 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
             "execution_location": "remote",
             "operator_loopback": False,
             "review_delivery": "reachable_url_required",
+            "expected_head": self.head,
             "snapshot_path": self.snapshot_path,
             "snapshot_digest": self.snapshot_digest,
             "streams": self.streams,
@@ -854,6 +855,18 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "stale PR input"):
             self.prepare(read_pr=lambda _repo, _number: changed_pull)
         self.assertFalse(self.worktree.exists())
+
+    def test_head_race_between_snapshot_capture_and_gateway_fails_before_worktree_or_provider(self) -> None:
+        # expected_head is the target HEAD the sweep captured while building the
+        # snapshot; a value that no longer matches the repo's actual current HEAD
+        # simulates a commit landing on the target between snapshot capture and
+        # gateway dispatch, and must fail before any source validation or
+        # worktree creation, even though every declared blob is still valid at
+        # the repo's real current HEAD.
+        with self.assertRaisesRegex(GateError, "HEAD"):
+            self.prepare(expected_head="f" * 40)
+        self.assertFalse(self.worktree.exists())
+        self.assertFalse(Path(self.temp.name, "reconcile.toml").exists())
 
     def test_stale_spec_blob_fails_before_worktree_or_provider(self) -> None:
         with self.assertRaisesRegex(GateError, "spec blob mismatch"):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import subprocess
@@ -13,6 +15,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SWEEP = ROOT / "scripts/operator-sweep"
 TIMER = ROOT / "scripts/operator-timer"
 CONTROL = ROOT / "scripts/octo-control"
+TARGET_AGENTS_TEMPLATE = ROOT / "skills/octo-lite-issue-shaper/assets/repo-agents.md"
+
+
+def _load_operator_sweep_module():
+    loader = importlib.machinery.SourceFileLoader("operator_sweep", str(SWEEP))
+    spec = importlib.util.spec_from_file_location("operator_sweep", SWEEP, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 # Fakes the two-phase reconciler launch: a --session-id call answers a bound
 # BOOTSTRAP_ACK computed from the exact receipt on disk; a --resume call echoes
@@ -150,6 +161,17 @@ class OperatorControlTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, source)
         self.assertNotIn("worktree=repo", source)
+
+    def test_target_init_template_declares_a_spec_and_an_adr_canonical_signal(self) -> None:
+        # The issue shaper hand-copies this asset into a freshly initialized
+        # target's root AGENTS.md; reusing the sweep's own signal parser (rather
+        # than a bespoke count) proves the template cannot silently ship without
+        # both canonical declarations the sweep will later require.
+        module = _load_operator_sweep_module()
+        text = TARGET_AGENTS_TEMPLATE.read_text()
+        self.assertIn("Spec format:", text)
+        self.assertEqual(1, len(module._signal_lines(text, module.CANONICAL_SPEC_SIGNAL)))
+        self.assertEqual(1, len(module._signal_lines(text, module.CANONICAL_ADR_SIGNAL)))
 
     def test_timer_only_wakes_current_operator_through_operator_say(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -861,6 +883,281 @@ class OperatorControlTests(unittest.TestCase):
             calls = log.read_text().splitlines() if log.exists() else []
             self.assertFalse(any(line.startswith("claude ") for line in calls))
 
+    def _sweep_env_and_command(self, base: Path, control: Path, repo: Path) -> tuple[dict, list[str], Path]:
+        status = control / "streams/TUR-1/status.md"
+        status.parent.mkdir(parents=True)
+        status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+        owner = base / "operator-owner.toml"
+        owner.write_text(
+            f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+        )
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        log = base / "calls.jsonl"
+        for name, body in {
+            "claude": FAKE_RECONCILER_CLAUDE,
+            "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+        }.items():
+            path = fake_bin / name
+            path.write_text(body)
+            path.chmod(0o755)
+        env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+        command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+        return env, command, log
+
+    def test_sweep_accepts_none_as_sole_no_adr_declaration_and_binds_empty_adr_list(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: none\n"
+            )
+            spec = repo / "spec" / "domains" / "operating-model.spec.html"
+            spec.parent.mkdir(parents=True)
+            spec.write_text('<p data-anchor="x">Works.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            env, command, _log = self._sweep_env_and_command(base, control, repo)
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertTrue(json.loads(result.stdout)["changed"])
+            with (control / "sweep-state.toml").open("rb") as handle:
+                state = tomllib.load(handle)
+            with open(state["receipt"], "rb") as handle:
+                receipt = tomllib.load(handle)
+            self.assertEqual([], receipt["reconcile"]["adr_blobs"])
+            self.assertEqual(1, len(receipt["reconcile"]["spec_blobs"]))
+
+    def test_sweep_fails_closed_on_a_sentinel_no_adr_value(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: None\n"
+            )
+            spec = repo / "spec" / "domains" / "operating-model.spec.html"
+            spec.parent.mkdir(parents=True)
+            spec.write_text('<p data-anchor="x">Works.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            env, command, log = self._sweep_env_and_command(base, control, repo)
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "sweeps").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_fails_closed_on_mixed_none_and_path_adr_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: none, spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
+            spec = repo / "spec" / "domains" / "operating-model.spec.html"
+            spec.parent.mkdir(parents=True)
+            spec.write_text('<p data-anchor="x">Works.</p>\n')
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            env, command, log = self._sweep_env_and_command(base, control, repo)
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "sweeps").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_fails_closed_when_canonical_spec_declaration_is_none(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: none\n"
+                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            env, command, log = self._sweep_env_and_command(base, control, repo)
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "sweeps").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_fails_closed_on_repeated_canonical_spec_declaration_lines_with_identical_values(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
+            spec = repo / "spec" / "domains" / "operating-model.spec.html"
+            spec.parent.mkdir(parents=True)
+            spec.write_text('<p data-anchor="x">Works.</p>\n')
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            env, command, log = self._sweep_env_and_command(base, control, repo)
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "sweeps").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_ignores_a_prefix_lookalike_line_and_succeeds_on_the_one_real_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths (legacy, unused): see docs\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
+            spec = repo / "spec" / "domains" / "operating-model.spec.html"
+            spec.parent.mkdir(parents=True)
+            spec.write_text('<p data-anchor="x">Works.</p>\n')
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            env, command, _log = self._sweep_env_and_command(base, control, repo)
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertTrue(json.loads(result.stdout)["changed"])
+            with (control / "sweep-state.toml").open("rb") as handle:
+                state = tomllib.load(handle)
+            with open(state["receipt"], "rb") as handle:
+                receipt = tomllib.load(handle)
+            self.assertEqual(1, len(receipt["reconcile"]["spec_blobs"]))
+            self.assertTrue(receipt["reconcile"]["spec_blobs"][0].startswith("spec/domains/operating-model.spec.html:"))
+
+    def test_sweep_leaves_no_sweep_directory_when_gateway_validation_fails_after_canonical_sources_are_valid(self) -> None:
+        # Canonical sources on AGENTS.md are entirely valid so canonical_blobs()
+        # succeeds and the sweep proceeds to build snapshot.md; the declared
+        # Linear stream then races between the snapshot-time fetch and the
+        # gateway's own fresh re-fetch, so the failure surfaces only inside
+        # prepare_reconcile_launch, after a naive implementation would already
+        # have written snapshot.md to disk.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+
+            control = base / "control"
+            stream = control / "streams/TUR-1"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text(
+                "Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n"
+            )
+            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-1"\n')
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            call_count_file = base / "linear-call-count.txt"
+            call_count_file.write_text("0")
+            (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+            (fake_bin / "operator-say").write_text(
+                "#!/usr/bin/env bash\nprintf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            )
+            (fake_bin / "linear").write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+                'count="$(cat "$CALL_COUNT_FILE")"\n'
+                'count=$((count + 1))\n'
+                'echo -n "$count" >"$CALL_COUNT_FILE"\n'
+                'if [[ "$count" -eq 1 ]]; then state="Todo"; else state="In Progress"; fi\n'
+                "cat <<JSON\n"
+                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "2026-07-19T00:00:00Z"}\n'
+                "JSON\n"
+            )
+            for name in ("claude", "operator-say", "linear"):
+                (fake_bin / name).chmod(0o755)
+            env = dict(
+                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+                CALL_COUNT_FILE=str(call_count_file),
+            )
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("stale Linear input", result.stderr)
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "worktrees").exists())
+            self.assertFalse((control / "sweeps").exists())
+            leftover = [path for path in control.glob("**/*") if path.is_file()]
+            self.assertEqual(
+                {control / "streams/TUR-1/status.md", control / "streams/TUR-1/sources.toml"},
+                set(leftover),
+            )
+
     def test_sweep_detects_changed_target_head_even_when_linear_and_pr_facts_are_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -970,6 +1267,59 @@ class OperatorControlTests(unittest.TestCase):
             calls = log.read_text().splitlines() if log.exists() else []
             self.assertFalse(any(line.startswith("claude ") for line in calls))
             self.assertEqual(2, sum(line.startswith("linear ") for line in calls))
+
+    def test_sweep_fails_closed_before_any_provider_call_when_target_head_races_between_snapshot_and_gateway(self) -> None:
+        # A thin git wrapper answers the exact literal `-C <repo> rev-parse HEAD`
+        # call twice with two different commits, simulating a commit landing on
+        # the target between the sweep's own head capture (used to build the
+        # snapshot and canonical blobs) and the gateway's independent re-read of
+        # the current repo HEAD, and delegates every other git invocation
+        # (including worktree-internal ones) unchanged to the real binary.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            first_head = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            (repo / "unrelated.txt").write_text("noise\n")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "unrelated"], check=True)
+            second_head = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+            control = base / "control"
+            env, command, log = self._sweep_env_and_command(base, control, repo)
+            real_git_path = subprocess.run(["which", "git"], check=True, capture_output=True, text=True).stdout.strip()
+            call_count_file = base / "head-call-count.txt"
+            call_count_file.write_text("0")
+            wrapper = base / "bin" / "git"
+            wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                f'REAL_GIT="{real_git_path}"\n'
+                f'REPO="{repo}"\n'
+                'if [[ "$1" == "-C" && "$2" == "$REPO" && "$3" == "rev-parse" && "$4" == "HEAD" && "$#" -eq 4 ]]; then\n'
+                '  count="$(cat "$HEAD_CALL_COUNT_FILE")"\n'
+                '  count=$((count + 1))\n'
+                '  echo -n "$count" >"$HEAD_CALL_COUNT_FILE"\n'
+                f'  if [[ "$count" -eq 1 ]]; then echo "{first_head}"; else echo "{second_head}"; fi\n'
+                "else\n"
+                '  exec "$REAL_GIT" "$@"\n'
+                "fi\n"
+            )
+            wrapper.chmod(0o755)
+            env["HEAD_CALL_COUNT_FILE"] = str(call_count_file)
+
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("head", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "worktrees").exists())
+            self.assertFalse((control / "sweeps").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+            self.assertFalse(any(line.startswith("operator ") for line in calls))
 
     def _write_receipt(self, path: Path, *, role: str, issue: str, provider_session_id: str, verified: bool = True) -> None:
         path.write_text(

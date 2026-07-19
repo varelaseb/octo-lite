@@ -1,6 +1,8 @@
 # Repository Instructions
 
 Spec format: markdown
+Canonical spec paths: TODO: exact target spec path(s), comma-separated
+Canonical ADR paths: none
 
 ## Commands
 
