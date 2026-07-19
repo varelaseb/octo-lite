@@ -15,9 +15,7 @@ target repositories.
 - `skills/` contains reusable octo-lite skills and their bundled templates.
 - `agents/` contains generated Claude Markdown and Codex TOML launch adapters.
   Never edit or spawn them raw. Regenerate through the role resolver.
-- `workflows/` contains Claude Code Workflow scripts (currently
-  `octo-loop-qa.js`, the loop-with-QA implementation); their conventions
-  blocks are per-target configuration.
+- `workflows/` contains target-neutral native Claude Workflow scripts.
 
 ## Target Spec Format Capability
 
@@ -44,6 +42,7 @@ target repositories.
 - Keep templates inside the relevant skill `assets/` directory.
 - Keep always-loaded guidance in `profile/AGENTS.md` short.
 - Do not copy octo-lite skills, agents, or templates into target repos.
+- Install profile, roles, adapters, skills, workflows, and helpers by symlink.
 
 ## Validation
 
@@ -51,6 +50,7 @@ target repositories.
 - Run `python3 workflows/lib/role_resolver.py check` and
   `python3 -m unittest tests/test_role_resolver.py` after role changes.
 - Verify skill symlinks point at this source repo when installing locally.
+- Run `scripts/install-octo-lite --check` after installed-surface changes.
 
 ## Conventions
 

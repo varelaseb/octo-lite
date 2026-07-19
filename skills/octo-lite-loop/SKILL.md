@@ -5,8 +5,8 @@ description: Run the native octo-lite delivery loop after exact shaping readines
 
 # octo-lite Loop
 
-Be extremely concise. Sacrifice grammar for concision.
-No em dash or en dash. Ever.
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
 
 Use after operator-approved shaping and a clear exact-head shaping verdict.
 Linear is primary for tracked work. Specs define detailed behavior. One evolving

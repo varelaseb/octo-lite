@@ -105,9 +105,7 @@ if (mode === 'delivery') {
   let implementation = await agent(
     `Execute the canonical implementer role. Resolve all detail from this exact envelope and its pinned sources. Spec-driven TDD required. Continue the same draft PR. Never merge or change acceptance state. Return only the schema.\n${sourceEnvelope({ starting_head: A.shaping_head, role_receipt: A.role_receipts.implementer })}`,
     {
-      agentType: 'octo-lite-implementer',
-      model: 'claude-sonnet-5',
-      effort: 'xhigh',
+      agentType: 'implementer',
       phase: 'Implement',
       schema: IMPLEMENT_SCHEMA,
     },
@@ -123,10 +121,7 @@ if (mode === 'delivery') {
     review = await agent(
       `Execute the canonical code-reviewer role as a fresh instance. Review exact HEAD. Publish the deterministic verdict comment through the named helper. Never approve or merge. Return only the schema.\n${sourceEnvelope({ expected_head: currentHead, implementation, cycle, role_receipt: A.role_receipts.code_reviewer })}`,
       {
-        agentType: 'octo-lite-code-reviewer',
-        model: 'gpt-5.6-sol',
-        effort: 'high',
-        serviceTier: 'fast',
+        agentType: 'code-reviewer',
         phase: 'Code Review',
         schema: REVIEW_SCHEMA,
       },
@@ -152,9 +147,7 @@ if (mode === 'delivery') {
     implementation = await agent(
       `Execute the canonical implementer role as a fresh fix instance. Fix only blocking findings on the same draft PR. Add a spec-derived regression red, then green. Return only the schema.\n${sourceEnvelope({ previous_head: previousHead, findings: gate.findings, cycle, role_receipt: A.role_receipts.implementer })}`,
       {
-        agentType: 'octo-lite-implementer',
-        model: 'claude-sonnet-5',
-        effort: 'xhigh',
+        agentType: 'implementer',
         phase: 'Fix',
         schema: IMPLEMENT_SCHEMA,
       },
@@ -188,9 +181,7 @@ if (mode === 'evidence') {
   const capture = await agent(
     `Execute the canonical qa-capture role as a fresh instance. Plan minimum honest proof per criterion. Screenshots default. Video only when stills cannot prove the behavior. Do not publish or mutate any dashboard or tracker. Return only the schema.\n${sourceEnvelope({ expected_head: A.head, code_review: A.code_review, qa_brief: A.qa_brief, role_receipt: A.role_receipts.qa_capture })}`,
     {
-      agentType: 'octo-lite-qa-capture',
-      model: 'claude-sonnet-5',
-      effort: 'high',
+      agentType: 'qa-capture',
       phase: 'QA Capture',
       schema: CAPTURE_SCHEMA,
     },
@@ -214,10 +205,7 @@ if (mode === 'qa-review') {
   const qaReview = await agent(
     `Execute the canonical qa-reviewer role as a fresh instance. Inspect the served packet and every artifact. Grade each criterion. Backend packets receive the same evidence-sufficiency gate. Never mutate Linear, publish, accept, or merge. Return only the schema.\n${sourceEnvelope({ expected_head: A.head, publication: A.publication, role_receipt: A.role_receipts.qa_reviewer })}`,
     {
-      agentType: 'octo-lite-qa-reviewer',
-      model: 'gpt-5.6-sol',
-      effort: 'high',
-      serviceTier: 'fast',
+      agentType: 'qa-reviewer',
       phase: 'QA Review',
       schema: QA_REVIEW_SCHEMA,
     },

@@ -14,6 +14,9 @@ from octo_lite.runtime import (
     normalize_launch_access,
     record_failure,
     safe_cleanup,
+    initialize_stream,
+    update_stream_brief,
+    write_stream_status,
     transfer_owner,
     transition_linear,
     verdict_body,
@@ -79,6 +82,54 @@ class RuntimeContractTests(unittest.TestCase):
                     successor_ready=True,
                 )
             self.assertEqual(current, owner.read_text())
+
+    def test_parent_owns_brief_and_child_owns_status(self):
+        with tempfile.TemporaryDirectory() as td:
+            stream = Path(td) / "streams/TUR-1"
+            initialized = initialize_stream(
+                stream,
+                stream_id="TUR-1",
+                parent_session="epic-opus",
+                child_session="issue-opus",
+                caller="epic-opus",
+                brief="Build the shaped issue.\n",
+            )
+            self.assertEqual(1, initialized["brief_revision"])
+            with self.assertRaises(GateError):
+                update_stream_brief(stream, caller="issue-opus", expected_revision=1, brief="wrong\n")
+            updated = update_stream_brief(
+                stream, caller="epic-opus", expected_revision=1, brief="Build exact HEAD.\n"
+            )
+            self.assertEqual(2, updated["brief_revision"])
+            status = write_stream_status(
+                stream,
+                caller="issue-opus",
+                expected_revision=0,
+                outcome="implementation ready",
+                gate="code review",
+                blocker="none",
+                next_operator_action="none",
+            )
+            self.assertEqual(1, status["status_revision"])
+            self.assertEqual(
+                [
+                    "Outcome: implementation ready",
+                    "Gate: code review",
+                    "Blocker: none",
+                    "Next operator action: none",
+                ],
+                (stream / "status.md").read_text().splitlines(),
+            )
+            with self.assertRaises(GateError):
+                write_stream_status(
+                    stream,
+                    caller="epic-opus",
+                    expected_revision=1,
+                    outcome="wrong writer",
+                    gate="review",
+                    blocker="none",
+                    next_operator_action="none",
+                )
 
     def test_transition_retry_does_not_repeat_mutation(self):
         with tempfile.TemporaryDirectory() as td:

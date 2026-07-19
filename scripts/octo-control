@@ -17,6 +17,9 @@ from octo_lite.runtime import (  # noqa: E402
     herdr_label,
     normalize_launch_access,
     record_failure,
+    initialize_stream,
+    update_stream_brief,
+    write_stream_status,
     transfer_owner,
     transition_linear,
     verdict_body,
@@ -152,7 +155,7 @@ def command_owner(args) -> dict:
         args.new_owner,
         args.revision,
         str(Path(args.control_dir).resolve()),
-        caller=args.expected_owner,
+        caller=args.caller,
         handoff=handoff,
         successor_ready=args.successor_ready,
     )
@@ -196,6 +199,51 @@ def command_label(args) -> dict:
     }
 
 
+def command_stream_init(args) -> dict:
+    return initialize_stream(
+        Path(args.path),
+        stream_id=args.stream_id,
+        parent_session=args.parent,
+        child_session=args.child,
+        caller=args.caller,
+        brief=Path(args.brief_file).read_text(),
+    )
+
+
+def command_stream_brief(args) -> dict:
+    return update_stream_brief(
+        Path(args.path),
+        caller=args.caller,
+        expected_revision=args.expected_revision,
+        brief=Path(args.brief_file).read_text(),
+    )
+
+
+def command_stream_status(args) -> dict:
+    path = Path(args.path)
+    state = write_stream_status(
+        path,
+        caller=args.caller,
+        expected_revision=args.expected_revision,
+        outcome=args.outcome,
+        gate=args.gate,
+        blocker=args.blocker,
+        next_operator_action=args.next_action,
+    )
+    parent = state["parent_session"]
+    result = subprocess.run(
+        [
+            "herdr-say", "--kind", "info", "--artifact", str((path / "status.md").resolve()),
+            parent, f"{state['stream_id']} status revision {state['status_revision']}",
+        ],
+        check=False,
+    )
+    if result.returncode not in {0, 75}:
+        raise GateError("parent notification failed")
+    state["notification"] = "queued" if result.returncode == 75 else "submitted"
+    return state
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Small foreground octo-lite gates")
     sub = root.add_subparsers(dest="command", required=True)
@@ -231,6 +279,7 @@ def parser() -> argparse.ArgumentParser:
     owner = sub.add_parser("owner-transfer")
     owner.add_argument("--owner-file", required=True)
     owner.add_argument("--expected-owner", required=True)
+    owner.add_argument("--caller", required=True)
     owner.add_argument("--new-owner", required=True)
     owner.add_argument("--revision", type=int, required=True)
     owner.add_argument("--control-dir", required=True)
@@ -266,6 +315,32 @@ def parser() -> argparse.ArgumentParser:
     label.add_argument("--outcome")
     label.add_argument("--direct", action="store_true")
     label.set_defaults(run=command_label)
+
+    stream_init = sub.add_parser("stream-init")
+    stream_init.add_argument("--path", required=True)
+    stream_init.add_argument("--stream-id", required=True)
+    stream_init.add_argument("--parent", required=True)
+    stream_init.add_argument("--child", required=True)
+    stream_init.add_argument("--caller", required=True)
+    stream_init.add_argument("--brief-file", required=True)
+    stream_init.set_defaults(run=command_stream_init)
+
+    stream_brief = sub.add_parser("stream-brief")
+    stream_brief.add_argument("--path", required=True)
+    stream_brief.add_argument("--caller", required=True)
+    stream_brief.add_argument("--expected-revision", type=int, required=True)
+    stream_brief.add_argument("--brief-file", required=True)
+    stream_brief.set_defaults(run=command_stream_brief)
+
+    stream_status = sub.add_parser("stream-status")
+    stream_status.add_argument("--path", required=True)
+    stream_status.add_argument("--caller", required=True)
+    stream_status.add_argument("--expected-revision", type=int, required=True)
+    stream_status.add_argument("--outcome", required=True)
+    stream_status.add_argument("--gate", required=True)
+    stream_status.add_argument("--blocker", default="none")
+    stream_status.add_argument("--next-action", default="none")
+    stream_status.set_defaults(run=command_stream_status)
     return root
 
 

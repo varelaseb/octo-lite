@@ -46,6 +46,27 @@ TRACE_FORBIDDEN_KEYS = {
     "product_data",
 }
 
+TRACE_ATTRIBUTE_KEYS = {
+    "role",
+    "issue",
+    "pr",
+    "head",
+    "cycle",
+    "category",
+    "attempt",
+    "model",
+    "provider",
+    "gate",
+    "from_state",
+    "to_state",
+    "message_id",
+    "result",
+    "owner",
+    "execution_location",
+    "worktree",
+    "duration_ms",
+}
+
 
 def _toml_value(value):
     if isinstance(value, bool):
@@ -100,6 +121,87 @@ def normalize_launch_access(values: Mapping[str, object]) -> dict:
 def exact_fingerprint(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def initialize_stream(
+    path: Path,
+    *,
+    stream_id: str,
+    parent_session: str,
+    child_session: str,
+    caller: str,
+    brief: str,
+) -> dict:
+    if caller != parent_session:
+        raise GateError("only parent may create stream brief")
+    if not all(value.strip() for value in (stream_id, parent_session, child_session, brief)):
+        raise GateError("stream identity and brief required")
+    if path.exists():
+        raise GateError("stream already exists")
+    path.mkdir(parents=True)
+    state = {
+        "schema_version": 1,
+        "stream_id": stream_id,
+        "parent_session": parent_session,
+        "child_session": child_session,
+        "brief_revision": 1,
+        "status_revision": 0,
+    }
+    _atomic_write(path / "brief.md", brief)
+    _atomic_write(path / "stream.toml", _toml_document(state))
+    return state
+
+
+def update_stream_brief(path: Path, *, caller: str, expected_revision: int, brief: str) -> dict:
+    if not brief.strip():
+        raise GateError("brief required")
+    manifest = path / "stream.toml"
+    lock_path = path / "stream.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = _read_toml(manifest)
+        if state.get("parent_session") != caller:
+            raise GateError("only parent may update stream brief")
+        if state.get("brief_revision") != expected_revision:
+            raise GateError("brief revision mismatch")
+        state["brief_revision"] = expected_revision + 1
+        _atomic_write(path / "brief.md", brief)
+        _atomic_write(manifest, _toml_document(state))
+        return state
+
+
+def write_stream_status(
+    path: Path,
+    *,
+    caller: str,
+    expected_revision: int,
+    outcome: str,
+    gate: str,
+    blocker: str,
+    next_operator_action: str,
+) -> dict:
+    values = (outcome, gate, blocker, next_operator_action)
+    if not all(value.strip() for value in values):
+        raise GateError("complete compact status required")
+    manifest = path / "stream.toml"
+    lock_path = path / "stream.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = _read_toml(manifest)
+        if state.get("child_session") != caller:
+            raise GateError("only child may update stream status")
+        if state.get("status_revision") != expected_revision:
+            raise GateError("status revision mismatch")
+        state["status_revision"] = expected_revision + 1
+        status = (
+            f"Outcome: {outcome}\n"
+            f"Gate: {gate}\n"
+            f"Blocker: {blocker}\n"
+            f"Next operator action: {next_operator_action}\n"
+        )
+        _atomic_write(path / "status.md", status)
+        _atomic_write(manifest, _toml_document(state))
+        return state
 
 
 def verdict_body(
@@ -290,6 +392,9 @@ def _validate_trace(event: Mapping[str, object]) -> None:
     missing = required - set(event)
     if missing:
         raise GateError(f"trace fields missing: {', '.join(sorted(missing))}")
+    extra = set(event) - required
+    if extra:
+        raise GateError(f"trace fields unsupported: {', '.join(sorted(extra))}")
     if event.get("schema_version") != 1:
         raise GateError("unsupported trace schema")
     if event.get("kind") not in TRACE_KINDS:
@@ -299,6 +404,13 @@ def _validate_trace(event: Mapping[str, object]) -> None:
         raise GateError(f"forbidden trace content: {', '.join(sorted(forbidden))}")
     if not isinstance(event.get("attributes"), dict) or not isinstance(event.get("artifacts"), list):
         raise GateError("trace attributes and artifacts have wrong shape")
+    unknown_attributes = set(event["attributes"]) - TRACE_ATTRIBUTE_KEYS
+    if unknown_attributes:
+        raise GateError(f"trace attributes unsupported: {', '.join(sorted(unknown_attributes))}")
+    if any(not isinstance(value, (str, int, bool)) for value in event["attributes"].values()):
+        raise GateError("trace attributes must be scalar")
+    if any(not isinstance(value, str) or not value for value in event["artifacts"]):
+        raise GateError("trace artifacts must be nonempty references")
 
 
 def _trace_degraded(status_path: Path) -> None:

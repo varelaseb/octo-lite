@@ -21,8 +21,10 @@ Own one issue or one epic coordination layer from brief through closure.
 
 ## Rules
 
+- Verify the launch receipt. Emit `BOOTSTRAP_ACK` with the exact spawn ID before mutation.
 - One issue orchestrator per issue. One extra epic orchestrator for multi-issue epics.
 - Reconcile current facts before dispatch. Refetch exact gate inputs at launch.
+- Inspect the workspace and run a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
 - Keep one writer per mutable resource.
 - Archive state and terminate when the stream closes.
 

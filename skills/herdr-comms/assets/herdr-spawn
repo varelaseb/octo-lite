@@ -1,75 +1,86 @@
-#!/bin/bash
-# herdr-spawn — spawn an agent session in a NEW single-pane herdr tab,
-# auto-accepting the folder-trust dialog and verifying the session starts.
-#
-# Usage:
-#   herdr-spawn --workspace <ws> --name <agent-name> [--label "<tab label>"]
-#               [--cwd <dir>] -- <argv...>
-# Example:
-#   herdr-spawn --workspace w7 --name gp-x --label "TUR-000 topic" --cwd /root \
-#     -- claude --model opus --permission-mode auto -n gp-x "<prompt>"
-#
-# Fixes (operator-mandated 2026-07-13):
-#   - single-pane tab (closes the root shell pane tab-create ships)
-#   - trust dialog auto-accepted (bare Enter selects the default "Yes, proceed";
-#     nobody has to press trust manually)
-#   - startup verified (stalled/unknown state reported, not assumed fine)
-set -u
-WS=""; LABEL=""; CWD="$PWD"; NAME=""
-while [ $# -gt 0 ]; do
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace=""
+name=""
+label=""
+cwd="$PWD"
+role=""
+receipt=""
+while (($#)); do
   case "$1" in
-    --workspace) WS="$2"; shift 2 ;;
-    --label)     LABEL="$2"; shift 2 ;;
-    --cwd)       CWD="$2"; shift 2 ;;
-    --name)      NAME="$2"; shift 2 ;;
+    --workspace) workspace="${2:?}"; shift 2 ;;
+    --name) name="${2:?}"; shift 2 ;;
+    --label) label="${2:?}"; shift 2 ;;
+    --cwd) cwd="${2:?}"; shift 2 ;;
+    --role) role="${2:?}"; shift 2 ;;
+    --receipt) receipt="${2:?}"; shift 2 ;;
     --) shift; break ;;
-    *) echo "herdr-spawn: unknown arg '$1'" >&2; exit 64 ;;
+    *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
   esac
 done
-if [ -z "$WS" ] || [ -z "$NAME" ] || [ $# -eq 0 ]; then
-  echo "usage: herdr-spawn --workspace <ws> --name <name> [--label L] [--cwd D] -- <argv...>" >&2
-  exit 64
-fi
+[[ -n "$workspace" && -n "$name" && -n "$role" && $# -gt 0 ]] || exit 64
+[[ -d "$cwd" ]] || exit 66
+cwd="$(cd "$cwd" && pwd -P)"
+[[ -z "$receipt" || -f "$receipt" ]] || exit 66
 
-OUT=$(herdr tab create --workspace "$WS" --label "${LABEL:-$NAME}" --cwd "$CWD" --no-focus)
-TAB=$(echo "$OUT" | jq -r '.result.tab.tab_id // empty')
-ROOT=$(echo "$OUT" | jq -r '.result.root_pane.pane_id // empty')
-[ -z "$TAB" ] && { echo "herdr-spawn: tab create failed: $OUT" >&2; exit 1; }
+value_after() {
+  local wanted="$1" previous=""
+  shift
+  for value in "$@"; do
+    [[ "$previous" == "$wanted" ]] && { echo "$value"; return 0; }
+    previous="$value"
+  done
+  return 1
+}
 
-# agent start does NOT inherit the tab's cwd — pass it explicitly
-herdr agent start "$NAME" --tab "$TAB" --cwd "$CWD" --no-focus -- "$@" >/dev/null \
-  || { echo "herdr-spawn: agent start failed" >&2; exit 1; }
-[ -n "$ROOT" ] && herdr pane close "$ROOT" >/dev/null 2>&1
+[[ "$1" == claude ]] || { echo "herdr-spawn: persistent tabs require Claude" >&2; exit 65; }
+model="$(value_after --model "$@" || true)"
+effort="$(value_after --effort "$@" || true)"
+mode="$(value_after --permission-mode "$@" || true)"
+agent="$(value_after --agent "$@" || true)"
+case "$role" in
+  meta-operator)
+    [[ "$model" == claude-fable-5 && "$effort" == xhigh && "$mode" == auto && "$agent" == meta-operator ]] || exit 65
+    [[ "$label" == "🧠 operator" ]] || exit 65
+    ;;
+  orchestrator|issue-shaper)
+    [[ "$model" == 'claude-opus-4-8[1m]' && "$effort" == high && "$mode" == auto && "$agent" == "$role" ]] || exit 65
+    grep -Eq '^(🎤 )?(◆)?[0-9]+(/[0-9]+)? · .+$' <<<"$label" || exit 65
+    ;;
+  *) echo "herdr-spawn: role has no persistent tab" >&2; exit 65 ;;
+esac
 
-PANE=""
+out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"
+tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
+root_pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
+[[ -n "$tab" ]] || exit 1
+
+herdr agent start "$name" --tab "$tab" --cwd "$cwd" --no-focus -- "$@" >/dev/null
+[[ -z "$root_pane" ]] || herdr pane close "$root_pane" >/dev/null 2>&1
+
+pane=""
 for _ in $(seq 1 10); do
-  PANE=$(herdr agent get "$NAME" 2>/dev/null | jq -r '.result.agent.pane_id // empty')
-  [ -n "$PANE" ] && break
+  pane="$(herdr agent get "$name" 2>/dev/null | jq -r '.result.agent.pane_id // empty')"
+  [[ -n "$pane" ]] && break
   sleep 1
 done
-[ -z "$PANE" ] && { echo "herdr-spawn: cannot resolve pane for $NAME" >&2; exit 1; }
+[[ -n "$pane" ]] || exit 1
 
-# Watch startup up to ~60s: accept trust dialog(s), stop once the REPL is up.
-STATE="unverified"
+startup="pending"
 for _ in $(seq 1 30); do
-  # NB: `herdr pane read` outputs RAW TEXT (no JSON envelope) — do not jq it.
-  TXT=$(herdr pane read "$PANE" --source visible --lines 30 2>/dev/null)
-  if echo "$TXT" | grep -qiE 'Do you trust|Quick safety check|trust this folder'; then
-    herdr pane run "$PANE" "" >/dev/null 2>&1   # Enter = default "Yes, proceed"
-    STATE="trust-accepted"
+  text="$(herdr pane read "$pane" --source visible --lines 50 2>/dev/null)"
+  if grep -qiE 'Quick safety check|trust this folder' <<<"$text"; then
+    herdr pane run "$pane" "" >/dev/null 2>&1
     sleep 1
     continue
   fi
-  if echo "$TXT" | grep -qE '⏵⏵|esc to interrupt|❯'; then
-    STATE="running"
+  if grep -q 'BOOTSTRAP_ACK' <<<"$text" && grep -Fq "$name" <<<"$text"; then
+    startup="acknowledged"
     break
   fi
   sleep 2
 done
 
-STATUS=$(herdr agent get "$NAME" 2>/dev/null | jq -r '.result.agent.agent_status // "unknown"')
-echo "spawned name=$NAME tab=$TAB pane=$PANE startup=$STATE agent_status=$STATUS"
-if [ "$STATE" = "unverified" ]; then
-  echo "herdr-spawn: WARNING - REPL not confirmed within 60s; read the pane yourself" >&2
-  exit 2
-fi
+echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=$startup receipt=${receipt:-none}"
+[[ "$startup" == acknowledged ]] || exit 2

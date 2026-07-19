@@ -1,0 +1,1 @@
+{"schema_version":1,"session_id":"stream-1","trace_id":"TUR-1@abc","observation_id":"retry-2","kind":"retry","status":"retry","time":"2026-07-18T00:02:00Z","attributes":{"issue":"TUR-1","role":"implementer","head":"abc","category":"provider or session","attempt":2},"artifacts":["failure.toml","handoff.md"]}

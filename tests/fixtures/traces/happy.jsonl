@@ -1,0 +1,1 @@
+{"schema_version":1,"session_id":"stream-1","trace_id":"TUR-1@abc","observation_id":"bootstrap-1","kind":"bootstrap","status":"ok","time":"2026-07-18T00:00:00Z","attributes":{"issue":"TUR-1","role":"implementer","head":"abc"},"artifacts":["receipt.toml"]}

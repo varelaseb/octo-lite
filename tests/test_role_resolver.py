@@ -95,6 +95,25 @@ class RoleResolverTest(unittest.TestCase):
             ),
         )
 
+    def test_persistent_roles_require_bootstrap_ack_before_mutation(self) -> None:
+        registry = self.resolver.load_registry(ROOT)
+        for name in ("meta-operator", "orchestrator", "issue-shaper"):
+            text = (ROOT / registry.roles[name].contract).read_text()
+            self.assertIn("BOOTSTRAP_ACK", text, name)
+            self.assertIn("before mutation", text, name)
+
+    def test_meta_operator_prompt_ends_direct_marker_at_autonomy(self) -> None:
+        registry = self.resolver.load_registry(ROOT)
+        text = (ROOT / registry.roles["meta-operator"].contract).read_text()
+        self.assertIn("Own compact Herdr labels", text)
+        self.assertIn("Remove `🎤` as soon as an Opus can work autonomously", text)
+
+    def test_orchestrator_prompt_requires_fresh_probe_before_fleet_outage(self) -> None:
+        registry = self.resolver.load_registry(ROOT)
+        text = (ROOT / registry.roles["orchestrator"].contract).read_text()
+        self.assertIn("fresh exact-model probe", text)
+        self.assertIn("Never infer fleet outage from one session", text)
+
     def test_generated_adapters_are_exact_and_not_raw_spawn_entrypoints(self) -> None:
         registry = self.resolver.load_registry(ROOT)
         errors = self.resolver.check_adapters(ROOT, registry)

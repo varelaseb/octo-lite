@@ -47,13 +47,19 @@ parallel `agents/*.md` profiles that install the same way:
 ~/.claude/octo-lite/roles/<role>.md -> roles/<role>.md
 ~/.claude/octo-lite/adapters/<role>.md -> agents/<role>.md
 ~/.claude/skills/<skill> -> skills/<skill>
-~/.claude/workflows/octo-loop-qa.js (copy of workflows/octo-loop-qa.js)
+~/.claude/workflows/octo-loop-qa.js -> workflows/octo-loop-qa.js
 ```
 
-`workflows/octo-loop-qa.js` is the Claude Code Workflow implementation of the
-loop with QA stages (see `skills/octo-lite-loop/SKILL.md`). Its CONVENTIONS
-and QA_APP blocks are per-target configuration (currently Turbo-Outreach), so
-copy it rather than symlinking and rewrite those blocks per target repo.
+`workflows/octo-loop-qa.js` is the target-neutral native Claude Workflow.
+Target repos supply their own instructions and evidence publication helpers.
+The workflow, roles, mappings, skills, and profile always install by symlink.
+
+Install or verify all links:
+
+```bash
+scripts/install-octo-lite
+scripts/install-octo-lite --check
+```
 
 `~/.codex/skills` is supported by the current local profile. `$HOME/.agents/skills`
 is the documented user-skill location in the current Codex manual, so both are

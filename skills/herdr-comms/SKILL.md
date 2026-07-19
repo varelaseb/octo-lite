@@ -5,8 +5,8 @@ description: Modal-safe Herdr delivery, acknowledgments, queue drain, owner rout
 
 # Herdr communications
 
-Be extremely concise. Sacrifice grammar for concision.
-No em dash or en dash. Ever.
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
 
 ## Install
 

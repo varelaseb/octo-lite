@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
 ACK = ROOT / "skills/herdr-comms/assets/herdr-ack"
+SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 
 
 class HerdrHelperTests(unittest.TestCase):
@@ -80,6 +81,42 @@ fi
             state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
             with state.open("rb") as handle:
                 self.assertEqual("acknowledged", tomllib.load(handle)["status"])
+
+    def test_orchestrator_spawn_enforces_label_model_auto_and_bootstrap(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            log = root / "herdr.log"
+            fake = fake_bin / "herdr"
+            fake.write_text(
+                """#!/usr/bin/env bash
+echo "$*" >>"$FAKE_LOG"
+if [[ "$1 $2" == "tab create" ]]; then
+  echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p0"}}}'
+elif [[ "$1 $2" == "agent get" ]]; then
+  echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
+elif [[ "$1 $2" == "pane read" ]]; then
+  echo 'BOOTSTRAP_ACK spawn-1'
+fi
+"""
+            )
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", FAKE_LOG=str(log))
+            base = [
+                str(SPAWN), "--workspace", "w1", "--name", "spawn-1", "--cwd", str(ROOT),
+                "--role", "orchestrator", "--label", "443/6 · operating model", "--",
+                "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
+                "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
+            ]
+            valid = subprocess.run(base, env=env, check=True, capture_output=True, text=True)
+            self.assertIn("bootstrap=acknowledged", valid.stdout)
+            log.unlink()
+            invalid = list(base)
+            invalid[invalid.index("443/6 · operating model")] = "TUR-443 operating model"
+            result = subprocess.run(invalid, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse(log.exists())
 
 
 if __name__ == "__main__":
