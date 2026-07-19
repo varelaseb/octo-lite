@@ -861,19 +861,33 @@ def prepare_reconcile_launch(
     receipt["manifest_type"] = "octo-lite-reconcile"
     receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
     persisted_snapshot_path = receipt_path.parent / "snapshot.md"
-    _atomic_write(persisted_snapshot_path, snapshot_bytes.decode("utf-8"))
-    receipt["reconcile"] = {
-        "snapshot_path": str(persisted_snapshot_path),
-        "snapshot_digest": str(snapshot_digest),
-        "control_head": control_head,
-        "spec_blobs": list(spec_blobs),
-        "adr_blobs": list(adr_blobs),
-        "conversation_state_refs": list(conversation_state_refs or []),
-        "streams_json": json.dumps(verified_streams, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
-    }
-    receipt["launch_revision"] = _launch_revision(receipt)
-    _atomic_write(receipt_path, render_receipt(receipt))
-    bootstrap, mutation = _provider_argv(receipt)
+    try:
+        _atomic_write(persisted_snapshot_path, snapshot_bytes.decode("utf-8"))
+        receipt["reconcile"] = {
+            "snapshot_path": str(persisted_snapshot_path),
+            "snapshot_digest": str(snapshot_digest),
+            "control_head": control_head,
+            "spec_blobs": list(spec_blobs),
+            "adr_blobs": list(adr_blobs),
+            "conversation_state_refs": list(conversation_state_refs or []),
+            "streams_json": json.dumps(verified_streams, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+        }
+        receipt["launch_revision"] = _launch_revision(receipt)
+        _atomic_write(receipt_path, render_receipt(receipt))
+        bootstrap, mutation = _provider_argv(receipt)
+    except BaseException:
+        # A caught failure anywhere after the final snapshot is written, most
+        # notably a receipt persistence failure, must not leave the final
+        # snapshot, receipt, or sweep directory behind; rmdir only removes the
+        # directory this call itself populated, since it no-ops on leftover
+        # unrelated content instead of masking that state.
+        persisted_snapshot_path.unlink(missing_ok=True)
+        receipt_path.unlink(missing_ok=True)
+        try:
+            receipt_path.parent.rmdir()
+        except OSError:
+            pass
+        raise
     return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
 
 

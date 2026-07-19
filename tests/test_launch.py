@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
+from octo_lite import launch as launch_module
 from octo_lite.launch import (
     GateError,
     bootstrap_from_receipt,
@@ -915,6 +916,33 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "snapshot path escapes allowed root"):
             self.prepare(snapshot_path=outside, snapshot_digest=digest)
         self.assertFalse(self.worktree.exists())
+
+    def test_receipt_persistence_failure_after_snapshot_persistence_leaves_no_final_artifact(self) -> None:
+        # The gateway persists snapshot.md before receipt.toml. A caught failure
+        # while persisting the receipt, injected here after the snapshot write
+        # already succeeded, must not leave the final snapshot, the receipt, or
+        # the now-empty sweep directory behind, and must not swallow the
+        # original exception. The caller-owned pending digest-verification
+        # input (self.snapshot_path here) is never this gateway's to delete, so
+        # it must be left exactly as the caller supplied it.
+        sweep_dir = (Path(self.temp.name) / "sweeps" / "fp1").resolve()
+        receipt_path = sweep_dir / "receipt.toml"
+        persisted_snapshot_path = sweep_dir / "snapshot.md"
+        real_atomic_write = launch_module._atomic_write
+
+        def flaky_atomic_write(path: Path, content: str) -> None:
+            if path == receipt_path:
+                raise OSError("simulated receipt persistence failure")
+            real_atomic_write(path, content)
+
+        with mock.patch.object(launch_module, "_atomic_write", side_effect=flaky_atomic_write):
+            with self.assertRaisesRegex(OSError, "simulated receipt persistence failure"):
+                self.prepare(receipt_path=receipt_path)
+
+        self.assertFalse(persisted_snapshot_path.exists())
+        self.assertFalse(receipt_path.exists())
+        self.assertFalse(sweep_dir.exists())
+        self.assertTrue(self.snapshot_path.exists())
 
     def test_run_reconcile_launch_is_the_sole_bootstrap_and_mutation_entry_point(self) -> None:
         prepared = self.prepare()

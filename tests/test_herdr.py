@@ -329,6 +329,67 @@ fi
                 self.assertEqual("pending", tomllib.load(handle)["status"])
             self.assertTrue((Path(td) / "state/octo-lite/inbox/agent1" / message_id).is_file())
 
+    def test_drain_persists_pending_before_clearing_the_retry_item_for_a_queued_message(self):
+        # A queued (never-sent) message that drain now transports successfully must
+        # persist status=pending before dropping the inbox retry item, or a legitimate
+        # herdr-ack afterward would see the stale queued status and reject.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "Quick safety check: trust this folder")
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+            with states[0].open("rb") as handle:
+                self.assertEqual("queued", tomllib.load(handle)["status"])
+
+            log.write_text("")
+            drain_env = dict(env, FAKE_PANE_TEXT="ready")
+            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
+            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["send", "run"], log.read_text().splitlines())
+            self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
+            with states[0].open("rb") as handle:
+                self.assertEqual("pending", tomllib.load(handle)["status"])
+
+            ack = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, ack.returncode, ack.stderr)
+
+    def test_drain_keeps_the_retry_item_and_queued_status_when_pending_persistence_fails(self):
+        # If the durable pending write cannot be persisted, the retry item must stay
+        # so a later drain attempt can retry, instead of silently losing the message.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "Quick safety check: trust this folder")
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+            inbox_item = Path(td) / "state/octo-lite/inbox/agent1" / message_id
+
+            log.write_text("")
+            drain_env = dict(env, FAKE_PANE_TEXT="ready")
+            messages_dir = Path(td) / "state/octo-lite/messages"
+            subprocess.run(["chattr", "+i", str(messages_dir)], check=True)
+            try:
+                drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
+                result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+                self.assertNotEqual(0, result.returncode)
+            finally:
+                subprocess.run(["chattr", "-i", str(messages_dir)], check=True)
+
+            with states[0].open("rb") as handle:
+                self.assertEqual("queued", tomllib.load(handle)["status"])
+            self.assertTrue(inbox_item.is_file())
+
     def test_safe_prompt_marks_pending_then_requires_ack(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
@@ -542,9 +603,9 @@ fi
             env["FAKE_ACK_OVERRIDE"] = ack_override
         return env, log
 
-    def spawn_base_command(self, receipt):
+    def spawn_base_command(self, receipt, cwd=None):
         return [
-            str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(ROOT),
+            str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(cwd or ROOT),
             "--role", "orchestrator", "--label", "443/6 · operating model",
             "--receipt", str(receipt), "--",
             "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
@@ -565,7 +626,7 @@ fi
 
             env, log = self.spawn_environment(td)
             result = subprocess.run(
-                self.spawn_base_command(receipt_path), env=env, capture_output=True, text=True,
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
             )
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertIn("bootstrap=acknowledged", result.stdout)
@@ -604,7 +665,7 @@ fi
 
                 env, log = self.spawn_environment(td, ack_override=override)
                 result = subprocess.run(
-                    self.spawn_base_command(receipt_path), env=env, capture_output=True, text=True,
+                    self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
                 )
                 self.assertNotEqual(0, result.returncode, name)
                 self.assertNotIn("bootstrap=acknowledged", result.stdout, name)
@@ -613,6 +674,53 @@ fi
                 self.assertFalse(any(call.startswith("agent start") for call in calls), name)
                 readback = tomllib.loads(receipt_path.read_text())
                 self.assertFalse(readback["bootstrap"]["verified"], name)
+
+    def test_spawn_rejects_role_or_cwd_that_diverges_from_receipt(self):
+        def git_repo(path):
+            subprocess.run(["git", "init", "-q", str(path)], check=True)
+            subprocess.run(["git", "-C", str(path), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True)
+            (path / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(path), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(path), "commit", "-qm", "target"], check=True)
+
+        def assert_blocked_before_bootstrap(result, log):
+            self.assertNotEqual(0, result.returncode)
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(call.startswith("claude") for call in calls))
+            self.assertFalse(any(call.startswith("tab create") for call in calls))
+            self.assertFalse(any(call.startswith("agent start") for call in calls))
+
+        # Receipt role is orchestrator, but --role and its flags/label claim
+        # meta-operator: spawn must refuse before bootstrap, never trust the CLI role.
+        with self.subTest("role_diverges_from_receipt"), tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+            env, log = self.spawn_environment(td)
+            argv = [
+                str(SPAWN), "--workspace", "w1", "--name", "meta-1", "--cwd", str(repo),
+                "--role", "meta-operator", "--label", "🧠 operator",
+                "--receipt", str(receipt_path), "--",
+                "claude", "--model", "claude-fable-5", "--effort", "xhigh",
+                "--permission-mode", "auto", "--agent", "meta-operator", "prompt",
+            ]
+            result = subprocess.run(argv, env=env, capture_output=True, text=True)
+            assert_blocked_before_bootstrap(result, log)
+
+        # Receipt worktree is repo A, but --cwd is ROOT, a different real git root:
+        # spawn must refuse before bootstrap, never trust the CLI cwd.
+        with self.subTest("cwd_diverges_from_receipt"), tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path), env=env, capture_output=True, text=True,
+            )
+            assert_blocked_before_bootstrap(result, log)
 
     def test_spawn_creates_no_pane_on_unreadable_receipt(self):
         with tempfile.TemporaryDirectory() as td:
@@ -657,7 +765,7 @@ fi
             build_orchestrator_receipt(repo, receipt_path)
 
             env, log = self.spawn_environment(td)
-            invalid = self.spawn_base_command(receipt_path)
+            invalid = self.spawn_base_command(receipt_path, cwd=repo)
             invalid[invalid.index("443/6 · operating model")] = "TUR-443 operating model"
             result = subprocess.run(invalid, env=env, capture_output=True, text=True)
             self.assertNotEqual(0, result.returncode)

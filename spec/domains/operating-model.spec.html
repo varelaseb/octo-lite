@@ -131,6 +131,8 @@
 <p data-anchor="role-reconciler-snapshot-no-partial">The sweep never persists snapshot.md under the final sweep directory before Linear, PR, HEAD, spec, and ADR validation all succeed, and a failing gateway leaves no sweep artifact directory or state behind.</p>
 <p data-anchor="role-reconciler-snapshot-temp-input">A temporary input required only for digest verification lives outside the final sweep directory and is removed on every failure, while a successful sweep still persists its atomic snapshot, receipt, result, and no-op state.</p>
 <p data-anchor="role-reconciler-snapshot-receipt-binding">The persisted receipt binds <code>reconcile.snapshot_path</code> to the final persisted <code>snapshot.md</code>, never the temporary digest-verification input, and that exact file exists with matching bytes and digest before bootstrap starts.</p>
+<p data-anchor="role-reconciler-snapshot-post-persist-atomicity">Every caught pre-provider failure, including a receipt persistence failure that happens after snapshot persistence, leaves no final sweep snapshot, receipt, or sweep directory and no pending digest-verification input behind.</p>
+<p data-anchor="role-reconciler-bootstrap-snapshot-proof">Reconciler bootstrap opens the exact file at the receipt-bound <code>reconcile.snapshot_path</code>, hashes its bytes, and refuses acknowledgment when that file is missing or its digest does not match <code>reconcile.snapshot_digest</code>.</p>
 <p data-anchor="role-reconciler-authority">Sonnet cannot mutate sources, override deterministic mismatches, investigate open-endedly, or silently resolve ambiguity.</p>
 <p data-anchor="role-reconciler-escalation">Missing or unparseable input and semantic ambiguity return <code>needs_fable</code>; Fable judges the case.</p>
 <p data-anchor="role-claude-native">Orchestrated Claude Workflows are the primary loop runtime rather than an adapter target.</p>
@@ -160,6 +162,8 @@
 <p data-anchor="shaping-complete">Shaping is not complete without an aligned Linear issue, canonical spec, evolving draft PR, and final fresh shaping-review verdict.</p>
 <p data-anchor="shaping-review-inputs">The shaping reviewer reads canonical specs and ADRs, relevant conversation logs through a pinned cutoff, Linear, repo instructions, the same draft-PR readiness HEAD, and the TDD contract.</p>
 <p data-anchor="shaping-state">Linear <code>Shaped</code> is the canonical readiness state and is set only after a clear final shaping verdict.</p>
+<p data-anchor="shaping-state-transition">A verified issue orchestrator in shaping mode may move Ideas or Todo to Shaped only after live readback of one canonical clear shaping verdict at the exact PR HEAD and a <code>linear:&lt;issue&gt;:&lt;fingerprint&gt;</code> binding for the exact current Linear issue.</p>
+<p data-anchor="shaping-state-transition-scope">Existing delivery and operator boundaries remain unchanged.</p>
 <p data-anchor="shaping-verdict-location">The final shaping verdict is a durable artifact on the evolving draft PR, not a separate readiness file.</p>
 <p data-anchor="shaping-verdict-bindings">The verdict binds the relevant Linear content fingerprint, PR and shaping HEAD, spec and ADR blobs, conversation-log references and cutoff, clear or blocking result, and reviewer receipt reference.</p>
 <p data-anchor="shaping-verdict-link">Linear links the PR verdict without duplicating its exact-revision proof.</p>
@@ -297,6 +301,7 @@
 <p data-anchor="message-herdr-say">Every Herdr message uses <code>herdr-say</code>, which attempts transport at a verified safe prompt or durably queues without acting on a modal.</p>
 <p data-anchor="message-no-composer-inference"><code>herdr-say</code> and <code>herdr-drain</code> never infer composer state, consumption, or delivery from pane transcript text.</p>
 <p data-anchor="message-pending">A send or Enter transport attempt leaves a message pending; retry reuses the same message ID, retries transport only, and never re-pastes text that already landed.</p>
+<p data-anchor="message-pending-persist-before-clear">A successful queued transport persists the pending durable status before removing its inbox retry item; a persistence failure retains the retry item and the queued status.</p>
 <p data-anchor="message-visible">Visible, injected, pending, or queued TUI text is not acknowledgment.</p>
 <p data-anchor="message-ack">Commands, operator rulings, ownership transfers, and blocking questions require explicit recipient acknowledgment before dependent action.</p>
 <p data-anchor="message-no-timeout">Acknowledgment has no arbitrary timeout because dependency, not duration, determines blocking.</p>
@@ -416,6 +421,7 @@ handoffs/0001.md</code></pre>
 <p data-anchor="herdr-label-numbers">The identity token is <code>issue/pr</code> with bare numbers, or only <code>issue</code> before a PR exists.</p>
 <p data-anchor="herdr-label-scope">Only persistent Fable and Opus orchestrator sessions receive Herdr tab labels; workflow subagents run inside the owning Opus session and never create tabs.</p>
 <p data-anchor="herdr-label-sparse">Normal unattended tabs use no status emoji, and every label uses the fewest characters that remain unique and human-readable.</p>
+<p data-anchor="herdr-label-receipt-bind">The passed persistent spawn role and canonical cwd must exactly equal the receipt's <code>role.name</code> and <code>workspace.worktree</code> before any bootstrap call or pane creation.</p>
 <pre data-anchor="herdr-label-examples"><code>🧠 operator
 🎤 ◆443/6 · operating model
 ◆443/6 · operating model

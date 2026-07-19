@@ -26,11 +26,17 @@ def _load_operator_sweep_module():
     loader.exec_module(module)
     return module
 
-# Fakes the two-phase reconciler launch: a --session-id call answers a bound
-# BOOTSTRAP_ACK computed from the exact receipt on disk; a --resume call echoes
-# the exact session it was resumed with in its own read-only judgment message,
-# proving the resumed session is the exact bootstrap-verified one, never a
-# self-attested or spoofed identity.
+# Fakes the two-phase reconciler launch: a --session-id call actually opens
+# and hashes the receipt-bound reconcile.snapshot_path before answering a
+# BOOTSTRAP_ACK, refusing (ready false, non-empty blocker) when that file is
+# missing or its digest does not match reconcile.snapshot_digest, so a
+# regression that persists the final snapshot late, corrupts its bytes, or
+# leaves the pending digest-verification input behind is caught by every test
+# that reuses this fake rather than only by assertions made after the sweep
+# has already finished. A --resume call echoes the exact session it was
+# resumed with in its own read-only judgment message, proving the resumed
+# session is the exact bootstrap-verified one, never a self-attested or
+# spoofed identity.
 FAKE_RECONCILER_CLAUDE = r"""#!/usr/bin/env bash
 printf 'claude %s\n' "$*" >>"$CALL_LOG"
 printf 'worktree-check %s|%s|%s\n' "$(pwd)" "$(git rev-parse --show-toplevel)" "$(git branch --show-current)" >>"$CALL_LOG"
@@ -54,13 +60,41 @@ else
     fi
   done
   python3 - "$receipt_path" "$session" <<'PY'
+import hashlib
 import json
+import os
 import sys
 import tomllib
+from pathlib import Path
 
 receipt_path, session_id = sys.argv[1], sys.argv[2]
 with open(receipt_path, "rb") as handle:
     receipt = tomllib.load(handle)
+reconcile = receipt.get("reconcile", {})
+snapshot_path = Path(reconcile["snapshot_path"])
+expected_digest = reconcile["snapshot_digest"]
+
+snapshot_exists = snapshot_path.is_file()
+actual_digest = hashlib.sha256(snapshot_path.read_bytes()).hexdigest() if snapshot_exists else ""
+snapshot_bytes_match = snapshot_exists and actual_digest == expected_digest
+
+# The pending digest-verification input lives outside the final sweep
+# directory as .sweep-pending-<digest>.md directly under the control dir
+# (parents[2] of receipt.toml: sweeps/<digest>/receipt.toml), so bootstrap can
+# independently observe whether the caller already removed it.
+control_dir = Path(receipt_path).resolve().parents[2]
+pending_files = sorted(str(path) for path in control_dir.glob(".sweep-pending-*.md"))
+
+observations_file = os.environ.get("BOOTSTRAP_OBSERVATIONS_FILE")
+if observations_file:
+    Path(observations_file).write_text(json.dumps({
+        "snapshot_exists": snapshot_exists,
+        "snapshot_bytes_match": snapshot_bytes_match,
+        "pending_files": pending_files,
+    }))
+
+ready = snapshot_bytes_match
+blocker = "" if ready else "reconcile.snapshot_path missing or digest mismatch"
 ack = {
     "schema_version": receipt["schema_version"],
     "spawn_id": receipt["spawn_id"],
@@ -69,8 +103,8 @@ ack = {
     "role": receipt["role"]["name"],
     "worktree": receipt["workspace"]["worktree"],
     "starting_head": receipt["workspace"]["starting_head"],
-    "ready": True,
-    "blocker": "",
+    "ready": ready,
+    "blocker": blocker,
 }
 print(json.dumps({"session_id": session_id, "result": json.dumps(ack)}))
 PY
@@ -521,6 +555,10 @@ class OperatorControlTests(unittest.TestCase):
         # binds the temporary digest-verification input instead of the final
         # persisted snapshot, that path is already deleted by the time bootstrap
         # runs, so a real reconciler can neither verify nor honestly acknowledge it.
+        # The fake bootstrap itself opens and hashes reconcile.snapshot_path and
+        # records what it actually observed, at the exact moment it runs, into
+        # BOOTSTRAP_OBSERVATIONS_FILE, so this proves the pre-bootstrap state
+        # directly rather than inferring it from post-sweep filesystem probing.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
@@ -538,6 +576,7 @@ class OperatorControlTests(unittest.TestCase):
             fake_bin = base / "bin"
             fake_bin.mkdir()
             log = base / "calls.jsonl"
+            observations_file = base / "bootstrap-observations.json"
             for name, body in {
                 "claude": FAKE_RECONCILER_CLAUDE,
                 "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
@@ -545,7 +584,10 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(
+                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+                BOOTSTRAP_OBSERVATIONS_FILE=str(observations_file),
+            )
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -558,6 +600,7 @@ class OperatorControlTests(unittest.TestCase):
                 state = tomllib.load(handle)
             with open(state["receipt"], "rb") as handle:
                 receipt = tomllib.load(handle)
+            self.assertTrue(receipt["bootstrap"]["verified"])
             reconcile = receipt["reconcile"]
 
             final_snapshot = control / "sweeps" / fingerprint / "snapshot.md"
@@ -565,6 +608,20 @@ class OperatorControlTests(unittest.TestCase):
             self.assertTrue(final_snapshot.is_file(), "bootstrap-bound snapshot_path must exist before bootstrap starts")
             actual_digest = hashlib.sha256(final_snapshot.read_bytes()).hexdigest()
             self.assertEqual(reconcile["snapshot_digest"], actual_digest)
+
+            observations = json.loads(observations_file.read_text())
+            self.assertTrue(
+                observations["snapshot_exists"],
+                "fake bootstrap must observe the final snapshot already present when it runs",
+            )
+            self.assertTrue(
+                observations["snapshot_bytes_match"],
+                "fake bootstrap must independently hash matching bytes, not trust the receipt string",
+            )
+            self.assertEqual(
+                [], observations["pending_files"],
+                "the pending digest-verification input must already be gone when bootstrap runs",
+            )
 
     def test_sweep_fails_closed_when_a_declared_canonical_source_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1856,6 +1913,287 @@ class OperatorControlTests(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(0, result.returncode)
+
+    def _write_shaping_receipt(
+        self, path: Path, *, role: str, issue: str, caller: str,
+        verified: bool = True, purpose: str = "shaping-review",
+        repo: str = "org/repo", pr: int = 7, head: str = "deadbeef123",
+        omit_revision: bool = False, omit_shaping: bool = False,
+    ) -> None:
+        from octo_lite.runtime import launch_revision
+        receipt = {
+            "schema_version": 1,
+            "spawn_id": caller,
+            "ready": True,
+            "role": {"name": role},
+            "issue": {"identifier": issue},
+            "purpose": purpose,
+            "bootstrap": {"verified": verified, "provider_session_id": caller},
+        }
+        if not omit_shaping:
+            receipt["shaping"] = {"repo": repo, "pr": pr, "head": head}
+        revision = launch_revision(receipt)
+        lines = [
+            "schema_version = 1",
+            f'spawn_id = "{caller}"',
+            "ready = true",
+            f'purpose = "{purpose}"',
+        ]
+        if not omit_revision:
+            lines.append(f'launch_revision = "{revision}"')
+        lines += ["", f'[role]\nname = "{role}"', "", f'[issue]\nidentifier = "{issue}"']
+        if not omit_shaping:
+            lines += ["", f'[shaping]\nrepo = "{repo}"\npr = {pr}\nhead = "{head}"']
+        lines += [
+            "",
+            "[bootstrap]",
+            f"verified = {'true' if verified else 'false'}",
+            f'provider_session_id = "{caller}"',
+        ]
+        path.write_text("\n".join(lines) + "\n")
+
+    def test_linear_transition_to_shaped_requires_verified_shaping_review_receipt_authority(self) -> None:
+        # Ideas or Todo -> Shaped must only ever move on receipt authority: a
+        # verified bootstrap, the exact orchestrator role, the exact bound
+        # issue and caller, purpose shaping-review, a valid launch_revision,
+        # and shaping repo/PR/head inputs. Stream authority (used for the
+        # existing delivery transitions) must never suffice for Shaped.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            stream = base / "stream"
+            from octo_lite.runtime import initialize_stream, exact_fingerprint, verdict_body
+            initialize_stream(
+                stream, stream_id="TUR-1", parent_session="epic-opus", child_session="issue-opus",
+                child_role="orchestrator", caller="epic-opus", brief="Build it.\n",
+            )
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            # Only the valid_shaping_review_receipt row must ever reach Linear or
+            # GitHub: every other row is rejected by receipt authority first. These
+            # fakes stay realistically executable for that row (driven by env-selected
+            # state/response files) instead of always failing regardless of reason.
+            (fake_bin / "linear").write_text(
+                "#!/usr/bin/env bash\n"
+                'if [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]]; then\n'
+                '  if [[ "$1 $2" == "issue view" ]]; then\n'
+                '    state="$(cat "$STATE_FILE")"\n'
+                "    cat <<JSON\n"
+                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "t1"}\n'
+                "JSON\n"
+                "    exit 0\n"
+                '  elif [[ "$1 $2" == "issue update" ]]; then\n'
+                '    echo -n "Shaped" >"$STATE_FILE"\n'
+                "    exit 0\n"
+                "  fi\n"
+                "fi\n"
+                "exit 99\n"
+            )
+            (fake_bin / "linear").chmod(0o755)
+            (fake_bin / "gh").write_text(
+                "#!/usr/bin/env bash\n"
+                'if [[ -n "$GH_RESPONSE_FILE" && -f "$GH_RESPONSE_FILE" ]]; then\n'
+                '  cat "$GH_RESPONSE_FILE"\n'
+                "  exit 0\n"
+                "fi\n"
+                "exit 99\n"
+            )
+            (fake_bin / "gh").chmod(0o755)
+            (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 0\n")
+            (fake_bin / "herdr-say").chmod(0o755)
+            base_env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+
+            cases = [
+                ("valid_shaping_review_receipt", {}, True),
+                ("stream_authority_forbidden", {"use_stream": True}, False),
+                ("wrong_purpose", {"purpose": "delivery"}, False),
+                ("unverified_receipt", {"verified": False}, False),
+                ("foreign_issue", {"issue": "TUR-999"}, False),
+                ("foreign_caller", {"caller": "someone-else"}, False),
+                ("wrong_role", {"role": "implementer"}, False),
+                ("missing_launch_revision", {"omit_revision": True}, False),
+                ("missing_shaping_inputs", {"omit_shaping": True}, False),
+            ]
+            for expected_state in ("Ideas", "Todo"):
+                for name, overrides, should_succeed in cases:
+                    with self.subTest(expected_state=expected_state, case=name):
+                        receipt = base / f"{expected_state}-{name}.toml"
+                        self._write_shaping_receipt(
+                            receipt, role=overrides.get("role", "orchestrator"), issue=overrides.get("issue", "TUR-1"),
+                            caller="issue-opus",
+                            verified=overrides.get("verified", True),
+                            purpose=overrides.get("purpose", "shaping-review"),
+                            omit_revision=overrides.get("omit_revision", False),
+                            omit_shaping=overrides.get("omit_shaping", False),
+                        )
+                        env = dict(base_env)
+                        if name == "valid_shaping_review_receipt":
+                            state_file = base / f"{expected_state}-{name}-state.txt"
+                            state_file.write_text(expected_state)
+                            normalized_issue = {
+                                "identifier": "TUR-1", "state": expected_state, "updatedAt": "t1",
+                            }
+                            binding = f"linear:TUR-1:{exact_fingerprint(normalized_issue)}"
+                            marker = verdict_body(
+                                "shaping", "clear", "deadbeef123", [binding], [],
+                                "reviewer-receipt-xyz",
+                                conversation_log_references=["session-log-1"],
+                                conversation_cutoff="2026-07-18T00:00:00Z",
+                            )
+                            response_file = base / f"{expected_state}-{name}-gh.json"
+                            response_file.write_text(json.dumps({
+                                "headRefOid": "deadbeef123",
+                                "comments": [{"id": 1, "body": marker}],
+                            }))
+                            env["STATE_FILE"] = str(state_file)
+                            env["GH_RESPONSE_FILE"] = str(response_file)
+                        command = [
+                            str(CONTROL), "linear-transition", "TUR-1",
+                            "--expected", expected_state, "--target", "Shaped",
+                            "--progress", str(base / f"{expected_state}-{name}-progress.toml"),
+                            "--status", str(base / f"{expected_state}-{name}-status.md"),
+                            "--parent", "epic-opus", "--outcome", "shaped", "--gate", "review",
+                            "--caller", overrides.get("caller", "issue-opus"),
+                        ]
+                        if overrides.get("use_stream"):
+                            command += ["--stream", str(stream)]
+                        else:
+                            command += ["--receipt", str(receipt)]
+                        result = subprocess.run(command, env=env, capture_output=True, text=True)
+                        if should_succeed:
+                            self.assertEqual(0, result.returncode, result.stderr)
+                        else:
+                            self.assertNotEqual(0, result.returncode)
+
+    def test_linear_transition_to_shaped_requires_one_exact_bound_shaping_marker(self) -> None:
+        # After the compare Linear read, Shaped must refetch the exact live PR
+        # head and comments and require exactly one shaping marker: parseable
+        # TOML, review_type shaping, verdict clear, exact head, and an exact
+        # linear:<issue>:<fingerprint of current normalized Linear read>
+        # binding. Every other case rejects before any mutation; only the
+        # exact-bound clear verdict permits one update, readback, status, and
+        # notify, in that order. Existing delivery transitions stay allowed
+        # and are not exercised here.
+        from octo_lite.runtime import verdict_body, exact_fingerprint
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            live_head = "deadbeef123"
+            raw_issue = {"identifier": "TUR-1", "state": {"name": "Todo"}, "updatedAt": "2026-07-19T00:00:00Z"}
+            normalized_issue = dict(raw_issue)
+            normalized_issue["state"] = "Todo"
+            fingerprint = exact_fingerprint(normalized_issue)
+            binding = f"linear:TUR-1:{fingerprint}"
+
+            def marker(*, verdict="clear", head=live_head, bound_inputs=(binding,)):
+                return verdict_body(
+                    "shaping", verdict, head, list(bound_inputs), [], "reviewer-receipt-xyz",
+                    conversation_log_references=["session-log-1"],
+                    conversation_cutoff="2026-07-18T00:00:00Z",
+                )
+
+            unreadable_marker = "<!-- octo-lite-verdict:shaping -->\n```toml\nverdict = \n```"
+
+            def wrong_review_type_marker():
+                return (
+                    "<!-- octo-lite-verdict:shaping -->\n```toml\n"
+                    'schema_version = 1\n'
+                    'review_type = "code"\n'
+                    'verdict = "clear"\n'
+                    f'head = "{live_head}"\n'
+                    f'bound_inputs = ["{binding}"]\n'
+                    '```'
+                )
+
+            scenarios = {
+                "missing": [],
+                "duplicate": [marker(), marker()],
+                "unreadable": [unreadable_marker],
+                "blocking": [marker(verdict="blocking")],
+                "stale_head": [marker(head="stalehead000")],
+                "live_head_mismatch": [marker()],
+                "wrong_review_type": [wrong_review_type_marker()],
+                "anonymous_binding": [marker(bound_inputs=("spec/domains/operating-model.spec.html:abc123",))],
+                "foreign_binding": [marker(bound_inputs=(f"linear:TUR-999:{fingerprint}",))],
+                "wrong_fingerprint": [marker(bound_inputs=(f"linear:TUR-1:{'0' * 64}",))],
+                "valid": [marker()],
+            }
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            (fake_bin / "linear").write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+                'if [[ "$1 $2" == "issue view" ]]; then\n'
+                '  state="$(cat "$STATE_FILE")"\n'
+                "  cat <<JSON\n"
+                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "2026-07-19T00:00:00Z"}\n'
+                "JSON\n"
+                'elif [[ "$1 $2" == "issue update" ]]; then\n'
+                '  echo -n "Shaped" >"$STATE_FILE"\n'
+                "fi\n"
+            )
+            (fake_bin / "linear").chmod(0o755)
+            (fake_bin / "gh").write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'gh %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+                'cat "$GH_RESPONSE_FILE"\n'
+            )
+            (fake_bin / "gh").chmod(0o755)
+            (fake_bin / "herdr-say").write_text(
+                "#!/usr/bin/env bash\nprintf 'herdr-say %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            )
+            (fake_bin / "herdr-say").chmod(0o755)
+
+            for name, comment_bodies in scenarios.items():
+                with self.subTest(case=name):
+                    state_file = base / f"{name}-state.txt"
+                    state_file.write_text("Todo")
+                    call_log = base / f"{name}-calls.log"
+                    response_file = base / f"{name}-gh.json"
+                    actual_head = "livehead999" if name == "live_head_mismatch" else live_head
+                    response_file.write_text(json.dumps({
+                        "url": "https://github.com/org/repo/pull/7",
+                        "headRefOid": actual_head,
+                        "headRefName": "shaping/TUR-1",
+                        "baseRefName": "main",
+                        "state": "OPEN",
+                        "reviewDecision": "",
+                        "statusCheckRollup": [],
+                        "comments": [{"id": i, "body": body} for i, body in enumerate(comment_bodies)],
+                    }))
+                    receipt = base / f"{name}-receipt.toml"
+                    self._write_shaping_receipt(
+                        receipt, role="orchestrator", issue="TUR-1", caller="issue-opus",
+                        repo="org/repo", pr=7, head=live_head,
+                    )
+                    env = dict(
+                        os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+                        STATE_FILE=str(state_file), CALL_LOG=str(call_log),
+                        GH_RESPONSE_FILE=str(response_file),
+                    )
+                    result = subprocess.run(
+                        [
+                            str(CONTROL), "linear-transition", "TUR-1",
+                            "--expected", "Todo", "--target", "Shaped",
+                            "--progress", str(base / f"{name}-progress.toml"),
+                            "--status", str(base / f"{name}-status.md"),
+                            "--parent", "epic-opus", "--outcome", "shaped", "--gate", "review",
+                            "--caller", "issue-opus", "--receipt", str(receipt),
+                        ],
+                        env=env, capture_output=True, text=True,
+                    )
+                    if name == "valid":
+                        self.assertEqual(0, result.returncode, result.stderr)
+                        self.assertEqual("Shaped", state_file.read_text())
+                        calls = call_log.read_text().splitlines()
+                        self.assertEqual(5, len(calls), calls)
+                        self.assertTrue(calls[0].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[1].startswith("gh "), calls)
+                        self.assertTrue(calls[2].startswith("linear issue update"), calls)
+                        self.assertTrue(calls[3].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[4].startswith("herdr-say "), calls)
+                    else:
+                        self.assertNotEqual(0, result.returncode, name)
 
 
 if __name__ == "__main__":

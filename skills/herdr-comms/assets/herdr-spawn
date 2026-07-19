@@ -51,6 +51,30 @@ case "$role" in
   *) echo "herdr-spawn: role has no persistent tab" >&2; exit 65 ;;
 esac
 
+# The passed --role and canonical --cwd must exactly equal the receipt's role.name
+# and workspace.worktree before any bootstrap call or pane creation. This never
+# trusts the CLI-supplied role or cwd on their own. An unreadable receipt or
+# missing required field fails closed with the same code as a bootstrap
+# verification failure; it never mutates the receipt.
+python3 - "$receipt" "$role" "$cwd" <<'PY'
+import os
+import sys
+import tomllib
+
+receipt_path, role, cwd = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(receipt_path, "rb") as handle:
+        receipt = tomllib.load(handle)
+    receipt_role = receipt["role"]["name"]
+    receipt_worktree = receipt["workspace"]["worktree"]
+except Exception:
+    sys.exit(2)
+if not receipt_role or not receipt_worktree:
+    sys.exit(2)
+if receipt_role != role or os.path.realpath(cwd) != os.path.realpath(receipt_worktree):
+    sys.exit(65)
+PY
+
 # Parent-controlled two-phase bootstrap. octo-launch runs a read-only print-mode
 # bootstrap for the exact receipt and verifies the full BOOTSTRAP_ACK (schema,
 # spawn, provider session, launch revision, role, worktree, starting HEAD, ready,

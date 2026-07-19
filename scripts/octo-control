@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from octo_lite.runtime import (  # noqa: E402
     declare_successor_ready,
     exact_fingerprint,
     herdr_label,
+    launch_revision,
     normalize_launch_access,
     record_acceptance,
     record_failure,
@@ -31,6 +33,8 @@ from octo_lite.runtime import (  # noqa: E402
     transition_linear,
     verdict_body,
 )
+
+SHAPING_VERDICT_MARKER = "<!-- octo-lite-verdict:shaping -->"
 
 
 def load_toml(path: Path) -> dict:
@@ -94,16 +98,93 @@ def _verify_transition_authority(args) -> None:
         raise GateError("caller is not the exact receipt-bound session")
 
 
+def _verify_shaped_transition_authority(args) -> dict:
+    if args.stream or not args.receipt:
+        raise GateError("Shaped transition requires exact receipt authority")
+    receipt = load_toml(Path(args.receipt))
+    if receipt.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("caller receipt bootstrap not verified")
+    if receipt.get("role", {}).get("name") != "orchestrator":
+        raise GateError("caller is not the exact issue-orchestrator role")
+    if receipt.get("issue", {}).get("identifier") != args.issue:
+        raise GateError("caller receipt issue mismatch")
+    if receipt.get("bootstrap", {}).get("provider_session_id") != args.caller:
+        raise GateError("caller is not the exact receipt-bound session")
+    if receipt.get("purpose") != "shaping-review":
+        raise GateError("caller receipt purpose is not shaping-review")
+    if not isinstance(receipt.get("launch_revision"), str) or receipt["launch_revision"] != launch_revision(receipt):
+        raise GateError("caller receipt launch revision mismatch")
+    shaping = receipt.get("shaping")
+    if not isinstance(shaping, dict) or not all(shaping.get(key) for key in ("repo", "pr", "head")):
+        raise GateError("caller receipt shaping binding missing")
+    return shaping
+
+
+def _verify_exact_shaping_marker(repo: str, pr: object, expected_head: str, issue: str, fingerprint: str) -> None:
+    current = run_json(["gh", "pr", "view", str(pr), "--repo", repo, "--json", "headRefOid,comments"])
+    if current.get("headRefOid") != expected_head:
+        raise GateError("shaping PR head mismatch")
+    comments = current.get("comments")
+    if not isinstance(comments, list):
+        raise GateError("shaping verdict comments unreadable")
+    matches = [
+        item.get("body", "") for item in comments
+        if isinstance(item, dict) and SHAPING_VERDICT_MARKER in item.get("body", "")
+    ]
+    if not matches:
+        raise GateError("shaping verdict missing")
+    if len(matches) > 1:
+        raise GateError("shaping verdict duplicate")
+    block = re.search(r"```toml\s*(.*?)\s*```", matches[0], re.DOTALL)
+    if not block:
+        raise GateError("shaping verdict unreadable")
+    try:
+        parsed = tomllib.loads(block.group(1))
+    except tomllib.TOMLDecodeError as error:
+        raise GateError("shaping verdict unreadable") from error
+    if parsed.get("schema_version") != 1:
+        raise GateError("shaping verdict schema mismatch")
+    if parsed.get("review_type") != "shaping":
+        raise GateError("shaping verdict wrong review type")
+    if parsed.get("verdict") != "clear":
+        raise GateError("shaping verdict not clear")
+    if parsed.get("head") != expected_head:
+        raise GateError("shaping verdict head mismatch")
+    binding = f"linear:{issue}:{fingerprint}"
+    bound_inputs = parsed.get("bound_inputs")
+    if not isinstance(bound_inputs, list) or binding not in bound_inputs:
+        raise GateError("shaping verdict binding mismatch")
+
+
 def command_linear_transition(args) -> dict:
-    allowed = {("Todo", "In Progress"), ("In Progress", "Awaiting Accept")}
+    allowed = {
+        ("Todo", "In Progress"),
+        ("In Progress", "Awaiting Accept"),
+        ("Ideas", "Shaped"),
+        ("Todo", "Shaped"),
+    }
     if (args.expected, args.target) not in allowed:
         raise GateError("stream orchestrator transition not allowed")
-    _verify_transition_authority(args)
+    if args.target == "Shaped":
+        shaping = _verify_shaped_transition_authority(args)
+    else:
+        shaping = None
+        _verify_transition_authority(args)
+
+    compare_cache: dict[str, dict] = {}
 
     def read():
-        return linear_read(args.issue)["issue"]
+        issue = linear_read(args.issue)["issue"]
+        compare_cache["issue"] = issue
+        return issue
 
     def mutate(target):
+        if shaping is not None:
+            current_issue = compare_cache["issue"]
+            fingerprint = exact_fingerprint(current_issue)
+            _verify_exact_shaping_marker(
+                shaping["repo"], shaping["pr"], shaping["head"], args.issue, fingerprint
+            )
         subprocess.run(
             ["linear", "issue", "update", args.issue, "--state", target],
             check=True,

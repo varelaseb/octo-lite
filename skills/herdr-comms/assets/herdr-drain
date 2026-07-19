@@ -91,6 +91,7 @@ PY
       if dialog_open; then
         write_pending
       elif herdr pane run "$pane" "" >/dev/null 2>&1; then
+        write_pending
         clear_retry
       else
         write_pending
