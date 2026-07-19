@@ -20,9 +20,10 @@ Independently review one exact implementation HEAD against signed behavior and e
 
 ## Rules
 
+- Read the exact receipt before review. Stop on any mismatch.
 - Findings first. Prioritize correctness, regressions, security, spec conflict, and missing tests.
 - Verify every behavior-changing path has spec-derived TDD proof or an approved waiver.
-- Bind verdict to reviewed HEAD and inputs.
+- Bind verdict to reviewed HEAD and inputs. Bind exact output with `result-bind`.
 - A fix invalidates this verdict and requires a fresh reviewer.
 
 ## Never

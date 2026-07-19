@@ -6,9 +6,14 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from octo_lite.runtime import verify_receipt_bootstrap  # noqa: E402
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -30,6 +35,59 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(stream)
 
 
+def run_json(argv: list[str]) -> dict:
+    result = subprocess.run(argv, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
+def read_linear_fact(issue: str) -> dict:
+    raw = run_json(["linear", "issue", "view", issue, "--json", "--no-download"])
+    state = raw.get("state")
+    return {
+        "identifier": raw.get("identifier"),
+        "state": state.get("name") if isinstance(state, dict) else state,
+        "updated_at": raw.get("updatedAt"),
+    }
+
+
+def read_pr_fact(repo: str, number: int) -> dict:
+    raw = run_json(
+        [
+            "gh", "pr", "view", str(number), "--repo", repo, "--json",
+            "headRefOid,state,reviewDecision,statusCheckRollup",
+        ]
+    )
+    return {
+        "head": raw.get("headRefOid"),
+        "state": raw.get("state"),
+        "review": raw.get("reviewDecision") or "",
+        "ci": raw.get("statusCheckRollup") or [],
+    }
+
+
+def declared_stream_facts(stream_dir: Path) -> dict:
+    sources_path = stream_dir / "sources.toml"
+    if not sources_path.is_file():
+        return {}
+    declared = load_toml(sources_path)
+    facts: dict = {}
+    linear_decl = declared.get("linear")
+    if isinstance(linear_decl, dict) and linear_decl.get("issue"):
+        facts["linear"] = read_linear_fact(str(linear_decl["issue"]))
+    pr_decl = declared.get("pull_request")
+    if isinstance(pr_decl, dict) and pr_decl.get("repo") and pr_decl.get("number"):
+        facts["pull_request"] = read_pr_fact(str(pr_decl["repo"]), int(pr_decl["number"]))
+    for name in ("evidence", "deployment"):
+        decl = declared.get(name)
+        if isinstance(decl, dict) and decl.get("path"):
+            artifact = Path(str(decl["path"]))
+            facts[name] = {
+                "path": str(decl["path"]),
+                "hash": hashlib.sha256(artifact.read_bytes()).hexdigest() if artifact.is_file() else "missing",
+            }
+    return facts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compact operator reconciliation sweep")
     parser.add_argument("--control-dir", type=Path, required=True)
@@ -48,9 +106,21 @@ def main() -> int:
         raise SystemExit("operator-sweep: owner missing")
 
     paths = ([control / "status.md"] if (control / "status.md").is_file() else [])
-    paths.extend(sorted((control / "streams").glob("**/status.md")))
+    stream_dirs = sorted((control / "streams").glob("*")) if (control / "streams").is_dir() else []
+    paths.extend(sorted(path for stream_dir in stream_dirs for path in [stream_dir / "status.md"] if path.is_file()))
     parts = [f"## {path.relative_to(control)}\n{path.read_text().strip()}\n" for path in paths]
-    snapshot = "# Stream snapshot\n\n" + "\n".join(parts)
+
+    facts = {"owner_session": owner_session}
+    for stream_dir in stream_dirs:
+        stream_facts = declared_stream_facts(stream_dir)
+        if stream_facts:
+            facts[stream_dir.name] = stream_facts
+    normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
+
+    snapshot = (
+        "# Stream snapshot\n\n" + "\n".join(parts)
+        + "\n## Declared facts\n\n" + normalized_facts + "\n"
+    )
     fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()
     state_path = control / "sweep-state.toml"
     prior = load_toml(state_path) if state_path.exists() else {}
@@ -84,6 +154,7 @@ def main() -> int:
     ).stdout
     atomic_write(receipt_path, receipt)
 
+    session_id = f"sweep-{fingerprint[:12]}"
     prompt = (
         f"Verify launch receipt {receipt_path}. Read snapshot {snapshot_path}. "
         "Classify only changed, missing, stale, contradictory, or needs_fable. "
@@ -91,7 +162,8 @@ def main() -> int:
     )
     result = subprocess.run(
         [
-            "claude", "-p", "--agent", "reconciler", "--model", "claude-sonnet-5",
+            "claude", "-p", "--session-id", session_id, "--output-format", "json",
+            "--agent", "reconciler", "--model", "claude-sonnet-5",
             "--effort", "high", "--permission-mode", "auto", prompt,
         ],
         cwd=repo,
@@ -99,7 +171,13 @@ def main() -> int:
         capture_output=True,
         text=True,
     )
-    atomic_write(result_path, result.stdout)
+    event = json.loads(result.stdout)
+    provider_session_id = event.get("session_id")
+    message = event.get("result")
+    if not provider_session_id or not isinstance(message, str):
+        raise SystemExit("operator-sweep: reconciler bootstrap identity missing")
+    verify_receipt_bootstrap(receipt_path, provider_session_id)
+    atomic_write(result_path, message)
 
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
     delivered = subprocess.run(

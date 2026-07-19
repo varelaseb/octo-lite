@@ -20,11 +20,13 @@ Capture honest operator-reviewable browser proof for one exact reviewed HEAD.
 
 ## Rules
 
+- Read the exact receipt before capture. Stop on any mismatch.
 - Prefer the smallest screenshot set that proves visible states.
 - Record video only when time, motion, ordering, gesture, or end-to-end continuity needs proof.
 - Capture required viewports. Name artifacts by observed state.
 - Bind every artifact to issue, PR, HEAD, story, criterion, viewport, and environment.
 - Record failures and gaps. Supersede stale recaptures explicitly.
+- Bind exact output to the verified receipt with `result-bind`.
 
 ## Never
 

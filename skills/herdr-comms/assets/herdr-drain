@@ -19,9 +19,20 @@ inbox="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/inbox/$target"
 for queued in "$inbox"/*; do
   [[ -f "$queued" ]] || continue
   dialog_open && exit 75
+  lock="$queued.lock"
+  exec 9>"$lock"
+  flock -n 9 || { exec 9>&-; continue; }
+  if [[ ! -f "$queued" ]]; then
+    exec 9>&-
+    continue
+  fi
   id="$(<"$queued")"
   state="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/messages/$id.toml"
-  [[ -f "$state" ]] || { rm -f "$queued"; continue; }
+  if [[ ! -f "$state" ]]; then
+    rm -f "$queued" "$lock"
+    exec 9>&-
+    continue
+  fi
   readarray -t values < <(python3 - "$state" <<'PY'
 import sys, tomllib
 with open(sys.argv[1], 'rb') as f:
@@ -34,25 +45,27 @@ PY
   if [[ "${values[1]}" != "info" ]]; then
     suffix=" [msg:$id kind:${values[1]}] Acknowledge with: herdr-ack $id acknowledged --by $target"
   fi
-  herdr agent send "$target" "${values[3]}$suffix" >/dev/null 2>&1 \
-    || herdr agent send "$pane" "${values[3]}$suffix" >/dev/null 2>&1
-  sleep 0.5
-  herdr pane run "$pane" "" >/dev/null 2>&1
+  if herdr agent send "$target" "${values[3]}$suffix" >/dev/null 2>&1 \
+    || herdr agent send "$pane" "${values[3]}$suffix" >/dev/null 2>&1; then
+    sleep 0.5
+    herdr pane run "$pane" "" >/dev/null 2>&1
 
-  quote() { jq -Rn --arg value "$1" '$value'; }
-  temporary="$state.$$.tmp"
-  {
-    echo 'schema_version = 1'
-    echo "message_id = $(quote "$id")"
-    echo "target = $(quote "${values[0]}")"
-    echo "kind = $(quote "${values[1]}")"
-    echo "status = $(quote submitted)"
-    echo "artifact = $(quote "${values[2]}")"
-    echo "message = $(quote "${values[3]}")"
-    echo "created_at = $(quote "${values[4]}")"
-    echo "submitted_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-  } >"$temporary"
-  mv "$temporary" "$state"
-  rm -f "$queued"
-  echo "message_id=$id status=submitted"
+    quote() { jq -Rn --arg value "$1" '$value'; }
+    temporary="$state.$$.tmp"
+    {
+      echo 'schema_version = 1'
+      echo "message_id = $(quote "$id")"
+      echo "target = $(quote "${values[0]}")"
+      echo "kind = $(quote "${values[1]}")"
+      echo "status = $(quote submitted)"
+      echo "artifact = $(quote "${values[2]}")"
+      echo "message = $(quote "${values[3]}")"
+      echo "created_at = $(quote "${values[4]}")"
+      echo "submitted_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+    } >"$temporary"
+    mv "$temporary" "$state"
+    rm -f "$queued" "$lock"
+    echo "message_id=$id status=submitted"
+  fi
+  exec 9>&-
 done

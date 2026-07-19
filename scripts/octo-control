@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -15,9 +16,12 @@ from octo_lite.runtime import (  # noqa: E402
     GateError,
     append_trace,
     admit_workspace,
+    bind_pass_result,
+    declare_successor_ready,
     exact_fingerprint,
     herdr_label,
     normalize_launch_access,
+    record_acceptance,
     record_failure,
     safe_cleanup,
     initialize_stream,
@@ -26,7 +30,13 @@ from octo_lite.runtime import (  # noqa: E402
     transfer_owner,
     transition_linear,
     verdict_body,
+    verify_receipt_bootstrap,
 )
+
+
+def load_toml(path: Path) -> dict:
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
 
 
 def run_json(argv: list[str]) -> dict:
@@ -62,10 +72,28 @@ def command_linear_read(args) -> dict:
     return linear_read(args.issue)
 
 
+def _verify_transition_authority(args) -> None:
+    if bool(args.stream) == bool(args.receipt):
+        raise GateError("exactly one of --stream or --receipt required")
+    if args.stream:
+        stream_state = load_toml(Path(args.stream) / "stream.toml")
+        if stream_state.get("child_session") != args.caller:
+            raise GateError("caller is not the exact stream owner")
+        return
+    receipt = load_toml(Path(args.receipt))
+    if receipt.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("caller receipt bootstrap not verified")
+    if receipt.get("issue", {}).get("identifier") != args.issue:
+        raise GateError("caller receipt issue mismatch")
+    if receipt.get("bootstrap", {}).get("provider_session_id") != args.caller:
+        raise GateError("caller is not the exact receipt-bound session")
+
+
 def command_linear_transition(args) -> dict:
     allowed = {("Todo", "In Progress"), ("In Progress", "Awaiting Accept")}
     if (args.expected, args.target) not in allowed:
         raise GateError("stream orchestrator transition not allowed")
+    _verify_transition_authority(args)
 
     def read():
         return linear_read(args.issue)["issue"]
@@ -150,8 +178,6 @@ def command_owner(args) -> dict:
     handoff = Path(args.handoff)
     if not handoff.is_file():
         raise GateError("immutable handoff missing")
-    if not args.successor_ready:
-        raise GateError("successor readiness required")
     return transfer_owner(
         Path(args.owner_file),
         args.expected_owner,
@@ -160,7 +186,26 @@ def command_owner(args) -> dict:
         str(Path(args.control_dir).resolve()),
         caller=args.caller,
         handoff=handoff,
-        successor_ready=args.successor_ready,
+        successor_readiness_path=Path(args.successor_readiness),
+    )
+
+
+def command_successor_ready(args) -> dict:
+    return declare_successor_ready(
+        Path(args.path), caller=args.caller, session_id=args.session_id, handoff_revision=args.handoff_revision,
+    )
+
+
+def command_accept(args) -> dict:
+    return record_acceptance(
+        Path(args.path),
+        Path(args.owner_file),
+        caller=args.caller,
+        issue=args.issue,
+        pr=args.pr,
+        head=args.head,
+        verdict_reference=args.verdict_reference,
+        decision=args.decision,
     )
 
 
@@ -247,6 +292,17 @@ def command_stream_status(args) -> dict:
     return state
 
 
+def command_bootstrap_ack(args) -> dict:
+    verify_receipt_bootstrap(Path(args.receipt), args.provider_session_id)
+    return {"verified": True}
+
+
+def command_result_bind(args) -> dict:
+    result = json.loads(Path(args.result).read_text())
+    binding = bind_pass_result(Path(args.receipt), args.role, result)
+    return {"binding": binding}
+
+
 def command_workspace_admit(args) -> dict:
     root = Path(args.worktree_root)
     target = Path(args.worktree)
@@ -298,6 +354,9 @@ def parser() -> argparse.ArgumentParser:
     transition.add_argument("--gate", required=True)
     transition.add_argument("--blocker", default="none")
     transition.add_argument("--next-action", default="none")
+    transition.add_argument("--caller", required=True)
+    transition.add_argument("--stream")
+    transition.add_argument("--receipt")
     transition.set_defaults(run=command_linear_transition)
 
     verdict = sub.add_parser("verdict-publish")
@@ -319,8 +378,26 @@ def parser() -> argparse.ArgumentParser:
     owner.add_argument("--revision", type=int, required=True)
     owner.add_argument("--control-dir", required=True)
     owner.add_argument("--handoff", required=True)
-    owner.add_argument("--successor-ready", action="store_true")
+    owner.add_argument("--successor-readiness", required=True)
     owner.set_defaults(run=command_owner)
+
+    successor_ready = sub.add_parser("successor-ready")
+    successor_ready.add_argument("--path", required=True)
+    successor_ready.add_argument("--caller", required=True)
+    successor_ready.add_argument("--session-id", required=True)
+    successor_ready.add_argument("--handoff-revision", type=int, required=True)
+    successor_ready.set_defaults(run=command_successor_ready)
+
+    accept = sub.add_parser("accept")
+    accept.add_argument("--path", required=True)
+    accept.add_argument("--owner-file", required=True)
+    accept.add_argument("--caller", required=True)
+    accept.add_argument("--issue", required=True)
+    accept.add_argument("--pr", required=True)
+    accept.add_argument("--head", required=True)
+    accept.add_argument("--verdict-reference", required=True)
+    accept.add_argument("--decision", choices=["accept", "reject"], required=True)
+    accept.set_defaults(run=command_accept)
 
     trace = sub.add_parser("trace-append")
     trace.add_argument("--trace", required=True)
@@ -376,6 +453,17 @@ def parser() -> argparse.ArgumentParser:
     stream_status.add_argument("--blocker", default="none")
     stream_status.add_argument("--next-action", default="none")
     stream_status.set_defaults(run=command_stream_status)
+
+    bootstrap_ack = sub.add_parser("bootstrap-ack")
+    bootstrap_ack.add_argument("--receipt", required=True)
+    bootstrap_ack.add_argument("--provider-session-id", required=True)
+    bootstrap_ack.set_defaults(run=command_bootstrap_ack)
+
+    result_bind = sub.add_parser("result-bind")
+    result_bind.add_argument("--receipt", required=True)
+    result_bind.add_argument("--role", required=True)
+    result_bind.add_argument("--result", required=True)
+    result_bind.set_defaults(run=command_result_bind)
 
     admission = sub.add_parser("workspace-admit")
     admission.add_argument("--worktree", required=True)

@@ -20,11 +20,12 @@ Judge exact-head QA evidence against every declared story and acceptance criteri
 
 ## Rules
 
+- Read the exact receipt before review. Stop on any mismatch.
 - Inspect cited pixels. Logs and code only corroborate.
 - Missing, stale, mismatched, or unreadable evidence never passes.
 - Require video only where screenshots cannot prove the criterion.
 - Record literal observation, artifact pointer, and concrete fix instruction for each non-pass.
-- Bind verdict to issue, PR, HEAD, manifest, and this receipt.
+- Bind verdict to issue, PR, HEAD, manifest, and this receipt. Bind exact output with `result-bind`.
 
 ## Never
 

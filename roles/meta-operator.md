@@ -21,7 +21,7 @@ Own the reconciled whole-operation view. Keep work moving without flooding conte
 
 ## Rules
 
-- Verify the launch receipt. Emit `BOOTSTRAP_ACK` with the exact spawn ID before mutation.
+- Verify the launch receipt. Run `bootstrap-ack` for durable BOOTSTRAP_ACK before mutation.
 - Verify outcome-critical claims at their source.
 - On `sweep`, run `operator-sweep`; judge its compact delta, not every leaf log.
 - Remain sole writer of the whole-operation view.

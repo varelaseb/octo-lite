@@ -19,10 +19,10 @@ while (($#)); do
     *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
   esac
 done
-[[ -n "$workspace" && -n "$name" && -n "$role" && $# -gt 0 ]] || exit 64
+[[ -n "$workspace" && -n "$name" && -n "$role" && -n "$receipt" && $# -gt 0 ]] || exit 64
 [[ -d "$cwd" ]] || exit 66
 cwd="$(cd "$cwd" && pwd -P)"
-[[ -z "$receipt" || -f "$receipt" ]] || exit 66
+[[ -f "$receipt" ]] || exit 66
 
 value_after() {
   local wanted="$1" previous=""
@@ -67,20 +67,32 @@ for _ in $(seq 1 10); do
 done
 [[ -n "$pane" ]] || exit 1
 
+receipt_verified() {
+  python3 - "$receipt" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    data = tomllib.load(f)
+bootstrap = data.get('bootstrap', {})
+ok = bootstrap.get('verified') is True and bool(bootstrap.get('provider_session_id'))
+print('yes' if ok else 'no')
+PY
+}
+
 startup="pending"
-for _ in $(seq 1 30); do
+retries="${HERDR_SPAWN_BOOTSTRAP_RETRIES:-30}"
+for _ in $(seq 1 "$retries"); do
   text="$(herdr pane read "$pane" --source visible --lines 50 2>/dev/null)"
   if grep -qiE 'Quick safety check|trust this folder' <<<"$text"; then
     herdr pane run "$pane" "" >/dev/null 2>&1
     sleep 1
     continue
   fi
-  if grep -q 'BOOTSTRAP_ACK' <<<"$text" && grep -Fq "$name" <<<"$text"; then
+  if [[ "$(receipt_verified)" == "yes" ]]; then
     startup="acknowledged"
     break
   fi
   sleep 2
 done
 
-echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=$startup receipt=${receipt:-none}"
+echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=$startup receipt=$receipt"
 [[ "$startup" == acknowledged ]] || exit 2

@@ -21,7 +21,7 @@ Turn an operator idea into aligned, testable, reviewable scope before implementa
 
 ## Rules
 
-- Verify the launch receipt. Emit `BOOTSTRAP_ACK` with the exact spawn ID before mutation.
+- Verify the launch receipt. Run `bootstrap-ack` for durable BOOTSTRAP_ACK before mutation.
 - Spec owns detailed behavior. Linear owns identity, high-level decisions, context, non-goals, and state.
 - Record each ruling immediately in durable sources.
 - Walk through user story and acceptance criteria with the operator.

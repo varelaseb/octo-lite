@@ -33,11 +33,17 @@ print(data['kind'])
 print(data.get('artifact', ''))
 print(data['message'])
 print(data['created_at'])
+print(data['status'])
 PY
 )
 target="${values[0]}"
-[[ "$by" == "$target" || "$target" == *:p* ]] || {
+current_status="${values[5]}"
+[[ "$by" == "$target" ]] || {
   echo "herdr-ack: acknowledger does not match target" >&2
+  exit 65
+}
+[[ "$current_status" == "submitted" ]] || {
+  echo "herdr-ack: message not yet submitted" >&2
   exit 65
 }
 [[ -n "$artifact" ]] || artifact="${values[2]}"

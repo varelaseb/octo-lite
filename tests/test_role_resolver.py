@@ -168,12 +168,21 @@ class RoleResolverTest(unittest.TestCase):
         self.assertEqual(parsed["runtime"]["effort"], "xhigh")
         self.assertEqual(parsed["runtime"]["mode"], "auto")
         self.assertEqual(parsed["skills"]["resolved"], ["tdd", "commit", "octo-lite-github", "push", "python"])
+        self.assertEqual(
+            parsed["skills"]["paths"],
+            [f"skills/{name}/SKILL.md" for name in parsed["skills"]["resolved"]],
+        )
+        self.assertEqual(len(parsed["skills"]["blobs"]), len(parsed["skills"]["resolved"]))
+        for blob in parsed["skills"]["blobs"]:
+            self.assertRegex(blob, r"^[0-9a-f]{40,64}$")
         self.assertRegex(parsed["role"]["contract_blob"], r"^[0-9a-f]{40,64}$")
         self.assertRegex(parsed["role"]["mapping_revision"], r"^[0-9a-f]{40,64}$")
         self.assertRegex(parsed["workspace"]["instructions_blob"], r"^[0-9a-f]{40,64}$")
         self.assertRegex(parsed["workspace"]["starting_head"], r"^[0-9a-f]{40}$")
         self.assertEqual(parsed["access"]["execution_location"], "remote")
         self.assertEqual(parsed["access"]["operator_loopback"], False)
+        self.assertEqual(parsed["bootstrap"]["verified"], False)
+        self.assertEqual(parsed["bootstrap"]["provider_session_id"], "")
         self.assertEqual(acknowledgment["spawn_id"], "dry-run-1")
         self.assertEqual(acknowledgment["role"], "implementer")
         self.assertEqual(acknowledgment["contract_blob"], parsed["role"]["contract_blob"])
@@ -181,6 +190,7 @@ class RoleResolverTest(unittest.TestCase):
         self.assertEqual(acknowledgment["model"], "claude-sonnet-5")
         self.assertEqual(acknowledgment["mode"], "auto")
         self.assertEqual(acknowledgment["skills"], parsed["skills"]["resolved"])
+        self.assertEqual(acknowledgment["skill_blobs"], parsed["skills"]["blobs"])
         self.assertEqual(acknowledgment["instructions_blob"], parsed["workspace"]["instructions_blob"])
         self.assertEqual(acknowledgment["starting_head"], parsed["workspace"]["starting_head"])
         self.resolver.verify_bootstrap_ack(receipt, acknowledgment)

@@ -74,7 +74,7 @@ python3 "$resolver" resolve meta-operator \
   --execution-location "$execution_location" \
   --operator-loopback "$operator_loopback" \
   --review-delivery "$review_delivery" >"$receipt"
-prompt="Load and acknowledge $receipt, the canonical meta-operator role, target instructions, and $brief. Verify cwd and access facts. Write current state to $status. Begin read-only inventory. Do not mutate before bootstrap acknowledgment."
+prompt="Load and acknowledge $receipt, the canonical meta-operator role, target instructions, and $brief. Verify cwd and access facts. Run octo-control bootstrap-ack --receipt $receipt --provider-session-id <your exact session ID> before any mutation. Write current state to $status. Begin read-only inventory."
 "$spawn" --workspace "$workspace" --name "$name" --label "🧠 operator" --cwd "$cwd" --role meta-operator --receipt "$receipt" -- \
   claude --agent meta-operator --model claude-fable-5 --effort xhigh --permission-mode auto -n "$name" "$prompt"
 

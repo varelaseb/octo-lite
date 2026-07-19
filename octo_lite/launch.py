@@ -67,6 +67,8 @@ def _validate_envelope_shape(envelope: Mapping[str, Any]) -> None:
         "repo",
         "pr",
         "branch",
+        "purpose",
+        "starting_head",
         "shaping_head",
         "spec_revision",
         "linear_revision",
@@ -75,29 +77,39 @@ def _validate_envelope_shape(envelope: Mapping[str, Any]) -> None:
         "pr_head",
         "pr_base",
         "topology_revision",
-        "shaping_verdict",
-        "shaping_verdict_head",
-        "shaping_reviewer_receipt",
         "conversation_cutoff",
     ):
         _required(envelope, name)
-    if envelope["linear_state"] not in {"Shaped", "Todo"}:
-        raise GateError("Linear state must be Shaped or Todo")
-    if envelope["shaping_verdict"] != "clear":
-        raise GateError("shaping verdict not clear")
-    if envelope["shaping_verdict_head"] != envelope["shaping_head"]:
-        raise GateError("shaping verdict HEAD mismatch")
-    if envelope["pr_head"] != envelope["shaping_head"]:
+    if envelope["purpose"] not in {"shaping-review", "delivery"}:
+        raise GateError("purpose must be shaping-review or delivery")
+    if envelope["pr_head"] != envelope["starting_head"]:
         raise GateError("PR HEAD mismatch")
+    if envelope["purpose"] == "shaping-review":
+        if envelope["linear_state"] not in {"Ideas", "Todo", "Shaped"}:
+            raise GateError("Linear state invalid for shaping review")
+        if envelope["shaping_head"] != envelope["starting_head"]:
+            raise GateError("shaping review must start at current HEAD")
+    else:
+        if envelope["linear_state"] not in {"Shaped", "Todo"}:
+            raise GateError("Linear state must be Shaped or Todo")
+        for name in ("shaping_verdict", "shaping_verdict_head", "shaping_reviewer_receipt"):
+            _required(envelope, name)
+        if envelope["shaping_verdict"] != "clear":
+            raise GateError("shaping verdict not clear")
+        if envelope["shaping_verdict_head"] != envelope["shaping_head"]:
+            raise GateError("shaping verdict HEAD mismatch")
     for name, allow_empty in (
         ("spec_blobs", False),
         ("adr_blobs", True),
-        ("shaping_verdict_inputs", False),
         ("acceptance_criteria", False),
     ):
         value = envelope.get(name)
         if not isinstance(value, list) or (not allow_empty and not value):
             raise GateError(f"{name.replace('_', ' ')} required")
+    if envelope["purpose"] == "delivery":
+        inputs = envelope.get("shaping_verdict_inputs")
+        if not isinstance(inputs, list) or not inputs:
+            raise GateError("shaping verdict inputs required")
     claims = envelope.get("resource_claims")
     if not isinstance(claims, Mapping) or set(claims) != {
         "branch", "fixtures", "ports", "pids", "artifact_roots",
@@ -199,7 +211,7 @@ def _verify_sources(
     if exact_fingerprint(linear) != envelope["linear_fingerprint"]:
         raise GateError("Linear fingerprint mismatch")
 
-    if pull.get("headRefOid") != envelope["pr_head"]:
+    if pull.get("headRefOid") != envelope["starting_head"]:
         raise GateError("PR HEAD mismatch")
     if pull.get("baseRefName") != envelope["pr_base"]:
         raise GateError("PR base mismatch")
@@ -208,20 +220,21 @@ def _verify_sources(
     if str(pull.get("url")) != str(envelope["pr"]):
         raise GateError("PR identity mismatch")
 
-    verdict = _parse_verdict(pull.get("comments"))
-    expected_verdict = {
-        "review_type": "shaping",
-        "verdict": "clear",
-        "head": envelope["shaping_head"],
-        "bound_inputs": envelope["shaping_verdict_inputs"],
-        "reviewer_receipt": envelope["shaping_reviewer_receipt"],
-    }
-    mismatches = [name for name, value in expected_verdict.items() if verdict.get(name) != value]
-    if mismatches:
-        raise GateError(f"shaping verdict mismatch: {', '.join(mismatches)}")
+    if envelope["purpose"] == "delivery":
+        verdict = _parse_verdict(pull.get("comments"))
+        expected_verdict = {
+            "review_type": "shaping",
+            "verdict": "clear",
+            "head": envelope["shaping_head"],
+            "bound_inputs": envelope["shaping_verdict_inputs"],
+            "reviewer_receipt": envelope["shaping_reviewer_receipt"],
+        }
+        mismatches = [name for name, value in expected_verdict.items() if verdict.get(name) != value]
+        if mismatches:
+            raise GateError(f"shaping verdict mismatch: {', '.join(mismatches)}")
 
-    _verify_blobs(repo, envelope["shaping_head"], envelope["spec_blobs"], "spec")
-    _verify_blobs(repo, envelope["shaping_head"], envelope["adr_blobs"], "ADR")
+    _verify_blobs(repo, envelope["starting_head"], envelope["spec_blobs"], "spec")
+    _verify_blobs(repo, envelope["starting_head"], envelope["adr_blobs"], "ADR")
 
 
 def _worktree_common_dir(path: Path) -> Path:
@@ -505,7 +518,7 @@ def prepare_launch(
         repo,
         worktree_root,
         worktree,
-        str(envelope["shaping_head"]),
+        str(envelope["starting_head"]),
         minimum_free_bytes=int(envelope["minimum_free_bytes"]),
         conflicts=list(envelope["resource_conflicts"]),
         provider_overloaded=bool(envelope["provider_overloaded"]),
@@ -514,7 +527,7 @@ def prepare_launch(
         repo,
         worktree_root,
         worktree,
-        str(envelope["shaping_head"]),
+        str(envelope["starting_head"]),
     )
 
     receipt = build_launch_receipt(
@@ -531,6 +544,7 @@ def prepare_launch(
     )
     receipt["ready"] = False
     receipt["manifest_type"] = "octo-lite-pass"
+    receipt["purpose"] = str(envelope["purpose"])
     receipt["workspace"]["remote"] = origin
     receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
     receipt["issue"] = {
@@ -556,11 +570,12 @@ def prepare_launch(
     }
     receipt["topology"] = {"revision": int(envelope["topology_revision"])}
     receipt["resources"] = dict(envelope["resource_claims"])
+    is_delivery = envelope["purpose"] == "delivery"
     receipt["prior_gates"] = {
-        "shaping_verdict": "clear",
-        "shaping_verdict_head": str(envelope["shaping_verdict_head"]),
-        "shaping_verdict_inputs": list(envelope["shaping_verdict_inputs"]),
-        "shaping_reviewer_receipt": str(envelope["shaping_reviewer_receipt"]),
+        "shaping_verdict": "clear" if is_delivery else "none",
+        "shaping_verdict_head": str(envelope["shaping_verdict_head"]) if is_delivery else "",
+        "shaping_verdict_inputs": list(envelope["shaping_verdict_inputs"]) if is_delivery else [],
+        "shaping_reviewer_receipt": str(envelope["shaping_reviewer_receipt"]) if is_delivery else "",
         "acceptance_criteria": list(envelope["acceptance_criteria"]),
     }
     receipt["bootstrap"] = {"verified": False, "provider_session_id": ""}

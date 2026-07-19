@@ -21,8 +21,10 @@ Implement signed behavior in one owned worktree, branch, and evolving PR.
 
 ## Rules
 
-- Prove intended red before production change. Record red and green commands and results.
+- Read the exact receipt before mutation. Stop on any mismatch.
+- Prove intended red before production change. Record red and green as exact command, exit status, outcome, and artifact.
 - Refetch bound sources before mutation.
+- Bind exact output to the verified receipt with `result-bind`.
 - Preserve unrelated changes. Use target validation.
 - Fix passes use fresh instances on the same branch and PR.
 

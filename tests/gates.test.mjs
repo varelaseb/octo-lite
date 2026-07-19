@@ -48,14 +48,31 @@ test('ready envelope rejects wrong lifecycle and incomplete bindings', () => {
   assert.throws(() => assertReadyEnvelope({ ...ready, pr_head: 'old' }), /PR head/)
 })
 
-test('pass receipt binds fresh role and exact starting head', () => {
-  const receipt = {
+function fullReceipt() {
+  return {
     spawn_id: 'spawn-1',
+    parent: 'issue-orchestrator',
+    reply_route: 'herdr:issue-orchestrator',
     ready: true,
-    role: { name: 'implementer' },
-    workspace: { starting_head: 'abc' },
-    bootstrap: { verified: true },
+    purpose: 'delivery',
+    launch_revision: 'rev-1',
+    role: { name: 'implementer', contract_blob: 'blob-1', mapping_revision: 'map-1' },
+    runtime: { provider: 'anthropic', model: 'claude-sonnet-5' },
+    skills: { resolved: ['tdd', 'commit'], blobs: ['sblob-1', 'sblob-2'] },
+    workspace: { starting_head: 'abc', repo: '/repo', instructions_blob: 'iblob-1' },
+    issue: { identifier: 'TUR-1', fingerprint: 'fp-1' },
+    spec: { revision: 'spec-1', blobs: ['spec/domain.spec.html:spec-1'] },
+    pull_request: { url: 'https://example.test/pr/1', head: 'abc' },
+    topology: { revision: 2 },
+    prior_gates: { shaping_verdict: 'clear', acceptance_criteria: ['works'] },
+    access: { execution_location: 'remote', operator_loopback: false },
+    resources: { branch: 'feature' },
+    bootstrap: { verified: true, provider_session_id: 'provider-session-1' },
   }
+}
+
+test('pass receipt binds fresh role and exact starting head', () => {
+  const receipt = fullReceipt()
   assert.deepEqual(assertPassReceipt(receipt, 'implementer', 'abc'), receipt)
   assert.throws(() => assertPassReceipt(receipt, 'code-reviewer', 'abc'), /role/)
   assert.throws(() => assertPassReceipt(receipt, 'implementer', 'old'), /starting HEAD/)
@@ -65,58 +82,203 @@ test('pass receipt binds fresh role and exact starting head', () => {
   )
 })
 
-test('implementation requires TDD evidence, exact receipt, and new fix head', () => {
-  const result = {
-    head: 'def', receipt: 'spawn-1', red: 'fails', green: 'passes', validation: 'suite', blocked: false,
-  }
-  assert.deepEqual(acceptImplementation('abc', result, 'spawn-1', true), result)
-  assert.throws(() => acceptImplementation('abc', { ...result, red: '' }, 'spawn-1', true), /red/)
-  assert.throws(() => acceptImplementation('abc', { ...result, receipt: 'old' }, 'spawn-1', true), /receipt/)
-  assert.throws(() => acceptImplementation('abc', { ...result, head: 'abc' }, 'spawn-1', true), /new HEAD/)
+test('pass receipt requires the complete bound-input set, not a decorative subset', () => {
+  const receipt = fullReceipt()
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, bootstrap: { verified: true, provider_session_id: '' } }, 'implementer', 'abc'),
+    /provider session/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, skills: { resolved: ['tdd'], blobs: [] } }, 'implementer', 'abc'),
+    /skill blobs/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, issue: {} }, 'implementer', 'abc'),
+    /issue/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, spec: { revision: '', blobs: [] } }, 'implementer', 'abc'),
+    /spec/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, pull_request: { url: '', head: 'abc' } }, 'implementer', 'abc'),
+    /pull request/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, topology: {} }, 'implementer', 'abc'),
+    /topology/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, prior_gates: {} }, 'implementer', 'abc'),
+    /prior gates/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, access: {} }, 'implementer', 'abc'),
+    /access/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, resources: {} }, 'implementer', 'abc'),
+    /resources/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, launch_revision: '' }, 'implementer', 'abc'),
+    /launch revision/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, parent: '' }, 'implementer', 'abc'),
+    /parent/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, reply_route: '' }, 'implementer', 'abc'),
+    /reply route/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, workspace: { starting_head: 'abc', repo: '/repo', instructions_blob: '' } }, 'implementer', 'abc'),
+    /instructions blob/,
+  )
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, role: { name: 'implementer', contract_blob: '', mapping_revision: 'map-1' } }, 'implementer', 'abc'),
+    /contract blob/,
+  )
 })
 
-test('code review rejects wrong head, ambiguous, and missing receipt', () => {
+const BINDING = 'a'.repeat(64)
+
+function proof(overrides = {}) {
+  return {
+    command: 'python3 -m unittest tests.test_launch',
+    exit_status: 1,
+    outcome: 'ModuleNotFoundError: no module named octo_lite.launch',
+    artifact: 'https://example.test/pr/1#issuecomment-1',
+    ...overrides,
+  }
+}
+
+test('implementation requires TDD evidence, exact receipt, new fix head, and exact output binding', () => {
+  const result = {
+    head: 'def', receipt: 'spawn-1', validation: 'suite', blocked: false,
+    red: proof(),
+    green: proof({ exit_status: 0, outcome: 'OK', artifact: 'https://example.test/pr/1#issuecomment-2' }),
+    result_binding: BINDING,
+  }
+  assert.deepEqual(acceptImplementation('abc', result, 'spawn-1', true), result)
+  assert.throws(() => acceptImplementation('abc', { ...result, red: null }, 'spawn-1', true), /red/)
   assert.throws(
-    () => acceptCodeReview('abc', { head: 'old', verdict: 'clear', receipt: 'x', comment_url: 'u' }),
-    /HEAD/,
+    () => acceptImplementation('abc', { ...result, red: proof({ command: '' }) }, 'spawn-1', true),
+    /red/,
   )
   assert.throws(
-    () => acceptCodeReview('abc', { head: 'abc', verdict: 'ambiguous', receipt: 'x', comment_url: 'u' }),
-    /ambiguous/,
+    () => acceptImplementation('abc', { ...result, red: proof({ exit_status: 0 }) }, 'spawn-1', true),
+    /red must fail/,
   )
   assert.throws(
-    () => acceptCodeReview('abc', { head: 'abc', verdict: 'clear', comment_url: 'u' }),
-    /receipt/,
+    () => acceptImplementation('abc', { ...result, green: proof({ exit_status: 1 }) }, 'spawn-1', true),
+    /green must pass/,
+  )
+  assert.throws(() => acceptImplementation('abc', { ...result, receipt: 'old' }, 'spawn-1', true), /receipt/)
+  assert.throws(() => acceptImplementation('abc', { ...result, head: 'abc' }, 'spawn-1', true), /new HEAD/)
+  assert.throws(
+    () => acceptImplementation('abc', { ...result, result_binding: 'not-a-hash' }, 'spawn-1', true),
+    /result binding/,
+  )
+})
+
+const PR = 'https://example.test/pr/1'
+
+function reviewFixture(overrides = {}) {
+  return {
+    head: 'abc', verdict: 'clear', receipt: 'x', comment_url: `${PR}#issuecomment-1`,
+    bound_inputs: ['spec:blob1', 'implementer-receipt:spawn-1'], result_binding: BINDING,
+    ...overrides,
+  }
+}
+
+test('code review rejects wrong head, ambiguous, missing receipt, and unbound output', () => {
+  assert.throws(() => acceptCodeReview('abc', PR, reviewFixture({ head: 'old' })), /HEAD/)
+  assert.throws(() => acceptCodeReview('abc', PR, reviewFixture({ verdict: 'ambiguous' })), /ambiguous/)
+  assert.throws(() => acceptCodeReview('abc', PR, reviewFixture({ receipt: undefined })), /receipt/)
+  assert.throws(
+    () => acceptCodeReview('abc', PR, reviewFixture({ result_binding: undefined })),
+    /result binding/,
+  )
+  assert.throws(
+    () => acceptCodeReview('abc', PR, reviewFixture({ bound_inputs: [] })),
+    /bound inputs/,
+  )
+  assert.throws(
+    () => acceptCodeReview('abc', PR, reviewFixture({ comment_url: 'https://example.test/pr/9#issuecomment-1' })),
+    /comment URL/,
   )
 })
 
 test('blocking review never advances', () => {
   assert.deepEqual(
-    acceptCodeReview('abc', {
-      head: 'abc', verdict: 'blocking', receipt: 'x', comment_url: 'u', findings: ['fix'],
-    }),
+    acceptCodeReview('abc', PR, reviewFixture({ verdict: 'blocking', findings: ['fix'] })),
     { advance: false, findings: ['fix'] },
   )
 })
 
+const MANIFEST = 'https://evidence.test/manifest-1'
+
+function criterion(overrides = {}) {
+  return { criterion: 'loads', status: 'pass', observation: 'renders as expected', ...overrides }
+}
+
+function qaExpected(overrides = {}) {
+  return { issue: 'TUR-1', pr: PR, manifest: MANIFEST, ...overrides }
+}
+
+function qaFixture(overrides = {}) {
+  return {
+    head: 'abc', verdict: 'satisfied', receipt: 'qa-1', packet_url: 'https://evidence.test/1',
+    issue: 'TUR-1', pr: PR, manifest: MANIFEST, criteria: [criterion()], result_binding: BINDING,
+    ...overrides,
+  }
+}
+
 test('backend work still requires fresh qa review', () => {
   assert.equal(evidenceMode(false), 'nonvisual')
   assert.deepEqual(
-    acceptQaReview('abc', {
-      head: 'abc', verdict: 'satisfied', receipt: 'qa-1', packet_url: 'https://evidence.test/1',
-    }),
+    acceptQaReview('abc', qaExpected(), qaFixture()),
     { advance: true, packet_url: 'https://evidence.test/1' },
   )
 })
 
-test('qa review rejects wrong head and missing served packet', () => {
+test('qa review rejects wrong head, missing served packet, and unbound output', () => {
+  assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ head: 'old' })), /HEAD/)
+  assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ packet_url: undefined })), /served packet/)
   assert.throws(
-    () => acceptQaReview('abc', { head: 'old', verdict: 'satisfied', receipt: 'x', packet_url: 'u' }),
-    /HEAD/,
+    () => acceptQaReview('abc', qaExpected(), qaFixture({ result_binding: undefined })),
+    /result binding/,
+  )
+  assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ issue: 'TUR-9' })), /issue/)
+  assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ manifest: 'other' })), /manifest/)
+})
+
+test('qa review requires structured per-criterion proof and only all-pass advances', () => {
+  assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ criteria: [] })), /criteria/)
+  assert.throws(
+    () => acceptQaReview('abc', qaExpected(), qaFixture({ criteria: [criterion({ status: 'fail' })] })),
+    /artifact/,
   )
   assert.throws(
-    () => acceptQaReview('abc', { head: 'abc', verdict: 'satisfied', receipt: 'x' }),
-    /served packet/,
+    () => acceptQaReview('abc', qaExpected(), qaFixture({
+      criteria: [criterion({ status: 'fail', artifact: 'https://evidence.test/1#shot2' })],
+    })),
+    /fix/,
+  )
+  const failing = qaFixture({
+    verdict: 'blocking',
+    criteria: [criterion({ status: 'fail', artifact: 'https://evidence.test/1#shot2', fix: 'add retry' })],
+  })
+  const gate = acceptQaReview('abc', qaExpected(), failing)
+  assert.deepEqual(gate, { advance: false, findings: [failing.criteria[0]] })
+  assert.throws(
+    () => acceptQaReview('abc', qaExpected(), qaFixture({
+      verdict: 'satisfied',
+      criteria: [criterion({ status: 'fail', artifact: 'https://evidence.test/1#shot2', fix: 'add retry' })],
+    })),
+    /verdict does not match/,
   )
 })
 
@@ -127,7 +289,7 @@ test('final publication readback binds the complete acceptance card', () => {
     pr: 'https://example.test/pr/1',
     head: 'abc',
     verdict: 'satisfied',
-    story_ids: ['TF-US-1-01'],
+    story_ids: ['US-1-01'],
     criteria_covered: ['works'],
     packet_url: 'https://evidence.test/1',
   }

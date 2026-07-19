@@ -83,9 +83,12 @@ Stream orchestrators may use only:
 Todo -> In Progress -> Awaiting Accept
 ```
 
-Use `octo-control linear-transition`. It compares expected state, mutates once,
-reads back, updates child status, and notifies the parent. Acceptance, merge,
-staging, preproduction, and live transitions are operator-owned helpers.
+Use `octo-control linear-transition`. It verifies the exact caller against
+stream ownership or a bound role receipt, compares expected state, mutates
+once, reads back, updates child status, and notifies the parent. Acceptance,
+merge, staging, preproduction, and live transitions are operator-owned
+helpers. Use `octo-control accept` for the exact-HEAD acceptance record; it
+verifies the caller against `operator-owner.toml` and never infers a decision.
 
 ## Topology
 

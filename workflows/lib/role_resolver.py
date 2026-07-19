@@ -198,6 +198,13 @@ def load_registry(root: Path | str) -> Registry:
     return Registry(root, roles, concise, forbid_dashes, raw_spawn, _git_blob(mapping))
 
 
+def _skill_blob(root: Path, skill: str) -> str:
+    path = _inside(root, f"skills/{skill}/SKILL.md", "skills")
+    if not path.is_file():
+        raise ValueError(f"skill contract missing: {skill}")
+    return _git_blob(path)
+
+
 def resolve_role(registry: Registry, role_name: str, capabilities: set[str] | None = None) -> ResolvedRole:
     try:
         role = registry.roles[role_name]
@@ -381,6 +388,8 @@ def build_launch_receipt(
         "skills": {
             "resolved": list(resolved.skills),
             "matched_capabilities": list(resolved.capabilities),
+            "paths": [f"skills/{skill}/SKILL.md" for skill in resolved.skills],
+            "blobs": [_skill_blob(root, skill) for skill in resolved.skills],
         },
         "workspace": {
             "repo": str(repo),
@@ -394,6 +403,7 @@ def build_launch_receipt(
             "operator_loopback": operator_loopback,
             "review_delivery": review_delivery,
         },
+        "bootstrap": {"verified": False, "provider_session_id": ""},
     }
 
 
@@ -405,7 +415,7 @@ def render_receipt(receipt: dict[str, Any]) -> str:
         f"reply_route = {_toml_string(receipt['reply_route'])}",
         f"ready = {str(receipt['ready']).lower()}",
     ]
-    for section in ("role", "runtime", "skills", "workspace", "access"):
+    for section in ("role", "runtime", "skills", "workspace", "access", "bootstrap"):
         lines.extend(["", f"[{section}]"])
         for key, value in receipt[section].items():
             if isinstance(value, bool):
@@ -443,6 +453,7 @@ json.dump({
     "session": receipt["runtime"]["session"],
     "service_tier": receipt["runtime"]["service_tier"],
     "skills": receipt["skills"]["resolved"],
+    "skill_blobs": receipt["skills"]["blobs"],
     "repo": receipt["workspace"]["repo"],
     "worktree": receipt["workspace"]["worktree"],
     "instructions_blob": receipt["workspace"]["instructions_blob"],
@@ -477,6 +488,7 @@ def verify_bootstrap_ack(receipt: dict[str, Any], acknowledgment: dict[str, Any]
         "session": receipt["runtime"]["session"],
         "service_tier": receipt["runtime"]["service_tier"],
         "skills": receipt["skills"]["resolved"],
+        "skill_blobs": receipt["skills"]["blobs"],
         "repo": receipt["workspace"]["repo"],
         "worktree": receipt["workspace"]["worktree"],
         "instructions_blob": receipt["workspace"]["instructions_blob"],

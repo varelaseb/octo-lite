@@ -60,16 +60,23 @@ if [[ "$kind" != "info" ]]; then
   suffix=" [msg:$id kind:$kind] Acknowledge with: herdr-ack $id acknowledged --by $target"
 fi
 
-if dialog_open; then
+queue_and_exit() {
   write_state queued
   printf '%s\n' "$id" >"$inbox/$id"
   echo "herdr-say: queued message_id=$id" >&2
   exit 75
+}
+
+if dialog_open; then
+  queue_and_exit
 fi
 
-write_state submitted
-herdr agent send "$target" "$message$suffix" >/dev/null 2>&1 \
-  || herdr agent send "$pane" "$message$suffix" >/dev/null 2>&1
-sleep 0.5
-herdr pane run "$pane" "" >/dev/null 2>&1
-echo "message_id=$id status=submitted"
+if herdr agent send "$target" "$message$suffix" >/dev/null 2>&1 \
+  || herdr agent send "$pane" "$message$suffix" >/dev/null 2>&1; then
+  sleep 0.5
+  herdr pane run "$pane" "" >/dev/null 2>&1
+  write_state submitted
+  echo "message_id=$id status=submitted"
+else
+  queue_and_exit
+fi

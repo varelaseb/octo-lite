@@ -75,7 +75,23 @@ def _toml_value(value):
         return str(value)
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     raise TypeError(f"unsupported TOML value: {type(value).__name__}")
+
+
+def _render_full_receipt(receipt: Mapping[str, object]) -> str:
+    lines: list[str] = []
+    for key, value in receipt.items():
+        if isinstance(value, Mapping):
+            continue
+        lines.append(f"{key} = {_toml_value(value)}")
+    for section, values in receipt.items():
+        if not isinstance(values, Mapping):
+            continue
+        lines.extend(["", f"[{section}]"])
+        lines.extend(f"{key} = {_toml_value(value)}" for key, value in values.items())
+    return "\n".join(lines) + "\n"
 
 
 def _toml_document(values: Mapping[str, object]) -> str:
@@ -242,6 +258,16 @@ def verdict_body(
     )
 
 
+def declare_successor_ready(path: Path, *, caller: str, session_id: str, handoff_revision: int) -> dict:
+    if caller != session_id:
+        raise GateError("only the successor may declare its own readiness")
+    if handoff_revision < 1:
+        raise GateError("handoff revision must be positive")
+    state = {"schema_version": 1, "session_id": session_id, "handoff_revision": handoff_revision}
+    _atomic_write(path, _toml_document(state))
+    return state
+
+
 def transfer_owner(
     path: Path,
     expected_owner: str,
@@ -251,12 +277,13 @@ def transfer_owner(
     *,
     caller: str,
     handoff: Path,
-    successor_ready: bool,
+    successor_readiness_path: Path,
 ) -> dict:
     if caller != expected_owner:
         raise GateError("caller is not current expected owner")
-    if not successor_ready:
-        raise GateError("successor readiness required")
+    readiness = _read_toml(successor_readiness_path)
+    if readiness.get("session_id") != new_owner or readiness.get("handoff_revision") != handoff_revision:
+        raise GateError("successor readiness receipt mismatch")
     if not handoff.is_file() or handoff.name != f"{handoff_revision:04d}.md":
         raise GateError("immutable handoff revision missing")
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -340,6 +367,59 @@ def transition_linear(
             _atomic_write(progress_path, _toml_document(progress))
 
         return progress
+
+
+def bind_pass_result(receipt_path: Path, role: str, result: Mapping[str, object]) -> str:
+    receipt = _read_toml(receipt_path)
+    if receipt.get("ready") is not True or receipt.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("receipt bootstrap not verified")
+    if receipt.get("role", {}).get("name") != role:
+        raise GateError("result role mismatch")
+    payload = {key: value for key, value in result.items() if key != "result_binding"}
+    binding = exact_fingerprint(payload)
+    receipt["result"] = {"bound": True, "binding": binding}
+    _atomic_write(receipt_path, _render_full_receipt(receipt))
+    return binding
+
+
+def verify_receipt_bootstrap(receipt_path: Path, provider_session_id: str) -> dict:
+    if not provider_session_id:
+        raise GateError("provider session ID required")
+    receipt = _read_toml(receipt_path)
+    receipt["bootstrap"] = {"verified": True, "provider_session_id": provider_session_id}
+    _atomic_write(receipt_path, _render_full_receipt(receipt))
+    return receipt
+
+
+def record_acceptance(
+    path: Path,
+    owner_file: Path,
+    *,
+    caller: str,
+    issue: str,
+    pr: str,
+    head: str,
+    verdict_reference: str,
+    decision: str,
+) -> dict:
+    owner = _read_toml(owner_file)
+    if owner.get("owner_session") != caller:
+        raise GateError("caller is not current operator owner")
+    if decision not in {"accept", "reject"}:
+        raise GateError("decision must be accept or reject")
+    if not all(str(value).strip() for value in (issue, pr, head, verdict_reference)):
+        raise GateError("issue, pr, head, and verdict reference required")
+    record = {
+        "schema_version": 1,
+        "issue": issue,
+        "pr": pr,
+        "head": head,
+        "verdict_reference": verdict_reference,
+        "decision": decision,
+        "decided_by": caller,
+    }
+    _atomic_write(path, _toml_document(record))
+    return record
 
 
 def record_failure(

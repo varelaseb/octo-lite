@@ -9,7 +9,11 @@ from octo_lite.runtime import (
     GateError,
     admit_workspace,
     append_trace,
+    bind_pass_result,
+    declare_successor_ready,
     exact_fingerprint,
+    record_acceptance,
+    verify_receipt_bootstrap,
     herdr_label,
     normalize_launch_access,
     record_failure,
@@ -57,6 +61,8 @@ class RuntimeContractTests(unittest.TestCase):
             handoff = Path(td) / "handoffs" / "0002.md"
             handoff.parent.mkdir()
             handoff.write_text("ready\n")
+            readiness = Path(td) / "ready.toml"
+            declare_successor_ready(readiness, caller="new", session_id="new", handoff_revision=2)
             transfer_owner(
                 owner,
                 "old",
@@ -65,7 +71,7 @@ class RuntimeContractTests(unittest.TestCase):
                 "/control",
                 caller="old",
                 handoff=handoff,
-                successor_ready=True,
+                successor_readiness_path=readiness,
             )
             current = owner.read_text()
             self.assertIn('owner_session = "new"', current)
@@ -79,9 +85,38 @@ class RuntimeContractTests(unittest.TestCase):
                     "/control",
                     caller="old",
                     handoff=handoff,
-                    successor_ready=True,
+                    successor_readiness_path=readiness,
                 )
             self.assertEqual(current, owner.read_text())
+
+    def test_owner_transfer_rejects_mismatched_or_third_party_readiness(self):
+        with tempfile.TemporaryDirectory() as td:
+            owner = Path(td) / "operator-owner.toml"
+            owner.write_text(
+                'schema_version = 1\nowner_session = "old"\nhandoff_revision = 1\ncontrol_dir = "/control"\n'
+            )
+            handoff = Path(td) / "handoffs" / "0002.md"
+            handoff.parent.mkdir()
+            handoff.write_text("ready\n")
+
+            with self.assertRaises(GateError):
+                declare_successor_ready(Path(td) / "bad.toml", caller="someone-else", session_id="new", handoff_revision=2)
+
+            wrong_revision = Path(td) / "wrong-rev.toml"
+            declare_successor_ready(wrong_revision, caller="new", session_id="new", handoff_revision=99)
+            with self.assertRaises(GateError):
+                transfer_owner(
+                    owner, "old", "new", 2, "/control",
+                    caller="old", handoff=handoff, successor_readiness_path=wrong_revision,
+                )
+
+            wrong_session = Path(td) / "wrong-session.toml"
+            declare_successor_ready(wrong_session, caller="impostor", session_id="impostor", handoff_revision=2)
+            with self.assertRaises(GateError):
+                transfer_owner(
+                    owner, "old", "new", 2, "/control",
+                    caller="old", handoff=handoff, successor_readiness_path=wrong_session,
+                )
 
     def test_parent_owns_brief_and_child_owns_status(self):
         with tempfile.TemporaryDirectory() as td:
@@ -301,6 +336,79 @@ class RuntimeContractTests(unittest.TestCase):
                     conflicts=["fixture:user-1"],
                     provider_overloaded=False,
                 )
+
+    def test_bind_pass_result_requires_verified_bootstrap_and_matching_role(self):
+        with tempfile.TemporaryDirectory() as td:
+            receipt = Path(td) / "launch.toml"
+            receipt.write_text(
+                'schema_version = 1\nspawn_id = "spawn-1"\nready = true\n\n'
+                '[role]\nname = "implementer"\n\n[bootstrap]\nverified = true\n'
+                'provider_session_id = "provider-1"\n'
+            )
+            result = {"head": "def", "receipt": "spawn-1", "red": "fails", "green": "passes", "validation": "suite"}
+            binding = bind_pass_result(receipt, "implementer", result)
+            self.assertRegex(binding, r"^[0-9a-f]{64}$")
+            with receipt.open("rb") as handle:
+                import tomllib as _toml
+                stored = _toml.load(handle)
+            self.assertEqual(binding, stored["result"]["binding"])
+            self.assertTrue(stored["result"]["bound"])
+
+            with self.assertRaises(GateError):
+                bind_pass_result(receipt, "code-reviewer", result)
+
+            unverified = Path(td) / "unverified.toml"
+            unverified.write_text(
+                'schema_version = 1\nspawn_id = "spawn-2"\nready = false\n\n'
+                '[role]\nname = "implementer"\n\n[bootstrap]\nverified = false\n'
+                'provider_session_id = ""\n'
+            )
+            with self.assertRaises(GateError):
+                bind_pass_result(unverified, "implementer", result)
+
+    def test_verify_receipt_bootstrap_durably_flips_verified_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            receipt = Path(td) / "launch.toml"
+            receipt.write_text(
+                'schema_version = 1\nspawn_id = "operator-1"\nready = true\n\n'
+                '[role]\nname = "meta-operator"\n\n[bootstrap]\nverified = false\n'
+                'provider_session_id = ""\n'
+            )
+            updated = verify_receipt_bootstrap(receipt, "provider-session-1")
+            self.assertTrue(updated["bootstrap"]["verified"])
+            self.assertEqual("provider-session-1", updated["bootstrap"]["provider_session_id"])
+            with receipt.open("rb") as handle:
+                import tomllib as _toml
+                stored = _toml.load(handle)
+            self.assertTrue(stored["bootstrap"]["verified"])
+            self.assertEqual("meta-operator", stored["role"]["name"])
+            with self.assertRaises(GateError):
+                verify_receipt_bootstrap(receipt, "")
+
+    def test_record_acceptance_verifies_operator_caller_and_never_infers(self):
+        with tempfile.TemporaryDirectory() as td:
+            owner_file = Path(td) / "operator-owner.toml"
+            owner_file.write_text(
+                'schema_version = 1\nowner_session = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "/control"\n'
+            )
+            path = Path(td) / "acceptance.toml"
+            with self.assertRaises(GateError):
+                record_acceptance(
+                    path, owner_file, caller="not-operator", issue="TUR-1", pr="https://x/pr/1",
+                    head="abc", verdict_reference="https://x/pr/1#c1", decision="accept",
+                )
+            self.assertFalse(path.exists())
+            with self.assertRaises(GateError):
+                record_acceptance(
+                    path, owner_file, caller="operator-1", issue="TUR-1", pr="https://x/pr/1",
+                    head="abc", verdict_reference="https://x/pr/1#c1", decision="maybe",
+                )
+            record = record_acceptance(
+                path, owner_file, caller="operator-1", issue="TUR-1", pr="https://x/pr/1",
+                head="abc", verdict_reference="https://x/pr/1#c1", decision="reject",
+            )
+            self.assertEqual("reject", record["decision"])
+            self.assertEqual("operator-1", record["decided_by"])
 
     def test_compact_herdr_label_contract(self):
         self.assertEqual("🧠 operator", herdr_label(kind="operator"))

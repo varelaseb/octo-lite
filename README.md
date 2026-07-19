@@ -13,8 +13,11 @@ client, product, or engagement.
 ## What It Provides
 
 - A user-facing Issue Shaper workflow for turning ideas or rough Linear/GitHub
-  issues into clear, spec-backed work.
-- A native Codex subagent loop for implementer and reviewer passes.
+  issues into clear, spec-backed work, plus an independent fresh shaping
+  review before readiness.
+- A native Claude Workflow delivery loop for fresh implementer, code-reviewer,
+  QA-capture, and QA-reviewer passes, with Codex relays for shaping and review
+  roles.
 - A cross-client meta-operator launcher for consolidating and supervising
   long-running Herdr workstreams.
 - Templates bundled inside skills, not copied as top-level target repo
@@ -91,9 +94,13 @@ idea or rough Linear/GitHub issue
   -> specs/ADRs/repo init where needed
   -> operator approval
   -> Linear issue/spec updates, or GitHub issue body for GitHub-first work
-  -> ready status/approval
-  -> implementer/reviewer loop
-  -> human PR review
+  -> evolving draft PR
+  -> fresh shaping review (clear verdict required)
+  -> implement with spec-derived red, green, refactor
+  -> fresh code review, fresh fix when blocking
+  -> QA capture and fresh QA review when user-facing
+  -> operator acceptance
+  -> merge and lifecycle transition
 ```
 
 During shaping, the draft file is the canonical working artifact. In

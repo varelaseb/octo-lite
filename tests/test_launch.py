@@ -71,6 +71,8 @@ class LaunchBoundaryTests(unittest.TestCase):
             "repo": "org/repo",
             "pr": self.pr["url"],
             "branch": "feature",
+            "purpose": "delivery",
+            "starting_head": self.head,
             "shaping_head": self.head,
             "spec_revision": self.spec_blob,
             "linear_revision": self.issue["updatedAt"],
@@ -157,6 +159,38 @@ class LaunchBoundaryTests(unittest.TestCase):
         self.assertNotIn("Edit", bootstrap[bootstrap.index("--tools") + 1])
         self.assertIn("Edit", mutation[mutation.index("--tools") + 1])
         self.assertIn("--resume", mutation)
+
+    def test_shaping_review_purpose_launches_without_prior_verdict(self) -> None:
+        envelope = dict(self.envelope, purpose="shaping-review")
+        for field in (
+            "shaping_verdict", "shaping_verdict_head", "shaping_reviewer_receipt", "shaping_verdict_inputs",
+        ):
+            envelope.pop(field, None)
+        pr_without_verdict = dict(self.pr, comments=[])
+        prepared = self.prepare(envelope=envelope, read_pr=lambda _repo, _pr: pr_without_verdict)
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertEqual("shaping-review", receipt["purpose"])
+        self.assertEqual(self.head, receipt["workspace"]["starting_head"])
+
+    def test_delivery_purpose_launches_at_current_head_retaining_shaping_verdict_binding(self) -> None:
+        (self.repo / "b").write_text("advance\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "b"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "fix"], check=True)
+        current_head = self.git("rev-parse", "HEAD")
+        self.assertNotEqual(self.head, current_head)
+
+        envelope = dict(self.envelope, starting_head=current_head, pr_head=current_head)
+        advanced_pr = dict(self.pr, headRefOid=current_head)
+        prepared = self.prepare(envelope=envelope, read_pr=lambda _repo, _pr: advanced_pr)
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertEqual(current_head, receipt["workspace"]["starting_head"])
+        self.assertEqual(self.head, receipt["pull_request"]["shaping_head"])
+        self.assertEqual("delivery", receipt["purpose"])
+
+    def test_delivery_purpose_still_requires_clear_verdict(self) -> None:
+        envelope = dict(self.envelope, shaping_verdict="blocking")
+        with self.assertRaisesRegex(GateError, "shaping verdict not clear"):
+            self.prepare(envelope=envelope)
 
     def test_stale_linear_or_pr_head_fails_before_worktree(self) -> None:
         stale_issue = dict(self.issue, title="changed")
