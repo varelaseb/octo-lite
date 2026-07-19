@@ -6,7 +6,7 @@ owner_file="${OCTO_OPERATOR_OWNER:-${XDG_STATE_HOME:-$HOME/.local/state}/octo-li
 owner="$(python3 - "$owner_file" <<'PY'
 import sys, tomllib
 with open(sys.argv[1], 'rb') as f:
-    print(tomllib.load(f)['owner_session'])
+    print(tomllib.load(f)['owner_route'])
 PY
 )"
 options=()

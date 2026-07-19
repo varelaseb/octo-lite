@@ -5,7 +5,7 @@ generated = true
 raw_spawn = "prohibited"
 contract_path = "roles/reconciler.md"
 contract_blob = "b2f7e0f838ef41c8b8bc97318777da28342eb83b"
-mapping_revision = "be13efe205a64aad9620d526dd808eff91ad976b"
+mapping_revision = "57a1e01ef0d0d6f20809ac497e59df9573752f4d"
 
 [launch]
 role = "reconciler"

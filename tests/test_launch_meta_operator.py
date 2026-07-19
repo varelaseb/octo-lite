@@ -97,7 +97,7 @@ class LaunchMetaOperatorIdentityTests(unittest.TestCase):
         )
         return repo, state_home, env
 
-    def test_named_launch_writes_routable_name_to_owner_state_with_distinct_uuid_receipt(self) -> None:
+    def test_named_launch_writes_routable_name_and_verified_session_id_to_owner_state(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo, state_home, env = self.environment(td)
             result = subprocess.run(
@@ -113,13 +113,17 @@ class LaunchMetaOperatorIdentityTests(unittest.TestCase):
             owner_path = state_home / "octo-lite/operator-owner.toml"
             with owner_path.open("rb") as handle:
                 owner = tomllib.load(handle)
-            self.assertEqual("operator-test-1", owner["owner_session"])
+            self.assertEqual("operator-test-1", owner["owner_route"])
 
             receipt_path = state_home / "octo-lite/operators/operator-test-1/receipt.toml"
             with receipt_path.open("rb") as handle:
                 receipt = tomllib.load(handle)
             self.assertRegex(receipt["spawn_id"], UUID_RE)
-            self.assertNotEqual(receipt["spawn_id"], owner["owner_session"])
+            self.assertTrue(receipt["bootstrap"]["verified"])
+            # The owner identity is the immutable bootstrap-verified provider session,
+            # never the routable Herdr name; the two fields must stay distinct.
+            self.assertEqual(receipt["bootstrap"]["provider_session_id"], owner["owner_session_id"])
+            self.assertNotEqual(owner["owner_session_id"], owner["owner_route"])
 
             say_bin = Path(td) / "say-bin"
             say_bin.mkdir()

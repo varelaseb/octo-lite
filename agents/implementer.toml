@@ -5,7 +5,7 @@ generated = true
 raw_spawn = "prohibited"
 contract_path = "roles/implementer.md"
 contract_blob = "6835537a3e546c4a517114261cab968f55fbfebc"
-mapping_revision = "be13efe205a64aad9620d526dd808eff91ad976b"
+mapping_revision = "57a1e01ef0d0d6f20809ac497e59df9573752f4d"
 
 [launch]
 role = "implementer"

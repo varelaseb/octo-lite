@@ -150,13 +150,14 @@ def initialize_stream(
     stream_id: str,
     parent_session: str,
     child_session: str,
+    child_role: str,
     caller: str,
     brief: str,
 ) -> dict:
     if caller != parent_session:
         raise GateError("only parent may create stream brief")
-    if not all(value.strip() for value in (stream_id, parent_session, child_session, brief)):
-        raise GateError("stream identity and brief required")
+    if not all(value.strip() for value in (stream_id, parent_session, child_session, child_role, brief)):
+        raise GateError("stream identity, role, and brief required")
     if path.exists():
         raise GateError("stream already exists")
     path.mkdir(parents=True)
@@ -165,6 +166,7 @@ def initialize_stream(
         "stream_id": stream_id,
         "parent_session": parent_session,
         "child_session": child_session,
+        "child_role": child_role,
         "brief_revision": 1,
         "status_revision": 0,
     }
@@ -280,10 +282,50 @@ def declare_successor_ready(path: Path, *, caller: str, session_id: str, handoff
     return state
 
 
+def _swap_owner(
+    path: Path,
+    *,
+    expected_owner_session_id: str,
+    expected_owner_route: str,
+    expected_prior_revision: int,
+    new_owner_session_id: str,
+    new_owner_route: str,
+    handoff_revision: int,
+    control_dir: str,
+) -> dict:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = _read_toml(path)
+        if current.get("owner_session_id") != expected_owner_session_id:
+            raise GateError("owner identity mismatch")
+        if current.get("owner_route") != expected_owner_route:
+            raise GateError("owner route mismatch")
+        if current.get("control_dir") != control_dir:
+            raise GateError("control directory mismatch")
+        if int(current.get("handoff_revision", -1)) != expected_prior_revision:
+            raise GateError("handoff revision mismatch")
+        if handoff_revision <= expected_prior_revision:
+            raise GateError("handoff revision must increase")
+        updated = {
+            "schema_version": 1,
+            "owner_session_id": new_owner_session_id,
+            "owner_route": new_owner_route,
+            "handoff_revision": handoff_revision,
+            "control_dir": control_dir,
+        }
+        _atomic_write(path, _toml_document(updated))
+        return updated
+
+
 def transfer_owner(
     path: Path,
-    expected_owner: str,
-    new_owner: str,
+    expected_owner_session_id: str,
+    expected_owner_route: str,
+    expected_prior_revision: int,
+    new_owner_session_id: str,
+    new_owner_route: str,
     handoff_revision: int,
     control_dir: str,
     *,
@@ -291,32 +333,59 @@ def transfer_owner(
     handoff: Path,
     successor_readiness_path: Path,
 ) -> dict:
-    if caller != expected_owner:
+    if caller != expected_owner_session_id:
         raise GateError("caller is not current expected owner")
     readiness = _read_toml(successor_readiness_path)
-    if readiness.get("session_id") != new_owner or readiness.get("handoff_revision") != handoff_revision:
+    if readiness.get("session_id") != new_owner_session_id or readiness.get("handoff_revision") != handoff_revision:
         raise GateError("successor readiness receipt mismatch")
     if not handoff.is_file() or handoff.name != f"{handoff_revision:04d}.md":
         raise GateError("immutable handoff revision missing")
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        current = _read_toml(path)
-        if current.get("owner_session") != expected_owner:
-            raise GateError("owner mismatch")
-        if current.get("control_dir") != control_dir:
-            raise GateError("control directory mismatch")
-        if handoff_revision <= int(current.get("handoff_revision", 0)):
-            raise GateError("handoff revision must increase")
-        updated = {
-            "schema_version": 1,
-            "owner_session": new_owner,
-            "handoff_revision": handoff_revision,
-            "control_dir": control_dir,
-        }
-        _atomic_write(path, _toml_document(updated))
-        return updated
+    return _swap_owner(
+        path,
+        expected_owner_session_id=expected_owner_session_id,
+        expected_owner_route=expected_owner_route,
+        expected_prior_revision=expected_prior_revision,
+        new_owner_session_id=new_owner_session_id,
+        new_owner_route=new_owner_route,
+        handoff_revision=handoff_revision,
+        control_dir=control_dir,
+    )
+
+
+def recover_dead_owner(
+    path: Path,
+    expected_owner_session_id: str,
+    expected_owner_route: str,
+    expected_prior_revision: int,
+    new_owner_session_id: str,
+    new_owner_route: str,
+    handoff_revision: int,
+    control_dir: str,
+    *,
+    liveness: str,
+    operator_authorized: bool,
+    handoff: Path,
+    successor_readiness_path: Path,
+) -> dict:
+    if not operator_authorized:
+        raise GateError("dead-owner recovery requires explicit operator authorization")
+    if liveness not in {"dead", "absent"}:
+        raise GateError("ambiguous liveness blocks dead-owner recovery")
+    readiness = _read_toml(successor_readiness_path)
+    if readiness.get("session_id") != new_owner_session_id or readiness.get("handoff_revision") != handoff_revision:
+        raise GateError("successor readiness receipt mismatch")
+    if not handoff.is_file() or handoff.name != f"{handoff_revision:04d}.md":
+        raise GateError("immutable handoff revision missing")
+    return _swap_owner(
+        path,
+        expected_owner_session_id=expected_owner_session_id,
+        expected_owner_route=expected_owner_route,
+        expected_prior_revision=expected_prior_revision,
+        new_owner_session_id=new_owner_session_id,
+        new_owner_route=new_owner_route,
+        handoff_revision=handoff_revision,
+        control_dir=control_dir,
+    )
 
 
 def transition_linear(
@@ -406,7 +475,7 @@ def record_acceptance(
     decision: str,
 ) -> dict:
     owner = _read_toml(owner_file)
-    if owner.get("owner_session") != caller:
+    if owner.get("owner_session_id") != caller:
         raise GateError("caller is not current operator owner")
     if decision not in {"accept", "reject"}:
         raise GateError("decision must be accept or reject")

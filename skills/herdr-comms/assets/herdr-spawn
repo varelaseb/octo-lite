@@ -44,7 +44,7 @@ case "$role" in
     [[ "$model" == claude-fable-5 && "$effort" == xhigh && "$mode" == auto && "$agent" == meta-operator ]] || exit 65
     [[ "$label" == "🧠 operator" ]] || exit 65
     ;;
-  orchestrator|issue-shaper)
+  orchestrator)
     [[ "$model" == 'claude-opus-4-8[1m]' && "$effort" == high && "$mode" == auto && "$agent" == "$role" ]] || exit 65
     grep -Eq '^(🎤 )?(◆)?[0-9]+(/[0-9]+)? · .+$' <<<"$label" || exit 65
     ;;

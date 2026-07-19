@@ -5,7 +5,7 @@ generated = true
 raw_spawn = "prohibited"
 contract_path = "roles/code-reviewer.md"
 contract_blob = "c536a39e0470b6c9411b2f1b42a95d9c16e4b8fc"
-mapping_revision = "be13efe205a64aad9620d526dd808eff91ad976b"
+mapping_revision = "57a1e01ef0d0d6f20809ac497e59df9573752f4d"
 
 [launch]
 role = "code-reviewer"

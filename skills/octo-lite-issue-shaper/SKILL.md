@@ -9,8 +9,9 @@ Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
 Use for intake, grilling, spec and ADR changes, story maintenance, repo setup,
-tracker reconciliation, and readiness. Resolve the `issue-shaper` role through
-`roles.toml`. Do not load implementer or reviewer skills.
+tracker reconciliation, and readiness. The one issue orchestrator loads this
+skill through `roles.toml` in shaping mode. Do not load implementer or
+reviewer skills.
 
 ## Source ownership
 

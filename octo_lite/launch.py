@@ -230,6 +230,8 @@ def _verify_sources(
         raise GateError("PR branch mismatch")
     if str(pull.get("url")) != str(envelope["pr"]):
         raise GateError("PR identity mismatch")
+    if str(envelope["resource_claims"]["branch"]) != str(envelope["branch"]):
+        raise GateError("resource branch mismatch")
 
     if envelope["purpose"] == "delivery":
         verdict = _parse_verdict(pull.get("comments"))
@@ -257,12 +259,29 @@ def _worktree_common_dir(path: Path) -> Path:
     return (path / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
 
 
+# Mutable implement/fix passes attach the exact bound PR branch. Review, QA review,
+# and shaping review are inherently read-only (no Bash/Edit/Write tools) and may use
+# a fresh detached worktree at the exact HEAD instead.
+READ_ONLY_WORKTREE_ROLES = frozenset({"shaping-reviewer", "code-reviewer", "qa-reviewer"})
+
+
+def _branch_exists(repo: Path, branch: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
 def _prepare_worktree(
     repo: Path,
     root: Path,
     worktree: Path,
     head: str,
+    branch: str,
     *,
+    read_only: bool,
     minimum_free_bytes: int,
     conflicts: list[str],
     provider_overloaded: bool,
@@ -277,16 +296,30 @@ def _prepare_worktree(
         conflicts=conflicts,
         provider_overloaded=provider_overloaded,
     )
-    if not worktree.exists():
-        subprocess.run(
-            ["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), head],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+    if worktree.exists():
+        raise GateError("fresh pass requires a new absent worktree path")
+    try:
+        if read_only:
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), head],
+                check=True, capture_output=True, text=True,
+            )
+        elif _branch_exists(repo, branch):
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "add", str(worktree), branch],
+                check=True, capture_output=True, text=True,
+            )
+        else:
+            subprocess.run(
+                ["git", "-C", str(repo), "worktree", "add", str(worktree), "-b", branch, head],
+                check=True, capture_output=True, text=True,
+            )
+    except subprocess.CalledProcessError as error:
+        raise GateError(f"worktree creation failed: {error.stderr.strip()}") from error
     try:
         top = Path(_git(worktree, "rev-parse", "--show-toplevel")).resolve()
         actual_head = _git(worktree, "rev-parse", "HEAD")
+        actual_branch = _git(worktree, "branch", "--show-current")
         dirty = _git(worktree, "status", "--porcelain")
     except subprocess.CalledProcessError as error:
         raise GateError("worktree validation failed") from error
@@ -298,11 +331,18 @@ def _prepare_worktree(
         raise GateError("worktree starting HEAD mismatch")
     if dirty:
         raise GateError("fresh worktree is dirty")
+    if read_only:
+        if actual_branch:
+            raise GateError("read-only worktree must be detached")
+    elif actual_branch != branch:
+        raise GateError("worktree branch mismatch")
     if not (worktree / "AGENTS.md").is_file():
         raise GateError("target AGENTS.md missing")
 
 
-def _child_workspace_check(repo: Path, root: Path, worktree: Path, head: str) -> dict[str, Any]:
+def _child_workspace_check(
+    repo: Path, root: Path, worktree: Path, head: str, branch: str | None
+) -> dict[str, Any]:
     child = r'''
 import json
 import os
@@ -320,6 +360,9 @@ top = Path(subprocess.run(
 head = subprocess.run(
     ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
 ).stdout.strip()
+branch = subprocess.run(
+    ["git", "branch", "--show-current"], check=True, capture_output=True, text=True
+).stdout.strip()
 common = Path(subprocess.run(
     ["git", "rev-parse", "--git-common-dir"], check=True, capture_output=True, text=True
 ).stdout.strip())
@@ -336,13 +379,19 @@ if os.path.commonpath((root, cwd)) != str(root) or cwd == root:
     raise SystemExit("child worktree containment mismatch")
 if common != repo_common or head != expected["head"] or not (cwd / "AGENTS.md").is_file():
     raise SystemExit("child workspace fact mismatch")
-json.dump({"worktree": str(cwd), "head": head, "contained": True}, sys.stdout)
+expected_branch = expected.get("branch")
+if expected_branch is not None and branch != expected_branch:
+    raise SystemExit("child worktree branch mismatch")
+if expected_branch is None and branch:
+    raise SystemExit("child worktree unexpectedly attached to a branch")
+json.dump({"worktree": str(cwd), "head": head, "branch": branch, "contained": True}, sys.stdout)
 '''
     payload = {
         "repo": str(repo),
         "root": str(root),
         "worktree": str(worktree),
         "head": head,
+        "branch": branch,
     }
     try:
         result = subprocess.run(
@@ -528,11 +577,15 @@ def prepare_launch(
     number = _pull_number(envelope["pr"])
     pull = dict(read_pr(str(envelope["repo"]), number))
     _verify_sources(repo, envelope, linear, pull)
+    read_only = role_name in READ_ONLY_WORKTREE_ROLES
+    branch = str(envelope["branch"])
     _prepare_worktree(
         repo,
         worktree_root,
         worktree,
         str(envelope["starting_head"]),
+        branch,
+        read_only=read_only,
         minimum_free_bytes=int(envelope["minimum_free_bytes"]),
         conflicts=list(envelope["resource_conflicts"]),
         provider_overloaded=bool(envelope["provider_overloaded"]),
@@ -542,6 +595,7 @@ def prepare_launch(
         worktree_root,
         worktree,
         str(envelope["starting_head"]),
+        None if read_only else branch,
     )
 
     receipt = build_launch_receipt(

@@ -88,13 +88,24 @@ class HerdrHelperTests(unittest.TestCase):
         fake_bin = root / "bin"
         fake_bin.mkdir()
         fake = fake_bin / "herdr"
+        # Each "pane read" call increments a counter file so a test can make the modal
+        # appear only after the Nth read: this reproduces the exact race where a dialog
+        # opens after paste but before Enter, which a single static pane text cannot.
         fake.write_text(
             """#!/usr/bin/env bash
 set -eu
 if [[ "$1 $2" == "agent get" ]]; then
   echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
 elif [[ "$1 $2" == "pane read" ]]; then
-  printf '%s\\n' "$FAKE_PANE_TEXT"
+  n=0
+  [[ -n "${FAKE_PANE_READ_COUNT:-}" && -f "$FAKE_PANE_READ_COUNT" ]] && n="$(cat "$FAKE_PANE_READ_COUNT")"
+  n=$((n + 1))
+  [[ -n "${FAKE_PANE_READ_COUNT:-}" ]] && echo "$n" >"$FAKE_PANE_READ_COUNT"
+  if [[ -n "${FAKE_PANE_TEXT_SWITCH_AFTER:-}" && "$n" -gt "$FAKE_PANE_TEXT_SWITCH_AFTER" ]]; then
+    printf '%s\\n' "$FAKE_PANE_TEXT_AFTER"
+  else
+    printf '%s\\n' "$FAKE_PANE_TEXT"
+  fi
 elif [[ "$1 $2" == "agent send" ]]; then
   if [[ -n "${FAKE_SEND_FAIL:-}" ]]; then
     echo send-failed >>"$FAKE_LOG"
@@ -102,6 +113,10 @@ elif [[ "$1 $2" == "agent send" ]]; then
   fi
   echo send >>"$FAKE_LOG"
 elif [[ "$1 $2" == "pane run" ]]; then
+  if [[ -n "${FAKE_RUN_FAIL:-}" ]]; then
+    echo run-failed >>"$FAKE_LOG"
+    exit 1
+  fi
   echo run >>"$FAKE_LOG"
 else
   exit 2
@@ -134,6 +149,99 @@ fi
             self.assertEqual(1, len(states))
             with states[0].open("rb") as handle:
                 self.assertEqual("queued", tomllib.load(handle)["status"])
+
+    def test_say_defers_to_pasted_when_modal_appears_after_paste_and_never_presses_enter(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
+            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
+            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(75, result.returncode)
+            self.assertEqual(["send"], log.read_text().splitlines())
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            self.assertEqual(1, len(states))
+            with states[0].open("rb") as handle:
+                self.assertEqual("pasted", tomllib.load(handle)["status"])
+            message_id = states[0].stem
+            inbox = Path(td) / "state/octo-lite/inbox/agent1" / message_id
+            self.assertTrue(inbox.is_file())
+
+    def test_say_defers_to_pasted_when_enter_fails_and_does_not_claim_submitted(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_RUN_FAIL"] = "1"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(75, result.returncode)
+            self.assertEqual(["send", "run-failed"], log.read_text().splitlines())
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            with states[0].open("rb") as handle:
+                self.assertEqual("pasted", tomllib.load(handle)["status"])
+
+    def test_drain_only_presses_enter_for_a_pasted_message_and_never_resends(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
+            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
+            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            with states[0].open("rb") as handle:
+                self.assertEqual("pasted", tomllib.load(handle)["status"])
+
+            # The pane is safe now: draining a pasted message must only press Enter,
+            # never re-send the text, or the pane would see the message twice.
+            log.write_text("")
+            drain_env = dict(env)
+            drain_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
+            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
+            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["run"], log.read_text().splitlines())
+            with states[0].open("rb") as handle:
+                self.assertEqual("submitted", tomllib.load(handle)["status"])
+            message_id = states[0].stem
+            self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
+
+    def test_drain_leaves_a_pasted_message_queued_while_the_modal_is_still_open(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
+            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
+            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+
+            # The modal is still open on the next drain attempt: never send or run.
+            log.write_text("")
+            still_open_env = dict(env, FAKE_PANE_TEXT="Quick safety check: trust this folder")
+            still_open_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
+            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
+            result = subprocess.run(["bash", str(drain), "agent1"], env=still_open_env, capture_output=True, text=True)
+            self.assertEqual(75, result.returncode)
+            self.assertEqual([], log.read_text().splitlines())
+            with states[0].open("rb") as handle:
+                self.assertEqual("pasted", tomllib.load(handle)["status"])
+            self.assertTrue((Path(td) / "state/octo-lite/inbox/agent1" / message_id).is_file())
 
     def test_safe_prompt_submits_then_requires_ack(self):
         with tempfile.TemporaryDirectory() as td:
@@ -362,6 +470,24 @@ fi
             )
             self.assertEqual(2, result.returncode)
             self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            self.assertFalse(log.exists())
+
+    def test_spawn_rejects_issue_shaper_as_a_role_with_no_persistent_tab(self):
+        # There is no separately persistent issue-shaper session or tab: shaping is a
+        # capability the one issue orchestrator loads, never a distinct spawn role.
+        with tempfile.TemporaryDirectory() as td:
+            receipt_path = Path(td) / "launch.toml"
+            receipt_path.write_text("unused\n")
+            env, log = self.spawn_environment(td)
+            argv = [
+                str(SPAWN), "--workspace", "w1", "--name", "shaper-1", "--cwd", str(ROOT),
+                "--role", "issue-shaper", "--label", "443 · shaping",
+                "--receipt", str(receipt_path), "--",
+                "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
+                "--permission-mode", "auto", "--agent", "issue-shaper", "prompt",
+            ]
+            result = subprocess.run(argv, env=env, capture_output=True, text=True)
+            self.assertEqual(65, result.returncode)
             self.assertFalse(log.exists())
 
     def test_spawn_still_enforces_label_and_model_before_any_bootstrap_call(self):

@@ -90,7 +90,8 @@
 
 <section data-anchor="role-topology">
 <h3>Role and model topology</h3>
-<p data-anchor="role-roster">The complete LLM role roster is meta-operator, orchestrator, issue-shaper, shaping-reviewer, implementer, code-reviewer, qa-capture, qa-reviewer, and reconciler.</p>
+<p data-anchor="role-roster">The complete LLM role roster is meta-operator, orchestrator, shaping-reviewer, implementer, code-reviewer, qa-capture, qa-reviewer, and reconciler.</p>
+<p data-anchor="role-shaping-mode">The issue orchestrator performs shaping mode by resolving the issue-shaper skill in its own persistent session, never a second persistent role or tab.</p>
 <p data-anchor="role-fix-reuse">Every fix uses a fresh implementer instance and every re-review uses a fresh code-reviewer instance rather than separate role contracts.</p>
 <p data-anchor="role-nested-reuse">Every nested stream owner uses the same orchestrator contract.</p>
 <p data-anchor="role-issue-cardinality">Every issue has one and only one dedicated Opus issue orchestrator.</p>

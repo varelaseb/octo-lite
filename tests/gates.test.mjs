@@ -90,6 +90,18 @@ test('pass receipt binds fresh role and exact starting head', () => {
   )
 })
 
+test('an exact registry-resolved empty skill set is a valid qa-reviewer receipt, not a gate failure', () => {
+  const receipt = { ...fullReceipt(), role: { name: 'qa-reviewer', contract_blob: 'blob-1', mapping_revision: 'map-1' }, skills: { resolved: [], blobs: [] } }
+  assert.deepEqual(assertPassReceipt(receipt, 'qa-reviewer', 'abc'), receipt)
+})
+
+test('a nonempty skill list still requires exactly one blob per resolved skill', () => {
+  const receipt = { ...fullReceipt(), skills: { resolved: ['tdd'], blobs: [] } }
+  assert.throws(() => assertPassReceipt(receipt, 'implementer', 'abc'), /skill blobs/)
+  const missingField = { ...fullReceipt(), skills: {} }
+  assert.throws(() => assertPassReceipt(missingField, 'implementer', 'abc'), /resolved skills/)
+})
+
 test('pass receipt requires the complete bound-input set, not a decorative subset', () => {
   const receipt = fullReceipt()
   assert.throws(
@@ -243,6 +255,22 @@ function qaFixture(overrides = {}) {
     ...overrides,
   }
 }
+
+test('qa-reviewer pass with the exact registry-declared empty skill set grades end to end', () => {
+  const passResult = qaFixture()
+  const { result_binding, ...unbound } = passResult
+  const binding = exactFingerprint(unbound)
+  const bound = { ...unbound, result_binding: binding }
+  const receipt = {
+    ...fullReceipt(),
+    role: { name: 'qa-reviewer', contract_blob: 'blob-qa', mapping_revision: 'map-1' },
+    skills: { resolved: [], blobs: [] },
+    result: { bound: true, binding },
+  }
+  assertPassReceipt(receipt, 'qa-reviewer', 'abc')
+  assertBoundPassResult(receipt, bound)
+  assert.deepEqual(acceptQaReview('abc', qaExpected(), bound), { advance: true, packet_url: 'https://evidence.test/1' })
+})
 
 test('backend work still requires fresh qa review', () => {
   assert.equal(evidenceMode(false), 'nonvisual')

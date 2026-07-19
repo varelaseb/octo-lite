@@ -432,6 +432,48 @@ class LaunchBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "unreadable"):
             parse_pass_output("anthropic", "not json")
 
+    def test_reused_worktree_path_rejected_for_fresh_pass(self) -> None:
+        self.prepare()
+        with self.assertRaisesRegex(GateError, "absent worktree path"):
+            self.prepare()
+
+    def test_read_only_role_uses_fresh_detached_worktree_at_exact_head(self) -> None:
+        prepared = self.prepare(role_name="code-reviewer", capabilities=set())
+        branch = subprocess.run(
+            ["git", "-C", str(self.worktree), "branch", "--show-current"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual("", branch)
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertEqual(self.head, receipt["workspace"]["starting_head"])
+
+    def test_mutable_role_attaches_the_exact_bound_branch(self) -> None:
+        self.prepare()
+        branch = subprocess.run(
+            ["git", "-C", str(self.worktree), "branch", "--show-current"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual("feature", branch)
+
+    def test_resource_branch_mismatch_rejected_before_worktree_creation(self) -> None:
+        mismatched = dict(
+            self.envelope,
+            resource_claims=dict(self.envelope["resource_claims"], branch="other-branch"),
+        )
+        with self.assertRaisesRegex(GateError, "resource branch mismatch"):
+            self.prepare(envelope=mismatched)
+        self.assertFalse(self.worktree.exists())
+
+    def test_mutable_pass_never_silently_falls_back_to_detached_when_branch_is_busy(self) -> None:
+        other = self.worktree_root / "other-pass"
+        subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "add", "-b", "feature", str(other), self.head],
+            check=True, capture_output=True, text=True,
+        )
+        with self.assertRaisesRegex(GateError, "worktree creation failed"):
+            self.prepare()
+        self.assertFalse(self.worktree.exists())
+
     def test_run_launch_fails_closed_when_mutation_call_returns_a_different_session(self) -> None:
         prepared = self.prepare()
         ack = prepared.expected_ack(self.spawn_id)

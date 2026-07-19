@@ -79,11 +79,17 @@ python3 "$resolver" resolve meta-operator \
 # herdr-spawn verifies BOOTSTRAP_ACK itself before this prompt ever runs; it is a
 # post-bootstrap mutation instruction only, never a bootstrap-ack instruction.
 prompt="Bootstrap already verified. Load and acknowledge $receipt, the canonical meta-operator role, target instructions, and $brief. Verify cwd and access facts. Write current state to $status. Begin read-only inventory."
-"$spawn" --workspace "$workspace" --name "$name" --label "🧠 operator" --cwd "$cwd" --role meta-operator --receipt "$receipt" -- \
-  claude --agent meta-operator --model claude-fable-5 --effort xhigh --permission-mode auto -n "$name" "$prompt"
+spawn_output="$("$spawn" --workspace "$workspace" --name "$name" --label "🧠 operator" --cwd "$cwd" --role meta-operator --receipt "$receipt" -- \
+  claude --agent meta-operator --model claude-fable-5 --effort xhigh --permission-mode auto -n "$name" "$prompt")"
+echo "$spawn_output"
+provider_session_id="$(grep -oE 'provider_session_id=[^ ]+' <<<"$spawn_output" | cut -d= -f2)"
+[[ -n "$provider_session_id" ]] || { echo "launch-meta-operator: missing verified provider session id" >&2; exit 1; }
 
+# The owner record stores the immutable bootstrap-verified provider session
+# separately from the routable Herdr name; authority checks bind to the former,
+# messaging resolves the latter.
 owner_tmp="$owner.$$.tmp"
-printf 'schema_version = 1\nowner_session = "%s"\nhandoff_revision = 0\ncontrol_dir = "%s"\n' "$name" "$control" >"$owner_tmp"
+printf 'schema_version = 1\nowner_session_id = "%s"\nowner_route = "%s"\nhandoff_revision = 0\ncontrol_dir = "%s"\n' "$provider_session_id" "$name" "$control" >"$owner_tmp"
 mv "$owner_tmp" "$owner"
 "$timer" install --name "$name" --control-dir "$control" --owner-file "$owner" --repo "$cwd"
 

@@ -18,6 +18,7 @@ from octo_lite.runtime import (
     herdr_label,
     normalize_launch_access,
     record_failure,
+    recover_dead_owner,
     safe_cleanup,
     initialize_stream,
     update_stream_brief,
@@ -57,67 +58,143 @@ class RuntimeContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             owner = Path(td) / "operator-owner.toml"
             owner.write_text(
-                'schema_version = 1\nowner_session = "old"\nhandoff_revision = 1\ncontrol_dir = "/control"\n'
+                'schema_version = 1\nowner_session_id = "old-session"\nowner_route = "old-route"\n'
+                'handoff_revision = 1\ncontrol_dir = "/control"\n'
             )
             handoff = Path(td) / "handoffs" / "0002.md"
             handoff.parent.mkdir()
             handoff.write_text("ready\n")
             readiness = Path(td) / "ready.toml"
-            declare_successor_ready(readiness, caller="new", session_id="new", handoff_revision=2)
+            declare_successor_ready(readiness, caller="new-session", session_id="new-session", handoff_revision=2)
             transfer_owner(
                 owner,
-                "old",
-                "new",
+                "old-session",
+                "old-route",
+                1,
+                "new-session",
+                "new-route",
                 2,
                 "/control",
-                caller="old",
+                caller="old-session",
                 handoff=handoff,
                 successor_readiness_path=readiness,
             )
             current = owner.read_text()
-            self.assertIn('owner_session = "new"', current)
+            self.assertIn('owner_session_id = "new-session"', current)
+            self.assertIn('owner_route = "new-route"', current)
             self.assertIn("handoff_revision = 2", current)
             with self.assertRaises(GateError):
                 transfer_owner(
                     owner,
-                    "old",
-                    "other",
+                    "old-session",
+                    "old-route",
+                    1,
+                    "session-3",
+                    "route-3",
                     3,
                     "/control",
-                    caller="old",
+                    caller="old-session",
                     handoff=handoff,
                     successor_readiness_path=readiness,
                 )
             self.assertEqual(current, owner.read_text())
 
+    def test_owner_transfer_requires_exact_prior_route_and_revision(self):
+        with tempfile.TemporaryDirectory() as td:
+            owner = Path(td) / "operator-owner.toml"
+            owner.write_text(
+                'schema_version = 1\nowner_session_id = "old-session"\nowner_route = "old-route"\n'
+                'handoff_revision = 5\ncontrol_dir = "/control"\n'
+            )
+            handoff = Path(td) / "handoffs" / "0006.md"
+            handoff.parent.mkdir()
+            handoff.write_text("ready\n")
+            readiness = Path(td) / "ready.toml"
+            declare_successor_ready(readiness, caller="new-session", session_id="new-session", handoff_revision=6)
+
+            with self.assertRaises(GateError):
+                transfer_owner(
+                    owner, "old-session", "old-route", 4, "new-session", "new-route", 6, "/control",
+                    caller="old-session", handoff=handoff, successor_readiness_path=readiness,
+                )
+            with self.assertRaises(GateError):
+                transfer_owner(
+                    owner, "old-session", "wrong-route", 5, "new-session", "new-route", 6, "/control",
+                    caller="old-session", handoff=handoff, successor_readiness_path=readiness,
+                )
+            transfer_owner(
+                owner, "old-session", "old-route", 5, "new-session", "new-route", 6, "/control",
+                caller="old-session", handoff=handoff, successor_readiness_path=readiness,
+            )
+            current = owner.read_text()
+            self.assertIn('owner_session_id = "new-session"', current)
+            self.assertIn('owner_route = "new-route"', current)
+
     def test_owner_transfer_rejects_mismatched_or_third_party_readiness(self):
         with tempfile.TemporaryDirectory() as td:
             owner = Path(td) / "operator-owner.toml"
             owner.write_text(
-                'schema_version = 1\nowner_session = "old"\nhandoff_revision = 1\ncontrol_dir = "/control"\n'
+                'schema_version = 1\nowner_session_id = "old-session"\nowner_route = "old-route"\n'
+                'handoff_revision = 1\ncontrol_dir = "/control"\n'
             )
             handoff = Path(td) / "handoffs" / "0002.md"
             handoff.parent.mkdir()
             handoff.write_text("ready\n")
 
             with self.assertRaises(GateError):
-                declare_successor_ready(Path(td) / "bad.toml", caller="someone-else", session_id="new", handoff_revision=2)
+                declare_successor_ready(Path(td) / "bad.toml", caller="someone-else", session_id="new-session", handoff_revision=2)
 
             wrong_revision = Path(td) / "wrong-rev.toml"
-            declare_successor_ready(wrong_revision, caller="new", session_id="new", handoff_revision=99)
+            declare_successor_ready(wrong_revision, caller="new-session", session_id="new-session", handoff_revision=99)
             with self.assertRaises(GateError):
                 transfer_owner(
-                    owner, "old", "new", 2, "/control",
-                    caller="old", handoff=handoff, successor_readiness_path=wrong_revision,
+                    owner, "old-session", "old-route", 1, "new-session", "new-route", 2, "/control",
+                    caller="old-session", handoff=handoff, successor_readiness_path=wrong_revision,
                 )
 
             wrong_session = Path(td) / "wrong-session.toml"
             declare_successor_ready(wrong_session, caller="impostor", session_id="impostor", handoff_revision=2)
             with self.assertRaises(GateError):
                 transfer_owner(
-                    owner, "old", "new", 2, "/control",
-                    caller="old", handoff=handoff, successor_readiness_path=wrong_session,
+                    owner, "old-session", "old-route", 1, "new-session", "new-route", 2, "/control",
+                    caller="old-session", handoff=handoff, successor_readiness_path=wrong_session,
                 )
+
+    def test_dead_owner_recovery_requires_operator_authorization_and_nonambiguous_liveness(self):
+        with tempfile.TemporaryDirectory() as td:
+            owner = Path(td) / "operator-owner.toml"
+            owner.write_text(
+                'schema_version = 1\nowner_session_id = "dead-session"\nowner_route = "dead-route"\n'
+                'handoff_revision = 1\ncontrol_dir = "/control"\n'
+            )
+            handoff = Path(td) / "handoffs" / "0002.md"
+            handoff.parent.mkdir()
+            handoff.write_text("ready\n")
+            readiness = Path(td) / "ready.toml"
+            declare_successor_ready(readiness, caller="successor", session_id="successor", handoff_revision=2)
+
+            with self.assertRaisesRegex(GateError, "authorization"):
+                recover_dead_owner(
+                    owner, "dead-session", "dead-route", 1, "successor", "new-route", 2, "/control",
+                    liveness="dead", operator_authorized=False, handoff=handoff, successor_readiness_path=readiness,
+                )
+            with self.assertRaisesRegex(GateError, "liveness"):
+                recover_dead_owner(
+                    owner, "dead-session", "dead-route", 1, "successor", "new-route", 2, "/control",
+                    liveness="unknown", operator_authorized=True, handoff=handoff, successor_readiness_path=readiness,
+                )
+            self.assertEqual(
+                'schema_version = 1\nowner_session_id = "dead-session"\nowner_route = "dead-route"\n'
+                'handoff_revision = 1\ncontrol_dir = "/control"\n',
+                owner.read_text(),
+            )
+            updated = recover_dead_owner(
+                owner, "dead-session", "dead-route", 1, "successor", "new-route", 2, "/control",
+                liveness="dead", operator_authorized=True, handoff=handoff, successor_readiness_path=readiness,
+            )
+            self.assertEqual("successor", updated["owner_session_id"])
+            self.assertEqual("new-route", updated["owner_route"])
+            self.assertIn('owner_session_id = "successor"', owner.read_text())
 
     def test_parent_owns_brief_and_child_owns_status(self):
         with tempfile.TemporaryDirectory() as td:
@@ -127,6 +204,7 @@ class RuntimeContractTests(unittest.TestCase):
                 stream_id="TUR-1",
                 parent_session="epic-opus",
                 child_session="issue-opus",
+                child_role="orchestrator",
                 caller="epic-opus",
                 brief="Build the shaped issue.\n",
             )
@@ -384,7 +462,8 @@ class RuntimeContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             owner_file = Path(td) / "operator-owner.toml"
             owner_file.write_text(
-                'schema_version = 1\nowner_session = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "/control"\n'
+                'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\n'
+                'handoff_revision = 0\ncontrol_dir = "/control"\n'
             )
             path = Path(td) / "acceptance.toml"
             with self.assertRaises(GateError):
@@ -395,15 +474,15 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertFalse(path.exists())
             with self.assertRaises(GateError):
                 record_acceptance(
-                    path, owner_file, caller="operator-1", issue="TUR-1", pr="https://x/pr/1",
+                    path, owner_file, caller="operator-1-session", issue="TUR-1", pr="https://x/pr/1",
                     head="abc", verdict_reference="https://x/pr/1#c1", decision="maybe",
                 )
             record = record_acceptance(
-                path, owner_file, caller="operator-1", issue="TUR-1", pr="https://x/pr/1",
+                path, owner_file, caller="operator-1-session", issue="TUR-1", pr="https://x/pr/1",
                 head="abc", verdict_reference="https://x/pr/1#c1", decision="reject",
             )
             self.assertEqual("reject", record["decision"])
-            self.assertEqual("operator-1", record["decided_by"])
+            self.assertEqual("operator-1-session", record["decided_by"])
 
     def test_compact_herdr_label_contract(self):
         self.assertEqual("🧠 operator", herdr_label(kind="operator"))

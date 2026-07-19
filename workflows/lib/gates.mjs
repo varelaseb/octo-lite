@@ -191,9 +191,12 @@ export function assertPassReceipt(receipt, role, startingHead) {
   requiredNonEmptyString(receipt.bootstrap?.provider_session_id, 'pass provider session')
   requiredNonEmptyString(receipt.role?.contract_blob, 'pass role contract blob')
   requiredNonEmptyString(receipt.role?.mapping_revision, 'pass role mapping revision')
-  requiredNonEmptyArray(receipt.skills?.resolved, 'pass resolved skills')
-  const blobs = requiredNonEmptyArray(receipt.skills?.blobs, 'pass skill blobs')
-  if (blobs.length !== receipt.skills.resolved.length) throw new Error('pass skill blobs required')
+  // A role that declares no required or matched conditional skills resolves an exact
+  // empty set. That is valid and distinct from a missing or malformed skills field.
+  const resolvedSkills = receipt.skills?.resolved
+  if (!Array.isArray(resolvedSkills)) throw new Error('pass resolved skills required')
+  const blobs = receipt.skills?.blobs
+  if (!Array.isArray(blobs) || blobs.length !== resolvedSkills.length) throw new Error('pass skill blobs required')
   requiredNonEmptyString(receipt.workspace?.repo, 'pass repo')
   requiredNonEmptyString(receipt.workspace?.instructions_blob, 'pass instructions blob')
   requiredNonEmptyString(receipt.issue?.identifier, 'pass issue identity')

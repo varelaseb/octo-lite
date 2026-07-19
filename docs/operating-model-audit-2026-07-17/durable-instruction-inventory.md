@@ -68,8 +68,8 @@ Counts are distinct paths inside each repository.
 | Repository | Category | Count |
 | --- | --- | ---: |
 | octo-lite | Standing authority and loading | 4 |
-| octo-lite | Canonical role contracts | 9 |
-| octo-lite | Generated launch adapters | 18 |
+| octo-lite | Canonical role contracts | 8 |
+| octo-lite | Generated launch adapters | 16 |
 | octo-lite | Skill contracts | 17 |
 | octo-lite | Skill discovery descriptors | 4 |
 | octo-lite | Skill assets, templates, and launch prompts | 14 |
@@ -77,7 +77,7 @@ Counts are distinct paths inside each repository.
 | octo-lite | Product docs and audit context | 13 |
 | octo-lite | Runtime wiring and prompt builders | 14 |
 | octo-lite | Conformance tests and fixtures | 14 |
-| octo-lite | Total | 109 |
+| octo-lite | Total | 106 |
 | Turbo | Standing authority and loading | 5 |
 | Turbo | Canonical specs | 24 |
 | Turbo | Repo skill and skill lock | 2 |
@@ -103,11 +103,10 @@ Counts are distinct paths inside each repository.
 
 CLAUDE.md is a tracked relative symlink to AGENTS.md.
 
-### Canonical role contracts, 9
+### Canonical role contracts, 8
 
 - roles/code-reviewer.md
 - roles/implementer.md
-- roles/issue-shaper.md
 - roles/meta-operator.md
 - roles/orchestrator.md
 - roles/qa-capture.md
@@ -115,14 +114,12 @@ CLAUDE.md is a tracked relative symlink to AGENTS.md.
 - roles/reconciler.md
 - roles/shaping-reviewer.md
 
-### Generated launch adapters, 18
+### Generated launch adapters, 16
 
 - agents/code-reviewer.md
 - agents/code-reviewer.toml
 - agents/implementer.md
 - agents/implementer.toml
-- agents/issue-shaper.md
-- agents/issue-shaper.toml
 - agents/meta-operator.md
 - agents/meta-operator.toml
 - agents/orchestrator.md
@@ -578,6 +575,7 @@ Nested tool plans, 2:
 9. Turbo deliberately does not depend on octo-lite. Generic role and skill loading therefore depends on the operator's installed octo-lite profile. Turbo AGENTS.md supplies only repo-specific policy.
 10. A prior revision recomputed every octo-lite count and path against its final tree. `octo_lite/__init__.py` was a real prior omission from Runtime wiring and prompt builders; it was included from that point on. The Turbo worktree at `/root/Turbo-Outreach-tur450-operating-model` (`29b929e`) had a different agent's concurrent uncommitted work at that validation time; that pass spot-checked canonical specs, historical plans, and evidence tests by exact count and left the Turbo section unchanged since all three matched.
 11. This revision reconciled both repos against pushed Turbo worktree HEAD `83b6b507b6ff1490576947388bd9682e784e2847` (Turbo fix pass 4, superseding note 10's `29b929e`) and this fix pass's final octo-lite tree. Turbo fix pass 4 added `tools/evidence-site/test/deployState.test.js` and `tools/evidence-site/test/pathDecoding.test.js`, raising Evidence operating-model tests from 5 to 7 and the Turbo total from 280 to 282; no other Turbo category changed and the 120 historical plan count is exact. This fix pass added `tests/test_launch_meta_operator.py` to octo-lite Conformance tests and fixtures, raising it from 13 to 14 and the octo-lite total from 108 to 109. Every listed path in both repositories was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
+12. This revision (PR 6 fix pass 4) reconciled the pinned Turbo head to `c0c27be9f3661a0007aeef49e9dd06f663b1e4ee` (tree `c85d86616fbad1b6302484b566b520ecfd2fae75`), the exact commit named by the operator as final for this inventory. Diffed against note 11's `83b6b507` pin: zero files added or removed, only content edits inside five already-listed `tools/evidence-site/*` files; every Turbo category and the 282 total are unchanged. octo-lite removed the separately persistent `issue-shaper` role and its two generated adapters (`roles/issue-shaper.md`, `agents/issue-shaper.md`, `agents/issue-shaper.toml`): the one issue orchestrator now resolves the `octo-lite-issue-shaper` skill conditionally in shaping mode instead of a second persistent role, per the one-dedicated-Opus contract. Canonical role contracts moved 9 to 8, Generated launch adapters 18 to 16, octo-lite total 109 to 106. Every listed path in both repositories was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
 
 ## Review focus
 

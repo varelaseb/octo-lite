@@ -35,24 +35,24 @@ effort = "high"
 mode = "auto"
 session = "persistent"
 service_tier = "default"
-tools = ["Read", "Grep", "Glob", "Bash", "Skill", "Workflow"]
+tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
 required_skills = ["herdr-comms"]
+
+[[roles.orchestrator.conditional_skills]]
+skill = "octo-lite-issue-shaper"
+when = "shaping"
+
+[[roles.orchestrator.conditional_skills]]
+skill = "grill-with-docs"
+when = "shaping"
+
+[[roles.orchestrator.conditional_skills]]
+skill = "octo-lite-github"
+when = "shaping"
 
 [[roles.orchestrator.conditional_skills]]
 skill = "octo-lite-loop"
 when = "delivery"
-
-[roles.issue-shaper]
-contract = "roles/issue-shaper.md"
-provider = "anthropic"
-model = "claude-opus-4-8[1m]"
-effort = "high"
-mode = "auto"
-session = "persistent"
-service_tier = "default"
-tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
-required_skills = ["octo-lite-issue-shaper", "grill-with-docs", "octo-lite-github"]
-conditional_skills = []
 
 [roles.shaping-reviewer]
 contract = "roles/shaping-reviewer.md"

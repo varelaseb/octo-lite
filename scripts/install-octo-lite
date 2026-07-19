@@ -33,6 +33,45 @@ link_one() {
   ln -s "$source" "$target"
 }
 
+# Known legacy octo-lite symlinks from earlier role/adapter names. Migration removes
+# only a dangling link or one that still resolves inside this source repo; any other
+# file or link at these exact paths is left untouched. --check rejects a leftover.
+legacy_links=(
+  ".codex/octo-lite-role-skills.json"
+  ".claude/agents/octo-lite-implementer.md"
+  ".claude/agents/octo-lite-reviewer.md"
+  ".codex/agents/octo-lite-implementer.toml"
+  ".codex/agents/octo-lite-reviewer.toml"
+)
+
+migrate_legacy_link() {
+  local target="$prefix/$1"
+  [[ -L "$target" ]] || return 0
+  if [[ -e "$target" ]]; then
+    case "$(readlink -f "$target")" in
+      "$root"/*) ;;
+      *) return 0 ;;
+    esac
+  fi
+  rm -f "$target"
+}
+
+check_legacy_gone() {
+  local target="$prefix/$1"
+  if [[ -e "$target" || -L "$target" ]]; then
+    echo "leftover legacy link: $target" >&2
+    exit 1
+  fi
+}
+
+for legacy in "${legacy_links[@]}"; do
+  if [[ "$check" == true ]]; then
+    check_legacy_gone "$legacy"
+  else
+    migrate_legacy_link "$legacy"
+  fi
+done
+
 link_one "$root/profile/AGENTS.md" "$prefix/.codex/AGENTS.md"
 link_one "$root/profile/AGENTS.md" "$prefix/.claude/CLAUDE.md"
 for base in "$prefix/.codex/octo-lite" "$prefix/.claude/octo-lite"; do

@@ -104,8 +104,8 @@ def main() -> int:
     owner = load_toml(owner_file)
     if owner.get("schema_version") != 1 or Path(str(owner.get("control_dir", ""))).resolve() != control:
         raise SystemExit("operator-sweep: control identity mismatch")
-    owner_session = str(owner.get("owner_session") or "")
-    if not owner_session:
+    owner_route = str(owner.get("owner_route") or "")
+    if not owner_route:
         raise SystemExit("operator-sweep: owner missing")
 
     paths = ([control / "status.md"] if (control / "status.md").is_file() else [])
@@ -113,7 +113,7 @@ def main() -> int:
     paths.extend(sorted(path for stream_dir in stream_dirs for path in [stream_dir / "status.md"] if path.is_file()))
     parts = [f"## {path.relative_to(control)}\n{path.read_text().strip()}\n" for path in paths]
 
-    facts = {"owner_session": owner_session}
+    facts = {"owner_route": owner_route}
     for stream_dir in stream_dirs:
         stream_facts = declared_stream_facts(stream_dir)
         if stream_facts:
@@ -128,7 +128,7 @@ def main() -> int:
     state_path = control / "sweep-state.toml"
     prior = load_toml(state_path) if state_path.exists() else {}
     if prior.get("fingerprint") == fingerprint:
-        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_session}))
+        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route}))
         return 0
 
     sweep_dir = control / "sweeps" / fingerprint
@@ -144,7 +144,7 @@ def main() -> int:
         root,
         resolved,
         spawn_id=str(uuid.uuid4()),
-        parent=owner_session,
+        parent=owner_route,
         reply_route="operator-say",
         repo=repo,
         worktree=repo,
@@ -196,12 +196,12 @@ def main() -> int:
         state_path,
         "schema_version = 1\n"
         f"fingerprint = {json.dumps(fingerprint)}\n"
-        f"owner_session = {json.dumps(owner_session)}\n"
+        f"owner_route = {json.dumps(owner_route)}\n"
         f"snapshot = {json.dumps(str(snapshot_path))}\n"
         f"receipt = {json.dumps(str(receipt_path))}\n"
         f"result = {json.dumps(str(result_path))}\n",
     )
-    print(json.dumps({"changed": True, "fingerprint": fingerprint, "owner": owner_session, "result": str(result_path)}))
+    print(json.dumps({"changed": True, "fingerprint": fingerprint, "owner": owner_route, "result": str(result_path)}))
     return 0
 
 

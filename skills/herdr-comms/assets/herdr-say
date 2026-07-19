@@ -67,6 +67,16 @@ queue_and_exit() {
   exit 75
 }
 
+paste_pending_exit() {
+  # Text already landed in the prompt from this call's paste, but the prompt state
+  # changed (or Enter failed) before submission was verified safe. Never re-paste on
+  # retry: a drain of a "pasted" message only rechecks safety and presses Enter.
+  write_state pasted
+  printf '%s\n' "$id" >"$inbox/$id"
+  echo "herdr-say: paste landed, submission deferred message_id=$id" >&2
+  exit 75
+}
+
 if dialog_open; then
   queue_and_exit
 fi
@@ -74,9 +84,15 @@ fi
 if herdr agent send "$target" "$message$suffix" >/dev/null 2>&1 \
   || herdr agent send "$pane" "$message$suffix" >/dev/null 2>&1; then
   sleep 0.5
-  herdr pane run "$pane" "" >/dev/null 2>&1
-  write_state submitted
-  echo "message_id=$id status=submitted"
+  if dialog_open; then
+    paste_pending_exit
+  fi
+  if herdr pane run "$pane" "" >/dev/null 2>&1; then
+    write_state submitted
+    echo "message_id=$id status=submitted"
+  else
+    paste_pending_exit
+  fi
 else
   queue_and_exit
 fi

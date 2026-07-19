@@ -23,6 +23,7 @@ from octo_lite.runtime import (  # noqa: E402
     normalize_launch_access,
     record_acceptance,
     record_failure,
+    recover_dead_owner,
     safe_cleanup,
     initialize_stream,
     update_stream_brief,
@@ -78,10 +79,14 @@ def _verify_transition_authority(args) -> None:
         stream_state = load_toml(Path(args.stream) / "stream.toml")
         if stream_state.get("child_session") != args.caller:
             raise GateError("caller is not the exact stream owner")
+        if stream_state.get("child_role") != "orchestrator":
+            raise GateError("caller is not the exact issue-orchestrator role")
         return
     receipt = load_toml(Path(args.receipt))
     if receipt.get("bootstrap", {}).get("verified") is not True:
         raise GateError("caller receipt bootstrap not verified")
+    if receipt.get("role", {}).get("name") != "orchestrator":
+        raise GateError("caller is not the exact issue-orchestrator role")
     if receipt.get("issue", {}).get("identifier") != args.issue:
         raise GateError("caller receipt issue mismatch")
     if receipt.get("bootstrap", {}).get("provider_session_id") != args.caller:
@@ -109,14 +114,13 @@ def command_linear_transition(args) -> dict:
     def notify(issue):
         if not args.parent:
             raise GateError("parent route required")
-        subprocess.run(
-            [
-                "herdr-say",
-                args.parent,
-                f"{args.issue} entered {issue['state']}; status {Path(args.status).resolve()}",
-            ],
-            check=True,
-        )
+        message = f"{args.issue} entered {issue['state']}; status {Path(args.status).resolve()}"
+        if args.parent == "operator":
+            # A top-level notification resolves the current owner through operator-say
+            # rather than a static route, so it always reaches the post-handoff owner.
+            subprocess.run(["operator-say", message], check=True)
+        else:
+            subprocess.run(["herdr-say", args.parent, message], check=True)
 
     return transition_linear(
         args.issue,
@@ -181,10 +185,33 @@ def command_owner(args) -> dict:
     return transfer_owner(
         Path(args.owner_file),
         args.expected_owner,
+        args.expected_route,
+        args.expected_revision,
         args.new_owner,
+        args.new_route,
         args.revision,
         str(Path(args.control_dir).resolve()),
         caller=args.caller,
+        handoff=handoff,
+        successor_readiness_path=Path(args.successor_readiness),
+    )
+
+
+def command_owner_recover(args) -> dict:
+    handoff = Path(args.handoff)
+    if not handoff.is_file():
+        raise GateError("immutable handoff missing")
+    return recover_dead_owner(
+        Path(args.owner_file),
+        args.expected_owner,
+        args.expected_route,
+        args.expected_revision,
+        args.new_owner,
+        args.new_route,
+        args.revision,
+        str(Path(args.control_dir).resolve()),
+        liveness=args.liveness,
+        operator_authorized=args.operator_authorized,
         handoff=handoff,
         successor_readiness_path=Path(args.successor_readiness),
     )
@@ -253,6 +280,7 @@ def command_stream_init(args) -> dict:
         stream_id=args.stream_id,
         parent_session=args.parent,
         child_session=args.child,
+        child_role=args.child_role,
         caller=args.caller,
         brief=Path(args.brief_file).read_text(),
     )
@@ -279,13 +307,20 @@ def command_stream_status(args) -> dict:
         next_operator_action=args.next_action,
     )
     parent = state["parent_session"]
-    result = subprocess.run(
-        [
-            "herdr-say", "--kind", "info", "--artifact", str((path / "status.md").resolve()),
-            parent, f"{state['stream_id']} status revision {state['status_revision']}",
-        ],
-        check=False,
-    )
+    message = f"{state['stream_id']} status revision {state['status_revision']}"
+    artifact = str((path / "status.md").resolve())
+    if parent == "operator":
+        # A top-level notification resolves the current owner through operator-say
+        # rather than a static route, so it always reaches the post-handoff owner.
+        result = subprocess.run(
+            ["operator-say", "--kind", "info", "--artifact", artifact, message],
+            check=False,
+        )
+    else:
+        result = subprocess.run(
+            ["herdr-say", "--kind", "info", "--artifact", artifact, parent, message],
+            check=False,
+        )
     if result.returncode not in {0, 75}:
         raise GateError("parent notification failed")
     state["notification"] = "queued" if result.returncode == 75 else "submitted"
@@ -369,13 +404,31 @@ def parser() -> argparse.ArgumentParser:
     owner = sub.add_parser("owner-transfer")
     owner.add_argument("--owner-file", required=True)
     owner.add_argument("--expected-owner", required=True)
+    owner.add_argument("--expected-route", required=True)
+    owner.add_argument("--expected-revision", type=int, required=True)
     owner.add_argument("--caller", required=True)
     owner.add_argument("--new-owner", required=True)
+    owner.add_argument("--new-route", required=True)
     owner.add_argument("--revision", type=int, required=True)
     owner.add_argument("--control-dir", required=True)
     owner.add_argument("--handoff", required=True)
     owner.add_argument("--successor-readiness", required=True)
     owner.set_defaults(run=command_owner)
+
+    recover = sub.add_parser("owner-recover")
+    recover.add_argument("--owner-file", required=True)
+    recover.add_argument("--expected-owner", required=True)
+    recover.add_argument("--expected-route", required=True)
+    recover.add_argument("--expected-revision", type=int, required=True)
+    recover.add_argument("--new-owner", required=True)
+    recover.add_argument("--new-route", required=True)
+    recover.add_argument("--revision", type=int, required=True)
+    recover.add_argument("--control-dir", required=True)
+    recover.add_argument("--handoff", required=True)
+    recover.add_argument("--successor-readiness", required=True)
+    recover.add_argument("--liveness", choices=["dead", "absent"], required=True)
+    recover.add_argument("--operator-authorized", action="store_true")
+    recover.set_defaults(run=command_owner_recover)
 
     successor_ready = sub.add_parser("successor-ready")
     successor_ready.add_argument("--path", required=True)
@@ -429,6 +482,7 @@ def parser() -> argparse.ArgumentParser:
     stream_init.add_argument("--stream-id", required=True)
     stream_init.add_argument("--parent", required=True)
     stream_init.add_argument("--child", required=True)
+    stream_init.add_argument("--child-role", required=True)
     stream_init.add_argument("--caller", required=True)
     stream_init.add_argument("--brief-file", required=True)
     stream_init.set_defaults(run=command_stream_init)

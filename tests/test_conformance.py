@@ -58,6 +58,59 @@ class CutoverConformanceTests(unittest.TestCase):
             self.assertEqual((ROOT / "roles").resolve(), (prefix / ".claude/octo-lite/roles").resolve())
             self.assertEqual((ROOT / "skills/tdd").resolve(), (prefix / ".codex/skills/tdd").resolve())
 
+    LEGACY_LINKS = (
+        ".codex/octo-lite-role-skills.json",
+        ".claude/agents/octo-lite-implementer.md",
+        ".claude/agents/octo-lite-reviewer.md",
+        ".codex/agents/octo-lite-implementer.toml",
+        ".codex/agents/octo-lite-reviewer.toml",
+    )
+
+    def test_install_migrates_known_dangling_or_repo_owned_legacy_links(self) -> None:
+        installer = ROOT / "scripts/install-octo-lite"
+        with tempfile.TemporaryDirectory() as td:
+            prefix = Path(td)
+            dangling = prefix / self.LEGACY_LINKS[0]
+            dangling.parent.mkdir(parents=True, exist_ok=True)
+            dangling.symlink_to(ROOT / "role-skills.json")
+            for relative in self.LEGACY_LINKS[1:]:
+                target = prefix / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(ROOT / "README.md")
+
+            subprocess.run([str(installer), "--prefix", str(prefix)], check=True, capture_output=True, text=True)
+            for relative in self.LEGACY_LINKS:
+                path = prefix / relative
+                self.assertFalse(path.is_symlink() or path.exists(), relative)
+
+            subprocess.run([str(installer), "--prefix", str(prefix), "--check"], check=True, capture_output=True, text=True)
+
+    def test_install_check_rejects_a_leftover_legacy_link(self) -> None:
+        installer = ROOT / "scripts/install-octo-lite"
+        with tempfile.TemporaryDirectory() as td:
+            prefix = Path(td)
+            subprocess.run([str(installer), "--prefix", str(prefix)], check=True, capture_output=True, text=True)
+            leftover = prefix / self.LEGACY_LINKS[0]
+            leftover.parent.mkdir(parents=True, exist_ok=True)
+            leftover.symlink_to(ROOT / "README.md")
+            result = subprocess.run(
+                [str(installer), "--prefix", str(prefix), "--check"], capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("legacy", result.stderr.lower())
+
+    def test_install_leaves_an_unrelated_non_symlink_file_at_a_legacy_path_untouched(self) -> None:
+        installer = ROOT / "scripts/install-octo-lite"
+        with tempfile.TemporaryDirectory() as td:
+            prefix = Path(td)
+            unrelated = prefix / self.LEGACY_LINKS[0]
+            unrelated.parent.mkdir(parents=True, exist_ok=True)
+            unrelated.write_text("not ours\n")
+            subprocess.run([str(installer), "--prefix", str(prefix)], check=True, capture_output=True, text=True)
+            self.assertTrue(unrelated.is_file())
+            self.assertFalse(unrelated.is_symlink())
+            self.assertEqual("not ours\n", unrelated.read_text())
+
     def test_repo_claude_entrypoint_is_relative_symlink(self) -> None:
         entry = ROOT / "CLAUDE.md"
         self.assertTrue(entry.is_symlink())

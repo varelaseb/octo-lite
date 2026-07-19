@@ -13,7 +13,6 @@ MODULE_PATH = ROOT / "workflows" / "lib" / "role_resolver.py"
 ROLES = {
     "meta-operator",
     "orchestrator",
-    "issue-shaper",
     "shaping-reviewer",
     "implementer",
     "code-reviewer",
@@ -43,7 +42,6 @@ class RoleResolverTest(unittest.TestCase):
         expected = {
             "meta-operator": ("anthropic", "claude-fable-5", "xhigh", "auto", "persistent", "default"),
             "orchestrator": ("anthropic", "claude-opus-4-8[1m]", "high", "auto", "persistent", "default"),
-            "issue-shaper": ("anthropic", "claude-opus-4-8[1m]", "high", "auto", "persistent", "default"),
             "shaping-reviewer": ("openai", "gpt-5.6-sol", "xhigh", "never", "fresh", "fast"),
             "implementer": ("anthropic", "claude-sonnet-5", "xhigh", "auto", "fresh", "default"),
             "code-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "default"),
@@ -95,20 +93,38 @@ class RoleResolverTest(unittest.TestCase):
             ),
         )
 
-    def test_persistent_roles_require_bootstrap_ack_before_mutation(self) -> None:
+    def test_orchestrator_resolves_shaping_skills_only_in_shaping_mode(self) -> None:
+        # There is no separately persistent issue-shaper role or tab: the one issue
+        # orchestrator loads the shaping skills conditionally, in its own session.
         registry = self.resolver.load_registry(ROOT)
-        for name in ("meta-operator", "orchestrator", "issue-shaper"):
+        base = self.resolver.resolve_role(registry, "orchestrator", set())
+        shaping = self.resolver.resolve_role(registry, "orchestrator", {"shaping"})
+        delivery = self.resolver.resolve_role(registry, "orchestrator", {"delivery"})
+        self.assertEqual(base.skills, ("herdr-comms",))
+        self.assertEqual(
+            shaping.skills,
+            ("herdr-comms", "octo-lite-issue-shaper", "grill-with-docs", "octo-lite-github"),
+        )
+        self.assertEqual(delivery.skills, ("herdr-comms", "octo-lite-loop"))
+
+    # The following three checks are structural wiring only: they prove the required
+    # keyword text is present in the canonical contract a session bootstraps from.
+    # They are not, and never substitute for, judged evidence that a model session
+    # actually behaves per that text; see the prompt-TDD receipts for that judgment.
+    def test_persistent_role_contracts_contain_bootstrap_ack_wiring_text(self) -> None:
+        registry = self.resolver.load_registry(ROOT)
+        for name in ("meta-operator", "orchestrator"):
             text = (ROOT / registry.roles[name].contract).read_text()
             self.assertIn("BOOTSTRAP_ACK", text, name)
             self.assertIn("before mutation", text, name)
 
-    def test_meta_operator_prompt_ends_direct_marker_at_autonomy(self) -> None:
+    def test_meta_operator_contract_text_contains_direct_marker_removal_wiring(self) -> None:
         registry = self.resolver.load_registry(ROOT)
         text = (ROOT / registry.roles["meta-operator"].contract).read_text()
         self.assertIn("Own compact Herdr labels", text)
         self.assertIn("Remove `🎤` as soon as an Opus can work autonomously", text)
 
-    def test_orchestrator_prompt_requires_fresh_probe_before_fleet_outage(self) -> None:
+    def test_orchestrator_contract_text_contains_fresh_probe_wiring(self) -> None:
         registry = self.resolver.load_registry(ROOT)
         text = (ROOT / registry.roles["orchestrator"].contract).read_text()
         self.assertIn("fresh exact-model probe", text)
@@ -137,6 +153,34 @@ class RoleResolverTest(unittest.TestCase):
             self.assertEqual(codex["launch"]["permission_mode"], role.mode)
             self.assertEqual(codex["launch"]["tools"], list(role.tools))
             self.assertEqual(codex["contract"]["text"], self.resolver.resolve_role(registry, name).contract_text)
+
+    def test_qa_reviewer_resolves_an_exact_empty_skill_set(self) -> None:
+        registry = self.resolver.load_registry(ROOT)
+        resolved = self.resolver.resolve_role(registry, "qa-reviewer", set())
+        self.assertEqual(resolved.skills, ())
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(target)], check=True)
+            subprocess.run(["git", "-C", str(target), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(target), "config", "user.name", "Test"], check=True)
+            (target / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(target), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(target), "commit", "-qm", "target"], check=True)
+            receipt = self.resolver.build_launch_receipt(
+                ROOT,
+                resolved,
+                spawn_id="qa-dry-run-1",
+                parent="issue-orchestrator",
+                reply_route="herdr:issue-orchestrator",
+                repo=target,
+                worktree=target,
+                execution_location="remote",
+                operator_loopback=False,
+                review_delivery="reachable_url_required",
+            )
+        self.assertEqual(receipt["skills"]["resolved"], [])
+        self.assertEqual(receipt["skills"]["paths"], [])
+        self.assertEqual(receipt["skills"]["blobs"], [])
 
     def test_dry_run_receipt_binds_effective_launch_inputs(self) -> None:
         registry = self.resolver.load_registry(ROOT)
