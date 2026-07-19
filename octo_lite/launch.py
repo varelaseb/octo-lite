@@ -1,0 +1,667 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import tomllib
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Mapping
+from urllib.parse import urlparse
+
+from octo_lite.runtime import GateError, admit_workspace, exact_fingerprint, normalize_launch_access
+from workflows.lib.role_resolver import build_launch_receipt, load_registry, resolve_role
+
+
+ReadLinear = Callable[[str], Mapping[str, Any]]
+ReadPullRequest = Callable[[str, int], Mapping[str, Any]]
+
+
+def _run(*argv: str, cwd: Path | None = None) -> str:
+    return subprocess.run(
+        list(argv),
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def read_linear(issue: str) -> dict[str, Any]:
+    raw = json.loads(_run("linear", "issue", "view", issue, "--json", "--no-download"))
+    state = raw.get("state")
+    normalized = dict(raw)
+    normalized["state"] = state.get("name") if isinstance(state, dict) else state
+    return normalized
+
+
+def read_pull_request(repo: str, number: int) -> dict[str, Any]:
+    return json.loads(
+        _run(
+            "gh",
+            "pr",
+            "view",
+            str(number),
+            "--repo",
+            repo,
+            "--json",
+            "number,url,headRefOid,headRefName,baseRefName,comments",
+        )
+    )
+
+
+def _required(envelope: Mapping[str, Any], name: str) -> Any:
+    value = envelope.get(name)
+    if value is None or value == "":
+        raise GateError(f"{name} required")
+    return value
+
+
+def _validate_envelope_shape(envelope: Mapping[str, Any]) -> None:
+    for name in (
+        "issue",
+        "repo",
+        "pr",
+        "branch",
+        "shaping_head",
+        "spec_revision",
+        "linear_revision",
+        "linear_fingerprint",
+        "linear_state",
+        "pr_head",
+        "pr_base",
+        "topology_revision",
+        "shaping_verdict",
+        "shaping_verdict_head",
+        "shaping_reviewer_receipt",
+        "conversation_cutoff",
+    ):
+        _required(envelope, name)
+    if envelope["linear_state"] not in {"Shaped", "Todo"}:
+        raise GateError("Linear state must be Shaped or Todo")
+    if envelope["shaping_verdict"] != "clear":
+        raise GateError("shaping verdict not clear")
+    if envelope["shaping_verdict_head"] != envelope["shaping_head"]:
+        raise GateError("shaping verdict HEAD mismatch")
+    if envelope["pr_head"] != envelope["shaping_head"]:
+        raise GateError("PR HEAD mismatch")
+    for name, allow_empty in (
+        ("spec_blobs", False),
+        ("adr_blobs", True),
+        ("shaping_verdict_inputs", False),
+        ("acceptance_criteria", False),
+    ):
+        value = envelope.get(name)
+        if not isinstance(value, list) or (not allow_empty and not value):
+            raise GateError(f"{name.replace('_', ' ')} required")
+
+
+def _issue_revision(issue: Mapping[str, Any]) -> str:
+    value = issue.get("updatedAt") or issue.get("updated_at") or issue.get("revision")
+    return str(value or exact_fingerprint(issue))
+
+
+def _pull_number(value: Any) -> int:
+    if isinstance(value, int):
+        return value
+    match = re.search(r"/(\d+)(?:/)?$", str(value))
+    if not match:
+        raise GateError("PR number unreadable")
+    return int(match.group(1))
+
+
+def _remote_repo_identity(remote: str) -> str:
+    if "://" in remote:
+        path = urlparse(remote).path
+    elif ":" in remote:
+        path = remote.split(":", 1)[1]
+    else:
+        path = remote
+    parts = [part for part in path.removesuffix(".git").strip("/").split("/") if part]
+    if len(parts) < 2:
+        raise GateError("repo identity unreadable from origin")
+    return "/".join(parts[-2:])
+
+
+def _parse_verdict(comments: Any) -> dict[str, Any]:
+    if not isinstance(comments, list):
+        raise GateError("shaping verdict comments missing")
+    marker = "<!-- octo-lite-verdict:shaping -->"
+    for comment in comments:
+        body = comment.get("body", "") if isinstance(comment, dict) else ""
+        if marker not in body:
+            continue
+        match = re.search(r"```toml\s*(.*?)\s*```", body, re.DOTALL)
+        if not match:
+            raise GateError("shaping verdict unreadable")
+        try:
+            return tomllib.loads(match.group(1))
+        except tomllib.TOMLDecodeError as error:
+            raise GateError("shaping verdict unreadable") from error
+    raise GateError("shaping verdict missing")
+
+
+def _git(repo: Path, *args: str) -> str:
+    return _run("git", "-C", str(repo), *args)
+
+
+def _verify_blobs(repo: Path, head: str, bindings: list[str], label: str) -> None:
+    for binding in bindings:
+        if not isinstance(binding, str) or ":" not in binding:
+            raise GateError(f"{label} blob binding unreadable")
+        relative, expected = binding.rsplit(":", 1)
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts:
+            raise GateError(f"{label} path escapes repo")
+        try:
+            actual = _git(repo, "rev-parse", f"{head}:{path.as_posix()}")
+        except subprocess.CalledProcessError as error:
+            raise GateError(f"{label} blob missing: {relative}") from error
+        if actual != expected:
+            raise GateError(f"{label} blob mismatch: {relative}")
+
+
+def _verify_sources(
+    repo: Path,
+    envelope: Mapping[str, Any],
+    linear: Mapping[str, Any],
+    pull: Mapping[str, Any],
+) -> None:
+    if linear.get("identifier") != envelope["issue"]:
+        raise GateError("Linear identity mismatch")
+    if linear.get("state") != envelope["linear_state"]:
+        raise GateError("Linear state mismatch")
+    if _issue_revision(linear) != str(envelope["linear_revision"]):
+        raise GateError("Linear revision mismatch")
+    if exact_fingerprint(linear) != envelope["linear_fingerprint"]:
+        raise GateError("Linear fingerprint mismatch")
+
+    if pull.get("headRefOid") != envelope["pr_head"]:
+        raise GateError("PR HEAD mismatch")
+    if pull.get("baseRefName") != envelope["pr_base"]:
+        raise GateError("PR base mismatch")
+    if pull.get("headRefName") != envelope["branch"]:
+        raise GateError("PR branch mismatch")
+    if str(pull.get("url")) != str(envelope["pr"]):
+        raise GateError("PR identity mismatch")
+
+    verdict = _parse_verdict(pull.get("comments"))
+    expected_verdict = {
+        "review_type": "shaping",
+        "verdict": "clear",
+        "head": envelope["shaping_head"],
+        "bound_inputs": envelope["shaping_verdict_inputs"],
+        "reviewer_receipt": envelope["shaping_reviewer_receipt"],
+    }
+    mismatches = [name for name, value in expected_verdict.items() if verdict.get(name) != value]
+    if mismatches:
+        raise GateError(f"shaping verdict mismatch: {', '.join(mismatches)}")
+
+    _verify_blobs(repo, envelope["shaping_head"], envelope["spec_blobs"], "spec")
+    _verify_blobs(repo, envelope["shaping_head"], envelope["adr_blobs"], "ADR")
+
+
+def _worktree_common_dir(path: Path) -> Path:
+    value = _git(path, "rev-parse", "--git-common-dir")
+    candidate = Path(value)
+    return (path / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
+
+
+def _prepare_worktree(repo: Path, root: Path, worktree: Path, head: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(root).free
+    admit_workspace(
+        worktree,
+        root,
+        disk_free_bytes=free,
+        minimum_free_bytes=1,
+        conflicts=[],
+        provider_overloaded=False,
+    )
+    if not worktree.exists():
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), head],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    try:
+        top = Path(_git(worktree, "rev-parse", "--show-toplevel")).resolve()
+        actual_head = _git(worktree, "rev-parse", "HEAD")
+        dirty = _git(worktree, "status", "--porcelain")
+    except subprocess.CalledProcessError as error:
+        raise GateError("worktree validation failed") from error
+    if top != worktree.resolve():
+        raise GateError("worktree must be git root")
+    if _worktree_common_dir(worktree) != _worktree_common_dir(repo):
+        raise GateError("worktree belongs to another repo")
+    if actual_head != head:
+        raise GateError("worktree starting HEAD mismatch")
+    if dirty:
+        raise GateError("fresh worktree is dirty")
+    if not (worktree / "AGENTS.md").is_file():
+        raise GateError("target AGENTS.md missing")
+
+
+def _child_workspace_check(repo: Path, root: Path, worktree: Path, head: str) -> dict[str, Any]:
+    child = r'''
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+expected = json.load(sys.stdin)
+cwd = Path.cwd().resolve()
+root = Path(expected["root"]).resolve()
+repo = Path(expected["repo"]).resolve()
+top = Path(subprocess.run(
+    ["git", "rev-parse", "--show-toplevel"], check=True, capture_output=True, text=True
+).stdout.strip()).resolve()
+head = subprocess.run(
+    ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+).stdout.strip()
+common = Path(subprocess.run(
+    ["git", "rev-parse", "--git-common-dir"], check=True, capture_output=True, text=True
+).stdout.strip())
+common = (cwd / common).resolve() if not common.is_absolute() else common.resolve()
+repo_common_raw = subprocess.run(
+    ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+    check=True, capture_output=True, text=True,
+).stdout.strip()
+repo_common = Path(repo_common_raw)
+repo_common = (repo / repo_common).resolve() if not repo_common.is_absolute() else repo_common.resolve()
+if cwd != Path(expected["worktree"]).resolve() or top != cwd:
+    raise SystemExit("child worktree identity mismatch")
+if os.path.commonpath((root, cwd)) != str(root) or cwd == root:
+    raise SystemExit("child worktree containment mismatch")
+if common != repo_common or head != expected["head"] or not (cwd / "AGENTS.md").is_file():
+    raise SystemExit("child workspace fact mismatch")
+json.dump({"worktree": str(cwd), "head": head, "contained": True}, sys.stdout)
+'''
+    payload = {
+        "repo": str(repo),
+        "root": str(root),
+        "worktree": str(worktree),
+        "head": head,
+    }
+    try:
+        result = subprocess.run(
+            [os.environ.get("PYTHON", "python3"), "-c", child],
+            cwd=worktree,
+            input=json.dumps(payload),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        raise GateError("child workspace bootstrap check failed") from error
+    return json.loads(result.stdout)
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return "[" + ", ".join(json.dumps(item, ensure_ascii=False) for item in value) + "]"
+    raise GateError(f"unsupported receipt value: {type(value).__name__}")
+
+
+def render_receipt(receipt: Mapping[str, Any]) -> str:
+    lines: list[str] = []
+    for key, value in receipt.items():
+        if isinstance(value, Mapping):
+            continue
+        lines.append(f"{key} = {_toml_value(value)}")
+    for section, values in receipt.items():
+        if not isinstance(values, Mapping):
+            continue
+        lines.extend(["", f"[{section}]"])
+        lines.extend(f"{key} = {_toml_value(value)}" for key, value in values.items())
+    return "\n".join(lines) + "\n"
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _provider_argv(receipt: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    runtime = receipt["runtime"]
+    worktree = receipt["workspace"]["worktree"]
+    provider = runtime["provider"]
+    session = receipt["spawn_id"]
+    if provider == "anthropic":
+        try:
+            uuid.UUID(session)
+        except ValueError as error:
+            raise GateError("Anthropic spawn ID must be a UUID") from error
+        safe_tools = [tool for tool in runtime["tools"] if tool in {"Read", "Grep", "Glob"}]
+        common = [
+            "--model", runtime["model"],
+            "--effort", runtime["effort"],
+            "--permission-mode", runtime["mode"],
+        ]
+        bootstrap = [
+            "claude", "--print", "--output-format", "json", "--session-id", session,
+            *common, "--tools", ",".join(safe_tools),
+        ]
+        mutation = [
+            "claude", "--print", "--output-format", "json", "--resume", session,
+            *common, "--tools", ",".join(runtime["tools"]),
+        ]
+    elif provider == "openai":
+        config = [
+            "-c", f'model_reasoning_effort="{runtime["effort"]}"',
+            "-c", f'service_tier="{runtime["service_tier"]}"',
+        ]
+        bootstrap = [
+            "codex", "exec", "--json", "-C", worktree, "-m", runtime["model"],
+            *config, "-s", "read-only", "-",
+        ]
+        mutation = [
+            "codex", "exec", "resume", "--json", "-m", runtime["model"],
+            *config, "{provider_session_id}", "-",
+        ]
+    else:
+        raise GateError("unsupported provider")
+    if "--last" in bootstrap + mutation or "--continue" in bootstrap + mutation:
+        raise GateError("implicit continuation prohibited")
+    return bootstrap, mutation
+
+
+def _expected_ack(receipt: Mapping[str, Any], provider_session_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "spawn_id": receipt["spawn_id"],
+        "provider_session_id": provider_session_id,
+        "launch_revision": receipt["launch_revision"],
+        "role": receipt["role"]["name"],
+        "worktree": receipt["workspace"]["worktree"],
+        "starting_head": receipt["workspace"]["starting_head"],
+        "ready": True,
+        "blocker": "",
+    }
+
+
+def _launch_revision(receipt: Mapping[str, Any]) -> str:
+    payload = {
+        key: value
+        for key, value in receipt.items()
+        if key not in {"ready", "launch_revision", "bootstrap"}
+    }
+    return exact_fingerprint(payload)
+
+
+@dataclass(frozen=True)
+class PreparedLaunch:
+    receipt_path: Path
+    bootstrap_argv: list[str]
+    mutation_argv: list[str]
+    contract_text: str
+
+    def expected_ack(self, provider_session_id: str) -> dict[str, Any]:
+        with self.receipt_path.open("rb") as handle:
+            return _expected_ack(tomllib.load(handle), provider_session_id)
+
+    def mutation_argv_for(self, provider_session_id: str) -> list[str]:
+        return [provider_session_id if item == "{provider_session_id}" else item for item in self.mutation_argv]
+
+
+def prepare_launch(
+    *,
+    root: Path,
+    envelope: Mapping[str, Any],
+    role_name: str,
+    capabilities: set[str],
+    spawn_id: str,
+    parent: str,
+    reply_route: str,
+    repo: Path,
+    worktree_root: Path,
+    worktree: Path,
+    receipt_path: Path,
+    execution_location: str,
+    operator_loopback: bool,
+    review_delivery: str,
+    read_linear: ReadLinear = read_linear,
+    read_pr: ReadPullRequest = read_pull_request,
+) -> PreparedLaunch:
+    root = root.resolve()
+    repo = repo.resolve()
+    worktree_root = worktree_root.resolve()
+    worktree = worktree.resolve()
+    _validate_envelope_shape(envelope)
+    normalize_launch_access(
+        {
+            "execution_location": execution_location,
+            "operator_loopback_access": operator_loopback,
+            "review_delivery": review_delivery,
+        }
+    )
+    if execution_location not in {"local", "remote"}:
+        raise GateError("execution_location must be local or remote")
+    registry = load_registry(root)
+    resolved = resolve_role(registry, role_name, capabilities)
+    if Path(_git(repo, "rev-parse", "--show-toplevel")).resolve() != repo:
+        raise GateError("repo must be control git root")
+    origin = _git(repo, "remote", "get-url", "origin")
+    if _remote_repo_identity(origin).lower() != str(envelope["repo"]).lower():
+        raise GateError("repo identity mismatch")
+
+    linear = dict(read_linear(str(envelope["issue"])))
+    state = linear.get("state")
+    if isinstance(state, Mapping):
+        linear["state"] = state.get("name")
+    number = _pull_number(envelope["pr"])
+    pull = dict(read_pr(str(envelope["repo"]), number))
+    _verify_sources(repo, envelope, linear, pull)
+    _prepare_worktree(repo, worktree_root, worktree, str(envelope["shaping_head"]))
+    child_workspace = _child_workspace_check(
+        repo,
+        worktree_root,
+        worktree,
+        str(envelope["shaping_head"]),
+    )
+
+    receipt = build_launch_receipt(
+        root,
+        resolved,
+        spawn_id=spawn_id,
+        parent=parent,
+        reply_route=reply_route,
+        repo=repo,
+        worktree=worktree,
+        execution_location=execution_location,
+        operator_loopback=operator_loopback,
+        review_delivery=review_delivery,
+    )
+    receipt["ready"] = False
+    receipt["workspace"]["remote"] = origin
+    receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
+    receipt["issue"] = {
+        "identifier": linear["identifier"],
+        "revision": _issue_revision(linear),
+        "fingerprint": exact_fingerprint(linear),
+        "state": linear["state"],
+    }
+    receipt["spec"] = {
+        "revision": str(envelope["spec_revision"]),
+        "blobs": list(envelope["spec_blobs"]),
+        "adr_blobs": list(envelope["adr_blobs"]),
+        "conversation_cutoff": str(envelope["conversation_cutoff"]),
+    }
+    receipt["pull_request"] = {
+        "repo": str(envelope["repo"]),
+        "number": number,
+        "url": str(pull["url"]),
+        "branch": str(pull["headRefName"]),
+        "base": str(pull["baseRefName"]),
+        "head": str(pull["headRefOid"]),
+        "shaping_head": str(envelope["shaping_head"]),
+    }
+    receipt["topology"] = {"revision": int(envelope["topology_revision"])}
+    receipt["prior_gates"] = {
+        "shaping_verdict": "clear",
+        "shaping_verdict_head": str(envelope["shaping_verdict_head"]),
+        "shaping_verdict_inputs": list(envelope["shaping_verdict_inputs"]),
+        "shaping_reviewer_receipt": str(envelope["shaping_reviewer_receipt"]),
+        "acceptance_criteria": list(envelope["acceptance_criteria"]),
+    }
+    receipt["bootstrap"] = {"verified": False, "provider_session_id": ""}
+    receipt["launch_revision"] = _launch_revision(receipt)
+    _atomic_write(receipt_path, render_receipt(receipt))
+    bootstrap, mutation = _provider_argv(receipt)
+    return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
+
+
+def verify_bootstrap(receipt_path: Path, acknowledgment: Mapping[str, Any]) -> dict[str, Any]:
+    with receipt_path.open("rb") as handle:
+        receipt = tomllib.load(handle)
+    if receipt.get("launch_revision") != _launch_revision(receipt):
+        raise GateError("launch receipt revision mismatch")
+    provider_session_id = acknowledgment.get("provider_session_id")
+    if not isinstance(provider_session_id, str) or not provider_session_id:
+        raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
+    expected = _expected_ack(receipt, provider_session_id)
+    mismatches = [name for name, value in expected.items() if acknowledgment.get(name) != value]
+    if mismatches:
+        raise GateError(f"bootstrap acknowledgment mismatch: {', '.join(mismatches)}")
+    receipt["ready"] = True
+    receipt["bootstrap"]["verified"] = True
+    receipt["bootstrap"]["provider_session_id"] = provider_session_id
+    _atomic_write(receipt_path, render_receipt(receipt))
+    return dict(acknowledgment)
+
+
+def bootstrap_prompt(prepared: PreparedLaunch) -> str:
+    receipt = prepared.receipt_path
+    return (
+        f"{prepared.contract_text.rstrip()}\n\n"
+        f"Bootstrap only. Read {receipt}. Check every bound source and workspace fact. "
+        "Do not mutate. Return BOOTSTRAP_ACK as JSON with schema_version, spawn_id, "
+        "launch_revision, role, worktree, starting_head, ready true, and empty blocker. "
+        "Include provider_session_id when visible."
+    )
+
+
+def mutation_prompt(prepared: PreparedLaunch) -> str:
+    with prepared.receipt_path.open("rb") as handle:
+        receipt = tomllib.load(handle)
+    if receipt.get("ready") is not True or receipt.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("verified BOOTSTRAP_ACK required before mutation")
+    skills = ", ".join(receipt["skills"]["resolved"])
+    return (
+        f"Bootstrap verified. Execute one {receipt['role']['name']} pass from {prepared.receipt_path}. "
+        f"Load resolved skills: {skills}. Use pinned sources. Return the role output."
+    )
+
+
+def _json_object(text: str) -> dict[str, Any]:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*|\s*```$", "", stripped, flags=re.DOTALL)
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        value = None
+        for index, character in enumerate(stripped):
+            if character != "{":
+                continue
+            try:
+                candidate, _ = decoder.raw_decode(stripped[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict):
+                value = candidate
+        if value is None:
+            raise GateError("bootstrap acknowledgment is not JSON")
+    if not isinstance(value, dict):
+        raise GateError("bootstrap acknowledgment is not an object")
+    nested = value.get("BOOTSTRAP_ACK")
+    return nested if isinstance(nested, dict) else value
+
+
+def parse_bootstrap_output(provider: str, output: str) -> tuple[str, dict[str, Any]]:
+    if provider == "anthropic":
+        try:
+            event = json.loads(output)
+        except json.JSONDecodeError as error:
+            raise GateError("Anthropic bootstrap output unreadable") from error
+        session = event.get("session_id")
+        result = event.get("result")
+        if not isinstance(session, str) or not isinstance(result, str):
+            raise GateError("Anthropic bootstrap identity missing")
+        return session, _json_object(result)
+    if provider == "openai":
+        session = ""
+        message = ""
+        for line in output.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise GateError("OpenAI bootstrap output unreadable") from error
+            if event.get("type") == "thread.started":
+                session = str(event.get("thread_id") or "")
+            item = event.get("item")
+            if event.get("type") == "item.completed" and isinstance(item, dict):
+                if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                    message = item["text"]
+        if not session or not message:
+            raise GateError("OpenAI bootstrap identity missing")
+        return session, _json_object(message)
+    raise GateError("unsupported provider")
+
+
+def run_launch(
+    prepared: PreparedLaunch,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    with prepared.receipt_path.open("rb") as handle:
+        receipt = tomllib.load(handle)
+    worktree = receipt["workspace"]["worktree"]
+    bootstrap = runner(
+        prepared.bootstrap_argv,
+        cwd=worktree,
+        input=bootstrap_prompt(prepared),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if bootstrap.returncode != 0:
+        raise GateError(f"bootstrap provider failed: {bootstrap.stderr.strip()}")
+    session, acknowledgment = parse_bootstrap_output(receipt["runtime"]["provider"], bootstrap.stdout)
+    claimed_session = acknowledgment.get("provider_session_id")
+    if claimed_session not in {None, "", session}:
+        raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
+    acknowledgment["provider_session_id"] = session
+    verify_bootstrap(prepared.receipt_path, acknowledgment)
+    mutation = runner(
+        prepared.mutation_argv_for(session),
+        cwd=worktree,
+        input=mutation_prompt(prepared),
+        text=True,
+        check=False,
+    )
+    if mutation.returncode != 0:
+        raise GateError(f"provider pass failed with exit {mutation.returncode}")
+    return mutation
