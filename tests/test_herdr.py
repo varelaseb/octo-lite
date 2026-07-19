@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -376,15 +377,26 @@ fi
             inbox_item = Path(td) / "state/octo-lite/inbox/agent1" / message_id
 
             log.write_text("")
+            fail_bin = Path(td) / "failbin"
+            fail_bin.mkdir()
+            fake_mv = fail_bin / "mv"
+            real_mv = shutil.which("mv")
+            fake_mv.write_text(
+                f"""#!/usr/bin/env bash
+set -eu
+if [[ "${{@: -1}}" == "${{FAKE_MV_FAIL_DEST:-}}" ]]; then
+  exit 1
+fi
+exec {real_mv} "$@"
+"""
+            )
+            fake_mv.chmod(0o755)
             drain_env = dict(env, FAKE_PANE_TEXT="ready")
-            messages_dir = Path(td) / "state/octo-lite/messages"
-            subprocess.run(["chattr", "+i", str(messages_dir)], check=True)
-            try:
-                drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
-                result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
-                self.assertNotEqual(0, result.returncode)
-            finally:
-                subprocess.run(["chattr", "-i", str(messages_dir)], check=True)
+            drain_env["PATH"] = f"{fail_bin}:{drain_env['PATH']}"
+            drain_env["FAKE_MV_FAIL_DEST"] = str(states[0])
+            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
+            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
 
             with states[0].open("rb") as handle:
                 self.assertEqual("queued", tomllib.load(handle)["status"])
