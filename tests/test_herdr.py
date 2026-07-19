@@ -1,15 +1,85 @@
+import json
 import os
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
+import uuid
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from workflows.lib.role_resolver import build_launch_receipt, load_registry, render_receipt, resolve_role
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
 ACK = ROOT / "skills/herdr-comms/assets/herdr-ack"
 SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
+OCTO_LAUNCH = ROOT / "scripts/octo-launch"
+
+# Fakes the bootstrap print-mode provider call herdr-spawn triggers indirectly
+# through `octo-launch bootstrap`. A `--session-id` call answers a BOOTSTRAP_ACK
+# computed from the exact receipt on disk, optionally with one field overridden to
+# prove herdr-spawn refuses to start a pane on any mismatch.
+FAKE_BOOTSTRAP_CLAUDE = r"""#!/usr/bin/env bash
+printf 'claude %s\n' "$*" >>"$CALL_LOG"
+prompt="$(cat)"
+receipt_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*\.toml' | head -1)"
+args=("$@")
+session=""
+for i in "${!args[@]}"; do
+  if [[ "${args[$i]}" == "--session-id" ]]; then
+    session="${args[$((i+1))]}"
+  fi
+done
+python3 - "$receipt_path" "$session" <<'PY'
+import json
+import os
+import sys
+import tomllib
+
+receipt_path, session_id = sys.argv[1], sys.argv[2]
+with open(receipt_path, "rb") as handle:
+    receipt = tomllib.load(handle)
+ack = {
+    "schema_version": receipt["schema_version"],
+    "spawn_id": receipt["spawn_id"],
+    "provider_session_id": session_id,
+    "launch_revision": receipt["launch_revision"],
+    "role": receipt["role"]["name"],
+    "worktree": receipt["workspace"]["worktree"],
+    "starting_head": receipt["workspace"]["starting_head"],
+    "ready": True,
+    "blocker": "",
+}
+override = os.environ.get("FAKE_ACK_OVERRIDE")
+if override:
+    key, value = override.split("=", 1)
+    ack[key] = value
+print(json.dumps({"session_id": session_id, "result": json.dumps(ack)}))
+PY
+"""
+
+
+def build_orchestrator_receipt(repo: Path, receipt_path: Path) -> dict:
+    registry = load_registry(ROOT)
+    resolved = resolve_role(registry, "orchestrator", set())
+    receipt = build_launch_receipt(
+        ROOT,
+        resolved,
+        spawn_id=str(uuid.uuid4()),
+        parent="epic-opus",
+        reply_route="herdr:epic-opus",
+        repo=repo,
+        worktree=repo,
+        execution_location="remote",
+        operator_loopback=False,
+        review_delivery="reachable_url_required",
+    )
+    receipt_path.write_text(render_receipt(receipt))
+    return receipt
 
 
 class HerdrHelperTests(unittest.TestCase):
@@ -178,7 +248,7 @@ fi
             )
             self.assertEqual(0, right.returncode)
 
-    def spawn_environment(self, td, pane_text):
+    def spawn_environment(self, td, ack_override=None):
         root = Path(td)
         fake_bin = root / "bin"
         fake_bin.mkdir()
@@ -192,62 +262,128 @@ if [[ "$1 $2" == "tab create" ]]; then
 elif [[ "$1 $2" == "agent get" ]]; then
   echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
 elif [[ "$1 $2" == "pane read" ]]; then
-  printf '%s\\n' "$FAKE_PANE_TEXT"
+  printf 'ready\\n'
 fi
 """
         )
         fake.chmod(0o755)
+        (fake_bin / "claude").write_text(FAKE_BOOTSTRAP_CLAUDE)
+        (fake_bin / "claude").chmod(0o755)
         env = dict(
             os.environ,
-            PATH=f"{fake_bin}:{os.environ['PATH']}",
+            PATH=f"{fake_bin}:{OCTO_LAUNCH.parent}:{os.environ['PATH']}",
             FAKE_LOG=str(log),
-            FAKE_PANE_TEXT=pane_text,
+            CALL_LOG=str(log),
             HERDR_SPAWN_BOOTSTRAP_RETRIES="2",
         )
+        if ack_override:
+            env["FAKE_ACK_OVERRIDE"] = ack_override
         return env, log
 
-    def test_orchestrator_spawn_enforces_label_model_auto_and_bootstrap(self):
+    def spawn_base_command(self, receipt):
+        return [
+            str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(ROOT),
+            "--role", "orchestrator", "--label", "443/6 · operating model",
+            "--receipt", str(receipt), "--",
+            "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
+            "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
+        ]
+
+    def test_spawn_verifies_bootstrap_before_any_pane_and_resumes_the_exact_verified_session(self):
         with tempfile.TemporaryDirectory() as td:
-            env, log = self.spawn_environment(td, "ready")
-            receipt = Path(td) / "launch.toml"
-            receipt.write_text(
-                'schema_version = 1\nspawn_id = "spawn-1"\nready = true\n\n'
-                '[bootstrap]\nverified = true\nprovider_session_id = "provider-1"\n'
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            receipt = build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path), env=env, capture_output=True, text=True,
             )
-            base = [
-                str(SPAWN), "--workspace", "w1", "--name", "spawn-1", "--cwd", str(ROOT),
-                "--role", "orchestrator", "--label", "443/6 · operating model",
-                "--receipt", str(receipt), "--",
-                "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
-                "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
-            ]
-            valid = subprocess.run(base, env=env, check=True, capture_output=True, text=True)
-            self.assertIn("bootstrap=acknowledged", valid.stdout)
-            log.unlink()
-            invalid = list(base)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn(f"provider_session_id={receipt['spawn_id']}", result.stdout)
+
+            readback = tomllib.loads(receipt_path.read_text())
+            self.assertTrue(readback["bootstrap"]["verified"])
+            self.assertEqual(receipt["spawn_id"], readback["bootstrap"]["provider_session_id"])
+
+            calls = log.read_text().splitlines()
+            start_call = next(line for line in calls if line.startswith("agent start"))
+            self.assertIn(f"--resume {receipt['spawn_id']}", start_call)
+            # The resumed command is the exact bootstrap-verified session, immediately
+            # after the executable, never a fresh unverified start.
+            self.assertIn(f"claude --resume {receipt['spawn_id']}", start_call)
+
+    def test_spawn_creates_no_pane_on_any_bootstrap_mismatch(self):
+        scenarios = {
+            "spoofed_role": "role=code-reviewer",
+            "wrong_provider_session": "provider_session_id=" + str(uuid.uuid4()),
+            "wrong_worktree": "worktree=/tmp/not-the-real-worktree",
+            "wrong_starting_head": "starting_head=" + ("0" * 40),
+            "wrong_launch_revision": "launch_revision=" + ("0" * 64),
+        }
+        for name, override in scenarios.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as td:
+                repo = Path(td) / "repo"
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+                subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+                (repo / "AGENTS.md").write_text("# Target\n")
+                subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+                subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+                receipt_path = Path(td) / "launch.toml"
+                build_orchestrator_receipt(repo, receipt_path)
+
+                env, log = self.spawn_environment(td, ack_override=override)
+                result = subprocess.run(
+                    self.spawn_base_command(receipt_path), env=env, capture_output=True, text=True,
+                )
+                self.assertNotEqual(0, result.returncode, name)
+                self.assertNotIn("bootstrap=acknowledged", result.stdout, name)
+                calls = log.read_text().splitlines() if log.exists() else []
+                self.assertFalse(any(call.startswith("tab create") for call in calls), name)
+                self.assertFalse(any(call.startswith("agent start") for call in calls), name)
+                readback = tomllib.loads(receipt_path.read_text())
+                self.assertFalse(readback["bootstrap"]["verified"], name)
+
+    def test_spawn_creates_no_pane_on_unreadable_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            receipt_path = Path(td) / "launch.toml"
+            receipt_path.write_text("not valid toml{{{")
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path), env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(2, result.returncode)
+            self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            self.assertFalse(log.exists())
+
+    def test_spawn_still_enforces_label_and_model_before_any_bootstrap_call(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            invalid = self.spawn_base_command(receipt_path)
             invalid[invalid.index("443/6 · operating model")] = "TUR-443 operating model"
             result = subprocess.run(invalid, env=env, capture_output=True, text=True)
             self.assertNotEqual(0, result.returncode)
             self.assertFalse(log.exists())
-
-    def test_spawn_rejects_pane_text_spoofing_an_unverified_receipt(self):
-        with tempfile.TemporaryDirectory() as td:
-            env, _log = self.spawn_environment(td, "BOOTSTRAP_ACK spawn-1")
-            receipt = Path(td) / "launch.toml"
-            receipt.write_text(
-                'schema_version = 1\nspawn_id = "spawn-1"\nready = false\n\n'
-                '[bootstrap]\nverified = false\nprovider_session_id = ""\n'
-            )
-            base = [
-                str(SPAWN), "--workspace", "w1", "--name", "spawn-1", "--cwd", str(ROOT),
-                "--role", "orchestrator", "--label", "443/6 · operating model",
-                "--receipt", str(receipt), "--",
-                "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
-                "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
-            ]
-            result = subprocess.run(base, env=env, capture_output=True, text=True)
-            self.assertEqual(2, result.returncode)
-            self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            readback = tomllib.loads(receipt_path.read_text())
+            self.assertFalse(readback["bootstrap"]["verified"])
 
 
 if __name__ == "__main__":

@@ -11,7 +11,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from octo_lite.launch import GateError, prepare_launch, run_launch, verify_bootstrap  # noqa: E402
+from octo_lite.launch import (  # noqa: E402
+    GateError,
+    bootstrap_from_receipt,
+    prepare_launch,
+    run_launch,
+    verify_bootstrap,
+)
 
 
 def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
@@ -37,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_prepare_arguments(prepare)
     launch = commands.add_parser("launch", help="Prepare, bootstrap, verify, then run one pass")
     add_prepare_arguments(launch)
+    bootstrap = commands.add_parser("bootstrap", help="Bootstrap-verify an already-prepared receipt only")
+    bootstrap.add_argument("--receipt", type=Path, required=True)
     verify = commands.add_parser("verify", help="Verify a captured BOOTSTRAP_ACK")
     verify.add_argument("--receipt", type=Path, required=True)
     verify.add_argument("--ack", type=Path, required=True)
@@ -73,6 +81,10 @@ def main() -> int:
             verified = verify_bootstrap(args.receipt, value)
             print(json.dumps({"ready": True, "provider_session_id": verified["provider_session_id"]}))
             return 0
+        if args.command == "bootstrap":
+            provider_session_id = bootstrap_from_receipt(args.receipt)
+            print(json.dumps({"verified": True, "provider_session_id": provider_session_id}))
+            return 0
         plan = prepared(args)
         if args.command == "prepare":
             print(
@@ -87,7 +99,20 @@ def main() -> int:
                 )
             )
             return 0
-        run_launch(plan)
+        pass_result = run_launch(plan)
+        with plan.receipt_path.open("rb") as handle:
+            receipt_content = tomllib.load(handle)
+        print(
+            json.dumps(
+                {
+                    "receipt_path": str(plan.receipt_path),
+                    "receipt": receipt_content,
+                    "pass_result": pass_result,
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        )
         return 0
     except (
         GateError,

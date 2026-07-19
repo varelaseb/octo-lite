@@ -14,6 +14,50 @@ SWEEP = ROOT / "scripts/operator-sweep"
 TIMER = ROOT / "scripts/operator-timer"
 CONTROL = ROOT / "scripts/octo-control"
 
+# Fakes the two-phase reconciler launch: a --session-id call answers a bound
+# BOOTSTRAP_ACK computed from the exact receipt on disk; a --resume call answers
+# a fixed read-only judgment message. Proves the resumed session is the exact
+# bootstrap-verified one, never a self-attested or spoofed identity.
+FAKE_RECONCILER_CLAUDE = r"""#!/usr/bin/env bash
+printf 'claude %s\n' "$*" >>"$CALL_LOG"
+prompt="$(cat)"
+if [[ "$*" == *"--resume"* ]]; then
+  cat <<'JSON'
+{"session_id": "reconciler-session-1", "result": "changed"}
+JSON
+else
+  receipt_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*receipt\.toml' | head -1)"
+  args=("$@")
+  session=""
+  for i in "${!args[@]}"; do
+    if [[ "${args[$i]}" == "--session-id" ]]; then
+      session="${args[$((i+1))]}"
+    fi
+  done
+  python3 - "$receipt_path" "$session" <<'PY'
+import json
+import sys
+import tomllib
+
+receipt_path, session_id = sys.argv[1], sys.argv[2]
+with open(receipt_path, "rb") as handle:
+    receipt = tomllib.load(handle)
+ack = {
+    "schema_version": receipt["schema_version"],
+    "spawn_id": receipt["spawn_id"],
+    "provider_session_id": session_id,
+    "launch_revision": receipt["launch_revision"],
+    "role": receipt["role"]["name"],
+    "worktree": receipt["workspace"]["worktree"],
+    "starting_head": receipt["workspace"]["starting_head"],
+    "ready": True,
+    "blocker": "",
+}
+print(json.dumps({"session_id": session_id, "result": json.dumps(ack)}))
+PY
+fi
+"""
+
 
 class OperatorControlTests(unittest.TestCase):
     def test_timer_only_wakes_current_operator_through_operator_say(self) -> None:
@@ -75,13 +119,7 @@ class OperatorControlTests(unittest.TestCase):
             fake_bin.mkdir()
             log = base / "calls.jsonl"
             for name, body in {
-                "claude": (
-                    "#!/usr/bin/env bash\n"
-                    "printf 'claude %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-                    "cat <<'JSON'\n"
-                    '{"session_id": "reconciler-session-1", "result": "changed"}\n'
-                    "JSON\n"
-                ),
+                "claude": FAKE_RECONCILER_CLAUDE,
                 "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
             }.items():
                 path = fake_bin / name
@@ -98,12 +136,20 @@ class OperatorControlTests(unittest.TestCase):
             self.assertTrue(json.loads(first.stdout)["changed"])
             self.assertFalse(json.loads(second.stdout)["changed"])
             calls = log.read_text().splitlines()
-            self.assertEqual(1, sum(line.startswith("claude ") for line in calls))
+            claude_calls = [line for line in calls if line.startswith("claude ")]
+            self.assertEqual(2, len(claude_calls))
             self.assertEqual(1, sum(line.startswith("operator ") for line in calls))
-            self.assertIn("--model claude-sonnet-5", calls[0])
-            self.assertIn("--agent reconciler", calls[0])
+            self.assertIn("--session-id", claude_calls[0])
+            self.assertIn("--resume", claude_calls[1])
+            self.assertIn("--model claude-sonnet-5", claude_calls[0])
+            self.assertIn("--tools Read", claude_calls[0])
             with (control / "sweep-state.toml").open("rb") as handle:
-                self.assertEqual("operator-1", tomllib.load(handle)["owner_session"])
+                state = tomllib.load(handle)
+            self.assertEqual("operator-1", state["owner_session"])
+            with open(state["receipt"], "rb") as handle:
+                receipt = tomllib.load(handle)
+            self.assertTrue(receipt["bootstrap"]["verified"])
+            self.assertTrue(receipt["result"]["bound"])
 
     def test_result_bind_produces_exact_output_binding_for_verified_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -133,32 +179,6 @@ class OperatorControlTests(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(0, wrong_role.returncode)
-
-    def test_bootstrap_ack_durably_verifies_persistent_receipt(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            receipt = Path(td) / "launch.toml"
-            receipt.write_text(
-                'schema_version = 1\nspawn_id = "operator-1"\nready = true\n\n'
-                '[role]\nname = "meta-operator"\n\n[bootstrap]\nverified = false\n'
-                'provider_session_id = ""\n'
-            )
-            result = subprocess.run(
-                [str(CONTROL), "bootstrap-ack", "--receipt", str(receipt), "--provider-session-id", "provider-1"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            output = json.loads(result.stdout)
-            self.assertTrue(output["verified"])
-            with receipt.open("rb") as handle:
-                self.assertTrue(tomllib.load(handle)["bootstrap"]["verified"])
-
-            missing = subprocess.run(
-                [str(CONTROL), "bootstrap-ack", "--receipt", str(receipt), "--provider-session-id", ""],
-                capture_output=True,
-                text=True,
-            )
-            self.assertNotEqual(0, missing.returncode)
 
     def test_sweep_refetches_declared_linear_and_pr_facts_with_verified_bootstrap(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -192,13 +212,7 @@ class OperatorControlTests(unittest.TestCase):
             log = base / "calls.jsonl"
             linear_state_file = base / "linear-state.txt"
             linear_state_file.write_text("Todo")
-            (fake_bin / "claude").write_text(
-                "#!/usr/bin/env bash\n"
-                "printf 'claude %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-                "cat <<'JSON'\n"
-                '{"session_id": "reconciler-session-1", "result": "changed"}\n'
-                "JSON\n"
-            )
+            (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
             (fake_bin / "operator-say").write_text(
                 "#!/usr/bin/env bash\nprintf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
             )
@@ -238,7 +252,8 @@ class OperatorControlTests(unittest.TestCase):
             with open(state["receipt"], "rb") as handle:
                 receipt = tomllib.load(handle)
             self.assertTrue(receipt["bootstrap"]["verified"])
-            self.assertEqual("reconciler-session-1", receipt["bootstrap"]["provider_session_id"])
+            self.assertEqual(receipt["spawn_id"], receipt["bootstrap"]["provider_session_id"])
+            self.assertTrue(receipt["result"]["bound"])
 
             second = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
             self.assertFalse(json.loads(second.stdout)["changed"])

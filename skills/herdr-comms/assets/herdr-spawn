@@ -51,12 +51,28 @@ case "$role" in
   *) echo "herdr-spawn: role has no persistent tab" >&2; exit 65 ;;
 esac
 
+# Parent-controlled two-phase bootstrap. octo-launch runs a read-only print-mode
+# bootstrap for the exact receipt and verifies the full BOOTSTRAP_ACK (schema,
+# spawn, provider session, launch revision, role, worktree, starting HEAD, ready,
+# blocker) before any pane exists. A spoofed ack, wrong session, wrong
+# role/worktree/HEAD/revision, or unverified receipt fails here and creates no tab
+# or pane. The child never runs bootstrap-ack and never mutates the receipt.
+bootstrap_output="$(octo-launch bootstrap --receipt "$receipt")" || {
+  echo "herdr-spawn: parent bootstrap verification failed" >&2
+  exit 2
+}
+provider_session_id="$(jq -r '.provider_session_id // empty' <<<"$bootstrap_output")"
+[[ -n "$provider_session_id" ]] || { echo "herdr-spawn: bootstrap verification returned no session" >&2; exit 2; }
+
+# Resume the exact verified provider session; never start a fresh unverified one.
+resumed=("$1" "--resume" "$provider_session_id" "${@:2}")
+
 out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"
 tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
 root_pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
 [[ -n "$tab" ]] || exit 1
 
-herdr agent start "$name" --tab "$tab" --cwd "$cwd" --no-focus -- "$@" >/dev/null
+herdr agent start "$name" --tab "$tab" --cwd "$cwd" --no-focus -- "${resumed[@]}" >/dev/null
 [[ -z "$root_pane" ]] || herdr pane close "$root_pane" >/dev/null 2>&1
 
 pane=""
@@ -67,19 +83,9 @@ for _ in $(seq 1 10); do
 done
 [[ -n "$pane" ]] || exit 1
 
-receipt_verified() {
-  python3 - "$receipt" <<'PY'
-import sys, tomllib
-with open(sys.argv[1], 'rb') as f:
-    data = tomllib.load(f)
-bootstrap = data.get('bootstrap', {})
-ok = bootstrap.get('verified') is True and bool(bootstrap.get('provider_session_id'))
-print('yes' if ok else 'no')
-PY
-}
-
-startup="pending"
-retries="${HERDR_SPAWN_BOOTSTRAP_RETRIES:-30}"
+# Bootstrap is already verified. This loop only dismisses the one-time trusted-folder
+# dialog that a fresh terminal pane can show; it never infers readiness from pane text.
+retries="${HERDR_SPAWN_BOOTSTRAP_RETRIES:-10}"
 for _ in $(seq 1 "$retries"); do
   text="$(herdr pane read "$pane" --source visible --lines 50 2>/dev/null)"
   if grep -qiE 'Quick safety check|trust this folder' <<<"$text"; then
@@ -87,12 +93,7 @@ for _ in $(seq 1 "$retries"); do
     sleep 1
     continue
   fi
-  if [[ "$(receipt_verified)" == "yes" ]]; then
-    startup="acknowledged"
-    break
-  fi
-  sleep 2
+  break
 done
 
-echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=$startup receipt=$receipt"
-[[ "$startup" == acknowledged ]] || exit 2
+echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=acknowledged provider_session_id=$provider_session_id receipt=$receipt"

@@ -32,6 +32,12 @@ and the evolving Turbo draft PR:
   known secrets, perform the exact served-card readback, add no new
   access/redaction/retention subsystem, and create no control-panel adapter
   unless a later shaped non-derivable presentation need proves one necessary.
+- Deployment lifecycle mapping (TUR-443 cutover, `linear-deployment-target-owned`):
+  the concrete meaning of `In Staging` (merged to `main`), `In Preprod`
+  (verified candidate at zero percent live traffic), and `Live` (operator
+  traffic shift) is Turbo's own Linear state mapping. Promote it into Turbo
+  `AGENTS.md` or spec; generic octo-lite defines only that such states are
+  durable, operator-authorized, and evidence-backed.
 
 ## Boundary
 

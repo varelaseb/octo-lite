@@ -19,7 +19,8 @@ Resolve roles through `roles.toml`. Refetch before launch:
 - complete Linear issue, state, and fingerprint
 - PR, base, topology revision, and exact HEAD
 - spec and ADR blobs
-- conversation-log path and cutoff used by shaping review
+- nonempty conversation-log references and the pinned cutoff used by shaping
+  review; a cutoff alone is not enough
 - shaping verdict comment, bound inputs, and reviewer receipt
 - target `AGENTS.md` blob
 - parent, reply route, brief, and launch access facts
@@ -32,10 +33,19 @@ Stop on missing or stale input. Linear must be `Shaped` or operator-pulled
 Every pass is a fresh instance. Never resume a worker for another pass. Never
 use `--last`.
 
-Before each pass, use `octo-launch` to refetch exact sources, create the fresh
-worktree, resolve the role, and verify its session-bound receipt. Invoke one
-Workflow mode with that receipt. Read back its exact output before resolving
-the next pass. Never precompute receipts for future unknown HEADs.
+Before each pass, run `octo-launch launch`. It refetches exact sources, creates
+the fresh worktree, resolves the role, bootstraps and verifies BOOTSTRAP_ACK,
+then resumes that exact same provider session to run the pass. It is the sole
+LLM execution for the pass. It parses the role's structured result, binds it to
+the receipt, and prints the exact receipt plus a machine-readable `pass_result`.
+
+Then invoke one `workflows/octo-loop-qa.js` mode, passing that exact receipt and
+`pass_result`. The Workflow never launches a worker itself; it only performs
+deterministic gating: it independently recomputes the result binding, checks it
+against the receipt's stored binding, checks role, launch revision, exact HEAD,
+and mode-specific schema, then advances or returns a fix or blocked stage. Read
+back its exact output before resolving the next pass. Never precompute receipts
+for future unknown HEADs. Never run a second worker for the same pass.
 
 1. Fresh exact Sonnet 5 xhigh implementer.
 2. Require spec-derived intended red, smallest green, refactor, validation,
@@ -48,9 +58,6 @@ the next pass. Never precompute receipts for future unknown HEADs.
 7. Every fix starts with a spec-derived regression red and returns a new HEAD.
 8. Every new HEAD gets a fresh Sol re-review.
 9. After three blocking review and fix cycles, return to shaping.
-
-Use `workflows/octo-loop-qa.js`. Run one mode per invocation. Its modes separate
-fresh LLM passes from deterministic publication and tracker helpers.
 
 ## QA
 

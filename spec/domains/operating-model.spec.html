@@ -150,6 +150,18 @@
 <p data-anchor="shaping-conflict">If Linear high-level law conflicts with canonical spec or ADR law, neither silently wins: stop implementation and return to shaping until both and the evolving PR agree.</p>
 </section>
 
+<section data-anchor="prompt-tdd">
+<h3>Prompt TDD</h3>
+<p data-anchor="prompt-tdd-contract">Every prompt, role, or skill instruction change starts with a behavior contract naming exact inputs, the required observable decisions, actions, or fields, forbidden behavior, and acceptable proof.</p>
+<p data-anchor="prompt-tdd-red">A fresh model session runs the smallest scenario against the actual unchanged instructions first; only a genuinely wrong or ambiguous decision is red.</p>
+<p data-anchor="prompt-tdd-red-not-missing">A missing file, module, export, or script is not a valid prompt red.</p>
+<p data-anchor="prompt-tdd-green">A different fresh model session runs the same scenario against the changed instructions and judges the observable decision against the contract for green, then narrow regression scenarios run for adjacent behavior the change could shift.</p>
+<p data-anchor="prompt-tdd-deterministic">Deterministic tests cover loading, wiring, schema, invariants, and forbidden characters; they judge structure, never prompt judgment quality.</p>
+<p data-anchor="prompt-tdd-no-snapshot">An exact prose snapshot or keyword presence is never behavioral proof.</p>
+<p data-anchor="prompt-tdd-no-fabrication">Red chronology that cannot be honestly reconstructed must be stated as such, never fabricated.</p>
+<p data-anchor="prompt-tdd-lean">Eval evidence stays a lean one-off scenario record; no eval service or general harness.</p>
+</section>
+
 <section data-anchor="delivery-loop">
 <h3>Delivery loop</h3>
 <pre data-anchor="delivery-flow"><code>shape and reconcile
@@ -190,10 +202,8 @@
 <p data-anchor="linear-transition-retry">A partial transition failure retries only unfinished idempotent steps and never blindly repeats a completed state mutation.</p>
 <p data-anchor="linear-stream-authority">Stream orchestrators may perform only <code>Todo -&gt; In Progress -&gt; Awaiting Accept</code> through that helper.</p>
 <p data-anchor="linear-operator-authority">Acceptance, merge, staging, preproduction, and live transitions remain operator-owned.</p>
-<p data-anchor="linear-staging">Merged to <code>main</code> means deployed to staging and therefore <code>In Staging</code>.</p>
 <p data-anchor="linear-train">Acceptance inside a stack or release train remains an acceptance-ledger fact while Linear stays <code>Awaiting Accept</code> until the commit reaches <code>main</code>.</p>
-<p data-anchor="linear-preprod">In Preprod means a verified candidate exists at zero percent live traffic.</p>
-<p data-anchor="linear-live">Live requires the actual operator-authorized traffic shift.</p>
+<p data-anchor="linear-deployment-target-owned">Generic octo-lite defines only that post-acceptance deployment and promotion states are durable, operator-authorized, and evidence-backed; the exact state names and the concrete facts that trigger each one are target-owned Linear state mapping, defined in the target repo, never in generic octo-lite.</p>
 </section>
 
 <section data-anchor="user-story-surface">

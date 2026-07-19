@@ -8,8 +8,17 @@ import unittest
 import uuid
 from pathlib import Path
 
-from octo_lite.launch import GateError, mutation_prompt, prepare_launch, run_launch, verify_bootstrap
-from octo_lite.runtime import exact_fingerprint, verdict_body
+from octo_lite.launch import (
+    GateError,
+    bootstrap_from_receipt,
+    mutation_prompt,
+    parse_pass_output,
+    prepare_launch,
+    render_receipt,
+    run_launch,
+    verify_bootstrap,
+)
+from octo_lite.runtime import exact_fingerprint, launch_revision, verdict_body
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +32,7 @@ class LaunchBoundaryTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertIn("{prepare,launch,verify}", result.stdout)
+        self.assertIn("{prepare,launch,bootstrap,verify}", result.stdout)
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -57,6 +66,7 @@ class LaunchBoundaryTests(unittest.TestCase):
             ["linear:current", f"spec:{self.spec_blob}"],
             [],
             "review-session-1",
+            ["session.jsonl:1-6824"],
         )
         self.pr = {
             "number": 6,
@@ -88,6 +98,8 @@ class LaunchBoundaryTests(unittest.TestCase):
             "spec_blobs": [f"spec/domain.spec.html:{self.spec_blob}"],
             "adr_blobs": [],
             "conversation_cutoff": "session.jsonl:6824",
+            "conversation_log_references": ["session.jsonl:1-6824"],
+            "pass_instruction": "Implement one pass. Return only the schema.",
             "acceptance_criteria": ["launch is exact"],
             "resource_claims": {
                 "branch": "feature",
@@ -268,17 +280,157 @@ class LaunchBoundaryTests(unittest.TestCase):
         ack.pop("provider_session_id")
         calls.clear()
 
+        role_result = {"head": "f" * 40, "blocked": False, "validation": "ok"}
+
         def clear_runner(argv, **kwargs):
             calls.append(list(argv))
             if len(calls) == 1:
                 output = {"session_id": self.spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
                 return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
-            return subprocess.CompletedProcess(argv, 0, stdout="done", stderr="")
+            output = {"session_id": self.spawn_id, "result": json.dumps(role_result)}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
 
-        run_launch(prepared, runner=clear_runner)
+        pass_result = run_launch(prepared, runner=clear_runner)
         self.assertEqual(2, len(calls))
         self.assertIn(self.spawn_id, calls[1])
         self.assertNotIn("--last", calls[1])
+        self.assertEqual("f" * 40, pass_result["head"])
+        self.assertEqual(self.spawn_id, pass_result["receipt"])
+        self.assertRegex(pass_result["result_binding"], r"^[0-9a-f]{64}$")
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertTrue(readback["result"]["bound"])
+        self.assertEqual(pass_result["result_binding"], readback["result"]["binding"])
+
+    def test_run_launch_overwrites_a_self_asserted_result_binding(self) -> None:
+        prepared = self.prepare()
+        ack = prepared.expected_ack(self.spawn_id)
+        ack.pop("provider_session_id")
+        spoofed_result = {"head": "f" * 40, "blocked": False, "result_binding": "0" * 64}
+        calls = []
+
+        def spoofing_runner(argv, **kwargs):
+            calls.append(list(argv))
+            if len(calls) == 1:
+                output = {"session_id": self.spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+            output = {"session_id": self.spawn_id, "result": json.dumps(spoofed_result)}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        pass_result = run_launch(prepared, runner=spoofing_runner)
+        self.assertNotEqual("0" * 64, pass_result["result_binding"])
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertEqual(pass_result["result_binding"], readback["result"]["binding"])
+
+    def test_bootstrap_from_receipt_verifies_via_working_tree_contract_blob(self) -> None:
+        prepared = self.prepare()
+        ack = prepared.expected_ack(self.spawn_id)
+        ack.pop("provider_session_id")
+
+        def clear_runner(argv, **kwargs):
+            output = {"session_id": self.spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        session = bootstrap_from_receipt(prepared.receipt_path, runner=clear_runner)
+        self.assertEqual(self.spawn_id, session)
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertTrue(readback["bootstrap"]["verified"])
+
+    def test_bootstrap_from_receipt_works_before_the_role_contract_is_committed(self) -> None:
+        # A control-panel edit to roles/*.md is a plain working-tree change until the
+        # operator commits it. Bootstrap must not require `git cat-file` lookup of an
+        # object that was never written to the object database.
+        role_repo = Path(self.temp.name) / "role-src"
+        subprocess.run(["git", "init", "-q", str(role_repo)], check=True)
+        subprocess.run(["git", "-C", str(role_repo), "config", "user.email", "t@example.com"], check=True)
+        subprocess.run(["git", "-C", str(role_repo), "config", "user.name", "T"], check=True)
+        (role_repo / "roles").mkdir()
+        contract = role_repo / "roles" / "implementer.md"
+        contract.write_text("# Implementer\nCommitted contract.\n")
+        subprocess.run(["git", "-C", str(role_repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(role_repo), "commit", "-qm", "base"], check=True)
+        contract.write_text("# Implementer\nUncommitted edit.\n")
+        blob = subprocess.run(
+            ["git", "-C", str(role_repo), "hash-object", "--no-filters", "roles/implementer.md"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        with self.assertRaises(subprocess.CalledProcessError):
+            subprocess.run(
+                ["git", "-C", str(role_repo), "cat-file", "-p", blob],
+                check=True, capture_output=True, text=True,
+            )
+
+        receipt_path = Path(self.temp.name) / "bare-receipt.toml"
+        receipt = {
+            "schema_version": 1,
+            "spawn_id": self.spawn_id,
+            "parent": "issue-orchestrator",
+            "reply_route": "herdr:issue-orchestrator",
+            "ready": True,
+            "role": {
+                "name": "implementer",
+                "root": str(role_repo),
+                "contract_path": "roles/implementer.md",
+                "contract_blob": blob,
+                "mapping_revision": "map-1",
+            },
+            "runtime": {
+                "provider": "anthropic", "model": "claude-sonnet-5", "effort": "xhigh",
+                "mode": "auto", "session": "fresh", "service_tier": "default",
+                "tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"],
+            },
+            "skills": {"resolved": [], "matched_capabilities": [], "paths": [], "blobs": []},
+            "workspace": {
+                "repo": str(self.repo), "worktree": str(self.repo),
+                "starting_head": self.head, "instructions_path": "AGENTS.md",
+                "instructions_blob": self.git("hash-object", "AGENTS.md"),
+            },
+            "access": {
+                "execution_location": "remote", "operator_loopback": False,
+                "review_delivery": "reachable_url_required",
+            },
+            "bootstrap": {"verified": False, "provider_session_id": ""},
+        }
+        receipt["launch_revision"] = launch_revision(receipt)
+        receipt_path.write_text(render_receipt(receipt))
+
+        ack = {
+            "schema_version": 1, "spawn_id": self.spawn_id, "provider_session_id": self.spawn_id,
+            "launch_revision": receipt["launch_revision"], "role": "implementer",
+            "worktree": str(self.repo), "starting_head": self.head, "ready": True, "blocker": "",
+        }
+
+        def clear_runner(argv, **kwargs):
+            output = {"session_id": self.spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        session = bootstrap_from_receipt(receipt_path, runner=clear_runner)
+        self.assertEqual(self.spawn_id, session)
+
+    def test_bootstrap_from_receipt_rejects_spoofed_acknowledgment(self) -> None:
+        prepared = self.prepare()
+        ack = prepared.expected_ack(self.spawn_id)
+        ack["role"] = "code-reviewer"
+
+        def spoofing_runner(argv, **kwargs):
+            output = {"session_id": self.spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        with self.assertRaisesRegex(GateError, "bootstrap acknowledgment mismatch"):
+            bootstrap_from_receipt(prepared.receipt_path, runner=spoofing_runner)
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertFalse(readback["bootstrap"]["verified"])
+
+    def test_parse_pass_output_extracts_the_role_result_without_bootstrap_unwrap(self) -> None:
+        anthropic_output = json.dumps({"session_id": "s1", "result": json.dumps({"head": "abc", "blocked": False})})
+        self.assertEqual({"head": "abc", "blocked": False}, parse_pass_output("anthropic", anthropic_output))
+
+        # A role result that happens to contain a BOOTSTRAP_ACK-shaped key is not unwrapped:
+        # unwrapping is bootstrap-specific and must not silently reshape a pass result.
+        literal = json.dumps({"session_id": "s1", "result": json.dumps({"BOOTSTRAP_ACK": {"x": 1}, "head": "abc"})})
+        self.assertEqual({"BOOTSTRAP_ACK": {"x": 1}, "head": "abc"}, parse_pass_output("anthropic", literal))
+
+        with self.assertRaisesRegex(GateError, "unreadable"):
+            parse_pass_output("anthropic", "not json")
 
 
 if __name__ == "__main__":

@@ -49,9 +49,12 @@ Use `operator-say` for messages to the current Fable owner. It resolves
 Only persistent Fable and Opus orchestrators get Herdr tabs. Workflow workers
 run inside the owning Opus session.
 
-Always use `herdr-spawn`. It creates one pane, passes exact cwd, handles the
-trusted-folder prompt, enforces exact Claude model and auto mode for operator
-and orchestrator roles, and requires bootstrap acknowledgment.
+Always use `herdr-spawn`. Before any pane exists, it runs a read-only print-mode
+bootstrap itself and verifies the full BOOTSTRAP_ACK; the child never runs
+bootstrap-ack or mutates the receipt. Only the exact verified provider session is
+then resumed into the persistent pane. It creates one pane, passes exact cwd,
+handles the trusted-folder prompt, and enforces exact Claude model and auto mode
+for operator and orchestrator roles.
 
 Labels:
 

@@ -3,16 +3,17 @@ import {
   acceptImplementation,
   acceptPublication,
   acceptQaReview,
+  assertBoundPassResult,
   assertPassReceipt,
   assertReadyEnvelope,
-  assertResultBinding,
+  assertSchema,
   evidenceMode,
 } from './lib/gates.mjs'
 
 export const meta = {
   name: 'octo-loop-qa',
-  description: 'One fresh exact-head delivery pass per invocation',
-  whenToUse: 'Shaped Linear work with a resolver-produced pass receipt',
+  description: 'Deterministic gating for one fresh exact-head delivery pass per invocation',
+  whenToUse: 'Shaped Linear work with a resolver-produced pass receipt and a completed octo-launch pass_result',
   phases: [
     { title: 'Implement' },
     { title: 'Code Review' },
@@ -22,6 +23,12 @@ export const meta = {
     { title: 'Publication Readback' },
   ],
 }
+
+// This module performs deterministic gating only. octo-launch launch is the sole LLM
+// execution: it bootstraps the exact role, resumes that same verified provider session
+// to run the pass, parses the structured result, and binds it to the receipt. The
+// caller runs octo-launch first, then invokes this Workflow with the receipt and the
+// exact pass_result it printed. This module never spawns a worker session itself.
 
 const A = typeof args === 'string' ? JSON.parse(args) : (args ?? {})
 const mode = A.mode ?? 'implement'
@@ -138,49 +145,23 @@ function cycle() {
   return value
 }
 
-function passReceipt(role, head) {
-  const receipt = assertPassReceipt(A.role_receipt, role, head)
-  const path = required(A.role_receipt_path, 'receipt path')
-  return { receipt, path }
-}
-
-function boundPassInstruction(path, role) {
-  return (
-    `Read the exact receipt at ${path} first. Verify every bound fact (role, worktree, repo, `
-    + `starting HEAD, instructions, skills, issue, spec, PR, topology, prior gates, access) against `
-    + `the live workspace before any mutation; stop and return blocked on any mismatch. Do not mutate `
-    + `until self-verification passes. After finishing, run ` +
-    `\`octo-control result-bind --receipt ${path} --role ${role} --result <your-result.json>\` ` +
-    'and copy its returned binding into result_binding.'
-  )
-}
-
-function sourceEnvelope(extra = {}) {
-  return JSON.stringify({
-    issue: A.issue,
-    repo: A.repo,
-    pr: A.pr,
-    branch: A.branch,
-    linear_revision: A.linear_revision,
-    spec_revision: A.spec_revision,
-    target_instructions_revision: A.target_instructions_revision,
-    topology_revision: A.topology_revision,
-    acceptance_criteria: A.acceptance_criteria,
-    story_ids: A.story_ids ?? [],
-    ...extra,
-  })
+// Deterministic gate shared by every mode: validate the fresh-pass receipt, validate
+// the mode-specific shape of the already-completed pass_result, independently
+// recompute and cross-check its launcher-owned binding, and require the exact
+// launch_revision and receipt echo before any per-mode acceptance logic runs.
+function boundPass(role, startingHead, schema) {
+  const receipt = assertPassReceipt(A.role_receipt, role, startingHead)
+  const passResult = assertSchema(schema, required(A.pass_result, 'pass result'), 'pass_result')
+  assertBoundPassResult(receipt, passResult)
+  if (passResult.launch_revision !== receipt.launch_revision) throw new Error('pass result launch revision mismatch')
+  if (passResult.receipt !== receipt.spawn_id) throw new Error('pass result receipt mismatch')
+  return { receipt, passResult }
 }
 
 if (mode === 'implement') {
   assertReadyEnvelope(A)
-  const { receipt, path } = passReceipt('implementer', A.shaping_head)
-  phase('Implement')
-  const implementation = await agent(
-    `${boundPassInstruction(path, 'implementer')} Implement one pass. Spec-driven red, green, refactor required. Continue the same draft PR. Never merge or change acceptance state. Return only the schema.\n${sourceEnvelope({ starting_head: A.shaping_head, receipt: receipt.spawn_id, launch_revision: receipt.launch_revision })}`,
-    { agentType: 'implementer', phase: 'Implement', schema: IMPLEMENT_SCHEMA },
-  )
-  if (!implementation || implementation.blocked) return { stage: 'blocked', gate: 'implement', implementation }
-  if (implementation.launch_revision !== receipt.launch_revision) throw new Error('implementation launch revision mismatch')
+  const { receipt, passResult: implementation } = boundPass('implementer', A.shaping_head, IMPLEMENT_SCHEMA)
+  if (implementation.blocked) return { stage: 'blocked', gate: 'implement', implementation }
   acceptImplementation(A.shaping_head, implementation, receipt.spawn_id, true)
   return {
     stage: 'code-review-required', issue: A.issue, pr: A.pr, head: implementation.head,
@@ -191,15 +172,8 @@ if (mode === 'implement') {
 if (mode === 'code-review') {
   const head = required(A.head, 'head')
   const reviewCycle = cycle()
-  const { receipt, path } = passReceipt('code-reviewer', head)
-  phase('Code Review')
-  const review = await agent(
-    `${boundPassInstruction(path, 'code-reviewer')} Review exact HEAD. Publish the deterministic verdict comment through octo-control verdict-publish; never report a comment URL you did not obtain from its readback. Return the exact reviewed spec, ADR, and receipt bindings as bound_inputs. Never approve or merge. Return only the schema.\n${sourceEnvelope({ expected_head: head, cycle: reviewCycle, receipt: receipt.spawn_id, launch_revision: receipt.launch_revision })}`,
-    { agentType: 'code-reviewer', phase: 'Code Review', schema: REVIEW_SCHEMA },
-  )
-  if (review?.receipt !== receipt.spawn_id) throw new Error('code review receipt mismatch')
-  if (review?.launch_revision !== receipt.launch_revision) throw new Error('code review launch revision mismatch')
-  if (review?.verdict === 'ambiguous') {
+  const { receipt, passResult: review } = boundPass('code-reviewer', head, REVIEW_SCHEMA)
+  if (review.verdict === 'ambiguous') {
     return { stage: 'return-to-shaping', issue: A.issue, head, review }
   }
   const gate = acceptCodeReview(head, A.pr, review)
@@ -215,14 +189,8 @@ if (mode === 'fix') {
   const reviewCycle = cycle()
   if (reviewCycle >= 3) return { stage: 'return-to-shaping', issue: A.issue, head }
   if (!Array.isArray(A.findings) || A.findings.length === 0) throw new Error('blocking findings required')
-  const { receipt, path } = passReceipt('implementer', head)
-  phase('Fix')
-  const implementation = await agent(
-    `${boundPassInstruction(path, 'implementer')} Fix only the bound findings on the same draft PR. Start with a spec-derived regression red, then green and refactor. Return only the schema.\n${sourceEnvelope({ previous_head: head, findings: A.findings, trigger: A.trigger ?? 'code-review', receipt: receipt.spawn_id, launch_revision: receipt.launch_revision })}`,
-    { agentType: 'implementer', phase: 'Fix', schema: IMPLEMENT_SCHEMA },
-  )
-  if (!implementation || implementation.blocked) return { stage: 'blocked', gate: 'fix', implementation }
-  if (implementation.launch_revision !== receipt.launch_revision) throw new Error('implementation launch revision mismatch')
+  const { receipt, passResult: implementation } = boundPass('implementer', head, IMPLEMENT_SCHEMA)
+  if (implementation.blocked) return { stage: 'blocked', gate: 'fix', implementation }
   acceptImplementation(head, implementation, receipt.spawn_id, true)
   return {
     stage: 'code-review-required', issue: A.issue, pr: A.pr, head: implementation.head,
@@ -242,16 +210,9 @@ if (mode === 'evidence') {
       next: 'Publish and read back the exact backend card, then run qa-review.',
     }
   }
-  const { receipt, path } = passReceipt('qa-capture', head)
-  phase('QA Capture')
-  const capture = await agent(
-    `${boundPassInstruction(path, 'qa-capture')} Capture minimum honest proof per criterion. Screenshots default. Video only when stills cannot prove behavior. Never publish or mutate tracker state. Return only the schema.\n${sourceEnvelope({ expected_head: head, qa_brief: A.qa_brief, receipt: receipt.spawn_id, launch_revision: receipt.launch_revision })}`,
-    { agentType: 'qa-capture', phase: 'QA Capture', schema: CAPTURE_SCHEMA },
-  )
-  if (!capture || capture.blocked) return { stage: 'blocked', gate: 'qa-capture', capture }
-  if (capture.head !== head || capture.receipt !== receipt.spawn_id) throw new Error('QA capture binding mismatch')
-  if (capture.launch_revision !== receipt.launch_revision) throw new Error('QA capture launch revision mismatch')
-  assertResultBinding(capture)
+  const { passResult: capture } = boundPass('qa-capture', head, CAPTURE_SCHEMA)
+  if (capture.blocked) return { stage: 'blocked', gate: 'qa-capture', capture }
+  if (capture.head !== head) throw new Error('QA capture head mismatch')
   return {
     stage: 'visual-publication-required', issue: A.issue, head, capture,
     next: 'Publish and read back the exact visual card, then run qa-review.',
@@ -266,15 +227,8 @@ if (mode === 'qa-review') {
   ) {
     throw new Error('exact served publication readback required')
   }
-  const { receipt, path } = passReceipt('qa-reviewer', head)
-  phase('QA Review')
-  const qaReview = await agent(
-    `${boundPassInstruction(path, 'qa-reviewer')} Inspect the served packet and every artifact. Grade each criterion pass, fail, or not_evidenced with literal observation, and record artifact and fix for every non-pass. Backend packets use the same sufficiency gate. Never publish, accept, merge, or mutate Linear. Return only the schema.\n${sourceEnvelope({ expected_head: head, publication: A.publication, receipt: receipt.spawn_id, launch_revision: receipt.launch_revision })}`,
-    { agentType: 'qa-reviewer', phase: 'QA Review', schema: QA_REVIEW_SCHEMA },
-  )
-  if (qaReview?.receipt !== receipt.spawn_id) throw new Error('QA review receipt mismatch')
-  if (qaReview?.launch_revision !== receipt.launch_revision) throw new Error('QA review launch revision mismatch')
-  if (qaReview?.verdict === 'ambiguous') return { stage: 'return-to-shaping', issue: A.issue, head, qa_review: qaReview }
+  const { passResult: qaReview } = boundPass('qa-reviewer', head, QA_REVIEW_SCHEMA)
+  if (qaReview.verdict === 'ambiguous') return { stage: 'return-to-shaping', issue: A.issue, head, qa_review: qaReview }
   const gate = acceptQaReview(head, { issue: A.issue, pr: A.pr, manifest: A.publication.manifest }, qaReview)
   return gate.advance
     ? {

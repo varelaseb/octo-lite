@@ -30,7 +30,6 @@ from octo_lite.runtime import (  # noqa: E402
     transfer_owner,
     transition_linear,
     verdict_body,
-    verify_receipt_bootstrap,
 )
 
 
@@ -144,6 +143,7 @@ def command_verdict(args) -> dict:
         args.bound_input,
         args.finding,
         args.receipt,
+        args.conversation_log_reference,
     )
     marker = f"<!-- octo-lite-verdict:{args.review_type} -->"
     comments = run_json(
@@ -292,11 +292,6 @@ def command_stream_status(args) -> dict:
     return state
 
 
-def command_bootstrap_ack(args) -> dict:
-    verify_receipt_bootstrap(Path(args.receipt), args.provider_session_id)
-    return {"verified": True}
-
-
 def command_result_bind(args) -> dict:
     result = json.loads(Path(args.result).read_text())
     binding = bind_pass_result(Path(args.receipt), args.role, result)
@@ -368,6 +363,7 @@ def parser() -> argparse.ArgumentParser:
     verdict.add_argument("--receipt", required=True)
     verdict.add_argument("--bound-input", action="append", default=[])
     verdict.add_argument("--finding", action="append", default=[])
+    verdict.add_argument("--conversation-log-reference", action="append", default=[])
     verdict.set_defaults(run=command_verdict)
 
     owner = sub.add_parser("owner-transfer")
@@ -453,11 +449,6 @@ def parser() -> argparse.ArgumentParser:
     stream_status.add_argument("--blocker", default="none")
     stream_status.add_argument("--next-action", default="none")
     stream_status.set_defaults(run=command_stream_status)
-
-    bootstrap_ack = sub.add_parser("bootstrap-ack")
-    bootstrap_ack.add_argument("--receipt", required=True)
-    bootstrap_ack.add_argument("--provider-session-id", required=True)
-    bootstrap_ack.set_defaults(run=command_bootstrap_ack)
 
     result_bind = sub.add_parser("result-bind")
     result_bind.add_argument("--receipt", required=True)

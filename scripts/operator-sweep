@@ -9,11 +9,14 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from octo_lite.runtime import verify_receipt_bootstrap  # noqa: E402
+from octo_lite.launch import parse_provider_message, prepared_from_receipt, run_bootstrap  # noqa: E402
+from octo_lite.runtime import bind_pass_result  # noqa: E402
+from workflows.lib.role_resolver import build_launch_receipt, load_registry, render_receipt, resolve_role  # noqa: E402
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -135,48 +138,46 @@ def main() -> int:
     atomic_write(snapshot_path, snapshot)
 
     root = Path(__file__).resolve().parents[1]
-    resolver = root / "workflows/lib/role_resolver.py"
-    receipt = subprocess.run(
-        [
-            "python3", str(resolver), "resolve", "reconciler",
-            "--spawn-id", f"sweep-{fingerprint[:12]}",
-            "--parent", owner_session,
-            "--reply-route", "operator-say",
-            "--repo", str(repo),
-            "--worktree", str(repo),
-            "--execution-location", os.environ.get("OCTO_EXECUTION_LOCATION", "remote"),
-            "--operator-loopback", os.environ.get("OCTO_OPERATOR_LOOPBACK", "false"),
-            "--review-delivery", os.environ.get("OCTO_REVIEW_DELIVERY", "reachable_url_required"),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    atomic_write(receipt_path, receipt)
+    registry = load_registry(root)
+    resolved = resolve_role(registry, "reconciler", set())
+    receipt = build_launch_receipt(
+        root,
+        resolved,
+        spawn_id=str(uuid.uuid4()),
+        parent=owner_session,
+        reply_route="operator-say",
+        repo=repo,
+        worktree=repo,
+        execution_location=os.environ.get("OCTO_EXECUTION_LOCATION", "remote"),
+        operator_loopback=os.environ.get("OCTO_OPERATOR_LOOPBACK", "false") == "true",
+        review_delivery=os.environ.get("OCTO_REVIEW_DELIVERY", "reachable_url_required"),
+    )
+    atomic_write(receipt_path, render_receipt(receipt))
 
-    session_id = f"sweep-{fingerprint[:12]}"
-    prompt = (
-        f"Verify launch receipt {receipt_path}. Read snapshot {snapshot_path}. "
+    # Phase 1: parent-controlled read-only bootstrap. The reconciler cannot read or
+    # judge the snapshot yet; it only self-verifies the receipt and acknowledges.
+    prepared = prepared_from_receipt(receipt, receipt_path, resolved.contract_text)
+    session_id = run_bootstrap(prepared)
+
+    # Phase 2: resume the exact bootstrap-verified session with the bounded snapshot
+    # for the read-only judgment pass.
+    judgment_prompt = (
+        f"Bootstrap verified. Read snapshot {snapshot_path}. "
         "Classify only changed, missing, stale, contradictory, or needs_fable. "
-        "Read only. Return a compact delta for the operator."
+        "Read only. Never mutate. Return a compact delta for the operator as plain text."
     )
-    result = subprocess.run(
-        [
-            "claude", "-p", "--session-id", session_id, "--output-format", "json",
-            "--agent", "reconciler", "--model", "claude-sonnet-5",
-            "--effort", "high", "--permission-mode", "auto", prompt,
-        ],
+    judgment = subprocess.run(
+        prepared.mutation_argv_for(session_id),
         cwd=repo,
-        check=True,
+        input=judgment_prompt,
         capture_output=True,
         text=True,
+        check=False,
     )
-    event = json.loads(result.stdout)
-    provider_session_id = event.get("session_id")
-    message = event.get("result")
-    if not provider_session_id or not isinstance(message, str):
-        raise SystemExit("operator-sweep: reconciler bootstrap identity missing")
-    verify_receipt_bootstrap(receipt_path, provider_session_id)
+    if judgment.returncode != 0:
+        raise SystemExit(f"operator-sweep: reconciler judgment failed: {judgment.stderr.strip()}")
+    _, message = parse_provider_message(receipt["runtime"]["provider"], judgment.stdout)
+    bind_pass_result(receipt_path, "reconciler", {"message": message})
     atomic_write(result_path, message)
 
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))

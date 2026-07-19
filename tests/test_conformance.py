@@ -35,12 +35,16 @@ class CutoverConformanceTests(unittest.TestCase):
         lines = (ROOT / "skills/octo-lite-issue-shaper/SKILL.md").read_text().splitlines()
         self.assertLessEqual(len(lines), 160)
 
-    def test_workflow_uses_generated_role_names_only(self) -> None:
+    def test_workflow_gates_generated_role_names_and_never_calls_agent(self) -> None:
         text = (ROOT / "workflows/octo-loop-qa.js").read_text()
         for role in ("implementer", "code-reviewer", "qa-capture", "qa-reviewer"):
-            self.assertIn(f"agentType: '{role}'", text)
+            self.assertIn(f"'{role}'", text)
         for stale in ("octo-lite-implementer", "octo-lite-reviewer", "octo-lite-code-reviewer"):
             self.assertNotIn(stale, text)
+        # octo-launch launch is the sole LLM execution; this Workflow only gates its
+        # already-completed, receipt-bound pass_result. It must never spawn a second worker.
+        self.assertNotIn("agent(", text)
+        self.assertIn("assertBoundPassResult", text)
 
     def test_install_is_symlink_only_and_checkable(self) -> None:
         installer = ROOT / "scripts/install-octo-lite"
@@ -58,6 +62,13 @@ class CutoverConformanceTests(unittest.TestCase):
         entry = ROOT / "CLAUDE.md"
         self.assertTrue(entry.is_symlink())
         self.assertEqual(Path("AGENTS.md"), entry.readlink())
+
+    def test_generic_spec_does_not_define_target_deployment_state_mapping(self) -> None:
+        text = (ROOT / "spec/domains/operating-model.spec.html").read_text()
+        self.assertIn("linear-deployment-target-owned", text)
+        self.assertIn("target-owned Linear state mapping", text)
+        for leak in ("zero percent live traffic", "deployed to staging and therefore"):
+            self.assertNotIn(leak, text)
 
 
 if __name__ == "__main__":

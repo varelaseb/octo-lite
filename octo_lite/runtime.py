@@ -139,6 +139,11 @@ def exact_fingerprint(value: object) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def launch_revision(receipt: Mapping[str, object]) -> str:
+    payload = {key: value for key, value in receipt.items() if key not in {"ready", "launch_revision", "bootstrap"}}
+    return exact_fingerprint(payload)
+
+
 def initialize_stream(
     path: Path,
     *,
@@ -227,6 +232,7 @@ def verdict_body(
     bound_inputs: list[str],
     findings: list[str],
     receipt: str,
+    conversation_log_references: list[str] | None = None,
 ) -> str:
     if review_type not in {"shaping", "code"}:
         raise GateError("invalid review type")
@@ -234,6 +240,11 @@ def verdict_body(
         raise GateError("invalid verdict")
     if not head or not receipt:
         raise GateError("head and receipt required")
+    references = list(conversation_log_references or [])
+    if review_type == "shaping" and not references:
+        raise GateError("shaping verdict requires conversation log references")
+    if review_type == "code" and references:
+        raise GateError("code verdict does not carry conversation log references")
     values = {
         "schema_version": 1,
         "review_type": review_type,
@@ -242,6 +253,7 @@ def verdict_body(
         "bound_inputs": bound_inputs,
         "findings": findings,
         "reviewer_receipt": receipt,
+        "conversation_log_references": references,
     }
     lines = []
     for key, value in values.items():
@@ -380,15 +392,6 @@ def bind_pass_result(receipt_path: Path, role: str, result: Mapping[str, object]
     receipt["result"] = {"bound": True, "binding": binding}
     _atomic_write(receipt_path, _render_full_receipt(receipt))
     return binding
-
-
-def verify_receipt_bootstrap(receipt_path: Path, provider_session_id: str) -> dict:
-    if not provider_session_id:
-        raise GateError("provider session ID required")
-    receipt = _read_toml(receipt_path)
-    receipt["bootstrap"] = {"verified": True, "provider_session_id": provider_session_id}
-    _atomic_write(receipt_path, _render_full_receipt(receipt))
-    return receipt
 
 
 def record_acceptance(

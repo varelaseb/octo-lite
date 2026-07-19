@@ -6,9 +6,12 @@ import {
   acceptQaReview,
   acceptImplementation,
   acceptPublication,
+  assertBoundPassResult,
   assertPassReceipt,
   assertReadyEnvelope,
+  assertSchema,
   evidenceMode,
+  exactFingerprint,
 } from '../workflows/lib/gates.mjs'
 
 const ready = {
@@ -31,6 +34,7 @@ const ready = {
   spec_blobs: ['spec/domains/operating-model.spec.html:spec-1'],
   adr_blobs: [],
   conversation_cutoff: 'session.jsonl:6824',
+  conversation_log_references: ['session.jsonl:1-6824'],
   role_receipts: { implementer: 'r1', code_reviewer: 'r2', qa_reviewer: 'r3' },
   acceptance_criteria: ['works'],
 }
@@ -46,6 +50,10 @@ test('ready envelope rejects wrong lifecycle and incomplete bindings', () => {
   assert.throws(() => assertReadyEnvelope({ ...ready, linear_state: 'Ideas' }), /Linear state/)
   assert.throws(() => assertReadyEnvelope({ ...ready, spec_blobs: [] }), /spec blobs/)
   assert.throws(() => assertReadyEnvelope({ ...ready, pr_head: 'old' }), /PR head/)
+  assert.throws(
+    () => assertReadyEnvelope({ ...ready, conversation_log_references: [] }),
+    /conversation log references/,
+  )
 })
 
 function fullReceipt() {
@@ -300,5 +308,70 @@ test('final publication readback binds the complete acceptance card', () => {
   assert.throws(
     () => acceptPublication({ issue: 'TUR-1', pr: publication.pr, head: 'abc', story_ids: publication.story_ids, acceptance_criteria: ['works', 'missing'] }, publication),
     /criterion coverage/,
+  )
+})
+
+test('exact fingerprint matches octo_lite.runtime.exact_fingerprint for the same payload', () => {
+  // Cross-checked against python3 -c "from octo_lite.runtime import exact_fingerprint; print(exact_fingerprint(...))"
+  assert.equal(
+    exactFingerprint({ a: 1, b: [1, 2, 3], c: { z: 'y', a: 'b' } }),
+    'c36bd36cb7d15bf8bc503f812c71ed02f9340466699c0b55a449c8a39a5c48aa',
+  )
+  assert.equal(
+    exactFingerprint({ command: 'pytest', exit_status: 0, outcome: 'pass', artifact: 'a/b.txt' }),
+    '3800bd8b93cc5789beecf634f9627d9c370a8132c9b3f2ef3b0ff475b8e2e5db',
+  )
+})
+
+test('the workflow independently recomputes and cross-checks the launcher-owned binding', () => {
+  const passResult = { head: 'def', receipt: 'spawn-1' }
+  const binding = exactFingerprint(passResult)
+  const bound = { ...passResult, result_binding: binding }
+  const receipt = { result: { bound: true, binding } }
+  assert.equal(assertBoundPassResult(receipt, bound), binding)
+
+  // A role cannot self-author its own binding: a claim that does not match its own content fails.
+  assert.throws(
+    () => assertBoundPassResult(receipt, { ...bound, result_binding: 'f'.repeat(64) }),
+    /does not match its own content/,
+  )
+  // The receipt itself must record the launcher's binding as bound.
+  assert.throws(
+    () => assertBoundPassResult({ result: { bound: false, binding } }, bound),
+    /receipt result not bound/,
+  )
+  // A tampered field after binding fails self-consistency immediately (the claimed
+  // binding no longer matches the tampered content).
+  assert.throws(
+    () => assertBoundPassResult(receipt, { ...bound, head: 'tampered' }),
+    /does not match its own content/,
+  )
+  // A self-consistent result bound to a different receipt's stored binding is rejected:
+  // the launcher bound this receipt to a different pass result.
+  const otherReceipt = { result: { bound: true, binding: exactFingerprint({ head: 'other' }) } }
+  assert.throws(
+    () => assertBoundPassResult(otherReceipt, bound),
+    /does not match receipt/,
+  )
+})
+
+test('schema assertion enforces required fields, types, enums, and nested items', () => {
+  const schema = {
+    type: 'object',
+    required: ['head', 'verdict'],
+    properties: {
+      head: { type: 'string' },
+      verdict: { enum: ['clear', 'blocking'] },
+      findings: { type: 'array', items: { type: 'string' } },
+    },
+  }
+  assert.deepEqual(assertSchema(schema, { head: 'abc', verdict: 'clear', findings: ['x'] }, 'result'), {
+    head: 'abc', verdict: 'clear', findings: ['x'],
+  })
+  assert.throws(() => assertSchema(schema, { verdict: 'clear' }, 'result'), /result\.head required/)
+  assert.throws(() => assertSchema(schema, { head: 'abc', verdict: 'maybe' }, 'result'), /must be one of/)
+  assert.throws(
+    () => assertSchema(schema, { head: 'abc', verdict: 'clear', findings: [1] }, 'result'),
+    /result\.findings\[0\] must be string/,
   )
 })

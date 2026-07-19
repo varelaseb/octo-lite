@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-from octo_lite.runtime import GateError, admit_workspace, exact_fingerprint, normalize_launch_access
+from octo_lite.runtime import (
+    GateError,
+    admit_workspace,
+    bind_pass_result,
+    exact_fingerprint,
+    launch_revision as _receipt_launch_revision,
+    normalize_launch_access,
+)
 from workflows.lib.role_resolver import build_launch_receipt, load_registry, resolve_role
 
 
@@ -78,8 +85,12 @@ def _validate_envelope_shape(envelope: Mapping[str, Any]) -> None:
         "pr_base",
         "topology_revision",
         "conversation_cutoff",
+        "pass_instruction",
     ):
         _required(envelope, name)
+    references = envelope.get("conversation_log_references")
+    if not isinstance(references, list) or not references or any(not isinstance(item, str) or not item for item in references):
+        raise GateError("conversation log references required")
     if envelope["purpose"] not in {"shaping-review", "delivery"}:
         raise GateError("purpose must be shaping-review or delivery")
     if envelope["pr_head"] != envelope["starting_head"]:
@@ -232,6 +243,9 @@ def _verify_sources(
         mismatches = [name for name, value in expected_verdict.items() if verdict.get(name) != value]
         if mismatches:
             raise GateError(f"shaping verdict mismatch: {', '.join(mismatches)}")
+        references = verdict.get("conversation_log_references")
+        if not isinstance(references, list) or not references:
+            raise GateError("shaping verdict missing conversation log references")
 
     _verify_blobs(repo, envelope["starting_head"], envelope["spec_blobs"], "spec")
     _verify_blobs(repo, envelope["starting_head"], envelope["adr_blobs"], "ADR")
@@ -443,12 +457,7 @@ def _expected_ack(receipt: Mapping[str, Any], provider_session_id: str) -> dict[
 
 
 def _launch_revision(receipt: Mapping[str, Any]) -> str:
-    payload = {
-        key: value
-        for key, value in receipt.items()
-        if key not in {"ready", "launch_revision", "bootstrap"}
-    }
-    return exact_fingerprint(payload)
+    return _receipt_launch_revision(receipt)
 
 
 @dataclass(frozen=True)
@@ -464,6 +473,11 @@ class PreparedLaunch:
 
     def mutation_argv_for(self, provider_session_id: str) -> list[str]:
         return [provider_session_id if item == "{provider_session_id}" else item for item in self.mutation_argv]
+
+
+def prepared_from_receipt(receipt: Mapping[str, Any], receipt_path: Path, contract_text: str) -> PreparedLaunch:
+    bootstrap, mutation = _provider_argv(receipt)
+    return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, contract_text)
 
 
 def prepare_launch(
@@ -558,6 +572,7 @@ def prepare_launch(
         "blobs": list(envelope["spec_blobs"]),
         "adr_blobs": list(envelope["adr_blobs"]),
         "conversation_cutoff": str(envelope["conversation_cutoff"]),
+        "conversation_log_references": list(envelope["conversation_log_references"]),
     }
     receipt["pull_request"] = {
         "repo": str(envelope["repo"]),
@@ -579,6 +594,10 @@ def prepare_launch(
         "acceptance_criteria": list(envelope["acceptance_criteria"]),
     }
     receipt["bootstrap"] = {"verified": False, "provider_session_id": ""}
+    receipt["pass"] = {
+        "instruction": str(envelope["pass_instruction"]),
+        "context_json": json.dumps(dict(envelope.get("pass_context") or {}), sort_keys=True, ensure_ascii=False),
+    }
     receipt["launch_revision"] = _launch_revision(receipt)
     _atomic_write(receipt_path, render_receipt(receipt))
     bootstrap, mutation = _provider_argv(receipt)
@@ -621,13 +640,17 @@ def mutation_prompt(prepared: PreparedLaunch) -> str:
     if receipt.get("ready") is not True or receipt.get("bootstrap", {}).get("verified") is not True:
         raise GateError("verified BOOTSTRAP_ACK required before mutation")
     skills = ", ".join(receipt["skills"]["resolved"])
+    pass_block = receipt.get("pass") or {}
+    instruction = str(pass_block.get("instruction") or "")
+    context = str(pass_block.get("context_json") or "{}")
     return (
         f"Bootstrap verified. Execute one {receipt['role']['name']} pass from {prepared.receipt_path}. "
-        f"Load resolved skills: {skills}. Use pinned sources. Return the role output."
+        f"Load resolved skills: {skills}. Use pinned sources. {instruction} "
+        f"Pass context: {context}. Return only the exact JSON result object. No prose, no code fences."
     )
 
 
-def _json_object(text: str) -> dict[str, Any]:
+def _extract_json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
     if stripped.startswith("```"):
         stripped = re.sub(r"^```(?:json)?\s*|\s*```$", "", stripped, flags=re.DOTALL)
@@ -646,24 +669,30 @@ def _json_object(text: str) -> dict[str, Any]:
             if isinstance(candidate, dict):
                 value = candidate
         if value is None:
-            raise GateError("bootstrap acknowledgment is not JSON")
+            raise GateError("provider output is not JSON")
     if not isinstance(value, dict):
-        raise GateError("bootstrap acknowledgment is not an object")
+        raise GateError("provider output is not an object")
+    return value
+
+
+def _json_object(text: str) -> dict[str, Any]:
+    value = _extract_json_object(text)
     nested = value.get("BOOTSTRAP_ACK")
     return nested if isinstance(nested, dict) else value
 
 
-def parse_bootstrap_output(provider: str, output: str) -> tuple[str, dict[str, Any]]:
+def parse_provider_message(provider: str, output: str) -> tuple[str, str]:
+    """Return (provider_session_id, raw message text) for one print-mode provider call."""
     if provider == "anthropic":
         try:
             event = json.loads(output)
         except json.JSONDecodeError as error:
-            raise GateError("Anthropic bootstrap output unreadable") from error
+            raise GateError("Anthropic output unreadable") from error
         session = event.get("session_id")
         result = event.get("result")
         if not isinstance(session, str) or not isinstance(result, str):
-            raise GateError("Anthropic bootstrap identity missing")
-        return session, _json_object(result)
+            raise GateError("Anthropic session identity missing")
+        return session, result
     if provider == "openai":
         session = ""
         message = ""
@@ -671,7 +700,7 @@ def parse_bootstrap_output(provider: str, output: str) -> tuple[str, dict[str, A
             try:
                 event = json.loads(line)
             except json.JSONDecodeError as error:
-                raise GateError("OpenAI bootstrap output unreadable") from error
+                raise GateError("OpenAI output unreadable") from error
             if event.get("type") == "thread.started":
                 session = str(event.get("thread_id") or "")
             item = event.get("item")
@@ -679,16 +708,27 @@ def parse_bootstrap_output(provider: str, output: str) -> tuple[str, dict[str, A
                 if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
                     message = item["text"]
         if not session or not message:
-            raise GateError("OpenAI bootstrap identity missing")
-        return session, _json_object(message)
+            raise GateError("OpenAI session identity missing")
+        return session, message
     raise GateError("unsupported provider")
 
 
-def run_launch(
+def parse_bootstrap_output(provider: str, output: str) -> tuple[str, dict[str, Any]]:
+    session, message = parse_provider_message(provider, output)
+    return session, _json_object(message)
+
+
+def parse_pass_output(provider: str, output: str) -> dict[str, Any]:
+    _, message = parse_provider_message(provider, output)
+    return _extract_json_object(message)
+
+
+def run_bootstrap(
     prepared: PreparedLaunch,
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> subprocess.CompletedProcess[str]:
+) -> str:
+    """Run the read-only bootstrap phase and verify BOOTSTRAP_ACK. Returns the verified provider session ID."""
     with prepared.receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
     worktree = receipt["workspace"]["worktree"]
@@ -708,13 +748,52 @@ def run_launch(
         raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
     acknowledgment["provider_session_id"] = session
     verify_bootstrap(prepared.receipt_path, acknowledgment)
+    return session
+
+
+def bootstrap_from_receipt(
+    receipt_path: Path,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    """Bootstrap-verify an already-prepared receipt, reading its role contract from the working tree
+    and checking it still matches the exact blob the receipt was built from (no prior commit required)."""
+    with receipt_path.open("rb") as handle:
+        receipt = tomllib.load(handle)
+    role_root = Path(receipt["role"]["root"])
+    contract_path = role_root / receipt["role"]["contract_path"]
+    actual_blob = _run("git", "hash-object", "--no-filters", str(contract_path), cwd=role_root)
+    if actual_blob != receipt["role"]["contract_blob"]:
+        raise GateError("role contract blob mismatch")
+    contract_text = contract_path.read_text()
+    prepared = prepared_from_receipt(receipt, receipt_path, contract_text)
+    return run_bootstrap(prepared, runner=runner)
+
+
+def run_launch(
+    prepared: PreparedLaunch,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> dict[str, Any]:
+    session = run_bootstrap(prepared, runner=runner)
+    with prepared.receipt_path.open("rb") as handle:
+        receipt = tomllib.load(handle)
+    worktree = receipt["workspace"]["worktree"]
     mutation = runner(
         prepared.mutation_argv_for(session),
         cwd=worktree,
         input=mutation_prompt(prepared),
+        capture_output=True,
         text=True,
         check=False,
     )
     if mutation.returncode != 0:
         raise GateError(f"provider pass failed with exit {mutation.returncode}")
-    return mutation
+    role = receipt["role"]["name"]
+    result = parse_pass_output(receipt["runtime"]["provider"], mutation.stdout)
+    result.pop("result_binding", None)
+    binding = bind_pass_result(prepared.receipt_path, role, result)
+    result["result_binding"] = binding
+    result.setdefault("receipt", receipt["spawn_id"])
+    result.setdefault("launch_revision", receipt["launch_revision"])
+    return result

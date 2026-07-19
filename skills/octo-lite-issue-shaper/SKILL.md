@@ -90,20 +90,24 @@ alternative proof.
 
 ## Final shaping review
 
-After grilling and reconciliation, launch one fresh `shaping-reviewer` resolved
-through `roles.toml`. It reads:
+After grilling and reconciliation, run `octo-launch launch` for one fresh
+`shaping-reviewer` resolved through `roles.toml`. It is the sole LLM execution
+for this pass: it bootstraps, verifies BOOTSTRAP_ACK, and resumes that exact
+session. The reviewer reads:
 
 - exact Linear issue and content fingerprint
 - same draft PR and immutable shaping HEAD
 - target instructions blob
 - canonical spec and ADR blobs
-- relevant conversation logs through a pinned cutoff
+- a nonempty list of exact conversation log references plus the pinned cutoff;
+  a cutoff alone is not enough
 - TDD contract and story revision when affected
 
 The reviewer returns clear or blocking. Publish one deterministic TOML verdict
-comment on the PR with `octo-control verdict-publish`. Bind all inputs, HEAD,
-findings, and reviewer receipt. Read it back. Never use the formal GitHub Review
-API as the shaping gate.
+comment on the PR with `octo-control verdict-publish`, including the exact
+conversation log references. Bind all inputs, HEAD, findings, and reviewer
+receipt. Read it back. Never use the formal GitHub Review API as the shaping
+gate.
 
 Blocking documentary gaps return here. Missing judgment returns to the operator
 grill. Material reconciliation requires another fresh shaping review.

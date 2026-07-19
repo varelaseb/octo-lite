@@ -67,19 +67,22 @@ umask 077
 mkdir -p "$control/handoffs"
 printf '# Operator brief\n\nObjective: %s\nCaller handoff: %s\nAuthority: confirm after read-only inventory.\n' "$objective" "$handoff" >"$brief"
 printf 'Outcome: inventory pending\nGate: bootstrap\nBlocker: none\nNext operator action: confirm objective and authority\n' >"$status"
+spawn_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 python3 "$resolver" resolve meta-operator \
   --capability operator-launch \
-  --spawn-id "$name" --parent operator --reply-route operator \
+  --spawn-id "$spawn_id" --parent operator --reply-route operator \
   --repo "$cwd" --worktree "$cwd" \
   --execution-location "$execution_location" \
   --operator-loopback "$operator_loopback" \
   --review-delivery "$review_delivery" >"$receipt"
-prompt="Load and acknowledge $receipt, the canonical meta-operator role, target instructions, and $brief. Verify cwd and access facts. Run octo-control bootstrap-ack --receipt $receipt --provider-session-id <your exact session ID> before any mutation. Write current state to $status. Begin read-only inventory."
+# herdr-spawn verifies BOOTSTRAP_ACK itself before this prompt ever runs; it is a
+# post-bootstrap mutation instruction only, never a bootstrap-ack instruction.
+prompt="Bootstrap already verified. Load and acknowledge $receipt, the canonical meta-operator role, target instructions, and $brief. Verify cwd and access facts. Write current state to $status. Begin read-only inventory."
 "$spawn" --workspace "$workspace" --name "$name" --label "🧠 operator" --cwd "$cwd" --role meta-operator --receipt "$receipt" -- \
   claude --agent meta-operator --model claude-fable-5 --effort xhigh --permission-mode auto -n "$name" "$prompt"
 
 owner_tmp="$owner.$$.tmp"
-printf 'schema_version = 1\nowner_session = "%s"\nhandoff_revision = 0\ncontrol_dir = "%s"\n' "$name" "$control" >"$owner_tmp"
+printf 'schema_version = 1\nowner_session = "%s"\nhandoff_revision = 0\ncontrol_dir = "%s"\n' "$spawn_id" "$control" >"$owner_tmp"
 mv "$owner_tmp" "$owner"
 "$timer" install --name "$name" --control-dir "$control" --owner-file "$owner" --repo "$cwd"
 

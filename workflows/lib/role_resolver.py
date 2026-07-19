@@ -12,6 +12,10 @@ import tomllib
 from pathlib import Path
 from typing import Any, NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from octo_lite.runtime import launch_revision as _launch_revision  # noqa: E402
+
 
 UNICODE_DASHES = ("\u2013", "\u2014")
 ROLE_FIELDS = {
@@ -364,7 +368,7 @@ def build_launch_receipt(
         raise ValueError(f"worktree must be git root: {worktree}")
     if Path(_git_output(repo, "rev-parse", "--show-toplevel")).resolve() != repo:
         raise ValueError(f"repo must be git root: {repo}")
-    return {
+    receipt: dict[str, Any] = {
         "schema_version": 1,
         "spawn_id": spawn_id,
         "parent": parent,
@@ -372,6 +376,7 @@ def build_launch_receipt(
         "ready": True,
         "role": {
             "name": resolved.role.name,
+            "root": str(root),
             "contract_path": resolved.role.contract,
             "contract_blob": resolved.contract_blob,
             "mapping_revision": resolved.registry.mapping_revision,
@@ -405,6 +410,8 @@ def build_launch_receipt(
         },
         "bootstrap": {"verified": False, "provider_session_id": ""},
     }
+    receipt["launch_revision"] = _launch_revision(receipt)
+    return receipt
 
 
 def render_receipt(receipt: dict[str, Any]) -> str:
@@ -414,6 +421,7 @@ def render_receipt(receipt: dict[str, Any]) -> str:
         f"parent = {_toml_string(receipt['parent'])}",
         f"reply_route = {_toml_string(receipt['reply_route'])}",
         f"ready = {str(receipt['ready']).lower()}",
+        f"launch_revision = {_toml_string(receipt['launch_revision'])}",
     ]
     for section in ("role", "runtime", "skills", "workspace", "access", "bootstrap"):
         lines.extend(["", f"[{section}]"])

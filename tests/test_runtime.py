@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import octo_lite.runtime as octo_runtime
 from octo_lite.runtime import (
     FAILURE_CATEGORIES,
     GateError,
@@ -12,8 +13,8 @@ from octo_lite.runtime import (
     bind_pass_result,
     declare_successor_ready,
     exact_fingerprint,
+    launch_revision,
     record_acceptance,
-    verify_receipt_bootstrap,
     herdr_label,
     normalize_launch_access,
     record_failure,
@@ -366,24 +367,18 @@ class RuntimeContractTests(unittest.TestCase):
             with self.assertRaises(GateError):
                 bind_pass_result(unverified, "implementer", result)
 
-    def test_verify_receipt_bootstrap_durably_flips_verified_once(self):
-        with tempfile.TemporaryDirectory() as td:
-            receipt = Path(td) / "launch.toml"
-            receipt.write_text(
-                'schema_version = 1\nspawn_id = "operator-1"\nready = true\n\n'
-                '[role]\nname = "meta-operator"\n\n[bootstrap]\nverified = false\n'
-                'provider_session_id = ""\n'
-            )
-            updated = verify_receipt_bootstrap(receipt, "provider-session-1")
-            self.assertTrue(updated["bootstrap"]["verified"])
-            self.assertEqual("provider-session-1", updated["bootstrap"]["provider_session_id"])
-            with receipt.open("rb") as handle:
-                import tomllib as _toml
-                stored = _toml.load(handle)
-            self.assertTrue(stored["bootstrap"]["verified"])
-            self.assertEqual("meta-operator", stored["role"]["name"])
-            with self.assertRaises(GateError):
-                verify_receipt_bootstrap(receipt, "")
+    def test_no_blind_bootstrap_verification_helper_exists(self):
+        # A receipt may only be marked bootstrap-verified by the full acknowledgment
+        # verifier (octo_lite.launch.verify_bootstrap), never by a bare session string.
+        self.assertFalse(hasattr(octo_runtime, "verify_receipt_bootstrap"))
+
+    def test_launch_revision_ignores_ready_bootstrap_and_itself(self):
+        base = {"schema_version": 1, "spawn_id": "a", "role": {"name": "implementer"}}
+        first = launch_revision({**base, "ready": False, "bootstrap": {"verified": False}, "launch_revision": ""})
+        second = launch_revision({**base, "ready": True, "bootstrap": {"verified": True}, "launch_revision": "stale"})
+        self.assertEqual(first, second)
+        changed = launch_revision({**base, "spawn_id": "b", "ready": False, "bootstrap": {}})
+        self.assertNotEqual(first, changed)
 
     def test_record_acceptance_verifies_operator_caller_and_never_infers(self):
         with tempfile.TemporaryDirectory() as td:
@@ -425,12 +420,22 @@ class RuntimeContractTests(unittest.TestCase):
             bound_inputs=["linear:123", "spec:456"],
             findings=[],
             receipt="session:reviewer",
+            conversation_log_references=["session.jsonl:1-100"],
         )
         self.assertIn("<!-- octo-lite-verdict:shaping -->", body)
         self.assertIn('head = "abc"', body)
         self.assertIn('bound_inputs = ["linear:123", "spec:456"]', body)
+        self.assertIn('conversation_log_references = ["session.jsonl:1-100"]', body)
         with self.assertRaises(GateError):
             verdict_body("code", "ambiguous", "abc", [], [], "r")
+
+    def test_verdict_requires_conversation_log_references_for_shaping_but_not_code(self):
+        with self.assertRaisesRegex(GateError, "conversation log references"):
+            verdict_body("shaping", "clear", "abc", ["linear:123"], [], "r")
+        code_body = verdict_body("code", "clear", "abc", ["linear:123"], [], "r")
+        self.assertIn('conversation_log_references = []', code_body)
+        with self.assertRaisesRegex(GateError, "does not carry conversation log references"):
+            verdict_body("code", "clear", "abc", ["linear:123"], [], "r", ["session.jsonl:1-10"])
 
 
 if __name__ == "__main__":
