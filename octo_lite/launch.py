@@ -718,9 +718,9 @@ def parse_bootstrap_output(provider: str, output: str) -> tuple[str, dict[str, A
     return session, _json_object(message)
 
 
-def parse_pass_output(provider: str, output: str) -> dict[str, Any]:
-    _, message = parse_provider_message(provider, output)
-    return _extract_json_object(message)
+def parse_pass_output(provider: str, output: str) -> tuple[str, dict[str, Any]]:
+    session, message = parse_provider_message(provider, output)
+    return session, _extract_json_object(message)
 
 
 def run_bootstrap(
@@ -790,7 +790,9 @@ def run_launch(
     if mutation.returncode != 0:
         raise GateError(f"provider pass failed with exit {mutation.returncode}")
     role = receipt["role"]["name"]
-    result = parse_pass_output(receipt["runtime"]["provider"], mutation.stdout)
+    mutation_session, result = parse_pass_output(receipt["runtime"]["provider"], mutation.stdout)
+    if mutation_session != session:
+        raise GateError("provider pass session mismatch")
     result.pop("result_binding", None)
     binding = bind_pass_result(prepared.receipt_path, role, result)
     result["result_binding"] = binding

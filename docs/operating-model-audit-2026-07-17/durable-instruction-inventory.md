@@ -76,8 +76,8 @@ Counts are distinct paths inside each repository.
 | octo-lite | Canonical specs | 2 |
 | octo-lite | Product docs and audit context | 13 |
 | octo-lite | Runtime wiring and prompt builders | 14 |
-| octo-lite | Conformance tests and fixtures | 13 |
-| octo-lite | Total | 108 |
+| octo-lite | Conformance tests and fixtures | 14 |
+| octo-lite | Total | 109 |
 | Turbo | Standing authority and loading | 5 |
 | Turbo | Canonical specs | 24 |
 | Turbo | Repo skill and skill lock | 2 |
@@ -89,8 +89,8 @@ Counts are distinct paths inside each repository.
 | Turbo | Historical audit and decision docs | 11 |
 | Turbo | Historical implementation plans | 120 |
 | Turbo | Prompt-adjacent conformance tests | 24 |
-| Turbo | Evidence operating-model tests | 5 |
-| Turbo | Total | 280 |
+| Turbo | Evidence operating-model tests | 7 |
+| Turbo | Total | 282 |
 
 ## octo-lite inventory
 
@@ -218,7 +218,7 @@ CLAUDE.md is a tracked relative symlink to AGENTS.md.
 - workflows/lib/role_resolver.py
 - workflows/octo-loop-qa.js
 
-### Conformance tests and fixtures, 13
+### Conformance tests and fixtures, 14
 
 - tests/fixtures/traces/failure.jsonl
 - tests/fixtures/traces/happy.jsonl
@@ -228,6 +228,7 @@ CLAUDE.md is a tracked relative symlink to AGENTS.md.
 - tests/test_conformance.py
 - tests/test_herdr.py
 - tests/test_launch.py
+- tests/test_launch_meta_operator.py
 - tests/test_operator_control.py
 - tests/test_provider_probe.py
 - tests/test_role_resolver.py
@@ -554,10 +555,12 @@ Nested tool plans, 2:
 - tools/prospect-report/test/transcribeMissingReels.test.js
 - tools/prospect-report/test/tur148Metering.test.js
 
-### Evidence operating-model tests, 5
+### Evidence operating-model tests, 7
 
 - tools/evidence-site/test/byteIdentity.test.js
+- tools/evidence-site/test/deployState.test.js
 - tools/evidence-site/test/operatingModelContracts.test.js
+- tools/evidence-site/test/pathDecoding.test.js
 - tools/evidence-site/test/publishEvidenceCard.test.js
 - tools/evidence-site/test/specSourceGuard.test.js
 - tools/evidence-site/test/syncProcedure.test.js
@@ -567,13 +570,14 @@ Nested tool plans, 2:
 1. Turbo production prompt text is not fully reviewable from git. The active prompt_versions database row wins after first seed. Review active rows and hashes for any production prompt audit.
 2. Turbo has 21 seed prompts, 2 migration-pinned copies, and 26 embedded composers. Copies can diverge. No single checked-in prompt manifest binds seed, active version, composer, model, and tests.
 3. Turbo prompt tests are uneven. Deterministic tests cover many schemas and call shapes. They do not replace fresh-model evaluations for judgment quality.
-4. Turbo keeps 120 historical plan files. They are useful context but easy for an agent to mistake for current scope. AGENTS.md now makes their lower authority explicit only indirectly through current source rules.
+4. Turbo keeps 120 historical plan files. They are useful context but easy for an agent to mistake for current scope. AGENTS.md now explicitly lowers their authority: tracked plans, project notes, audits, worklogs, memories, and session logs are dated context only and never override AGENTS.md, current Linear state, canonical specs or ADRs, or the active PR.
 5. octo-lite roles/*.md are canonical while agents/* duplicates their content as generated adapters. Resolver checks are the drift guard. Direct adapter edits remain a failure mode.
 6. octo-lite install correctness is external state. Repository tests can validate link targets and manifests, but each installed Claude or Codex profile still needs scripts/install-octo-lite --check.
 7. Provider model aliases and availability are external. roles.toml pins intent, not provider reachability.
 8. Audit docs in both repos can preserve rejected or superseded proposals. Treat them as evidence and context, never standing instruction.
 9. Turbo deliberately does not depend on octo-lite. Generic role and skill loading therefore depends on the operator's installed octo-lite profile. Turbo AGENTS.md supplies only repo-specific policy.
-10. This revision recomputed every octo-lite count and path against the exact final tree. `octo_lite/__init__.py` was a real prior omission from Runtime wiring and prompt builders; it is now included. The Turbo worktree at `/root/Turbo-Outreach-tur450-operating-model` (`29b929e`) had a different agent's concurrent uncommitted work at validation time; this pass spot-checked canonical specs, historical plans, and evidence tests by exact count and left the Turbo section unchanged since all three matched and Turbo is out of this pass's write scope.
+10. A prior revision recomputed every octo-lite count and path against its final tree. `octo_lite/__init__.py` was a real prior omission from Runtime wiring and prompt builders; it was included from that point on. The Turbo worktree at `/root/Turbo-Outreach-tur450-operating-model` (`29b929e`) had a different agent's concurrent uncommitted work at that validation time; that pass spot-checked canonical specs, historical plans, and evidence tests by exact count and left the Turbo section unchanged since all three matched.
+11. This revision reconciled both repos against pushed Turbo worktree HEAD `83b6b507b6ff1490576947388bd9682e784e2847` (Turbo fix pass 4, superseding note 10's `29b929e`) and this fix pass's final octo-lite tree. Turbo fix pass 4 added `tools/evidence-site/test/deployState.test.js` and `tools/evidence-site/test/pathDecoding.test.js`, raising Evidence operating-model tests from 5 to 7 and the Turbo total from 280 to 282; no other Turbo category changed and the 120 historical plan count is exact. This fix pass added `tests/test_launch_meta_operator.py` to octo-lite Conformance tests and fixtures, raising it from 13 to 14 and the octo-lite total from 108 to 109. Every listed path in both repositories was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
 
 ## Review focus
 

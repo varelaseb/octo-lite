@@ -420,17 +420,39 @@ class LaunchBoundaryTests(unittest.TestCase):
         readback = tomllib.loads(prepared.receipt_path.read_text())
         self.assertFalse(readback["bootstrap"]["verified"])
 
-    def test_parse_pass_output_extracts_the_role_result_without_bootstrap_unwrap(self) -> None:
+    def test_parse_pass_output_extracts_the_exact_session_and_role_result_without_bootstrap_unwrap(self) -> None:
         anthropic_output = json.dumps({"session_id": "s1", "result": json.dumps({"head": "abc", "blocked": False})})
-        self.assertEqual({"head": "abc", "blocked": False}, parse_pass_output("anthropic", anthropic_output))
+        self.assertEqual(("s1", {"head": "abc", "blocked": False}), parse_pass_output("anthropic", anthropic_output))
 
         # A role result that happens to contain a BOOTSTRAP_ACK-shaped key is not unwrapped:
         # unwrapping is bootstrap-specific and must not silently reshape a pass result.
         literal = json.dumps({"session_id": "s1", "result": json.dumps({"BOOTSTRAP_ACK": {"x": 1}, "head": "abc"})})
-        self.assertEqual({"BOOTSTRAP_ACK": {"x": 1}, "head": "abc"}, parse_pass_output("anthropic", literal))
+        self.assertEqual(("s1", {"BOOTSTRAP_ACK": {"x": 1}, "head": "abc"}), parse_pass_output("anthropic", literal))
 
         with self.assertRaisesRegex(GateError, "unreadable"):
             parse_pass_output("anthropic", "not json")
+
+    def test_run_launch_fails_closed_when_mutation_call_returns_a_different_session(self) -> None:
+        prepared = self.prepare()
+        ack = prepared.expected_ack(self.spawn_id)
+        ack.pop("provider_session_id")
+        wrong_session = str(uuid.uuid4())
+        calls = []
+
+        def imposter_runner(argv, **kwargs):
+            calls.append(list(argv))
+            if len(calls) == 1:
+                output = {"session_id": self.spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+            role_result = {"head": "f" * 40, "blocked": False, "validation": "ok"}
+            output = {"session_id": wrong_session, "result": json.dumps(role_result)}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        with self.assertRaisesRegex(GateError, "session mismatch"):
+            run_launch(prepared, runner=imposter_runner)
+        self.assertEqual(2, len(calls))
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertNotIn("result", readback)
 
 
 if __name__ == "__main__":

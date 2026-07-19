@@ -52,9 +52,10 @@ receipt="$control/receipt.toml"
 owner="$state_root/operator-owner.toml"
 
 if [[ "$dry_run" == true ]]; then
+  dry_spawn_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
   python3 "$resolver" resolve meta-operator \
     --capability operator-launch \
-    --spawn-id "$name" --parent operator --reply-route operator \
+    --spawn-id "$dry_spawn_id" --parent operator --reply-route operator \
     --repo "$cwd" --worktree "$cwd" \
     --execution-location "$execution_location" \
     --operator-loopback "$operator_loopback" \
@@ -82,7 +83,7 @@ prompt="Bootstrap already verified. Load and acknowledge $receipt, the canonical
   claude --agent meta-operator --model claude-fable-5 --effort xhigh --permission-mode auto -n "$name" "$prompt"
 
 owner_tmp="$owner.$$.tmp"
-printf 'schema_version = 1\nowner_session = "%s"\nhandoff_revision = 0\ncontrol_dir = "%s"\n' "$spawn_id" "$control" >"$owner_tmp"
+printf 'schema_version = 1\nowner_session = "%s"\nhandoff_revision = 0\ncontrol_dir = "%s"\n' "$name" "$control" >"$owner_tmp"
 mv "$owner_tmp" "$owner"
 "$timer" install --name "$name" --control-dir "$control" --owner-file "$owner" --repo "$cwd"
 
