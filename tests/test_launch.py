@@ -93,6 +93,7 @@ class LaunchBoundaryTests(unittest.TestCase):
             [],
             "review-session-1",
             ["session.jsonl:1-6824"],
+            "session.jsonl:6824",
         )
         self.pr = {
             "number": 6,
@@ -229,6 +230,40 @@ class LaunchBoundaryTests(unittest.TestCase):
         envelope = dict(self.envelope, shaping_verdict="blocking")
         with self.assertRaisesRegex(GateError, "shaping verdict not clear"):
             self.prepare(envelope=envelope)
+
+    def test_delivery_purpose_rejects_stale_or_substituted_verdict_conversation_evidence(self) -> None:
+        # A nonempty conversation reference or cutoff is not enough: it must be the
+        # exact one this envelope declares, or a stale or substituted verdict (from
+        # an unrelated or earlier session) could otherwise pass preflight.
+        stale_refs_comment = verdict_body(
+            "shaping",
+            "clear",
+            self.head,
+            ["linear:current", f"spec:{self.spec_blob}"],
+            [],
+            "review-session-1",
+            ["stale-session.jsonl:1-1"],
+            "session.jsonl:6824",
+        )
+        stale_refs_pr = dict(self.pr, comments=[{"body": stale_refs_comment}])
+        with self.assertRaisesRegex(GateError, "shaping verdict mismatch: conversation_log_references"):
+            self.prepare(read_pr=lambda _repo, _pr: stale_refs_pr)
+        self.assertFalse(self.worktree.exists())
+
+        stale_cutoff_comment = verdict_body(
+            "shaping",
+            "clear",
+            self.head,
+            ["linear:current", f"spec:{self.spec_blob}"],
+            [],
+            "review-session-1",
+            ["session.jsonl:1-6824"],
+            "stale-session.jsonl:1",
+        )
+        stale_cutoff_pr = dict(self.pr, comments=[{"body": stale_cutoff_comment}])
+        with self.assertRaisesRegex(GateError, "shaping verdict mismatch: conversation_cutoff"):
+            self.prepare(read_pr=lambda _repo, _pr: stale_cutoff_pr)
+        self.assertFalse(self.worktree.exists())
 
     def test_stale_linear_or_pr_head_fails_before_worktree(self) -> None:
         stale_issue = dict(self.issue, title="changed")

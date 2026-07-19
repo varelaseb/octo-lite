@@ -13,8 +13,10 @@ target repositories.
 - `roles/` contains the sole canonical prose contract for each LLM role.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
 - `skills/` contains reusable octo-lite skills and their bundled templates.
-- `agents/` contains generated Claude Markdown and Codex TOML launch adapters.
-  Never edit or spawn them raw. Regenerate through the role resolver.
+- `agents/` contains generated Claude Markdown launch adapters only. OpenAI
+  roles use a direct `codex exec` relay with no generated Codex custom-agent
+  file. Never edit or spawn `agents/` raw. Regenerate through the role
+  resolver.
 - `workflows/` contains target-neutral native Claude Workflow scripts.
 
 ## Target Spec Format Capability

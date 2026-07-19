@@ -241,13 +241,15 @@ def _verify_sources(
             "head": envelope["shaping_head"],
             "bound_inputs": envelope["shaping_verdict_inputs"],
             "reviewer_receipt": envelope["shaping_reviewer_receipt"],
+            # A nonempty reference or cutoff alone is not proof: it must be the exact
+            # one this envelope declares, or a stale or substituted verdict from an
+            # unrelated or earlier session could otherwise pass preflight.
+            "conversation_log_references": envelope["conversation_log_references"],
+            "conversation_cutoff": envelope["conversation_cutoff"],
         }
         mismatches = [name for name, value in expected_verdict.items() if verdict.get(name) != value]
         if mismatches:
             raise GateError(f"shaping verdict mismatch: {', '.join(mismatches)}")
-        references = verdict.get("conversation_log_references")
-        if not isinstance(references, list) or not references:
-            raise GateError("shaping verdict missing conversation log references")
 
     _verify_blobs(repo, envelope["starting_head"], envelope["spec_blobs"], "spec")
     _verify_blobs(repo, envelope["starting_head"], envelope["adr_blobs"], "ADR")
@@ -870,6 +872,35 @@ def bootstrap_from_receipt(
     return run_bootstrap(prepared, runner=runner)
 
 
+def run_mutation(
+    prepared: PreparedLaunch,
+    session: str,
+    prompt: str,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> tuple[str, str]:
+    """Sole entry point for any mutation call against an already bootstrap-verified
+    session. Fails closed unless the response's own session ID exactly matches the
+    resumed session, so a spoofed or mismatched identity can never be accepted."""
+    with prepared.receipt_path.open("rb") as handle:
+        receipt = tomllib.load(handle)
+    worktree = receipt["workspace"]["worktree"]
+    mutation = runner(
+        prepared.mutation_argv_for(session),
+        cwd=worktree,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if mutation.returncode != 0:
+        raise GateError(f"provider pass failed with exit {mutation.returncode}")
+    mutation_session, message = parse_provider_message(receipt["runtime"]["provider"], mutation.stdout)
+    if mutation_session != session:
+        raise GateError("provider pass session mismatch")
+    return mutation_session, message
+
+
 def run_launch(
     prepared: PreparedLaunch,
     *,
@@ -878,21 +909,9 @@ def run_launch(
     session = run_bootstrap(prepared, runner=runner)
     with prepared.receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
-    worktree = receipt["workspace"]["worktree"]
-    mutation = runner(
-        prepared.mutation_argv_for(session),
-        cwd=worktree,
-        input=mutation_prompt(prepared),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if mutation.returncode != 0:
-        raise GateError(f"provider pass failed with exit {mutation.returncode}")
+    _, message = run_mutation(prepared, session, mutation_prompt(prepared), runner=runner)
     role = receipt["role"]["name"]
-    mutation_session, result = parse_pass_output(receipt["runtime"]["provider"], mutation.stdout)
-    if mutation_session != session:
-        raise GateError("provider pass session mismatch")
+    result = _extract_json_object(message)
     result.pop("result_binding", None)
     binding = bind_pass_result(prepared.receipt_path, role, result)
     result["result_binding"] = binding

@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from octo_lite.launch import parse_provider_message, prepared_from_receipt, run_bootstrap  # noqa: E402
+from octo_lite.launch import prepared_from_receipt, run_bootstrap, run_mutation  # noqa: E402
 from octo_lite.runtime import bind_pass_result  # noqa: E402
 from workflows.lib.role_resolver import build_launch_receipt, load_registry, render_receipt, resolve_role  # noqa: E402
 
@@ -160,23 +160,15 @@ def main() -> int:
     session_id = run_bootstrap(prepared)
 
     # Phase 2: resume the exact bootstrap-verified session with the bounded snapshot
-    # for the read-only judgment pass.
+    # for the read-only judgment pass. run_mutation is the same sole-gateway call
+    # octo-launch's run_launch uses; it fails closed unless the response's own
+    # session ID matches the exact resumed session_id, never a self-attested one.
     judgment_prompt = (
         f"Bootstrap verified. Read snapshot {snapshot_path}. "
         "Classify only changed, missing, stale, contradictory, or needs_fable. "
         "Read only. Never mutate. Return a compact delta for the operator as plain text."
     )
-    judgment = subprocess.run(
-        prepared.mutation_argv_for(session_id),
-        cwd=repo,
-        input=judgment_prompt,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if judgment.returncode != 0:
-        raise SystemExit(f"operator-sweep: reconciler judgment failed: {judgment.stderr.strip()}")
-    _, message = parse_provider_message(receipt["runtime"]["provider"], judgment.stdout)
+    session_id, message = run_mutation(prepared, session_id, judgment_prompt)
     bind_pass_result(receipt_path, "reconciler", {"message": message})
     atomic_write(result_path, message)
 

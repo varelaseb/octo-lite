@@ -106,9 +106,9 @@ session. The reviewer reads:
 
 The reviewer returns clear or blocking. Publish one deterministic TOML verdict
 comment on the PR with `octo-control verdict-publish`, including the exact
-conversation log references. Bind all inputs, HEAD, findings, and reviewer
-receipt. Read it back. Never use the formal GitHub Review API as the shaping
-gate.
+conversation log references and cutoff. Bind all inputs, HEAD, findings, and
+reviewer receipt. Read it back. Never use the formal GitHub Review API as the
+shaping gate.
 
 Blocking documentary gaps return here. Missing judgment returns to the operator
 grill. Material reconciliation requires another fresh shaping review.

@@ -165,6 +165,12 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertTrue(entry.is_symlink())
         self.assertEqual(Path("AGENTS.md"), entry.readlink())
 
+    def test_root_instruction_law_has_no_stale_codex_toml_adapter_claim(self) -> None:
+        text = (ROOT / "AGENTS.md").read_text()
+        self.assertNotIn("Codex TOML", text)
+        self.assertIn("no generated Codex custom-agent", text)
+        self.assertIn("codex exec", text)
+
     def test_generic_spec_does_not_define_target_deployment_state_mapping(self) -> None:
         text = (ROOT / "spec/domains/operating-model.spec.html").read_text()
         self.assertIn("linear-deployment-target-owned", text)

@@ -351,6 +351,55 @@ fi
             with state.open("rb") as handle:
                 self.assertEqual("acknowledged", tomllib.load(handle)["status"])
 
+    def test_ack_allows_the_full_pending_acknowledged_completed_lifecycle(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
+
+            acked = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            self.assertEqual(0, acked.returncode)
+            state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
+            with state.open("rb") as handle:
+                self.assertEqual("acknowledged", tomllib.load(handle)["status"])
+
+            completed = subprocess.run(
+                ["bash", str(ACK), message_id, "completed", "--by", "agent1", "--artifact", "ref/1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            with state.open("rb") as handle:
+                stored = tomllib.load(handle)
+            self.assertEqual("completed", stored["status"])
+            self.assertEqual("ref/1", stored["artifact"])
+
+    def test_ack_rejects_acknowledging_a_message_that_is_already_completed(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
+            subprocess.run(
+                ["bash", str(ACK), message_id, "completed", "--by", "agent1", "--artifact", "ref/1"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
+            regress = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, regress.returncode)
+            with state.open("rb") as handle:
+                self.assertEqual("completed", tomllib.load(handle)["status"])
+
     def test_info_kind_never_carries_an_ack_instruction_or_claims_acknowledged(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")

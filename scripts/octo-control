@@ -149,6 +149,7 @@ def command_verdict(args) -> dict:
         args.finding,
         args.receipt,
         args.conversation_log_reference,
+        args.conversation_cutoff,
     )
     marker = f"<!-- octo-lite-verdict:{args.review_type} -->"
     comments = run_json(
@@ -380,6 +381,7 @@ def parser() -> argparse.ArgumentParser:
     verdict.add_argument("--bound-input", action="append", default=[])
     verdict.add_argument("--finding", action="append", default=[])
     verdict.add_argument("--conversation-log-reference", action="append", default=[])
+    verdict.add_argument("--conversation-cutoff", default="")
     verdict.set_defaults(run=command_verdict)
 
     owner = sub.add_parser("owner-transfer")

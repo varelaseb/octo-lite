@@ -15,15 +15,66 @@ TIMER = ROOT / "scripts/operator-timer"
 CONTROL = ROOT / "scripts/octo-control"
 
 # Fakes the two-phase reconciler launch: a --session-id call answers a bound
-# BOOTSTRAP_ACK computed from the exact receipt on disk; a --resume call answers
-# a fixed read-only judgment message. Proves the resumed session is the exact
-# bootstrap-verified one, never a self-attested or spoofed identity.
+# BOOTSTRAP_ACK computed from the exact receipt on disk; a --resume call echoes
+# the exact session it was resumed with in its own read-only judgment message,
+# proving the resumed session is the exact bootstrap-verified one, never a
+# self-attested or spoofed identity.
 FAKE_RECONCILER_CLAUDE = r"""#!/usr/bin/env bash
 printf 'claude %s\n' "$*" >>"$CALL_LOG"
 prompt="$(cat)"
 if [[ "$*" == *"--resume"* ]]; then
+  args=("$@")
+  session=""
+  for i in "${!args[@]}"; do
+    if [[ "${args[$i]}" == "--resume" ]]; then
+      session="${args[$((i+1))]}"
+    fi
+  done
+  python3 -c 'import json, sys; print(json.dumps({"session_id": sys.argv[1], "result": "changed"}))' "$session"
+else
+  receipt_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*receipt\.toml' | head -1)"
+  args=("$@")
+  session=""
+  for i in "${!args[@]}"; do
+    if [[ "${args[$i]}" == "--session-id" ]]; then
+      session="${args[$((i+1))]}"
+    fi
+  done
+  python3 - "$receipt_path" "$session" <<'PY'
+import json
+import sys
+import tomllib
+
+receipt_path, session_id = sys.argv[1], sys.argv[2]
+with open(receipt_path, "rb") as handle:
+    receipt = tomllib.load(handle)
+ack = {
+    "schema_version": receipt["schema_version"],
+    "spawn_id": receipt["spawn_id"],
+    "provider_session_id": session_id,
+    "launch_revision": receipt["launch_revision"],
+    "role": receipt["role"]["name"],
+    "worktree": receipt["workspace"]["worktree"],
+    "starting_head": receipt["workspace"]["starting_head"],
+    "ready": True,
+    "blocker": "",
+}
+print(json.dumps({"session_id": session_id, "result": json.dumps(ack)}))
+PY
+fi
+"""
+
+
+# Same two-phase shape as FAKE_RECONCILER_CLAUDE, but the resumed judgment call
+# reports a fixed spoofed session_id instead of the exact session it was resumed
+# with. Proves the sweep never accepts a mutation response from an unverified
+# or mismatched session, matching octo-launch's own run_launch identity check.
+FAKE_RECONCILER_CLAUDE_SPOOFED_RESUME = r"""#!/usr/bin/env bash
+printf 'claude %s\n' "$*" >>"$CALL_LOG"
+prompt="$(cat)"
+if [[ "$*" == *"--resume"* ]]; then
   cat <<'JSON'
-{"session_id": "reconciler-session-1", "result": "changed"}
+{"session_id": "spoofed-session-not-the-resumed-one", "result": "changed"}
 JSON
 else
   receipt_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*receipt\.toml' | head -1)"
@@ -150,6 +201,50 @@ class OperatorControlTests(unittest.TestCase):
                 receipt = tomllib.load(handle)
             self.assertTrue(receipt["bootstrap"]["verified"])
             self.assertTrue(receipt["result"]["bound"])
+
+    def test_sweep_fails_closed_when_resumed_judgment_reports_a_different_session(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE_SPOOFED_RESUME,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse(any((control / "sweeps").rglob("result.md")))
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("operator ") for line in calls))
 
     def test_result_bind_produces_exact_output_binding_for_verified_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as td:

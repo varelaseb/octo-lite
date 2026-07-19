@@ -471,21 +471,37 @@ class RuntimeContractTests(unittest.TestCase):
             findings=[],
             receipt="session:reviewer",
             conversation_log_references=["session.jsonl:1-100"],
+            conversation_cutoff="session.jsonl:100",
         )
         self.assertIn("<!-- octo-lite-verdict:shaping -->", body)
         self.assertIn('head = "abc"', body)
         self.assertIn('bound_inputs = ["linear:123", "spec:456"]', body)
         self.assertIn('conversation_log_references = ["session.jsonl:1-100"]', body)
+        self.assertIn('conversation_cutoff = "session.jsonl:100"', body)
         with self.assertRaises(GateError):
             verdict_body("code", "ambiguous", "abc", [], [], "r")
 
     def test_verdict_requires_conversation_log_references_for_shaping_but_not_code(self):
         with self.assertRaisesRegex(GateError, "conversation log references"):
-            verdict_body("shaping", "clear", "abc", ["linear:123"], [], "r")
+            verdict_body("shaping", "clear", "abc", ["linear:123"], [], "r", conversation_cutoff="session.jsonl:1")
         code_body = verdict_body("code", "clear", "abc", ["linear:123"], [], "r")
         self.assertIn('conversation_log_references = []', code_body)
         with self.assertRaisesRegex(GateError, "does not carry conversation log references"):
             verdict_body("code", "clear", "abc", ["linear:123"], [], "r", ["session.jsonl:1-10"])
+
+    def test_verdict_requires_conversation_cutoff_for_shaping_but_not_code(self):
+        with self.assertRaisesRegex(GateError, "conversation cutoff"):
+            verdict_body(
+                "shaping", "clear", "abc", ["linear:123"], [], "r",
+                conversation_log_references=["session.jsonl:1-10"],
+            )
+        code_body = verdict_body("code", "clear", "abc", ["linear:123"], [], "r")
+        self.assertIn('conversation_cutoff = ""', code_body)
+        with self.assertRaisesRegex(GateError, "does not carry a conversation cutoff"):
+            verdict_body(
+                "code", "clear", "abc", ["linear:123"], [], "r",
+                conversation_cutoff="session.jsonl:10",
+            )
 
 
 if __name__ == "__main__":
