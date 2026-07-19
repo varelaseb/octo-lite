@@ -401,6 +401,44 @@ class OperatorControlTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("orchestrator", result.stderr.lower())
 
+    def test_linear_transition_denies_a_foreign_issue_from_the_exact_stream_owner(self) -> None:
+        # The exact stream owner for TUR-1 must never authorize a transition for a
+        # different issue: role and caller checks alone are not stream authority.
+        # A fake `linear` that logs any call before exiting nonzero proves rejection
+        # happens before any Linear read or mutation is attempted.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            stream = base / "stream"
+            from octo_lite.runtime import initialize_stream
+            initialize_stream(
+                stream, stream_id="TUR-1", parent_session="epic-opus", child_session="issue-opus",
+                child_role="orchestrator", caller="epic-opus", brief="Build it.\n",
+            )
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            call_log = base / "calls.log"
+            (fake_bin / "linear").write_text(
+                f"#!/usr/bin/env bash\nprintf 'linear %s\\n' \"$*\" >>\"{call_log}\"\nexit 99\n"
+            )
+            (fake_bin / "linear").chmod(0o755)
+            (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 99\n")
+            (fake_bin / "herdr-say").chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+
+            result = subprocess.run(
+                [
+                    str(CONTROL), "linear-transition", "TUR-999",
+                    "--expected", "Todo", "--target", "In Progress",
+                    "--progress", str(base / "progress.toml"), "--status", str(base / "status.md"),
+                    "--parent", "epic-opus", "--outcome", "started", "--gate", "implement",
+                    "--caller", "issue-opus", "--stream", str(stream),
+                ],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("stream_id", result.stderr.lower())
+            self.assertFalse(call_log.exists())
+
     def test_linear_transition_rejects_wrong_caller_before_any_linear_call(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -592,7 +630,12 @@ class OperatorControlTests(unittest.TestCase):
             self.assertEqual("new-session", json.loads(transfer.stdout)["owner_session_id"])
             self.assertEqual("new-route", json.loads(transfer.stdout)["owner_route"])
 
-    def test_owner_recover_requires_authorization_and_liveness_then_swaps_dead_owner(self) -> None:
+    def test_owner_recover_probes_provider_session_and_herdr_route_before_swap(self) -> None:
+        # No caller-supplied --liveness exists any more. octo-control must probe the
+        # exact owner provider session (via `herdr pane list`) and the exact Herdr
+        # route (via `herdr agent get`/`herdr pane get`) itself, and only proceed
+        # when both are cleanly proven absent. A route or session still live in the
+        # fake herdr's response blocks recovery exactly like a missing authorization.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             owner = base / "operator-owner.toml"
@@ -618,18 +661,58 @@ class OperatorControlTests(unittest.TestCase):
                 "--successor-readiness", str(base / "ready.toml"),
             ]
 
-            unauthorized = subprocess.run(base_argv + ["--liveness", "dead"], capture_output=True, text=True)
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            fake_herdr = fake_bin / "herdr"
+            fake_herdr.write_text(
+                """#!/usr/bin/env bash
+set -eu
+if [[ "$1 $2" == "agent get" ]]; then
+  if [[ -n "${FAKE_ROUTE_LIVE:-}" ]]; then
+    echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
+  else
+    echo '{"error":{"code":"agent_not_found","message":"not found"}}'
+    exit 1
+  fi
+elif [[ "$1 $2" == "pane list" ]]; then
+  if [[ -n "${FAKE_SESSION_LIVE:-}" ]]; then
+    echo '{"result":{"panes":[{"agent_session":{"value":"dead-session"}}]}}'
+  else
+    echo '{"result":{"panes":[]}}'
+  fi
+else
+  exit 2
+fi
+"""
+            )
+            fake_herdr.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+
+            unauthorized = subprocess.run(base_argv, env=env, capture_output=True, text=True)
             self.assertNotEqual(0, unauthorized.returncode)
 
-            ambiguous = subprocess.run(
-                base_argv + ["--liveness", "ambiguous", "--operator-authorized"],
+            live_route = subprocess.run(
+                base_argv + ["--operator-authorized"],
+                env=dict(env, FAKE_ROUTE_LIVE="1"),
                 capture_output=True, text=True,
             )
-            self.assertNotEqual(0, ambiguous.returncode)
+            self.assertNotEqual(0, live_route.returncode)
+
+            live_session = subprocess.run(
+                base_argv + ["--operator-authorized"],
+                env=dict(env, FAKE_SESSION_LIVE="1"),
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, live_session.returncode)
+            self.assertEqual(
+                'schema_version = 1\nowner_session_id = "dead-session"\nowner_route = "dead-route"\n'
+                'handoff_revision = 1\ncontrol_dir = "/control"\n',
+                owner.read_text(),
+            )
 
             recovered = subprocess.run(
-                base_argv + ["--liveness", "dead", "--operator-authorized"],
-                check=True, capture_output=True, text=True,
+                base_argv + ["--operator-authorized"],
+                env=env, check=True, capture_output=True, text=True,
             )
             self.assertEqual("successor", json.loads(recovered.stdout)["owner_session_id"])
             self.assertEqual("new-route", json.loads(recovered.stdout)["owner_route"])

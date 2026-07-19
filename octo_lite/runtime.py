@@ -292,11 +292,14 @@ def _swap_owner(
     new_owner_route: str,
     handoff_revision: int,
     control_dir: str,
+    pre_swap_check: Callable[[], None] | None = None,
 ) -> dict:
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if pre_swap_check is not None:
+            pre_swap_check()
         current = _read_toml(path)
         if current.get("owner_session_id") != expected_owner_session_id:
             raise GateError("owner identity mismatch")
@@ -352,6 +355,17 @@ def transfer_owner(
     )
 
 
+def _require_proven_absent(probe: Callable[[str], Mapping[str, object]], expected: str, label: str) -> None:
+    try:
+        snapshot = probe(expected)
+    except Exception as error:
+        raise GateError(f"{label} probe failed: {error}") from error
+    if not isinstance(snapshot, Mapping) or snapshot.get("checked") != expected:
+        raise GateError(f"{label} probe result mismatch")
+    if snapshot.get("present") is not False:
+        raise GateError(f"{label} not proven absent")
+
+
 def recover_dead_owner(
     path: Path,
     expected_owner_session_id: str,
@@ -362,20 +376,27 @@ def recover_dead_owner(
     handoff_revision: int,
     control_dir: str,
     *,
-    liveness: str,
+    probe_provider_session: Callable[[str], Mapping[str, object]],
+    probe_herdr_route: Callable[[str], Mapping[str, object]],
     operator_authorized: bool,
     handoff: Path,
     successor_readiness_path: Path,
 ) -> dict:
     if not operator_authorized:
         raise GateError("dead-owner recovery requires explicit operator authorization")
-    if liveness not in {"dead", "absent"}:
-        raise GateError("ambiguous liveness blocks dead-owner recovery")
     readiness = _read_toml(successor_readiness_path)
     if readiness.get("session_id") != new_owner_session_id or readiness.get("handoff_revision") != handoff_revision:
         raise GateError("successor readiness receipt mismatch")
     if not handoff.is_file() or handoff.name != f"{handoff_revision:04d}.md":
         raise GateError("immutable handoff revision missing")
+
+    def pre_swap_check() -> None:
+        # Probed under the same lock as the compare-and-swap: a caller can no longer
+        # assert liveness. Only a snapshot that proves both the exact provider
+        # session and the exact Herdr route cleanly absent may unblock recovery.
+        _require_proven_absent(probe_provider_session, expected_owner_session_id, "provider session")
+        _require_proven_absent(probe_herdr_route, expected_owner_route, "herdr route")
+
     return _swap_owner(
         path,
         expected_owner_session_id=expected_owner_session_id,
@@ -385,6 +406,7 @@ def recover_dead_owner(
         new_owner_route=new_owner_route,
         handoff_revision=handoff_revision,
         control_dir=control_dir,
+        pre_swap_check=pre_swap_check,
     )
 
 

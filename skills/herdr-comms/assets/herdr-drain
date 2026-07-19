@@ -14,6 +14,15 @@ dialog_open() {
     | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
 }
 
+# `pane run` can exit 0 (Enter was sent) while the exact text is still sitting
+# unsubmitted in the composer. Only a read that proves the text is gone counts
+# as consumption; an unreadable pane is ambiguous, never a submitted proof.
+composer_cleared() {
+  local text="$1" observed
+  observed="$(herdr pane read "$pane" --source visible --lines 6 2>/dev/null)" || return 1
+  [[ "$observed" != *"$text"* ]]
+}
+
 inbox="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/inbox/$target"
 [[ -d "$inbox" ]] || exit 0
 for queued in "$inbox"/*; do
@@ -83,8 +92,9 @@ PY
 
   if [[ "${values[5]}" == "pasted" ]]; then
     # Text already landed in the prompt from an earlier attempt. Never re-send: only
-    # recheck safety and press Enter once it is safe.
-    if ! dialog_open && herdr pane run "$pane" "" >/dev/null 2>&1; then
+    # recheck safety and press Enter once it is safe. Stay pasted for the next drain
+    # unless the composer is observed clear of the exact message.
+    if ! dialog_open && herdr pane run "$pane" "" >/dev/null 2>&1 && composer_cleared "${values[3]}"; then
       write_submitted
     fi
   elif herdr agent send "$target" "${values[3]}$suffix" >/dev/null 2>&1 \
@@ -92,7 +102,7 @@ PY
     sleep 0.5
     if dialog_open; then
       write_pasted
-    elif herdr pane run "$pane" "" >/dev/null 2>&1; then
+    elif herdr pane run "$pane" "" >/dev/null 2>&1 && composer_cleared "${values[3]}"; then
       write_submitted
     else
       write_pasted

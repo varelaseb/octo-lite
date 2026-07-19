@@ -81,6 +81,8 @@ def _verify_transition_authority(args) -> None:
             raise GateError("caller is not the exact stream owner")
         if stream_state.get("child_role") != "orchestrator":
             raise GateError("caller is not the exact issue-orchestrator role")
+        if stream_state.get("stream_id") != args.issue:
+            raise GateError("stream_id does not match requested issue")
         return
     receipt = load_toml(Path(args.receipt))
     if receipt.get("bootstrap", {}).get("verified") is not True:
@@ -197,6 +199,39 @@ def command_owner(args) -> dict:
     )
 
 
+def _herdr_json(argv: list[str]) -> tuple[int, dict]:
+    result = subprocess.run(argv, capture_output=True, text=True)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise GateError(f"herdr probe parse failure: {error}") from error
+    return result.returncode, payload
+
+
+def probe_herdr_route(route: str) -> dict:
+    argv = ["herdr", "pane", "get", route] if ":p" in route else ["herdr", "agent", "get", route]
+    returncode, payload = _herdr_json(argv)
+    if returncode == 0:
+        return {"checked": route, "present": True}
+    if payload.get("error", {}).get("code") in {"pane_not_found", "agent_not_found"}:
+        return {"checked": route, "present": False}
+    raise GateError(f"herdr route probe failed: {payload}")
+
+
+def probe_provider_session(session_id: str) -> dict:
+    returncode, payload = _herdr_json(["herdr", "pane", "list"])
+    if returncode != 0:
+        raise GateError(f"herdr pane list failed: {payload}")
+    panes = payload.get("result", {}).get("panes")
+    if not isinstance(panes, list):
+        raise GateError("herdr pane list result malformed")
+    live = any(
+        isinstance(pane, dict) and pane.get("agent_session", {}).get("value") == session_id
+        for pane in panes
+    )
+    return {"checked": session_id, "present": live}
+
+
 def command_owner_recover(args) -> dict:
     handoff = Path(args.handoff)
     if not handoff.is_file():
@@ -210,7 +245,8 @@ def command_owner_recover(args) -> dict:
         args.new_route,
         args.revision,
         str(Path(args.control_dir).resolve()),
-        liveness=args.liveness,
+        probe_provider_session=probe_provider_session,
+        probe_herdr_route=probe_herdr_route,
         operator_authorized=args.operator_authorized,
         handoff=handoff,
         successor_readiness_path=Path(args.successor_readiness),
@@ -426,7 +462,6 @@ def parser() -> argparse.ArgumentParser:
     recover.add_argument("--control-dir", required=True)
     recover.add_argument("--handoff", required=True)
     recover.add_argument("--successor-readiness", required=True)
-    recover.add_argument("--liveness", choices=["dead", "absent"], required=True)
     recover.add_argument("--operator-authorized", action="store_true")
     recover.set_defaults(run=command_owner_recover)
 

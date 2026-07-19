@@ -172,6 +172,31 @@ fi
             inbox = Path(td) / "state/octo-lite/inbox/agent1" / message_id
             self.assertTrue(inbox.is_file())
 
+    def test_say_persists_pasted_when_pane_run_exits_zero_but_message_stays_in_composer(self):
+        # Adversarial boundary: `pane run` can return 0 (Enter was sent) while the
+        # exact message text is still visibly sitting in the composer, unsubmitted.
+        # herdr-say must observe consumption, not trust the exit code alone.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_PANE_TEXT_AFTER"] = "prompt still shows: do work"
+            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "2"
+            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(75, result.returncode)
+            self.assertEqual(["send", "run"], log.read_text().splitlines())
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            self.assertEqual(1, len(states))
+            with states[0].open("rb") as handle:
+                self.assertEqual("pasted", tomllib.load(handle)["status"])
+            message_id = states[0].stem
+            inbox = Path(td) / "state/octo-lite/inbox/agent1" / message_id
+            self.assertTrue(inbox.is_file())
+
     def test_say_defers_to_pasted_when_enter_fails_and_does_not_claim_submitted(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
@@ -216,6 +241,40 @@ fi
                 self.assertEqual("submitted", tomllib.load(handle)["status"])
             message_id = states[0].stem
             self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
+
+    def test_drain_retries_enter_only_and_stays_pasted_when_composer_never_clears(self):
+        # Same adversarial boundary as herdr-say, hit from herdr-drain's "pasted"
+        # retry path: `pane run` exits 0 but the composer still shows the message.
+        # Drain must never re-send text on this path, only retry Enter, and must
+        # not claim submitted without observing the composer clear.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
+            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
+            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            with states[0].open("rb") as handle:
+                self.assertEqual("pasted", tomllib.load(handle)["status"])
+            message_id = states[0].stem
+
+            # The modal is gone now, but the composer still visibly shows the message
+            # after Enter: drain must retry Enter only, and stay pasted, never resend.
+            log.write_text("")
+            drain_env = dict(env, FAKE_PANE_TEXT="prompt still shows: do work")
+            drain_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
+            drain_env.pop("FAKE_PANE_TEXT_AFTER", None)
+            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
+            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["run"], log.read_text().splitlines())
+            with states[0].open("rb") as handle:
+                self.assertEqual("pasted", tomllib.load(handle)["status"])
+            self.assertTrue((Path(td) / "state/octo-lite/inbox/agent1" / message_id).is_file())
 
     def test_drain_leaves_a_pasted_message_queued_while_the_modal_is_still_open(self):
         with tempfile.TemporaryDirectory() as td:

@@ -89,8 +89,8 @@ Counts are distinct paths inside each repository.
 | Turbo | Historical audit and decision docs | 11 |
 | Turbo | Historical implementation plans | 120 |
 | Turbo | Prompt-adjacent conformance tests | 24 |
-| Turbo | Evidence operating-model tests | 7 |
-| Turbo | Total | 282 |
+| Turbo | Evidence operating-model tests | 8 |
+| Turbo | Total | 283 |
 
 ## octo-lite inventory
 
@@ -552,7 +552,7 @@ Nested tool plans, 2:
 - tools/prospect-report/test/transcribeMissingReels.test.js
 - tools/prospect-report/test/tur148Metering.test.js
 
-### Evidence operating-model tests, 7
+### Evidence operating-model tests, 8
 
 - tools/evidence-site/test/byteIdentity.test.js
 - tools/evidence-site/test/deployState.test.js
@@ -560,6 +560,7 @@ Nested tool plans, 2:
 - tools/evidence-site/test/pathDecoding.test.js
 - tools/evidence-site/test/publishEvidenceCard.test.js
 - tools/evidence-site/test/specSourceGuard.test.js
+- tools/evidence-site/test/symlinkContainment.test.js
 - tools/evidence-site/test/syncProcedure.test.js
 
 ## Ambiguity and drift flags
@@ -576,6 +577,19 @@ Nested tool plans, 2:
 10. A prior revision recomputed every octo-lite count and path against its final tree. `octo_lite/__init__.py` was a real prior omission from Runtime wiring and prompt builders; it was included from that point on. The Turbo worktree at `/root/Turbo-Outreach-tur450-operating-model` (`29b929e`) had a different agent's concurrent uncommitted work at that validation time; that pass spot-checked canonical specs, historical plans, and evidence tests by exact count and left the Turbo section unchanged since all three matched.
 11. This revision reconciled both repos against pushed Turbo worktree HEAD `83b6b507b6ff1490576947388bd9682e784e2847` (Turbo fix pass 4, superseding note 10's `29b929e`) and this fix pass's final octo-lite tree. Turbo fix pass 4 added `tools/evidence-site/test/deployState.test.js` and `tools/evidence-site/test/pathDecoding.test.js`, raising Evidence operating-model tests from 5 to 7 and the Turbo total from 280 to 282; no other Turbo category changed and the 120 historical plan count is exact. This fix pass added `tests/test_launch_meta_operator.py` to octo-lite Conformance tests and fixtures, raising it from 13 to 14 and the octo-lite total from 108 to 109. Every listed path in both repositories was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
 12. This revision (PR 6 fix pass 4) reconciled the pinned Turbo head to `c0c27be9f3661a0007aeef49e9dd06f663b1e4ee` (tree `c85d86616fbad1b6302484b566b520ecfd2fae75`), the exact commit named by the operator as final for this inventory. Diffed against note 11's `83b6b507` pin: zero files added or removed, only content edits inside five already-listed `tools/evidence-site/*` files; every Turbo category and the 282 total are unchanged. octo-lite removed the separately persistent `issue-shaper` role and its two generated adapters (`roles/issue-shaper.md`, `agents/issue-shaper.md`, `agents/issue-shaper.toml`): the one issue orchestrator now resolves the `octo-lite-issue-shaper` skill conditionally in shaping mode instead of a second persistent role, per the one-dedicated-Opus contract. Canonical role contracts moved 9 to 8, Generated launch adapters 18 to 16, octo-lite total 109 to 106. Every listed path in both repositories was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
+13. This revision (PR 6 fix pass 5) reconciled the pinned Turbo head to `578abfdf2d9effdeecba922a6227482d573763ec` (tree `cd4af035283d1a57ecfdec2a020228c05252142c`), Turbo PR 423's exact head refetched immediately before this commit. Diffed against note 12's `c0c27be` pin: one file added, `tools/evidence-site/test/symlinkContainment.test.js`; zero files removed; the remaining edits are content-only inside the same seven already-listed `tools/evidence-site/*` files. Evidence operating-model tests moves 7 to 8, Turbo total 282 to 283; no other Turbo category changed and the 120 historical plan count is exact. The `/root/Turbo-Outreach-tur450-operating-model` worktree carried a different agent's concurrent uncommitted local diff at read time (modified `serve-evidence.py`, `deployState.test.js`, plus an untracked `symlinkContainment.test.js`); this reconciliation used the pushed PR 423 head content only, read through `git show`/`git diff` against the exact commit, never the dirty worktree state. octo-lite's own count is unaffected: this fix pass changed code and tests, not the counted-category file set. Every listed path in both repositories was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
+
+## Failures recorded, PR 6 fix pass 5
+
+Exact-head review at `37002380b0288a6a73a52f6d5d4ff5ff80505111` (https://github.com/varelaseb/octo-lite/pull/6#issuecomment-5014249876) found these current failures. Each fix below changed HEAD; see the PR fix-pass comment for the exact new head and receipts.
+
+1. Codex custom-agent schema rejected by the real CLI. `codex doctor --json` against the installed `~/.codex/agents/*.toml` (symlinked to this repo's `agents/`) reported 8 `Ignoring malformed agent role definition: ... unknown field 'adapter'` startup warnings at head `3700238`. Fix: `workflows/lib/role_resolver.py:render_codex_adapter` now emits only the documented top-level schema (`name`, `description`, `model`, `model_reasoning_effort`, `developer_instructions`, `skills.config`); the same `codex doctor --json` probe now reports 0 startup warnings. Tests: `tests/test_role_resolver.py::test_codex_adapters_have_no_unsupported_tables`, `::test_codex_cli_loads_generated_adapters_without_schema_errors`.
+2. Placeholder spawn behavior: checked. `skills/herdr-comms/assets/herdr-spawn`, `scripts/octo-launch`, and `scripts/octo-probe` were reviewed for stub or placeholder spawn paths. None found: `herdr-spawn` runs a real read-only bootstrap and verifies the full BOOTSTRAP_ACK before any pane exists. Covered by `tests/test_herdr.py::test_spawn_verifies_bootstrap_before_any_pane_and_resumes_the_exact_verified_session` and `::test_spawn_creates_no_pane_on_any_bootstrap_mismatch`. No fix required.
+3. Stale installed-copy cutover: checked. octo-lite installs by symlink, never by copy (`scripts/install-octo-lite`); `~/.codex/agents/*.toml` points directly at this repo's tracked files, so the Codex-schema fix above took effect on the installed profile with no separate cutover step. `scripts/install-octo-lite --prefix /root --check` passes at this head.
+4. False Herdr `submitted` receipts. `herdr-say`/`herdr-drain` wrote `status = "submitted"` whenever `herdr pane run` exited 0, without observing whether the exact message text was still visible in the composer; reproduced as a failing test against the unmodified scripts. Fix: both scripts now require `composer_cleared` (a narrow post-Enter `herdr pane read --lines 6` proving the message text is gone) before writing `submitted`; unproven consumption persists `pasted`, and the next drain retries Enter only, never resending. Tests: `tests/test_herdr.py::test_say_persists_pasted_when_pane_run_exits_zero_but_message_stays_in_composer`, `::test_drain_retries_enter_only_and_stays_pasted_when_composer_never_clears`.
+5. Caller-supplied liveness. `recover_dead_owner` accepted a caller-supplied `--liveness dead|absent` flag with no independent verification. Fix: `--liveness` removed from `scripts/octo-control`; recovery now probes the exact provider session (`herdr pane list`, matched against `agent_session.value`) and the exact Herdr route (`herdr agent get`/`herdr pane get`) under the same lock as the compare-and-swap in `octo_lite/runtime.py:recover_dead_owner`/`_swap_owner`. A live match, checked-identity mismatch, command failure, parse failure, or ambiguous result all block. Tests: `tests/test_runtime.py::test_dead_owner_recovery_probes_provider_session_and_herdr_route_before_swap`, `tests/test_operator_control.py::test_owner_recover_probes_provider_session_and_herdr_route_before_swap`.
+6. Cross-issue authority. `octo-control`'s `_verify_transition_authority` `--stream` path checked caller session and role but never checked that the stream's `stream_id` equals the requested issue, so a valid TUR-1 stream owner could authorize a TUR-999 transition. Fix: added a `stream_id` equality check before any Linear read or mutation. Test: `tests/test_operator_control.py::test_linear_transition_denies_a_foreign_issue_from_the_exact_stream_owner` (asserts the fake `linear` binary is never invoked).
+7. Repeated long fix loops. PR 6 has run five consecutive fix passes since the shaping-review gate opened (`56637e0`, `898ea5d`, `dfc4031`, `3700238`, and this pass), each following a fresh blocking review comment on the PR; `gate_state` in the PR body's train manifest still reads `shaping-review-pending`. This pass does not decide whether the cycle returns to shaping; that determination and any PR-metadata update are the issue orchestrator's, per this pass's own launch instructions.
 
 ## Review focus
 

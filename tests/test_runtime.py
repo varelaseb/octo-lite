@@ -160,7 +160,13 @@ class RuntimeContractTests(unittest.TestCase):
                     caller="old-session", handoff=handoff, successor_readiness_path=wrong_session,
                 )
 
-    def test_dead_owner_recovery_requires_operator_authorization_and_nonambiguous_liveness(self):
+    def test_dead_owner_recovery_probes_provider_session_and_herdr_route_before_swap(self):
+        # No caller-supplied liveness exists any more: recover_dead_owner must probe
+        # the exact owner provider session and Herdr route itself, under the lock,
+        # and only a snapshot that proves both cleanly absent may proceed. A live
+        # match, a checked-identity mismatch, a raised command failure, or an
+        # ambiguous (non-bool) present value must all block, same as a probe that
+        # affirmatively reports presence.
         with tempfile.TemporaryDirectory() as td:
             owner = Path(td) / "operator-owner.toml"
             owner.write_text(
@@ -173,24 +179,56 @@ class RuntimeContractTests(unittest.TestCase):
             readiness = Path(td) / "ready.toml"
             declare_successor_ready(readiness, caller="successor", session_id="successor", handoff_revision=2)
 
+            def absent(expected):
+                return {"checked": expected, "present": False}
+
+            def present(expected):
+                return {"checked": expected, "present": True}
+
+            def failing(expected):
+                raise RuntimeError("herdr command failed")
+
+            def mismatched(expected):
+                return {"checked": "someone-else", "present": False}
+
+            def ambiguous(expected):
+                return {"checked": expected, "present": None}
+
             with self.assertRaisesRegex(GateError, "authorization"):
                 recover_dead_owner(
                     owner, "dead-session", "dead-route", 1, "successor", "new-route", 2, "/control",
-                    liveness="dead", operator_authorized=False, handoff=handoff, successor_readiness_path=readiness,
+                    probe_provider_session=absent, probe_herdr_route=absent,
+                    operator_authorized=False, handoff=handoff, successor_readiness_path=readiness,
                 )
-            with self.assertRaisesRegex(GateError, "liveness"):
-                recover_dead_owner(
-                    owner, "dead-session", "dead-route", 1, "successor", "new-route", 2, "/control",
-                    liveness="unknown", operator_authorized=True, handoff=handoff, successor_readiness_path=readiness,
-                )
+
+            blocking = {
+                "session_live_match": (present, absent),
+                "route_live_match": (absent, present),
+                "session_command_failure": (failing, absent),
+                "route_command_failure": (absent, failing),
+                "session_mismatch": (mismatched, absent),
+                "route_mismatch": (absent, mismatched),
+                "session_ambiguous": (ambiguous, absent),
+                "route_ambiguous": (absent, ambiguous),
+            }
+            for name, (session_probe, route_probe) in blocking.items():
+                with self.subTest(name):
+                    with self.assertRaises(GateError):
+                        recover_dead_owner(
+                            owner, "dead-session", "dead-route", 1, "successor", "new-route", 2, "/control",
+                            probe_provider_session=session_probe, probe_herdr_route=route_probe,
+                            operator_authorized=True, handoff=handoff, successor_readiness_path=readiness,
+                        )
             self.assertEqual(
                 'schema_version = 1\nowner_session_id = "dead-session"\nowner_route = "dead-route"\n'
                 'handoff_revision = 1\ncontrol_dir = "/control"\n',
                 owner.read_text(),
             )
+
             updated = recover_dead_owner(
                 owner, "dead-session", "dead-route", 1, "successor", "new-route", 2, "/control",
-                liveness="dead", operator_authorized=True, handoff=handoff, successor_readiness_path=readiness,
+                probe_provider_session=absent, probe_herdr_route=absent,
+                operator_authorized=True, handoff=handoff, successor_readiness_path=readiness,
             )
             self.assertEqual("successor", updated["owner_session_id"])
             self.assertEqual("new-route", updated["owner_route"])

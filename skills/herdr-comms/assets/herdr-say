@@ -55,6 +55,15 @@ dialog_open() {
     | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
 }
 
+# `pane run` can exit 0 (Enter was sent) while the exact text is still sitting
+# unsubmitted in the composer. Only a read that proves the text is gone counts
+# as consumption; an unreadable pane is ambiguous, never a submitted proof.
+composer_cleared() {
+  local text="$1" observed
+  observed="$(herdr pane read "$pane" --source visible --lines 6 2>/dev/null)" || return 1
+  [[ "$observed" != *"$text"* ]]
+}
+
 suffix=""
 if [[ "$kind" != "info" ]]; then
   suffix=" [msg:$id kind:$kind] Acknowledge with: herdr-ack $id acknowledged --by $target"
@@ -87,7 +96,7 @@ if herdr agent send "$target" "$message$suffix" >/dev/null 2>&1 \
   if dialog_open; then
     paste_pending_exit
   fi
-  if herdr pane run "$pane" "" >/dev/null 2>&1; then
+  if herdr pane run "$pane" "" >/dev/null 2>&1 && composer_cleared "$message"; then
     write_state submitted
     echo "message_id=$id status=submitted"
   else
