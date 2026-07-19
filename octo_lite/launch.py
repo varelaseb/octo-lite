@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -56,7 +57,8 @@ def read_pull_request(repo: str, number: int) -> dict[str, Any]:
             "--repo",
             repo,
             "--json",
-            "number,url,headRefOid,headRefName,baseRefName,comments",
+            "number,url,headRefOid,headRefName,baseRefName,comments,"
+            "state,reviewDecision,statusCheckRollup",
         )
     )
 
@@ -207,6 +209,28 @@ def _verify_blobs(repo: Path, head: str, bindings: list[str], label: str) -> Non
             raise GateError(f"{label} blob mismatch: {relative}")
 
 
+def _verify_snapshot_source(snapshot_path: Path, snapshot_digest: str, allowed_root: Path) -> None:
+    """Independently prove the caller's claimed snapshot_digest by reading and
+    hashing the exact snapshot_path bytes, rather than trusting the caller's own
+    claim. Rejects a missing, symlinked, escaping, unreadable, or hash-mismatched
+    source before any worktree or provider launch."""
+    if snapshot_path.is_symlink():
+        raise GateError("snapshot source must be a regular file")
+    allowed = allowed_root.resolve()
+    resolved = snapshot_path.resolve()
+    if os.path.commonpath((allowed, resolved)) != str(allowed) or resolved == allowed:
+        raise GateError("snapshot path escapes allowed root")
+    if not resolved.is_file():
+        raise GateError("snapshot source missing")
+    try:
+        content = resolved.read_bytes()
+    except OSError as error:
+        raise GateError("snapshot source unreadable") from error
+    actual = hashlib.sha256(content).hexdigest()
+    if actual != str(snapshot_digest):
+        raise GateError("snapshot digest mismatch")
+
+
 def _verify_sources(
     repo: Path,
     envelope: Mapping[str, Any],
@@ -264,6 +288,19 @@ def _linear_binding(linear: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalized_status_checks(rollup: Any) -> list[dict[str, str]]:
+    if not isinstance(rollup, list):
+        return []
+    normalized = []
+    for entry in rollup:
+        if not isinstance(entry, Mapping):
+            continue
+        name = str(entry.get("name") or entry.get("context") or "")
+        outcome = str(entry.get("conclusion") or entry.get("state") or "")
+        normalized.append({"name": name, "outcome": outcome})
+    return sorted(normalized, key=lambda item: item["name"])
+
+
 def _pull_request_binding(pull: Mapping[str, Any], *, repo: str, number: int) -> dict[str, Any]:
     return {
         "repo": repo,
@@ -298,6 +335,7 @@ def fetch_stream_binding(
         pr_binding = _pull_request_binding(pull, repo=pr_repo, number=pr_number)
         pr_binding["state"] = str(pull.get("state") or "")
         pr_binding["review"] = str(pull.get("reviewDecision") or "")
+        pr_binding["status_checks"] = _normalized_status_checks(pull.get("statusCheckRollup"))
         binding["pull_request"] = pr_binding
     return binding
 
@@ -741,6 +779,7 @@ def prepare_reconcile_launch(
     repo = repo.resolve()
     worktree_root = worktree_root.resolve()
     worktree = worktree.resolve()
+    _verify_snapshot_source(snapshot_path, str(snapshot_digest), worktree_root.parent)
     normalize_launch_access(
         {
             "execution_location": execution_location,
@@ -1082,6 +1121,34 @@ def run_launch(
     return result
 
 
+def _cleanup_reconcile_worktree(receipt: Mapping[str, Any]) -> None:
+    """Remove a completed, read-only reconcile worktree only after its result is
+    already bound and durably persisted. A worktree that is not a genuine detached
+    worktree of the exact bound control repo, has moved off its starting HEAD, or
+    is dirty is preserved for inspection instead of being force-removed."""
+    workspace = receipt["workspace"]
+    repo = Path(workspace["repo"])
+    worktree = Path(workspace["worktree"])
+    if worktree == repo or not worktree.is_dir():
+        return
+    try:
+        if _worktree_common_dir(worktree) != _worktree_common_dir(repo):
+            return
+        if _git(worktree, "rev-parse", "HEAD") != str(workspace["starting_head"]):
+            return
+        if _git(worktree, "status", "--porcelain"):
+            return
+    except subprocess.CalledProcessError:
+        return
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", str(worktree)],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError:
+        return
+
+
 def run_reconcile_launch(
     prepared: PreparedLaunch,
     prompt: str,
@@ -1096,4 +1163,5 @@ def run_reconcile_launch(
         receipt = tomllib.load(handle)
     _, message = run_mutation(prepared, session, prompt, runner=runner)
     bind_pass_result(prepared.receipt_path, receipt["role"]["name"], {"message": message})
+    _cleanup_reconcile_worktree(receipt)
     return message

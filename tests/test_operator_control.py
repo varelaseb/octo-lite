@@ -21,6 +21,7 @@ CONTROL = ROOT / "scripts/octo-control"
 # self-attested or spoofed identity.
 FAKE_RECONCILER_CLAUDE = r"""#!/usr/bin/env bash
 printf 'claude %s\n' "$*" >>"$CALL_LOG"
+printf 'worktree-check %s|%s|%s\n' "$(pwd)" "$(git rev-parse --show-toplevel)" "$(git branch --show-current)" >>"$CALL_LOG"
 prompt="$(cat)"
 if [[ "$*" == *"--resume"* ]]; then
   args=("$@")
@@ -110,6 +111,23 @@ fi
 """
 
 
+def _init_target_repo(repo: Path, *, with_canonical_sources: bool = True) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    (repo / "AGENTS.md").write_text("# Target\n")
+    if with_canonical_sources:
+        spec = repo / "spec" / "domains" / "operating-model.spec.html"
+        spec.parent.mkdir(parents=True)
+        spec.write_text('<p data-anchor="x">Works.</p>\n')
+        adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+        adr.parent.mkdir(parents=True)
+        adr.write_text('<p data-anchor="x">Decided.</p>\n')
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+
 class OperatorControlTests(unittest.TestCase):
     def test_sweep_imports_only_the_shared_reconcile_gateway_never_low_level_launch_helpers(self) -> None:
         source = SWEEP.read_text()
@@ -161,13 +179,7 @@ class OperatorControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
-            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            _init_target_repo(repo)
 
             control = base / "control"
             status = control / "streams/TUR-1/status.md"
@@ -218,13 +230,7 @@ class OperatorControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
-            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            _init_target_repo(repo)
 
             control = base / "control"
             status = control / "streams/TUR-1/status.md"
@@ -291,13 +297,7 @@ class OperatorControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
-            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            _init_target_repo(repo)
 
             control = base / "control"
             stream = control / "streams/TUR-1"
@@ -376,13 +376,7 @@ class OperatorControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
-            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            _init_target_repo(repo)
 
             control = base / "control"
             status = control / "streams/TUR-1/status.md"
@@ -416,21 +410,22 @@ class OperatorControlTests(unittest.TestCase):
             with open(state["receipt"], "rb") as handle:
                 receipt = tomllib.load(handle)
 
+            # The worktree is a genuine detached checkout in worktree_root, never the
+            # control checkout, while the reconciler pass runs inside it; a successful
+            # pass then removes it, so its live state is captured from the fake
+            # reconciler's own worktree-check log line rather than probed afterward.
             worktree = Path(receipt["workspace"]["worktree"])
             self.assertNotEqual(str(repo), receipt["workspace"]["worktree"])
             self.assertEqual(str((control / "worktrees").resolve()), str(worktree.resolve().parent))
-            self.assertTrue(worktree.is_dir())
-            branch = subprocess.run(
-                ["git", "-C", str(worktree), "branch", "--show-current"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            self.assertEqual("", branch)
-            top = subprocess.run(
-                ["git", "-C", str(worktree), "rev-parse", "--show-toplevel"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            self.assertEqual(str(worktree.resolve()), top)
             self.assertTrue(receipt["workspace"]["child_containment_verified"])
+            checks = [line for line in log.read_text().splitlines() if line.startswith("worktree-check ")]
+            self.assertTrue(checks)
+            for check in checks:
+                pwd, top, branch = check.removeprefix("worktree-check ").split("|")
+                self.assertEqual(str(worktree.resolve()), pwd)
+                self.assertEqual(str(worktree.resolve()), top)
+                self.assertEqual("", branch)
+            self.assertFalse(worktree.exists())
 
     def test_sweep_receipt_binds_snapshot_digest_control_head_and_canonical_spec_adr_blobs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -500,6 +495,97 @@ class OperatorControlTests(unittest.TestCase):
             self.assertEqual([f"spec/adr/0001-operating-model-boundaries.spec.html:{adr_blob}"], reconcile["adr_blobs"])
             self.assertIn("streams/TUR-1/status.md", reconcile["conversation_state_refs"])
 
+    def test_sweep_fails_closed_when_a_declared_canonical_source_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo, with_canonical_sources=False)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "worktrees").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+            self.assertFalse(any(line.startswith("operator ") for line in calls))
+
+    def test_sweep_fails_closed_when_a_declared_canonical_path_is_not_a_regular_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            # The declared canonical spec path resolves to a tree object, not a blob.
+            bogus = repo / "spec" / "domains" / "operating-model.spec.html"
+            bogus.mkdir(parents=True)
+            (bogus / "inner.html").write_text("<p>not the real file</p>\n")
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
     def test_sweep_fails_closed_before_any_provider_call_when_linear_state_races_between_snapshot_and_gateway(self) -> None:
         # declared_stream_facts() and prepare_reconcile_launch()'s own fresh
         # re-verification each call the fake `linear` binary once for TUR-1's issue
@@ -509,13 +595,7 @@ class OperatorControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
-            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            _init_target_repo(repo)
 
             control = base / "control"
             stream = control / "streams/TUR-1"

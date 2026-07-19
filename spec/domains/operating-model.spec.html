@@ -112,6 +112,9 @@
 <p data-anchor="role-qa-reviewer">QA review uses a fresh GPT-5.6 Sol instance at high effort on the fast service tier.</p>
 <p data-anchor="role-reconciler">Each reconciliation sweep uses a fresh exact <code>claude-sonnet-5</code> instance at high effort with no fallback.</p>
 <p data-anchor="role-reconciler-input">Deterministic helpers perform exact checks and provide one compact normalized read-only snapshot; Sonnet classifies only changed, missing, stale, contradictory, or <code>needs_fable</code>.</p>
+<p data-anchor="role-reconciler-snapshot-integrity">The reconcile gateway reads the exact snapshot file bytes from a regular contained path and hashes them, rejecting a missing, substituted, corrupt, or digest-mismatched snapshot before any worktree or provider launch.</p>
+<p data-anchor="role-reconciler-pr-facts">Reconcile PR facts bind normalized PR state, review decision, and status check rollup outcomes alongside head, base, and branch, so a change in any of them changes the snapshot fingerprint.</p>
+<p data-anchor="role-reconciler-canonical-sweep">The reconciler's canonical spec and ADR sweep requires every declared canonical path to exist as a readable regular file at the exact control HEAD, and a missing, renamed, unreadable, non-file, or empty resulting source set fails the sweep closed before any snapshot or worktree is produced.</p>
 <p data-anchor="role-reconciler-authority">Sonnet cannot mutate sources, override deterministic mismatches, investigate open-endedly, or silently resolve ambiguity.</p>
 <p data-anchor="role-reconciler-escalation">Missing or unparseable input and semantic ambiguity return <code>needs_fable</code>; Fable judges the case.</p>
 <p data-anchor="role-claude-native">Orchestrated Claude Workflows are the primary loop runtime rather than an adapter target.</p>
@@ -320,6 +323,7 @@
 <p data-anchor="workspace-admission">Before spawn, check disk health, isolated worktree, conflicting ownership of branch, fixture, port, or deployment resource, and active provider overload; unsafe work waits.</p>
 <p data-anchor="workspace-fixture">State-mutating QA verifies starting state, avoids fixtures under concurrent mutation, and records its fixture; read-only QA may share stable fixtures.</p>
 <p data-anchor="workspace-cleanup">Completed worker worktrees are removed only after durable handoff, commit, and push state exists, while dirty worktrees stop for inspection.</p>
+<p data-anchor="workspace-cleanup-reconcile">A completed read-only reconcile worktree is removed only after its result is bound and the receipt is durably persisted, while a failed, diverged, or dirty reconcile worktree is preserved for inspection.</p>
 <p data-anchor="retry-record">Only failed or interrupted passes add a compact failure record with exact attempt, original error, category, useful work, owner, and next action.</p>
 <p data-anchor="retry-categories">The category is exactly one of input or contract, environment, provider or session, implementation or validation, or external dependency.</p>
 <p data-anchor="retry-timeout">Timeout alone is not failure and cannot launch duplicate work.</p>

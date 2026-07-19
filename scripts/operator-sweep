@@ -46,18 +46,29 @@ def repo_head(repo: Path) -> str:
 
 
 def canonical_blobs(repo: Path, head: str) -> tuple[list[str], list[str]]:
-    def bind(paths: tuple[str, ...]) -> list[str]:
+    def bind(paths: tuple[str, ...], label: str) -> list[str]:
+        if not paths:
+            raise SystemExit(f"operator-sweep: no canonical {label} paths declared")
         bound = []
         for relative in paths:
-            probe = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", f"{head}:{relative}"],
+            kind = subprocess.run(
+                ["git", "-C", str(repo), "cat-file", "-t", f"{head}:{relative}"],
                 capture_output=True, text=True,
             )
-            if probe.returncode == 0:
-                bound.append(f"{relative}:{probe.stdout.strip()}")
+            if kind.returncode != 0:
+                raise SystemExit(f"operator-sweep: canonical {label} path missing: {relative}")
+            if kind.stdout.strip() != "blob":
+                raise SystemExit(f"operator-sweep: canonical {label} path is not a regular file: {relative}")
+            digest = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", f"{head}:{relative}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            bound.append(f"{relative}:{digest}")
+        if not bound:
+            raise SystemExit(f"operator-sweep: canonical {label} sweep produced no sources")
         return bound
 
-    return bind(CANONICAL_SPEC_PATHS), bind(CANONICAL_ADR_PATHS)
+    return bind(CANONICAL_SPEC_PATHS, "spec"), bind(CANONICAL_ADR_PATHS, "ADR")
 
 
 def declared_stream_facts(stream_dir: Path) -> dict:

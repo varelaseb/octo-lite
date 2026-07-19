@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -18,6 +19,7 @@ from octo_lite.launch import (
     parse_pass_output,
     prepare_launch,
     prepare_reconcile_launch,
+    read_pull_request,
     render_receipt,
     run_bootstrap,
     run_launch,
@@ -51,6 +53,48 @@ def write_codex_rollout(codex_home: Path, session_id: str, *, model: str, effort
         )
         + "\n"
     )
+
+
+FAKE_GH_PR_VIEW = '''#!/usr/bin/env python3
+import json
+import sys
+
+argv = sys.argv[1:]
+fields = argv[argv.index("--json") + 1].split(",") if "--json" in argv else []
+full = {
+    "number": 6,
+    "url": "https://github.com/org/repo/pull/6",
+    "headRefOid": "a" * 40,
+    "headRefName": "feature",
+    "baseRefName": "main",
+    "comments": [],
+    "state": "OPEN",
+    "reviewDecision": "APPROVED",
+    "statusCheckRollup": [{"name": "conformance", "conclusion": "SUCCESS"}],
+}
+print(json.dumps({key: full[key] for key in fields if key in full}))
+'''
+
+
+class GitHubReadFacadeTests(unittest.TestCase):
+    def test_read_pull_request_requests_and_binds_state_review_decision_and_status_check_rollup(self) -> None:
+        # A real `gh pr view --json <fields>` only returns the exact fields listed
+        # in --json; this fake mirrors that shape instead of a permissive mock that
+        # would hide an incomplete field list in the real production call.
+        with tempfile.TemporaryDirectory() as td:
+            fake_bin = Path(td) / "bin"
+            fake_bin.mkdir()
+            gh = fake_bin / "gh"
+            gh.write_text(FAKE_GH_PR_VIEW)
+            gh.chmod(0o755)
+            with mock.patch.dict(os.environ, {"PATH": f"{fake_bin}:{os.environ['PATH']}"}):
+                pull = read_pull_request("org/repo", 6)
+            self.assertEqual("OPEN", pull.get("state"))
+            self.assertEqual("APPROVED", pull.get("reviewDecision"))
+            self.assertEqual(
+                [{"name": "conformance", "conclusion": "SUCCESS"}],
+                pull.get("statusCheckRollup"),
+            )
 
 
 class LaunchBoundaryTests(unittest.TestCase):
@@ -645,6 +689,17 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
             "baseRefName": "main",
             "state": "OPEN",
             "reviewDecision": "",
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "conformance",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-07-19T00:00:00Z",
+                    "completedAt": "2026-07-19T00:01:00Z",
+                    "detailsUrl": "https://github.com/org/repo/actions/runs/1",
+                }
+            ],
         }
         self.streams = [
             {
@@ -658,6 +713,7 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         ]
         self.snapshot_path = base / "snapshot.md"
         self.snapshot_path.write_text("# snapshot\n")
+        self.snapshot_digest = hashlib.sha256(self.snapshot_path.read_bytes()).hexdigest()
 
     def git(self, *args: str) -> str:
         return subprocess.run(
@@ -678,7 +734,7 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
             "operator_loopback": False,
             "review_delivery": "reachable_url_required",
             "snapshot_path": self.snapshot_path,
-            "snapshot_digest": "f" * 64,
+            "snapshot_digest": self.snapshot_digest,
             "streams": self.streams,
             "spec_blobs": [f"spec/domains/operating-model.spec.html:{self.spec_blob}"],
             "adr_blobs": [],
@@ -716,7 +772,7 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         prepared = self.prepare()
         receipt = tomllib.loads(prepared.receipt_path.read_text())
         reconcile = receipt["reconcile"]
-        self.assertEqual("f" * 64, reconcile["snapshot_digest"])
+        self.assertEqual(self.snapshot_digest, reconcile["snapshot_digest"])
         self.assertEqual(self.head, reconcile["control_head"])
         self.assertEqual([f"spec/domains/operating-model.spec.html:{self.spec_blob}"], reconcile["spec_blobs"])
         self.assertEqual([], reconcile["adr_blobs"])
@@ -727,6 +783,12 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         self.assertEqual(exact_fingerprint(self.linear), streams[0]["linear"]["fingerprint"])
         self.assertEqual("main", streams[0]["pull_request"]["base"])
         self.assertEqual("a" * 40, streams[0]["pull_request"]["head"])
+        self.assertEqual("OPEN", streams[0]["pull_request"]["state"])
+        self.assertEqual("", streams[0]["pull_request"]["review"])
+        self.assertEqual(
+            [{"name": "conformance", "outcome": "SUCCESS"}],
+            streams[0]["pull_request"]["status_checks"],
+        )
         self.assertIn("launch_revision", receipt)
         self.assertEqual(launch_revision(receipt), receipt["launch_revision"])
 
@@ -752,6 +814,44 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         receipt = tomllib.loads(prepared.receipt_path.read_text())
         self.assertEqual([], receipt["reconcile"]["spec_blobs"])
 
+    def test_missing_snapshot_source_fails_before_worktree_or_provider(self) -> None:
+        missing = Path(self.temp.name) / "absent-snapshot.md"
+        with self.assertRaisesRegex(GateError, "snapshot source missing"):
+            self.prepare(snapshot_path=missing, snapshot_digest="0" * 64)
+        self.assertFalse(self.worktree.exists())
+
+    def test_snapshot_digest_mismatch_fails_before_worktree_or_provider(self) -> None:
+        with self.assertRaisesRegex(GateError, "snapshot digest mismatch"):
+            self.prepare(snapshot_digest="0" * 64)
+        self.assertFalse(self.worktree.exists())
+
+    def test_substituted_snapshot_content_fails_the_originally_claimed_digest(self) -> None:
+        claimed_digest = self.snapshot_digest
+        self.snapshot_path.write_text("# tampered\n")
+        with self.assertRaisesRegex(GateError, "snapshot digest mismatch"):
+            self.prepare(snapshot_digest=claimed_digest)
+        self.assertFalse(self.worktree.exists())
+
+    def test_snapshot_source_must_be_a_regular_contained_file_not_a_symlink(self) -> None:
+        outside = Path(self.temp.name) / "outside-snapshot.md"
+        outside.write_text("# snapshot\n")
+        link = Path(self.temp.name) / "linked-snapshot.md"
+        link.symlink_to(outside)
+        digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(GateError, "snapshot source must be a regular file"):
+            self.prepare(snapshot_path=link, snapshot_digest=digest)
+        self.assertFalse(self.worktree.exists())
+
+    def test_snapshot_source_escaping_allowed_root_fails_closed(self) -> None:
+        outside_root = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_root.cleanup)
+        outside = Path(outside_root.name) / "outside-snapshot.md"
+        outside.write_text("# snapshot\n")
+        digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(GateError, "snapshot path escapes allowed root"):
+            self.prepare(snapshot_path=outside, snapshot_digest=digest)
+        self.assertFalse(self.worktree.exists())
+
     def test_run_reconcile_launch_is_the_sole_bootstrap_and_mutation_entry_point(self) -> None:
         prepared = self.prepare()
         spawn_id = tomllib.loads(prepared.receipt_path.read_text())["spawn_id"]
@@ -772,6 +872,29 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         readback = tomllib.loads(prepared.receipt_path.read_text())
         self.assertTrue(readback["bootstrap"]["verified"])
         self.assertTrue(readback["result"]["bound"])
+        self.assertFalse(self.worktree.exists())
+
+    def test_run_reconcile_launch_preserves_a_dirty_worktree_after_a_successful_bind(self) -> None:
+        prepared = self.prepare()
+        spawn_id = tomllib.loads(prepared.receipt_path.read_text())["spawn_id"]
+        ack = prepared.expected_ack(spawn_id)
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if len(calls) == 1:
+                output = {"session_id": spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+            output = {"session_id": spawn_id, "result": "changed"}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        (self.worktree / "stray.txt").write_text("uncommitted diagnostic residue\n")
+        message = run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
+        self.assertEqual("changed", message)
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertTrue(readback["result"]["bound"])
+        self.assertTrue(self.worktree.exists())
+        self.assertTrue((self.worktree / "stray.txt").is_file())
 
     def test_run_reconcile_launch_fails_closed_on_resumed_session_mismatch(self) -> None:
         prepared = self.prepare()
@@ -791,6 +914,7 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
             run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
         readback = tomllib.loads(prepared.receipt_path.read_text())
         self.assertNotIn("result", readback)
+        self.assertTrue(self.worktree.exists())
 
 
 if __name__ == "__main__":
