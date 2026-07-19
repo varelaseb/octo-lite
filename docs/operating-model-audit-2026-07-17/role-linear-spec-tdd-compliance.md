@@ -304,3 +304,18 @@ persistent Opus tab for the whole lifecycle, correct. Regression, fixed bundle,
 multi-issue epic scenario, fresh session (agent `ab9d6581bf9e026a7`), confirmed
 the legitimate two-Opus-layer epic topology survived. This pass does not rerun
 or invent new prompt evals; the underlying contract is unchanged.
+
+F5 receipt (PR 6, `skills/octo-lite-issue-shaper/SKILL.md` cutoff-binding
+wording delta at `42e2bfc`): scoped observable behavior is whether the model
+binds the pinned conversation cutoff, not only the log references, when
+publishing the shaping verdict. Unchanged bytes, `42e2bfc^`, fresh Opus 4.8
+session `325e04a4-fac1-4f11-8693-51c327184ba9`: bound the cutoff in both the
+command and the durable-binding explanation. Changed bytes, `e857ed2`,
+different fresh Opus 4.8 session `fe638cc9-969d-43bd-bceb-a7769bf7795a`: same,
+bound the cutoff. No genuine red exists; unchanged was already green for the
+scoped behavior. Both sessions invented differing `octo-control
+verdict-publish` flag spellings outside this wording delta (neither matches
+the real `--conversation-cutoff` flag); those spellings are not claimed as
+command proof. Because there is no red, the redundant wording delta was
+reverted to the exact `42e2bfc^` bytes rather than kept or replaced. No
+red-green claim is made for this change.
