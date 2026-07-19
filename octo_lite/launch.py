@@ -209,11 +209,12 @@ def _verify_blobs(repo: Path, head: str, bindings: list[str], label: str) -> Non
             raise GateError(f"{label} blob mismatch: {relative}")
 
 
-def _verify_snapshot_source(snapshot_path: Path, snapshot_digest: str, allowed_root: Path) -> None:
+def _verify_snapshot_source(snapshot_path: Path, snapshot_digest: str, allowed_root: Path) -> bytes:
     """Independently prove the caller's claimed snapshot_digest by reading and
     hashing the exact snapshot_path bytes, rather than trusting the caller's own
     claim. Rejects a missing, symlinked, escaping, unreadable, or hash-mismatched
-    source before any worktree or provider launch."""
+    source before any worktree or provider launch. Returns the verified bytes so
+    the gateway can persist them to the final receipt-bound location."""
     if snapshot_path.is_symlink():
         raise GateError("snapshot source must be a regular file")
     allowed = allowed_root.resolve()
@@ -229,6 +230,7 @@ def _verify_snapshot_source(snapshot_path: Path, snapshot_digest: str, allowed_r
     actual = hashlib.sha256(content).hexdigest()
     if actual != str(snapshot_digest):
         raise GateError("snapshot digest mismatch")
+    return content
 
 
 def _verify_sources(
@@ -788,7 +790,8 @@ def prepare_reconcile_launch(
     repo = repo.resolve()
     worktree_root = worktree_root.resolve()
     worktree = worktree.resolve()
-    _verify_snapshot_source(snapshot_path, str(snapshot_digest), worktree_root.parent)
+    receipt_path = receipt_path.resolve()
+    snapshot_bytes = _verify_snapshot_source(snapshot_path, str(snapshot_digest), worktree_root.parent)
     normalize_launch_access(
         {
             "execution_location": execution_location,
@@ -857,8 +860,10 @@ def prepare_reconcile_launch(
     receipt["ready"] = False
     receipt["manifest_type"] = "octo-lite-reconcile"
     receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
+    persisted_snapshot_path = receipt_path.parent / "snapshot.md"
+    _atomic_write(persisted_snapshot_path, snapshot_bytes.decode("utf-8"))
     receipt["reconcile"] = {
-        "snapshot_path": str(snapshot_path),
+        "snapshot_path": str(persisted_snapshot_path),
         "snapshot_digest": str(snapshot_digest),
         "control_head": control_head,
         "spec_blobs": list(spec_blobs),

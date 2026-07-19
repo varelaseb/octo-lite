@@ -233,7 +233,9 @@ def main() -> int:
     # gateway validates Linear, PR, HEAD, spec, and ADR facts, so a failing
     # gateway leaves no sweep artifact directory or state behind. A pending copy
     # outside that directory backs only the gateway's own independent digest
-    # check and is removed on every failure.
+    # check and is removed on every failure. The gateway itself persists the
+    # verified bytes to snapshot_path and binds the receipt to that exact final
+    # location, so bootstrap always reads an existing, matching source.
     pending_snapshot_path = control / f".sweep-pending-{fingerprint}.md"
     atomic_write(pending_snapshot_path, snapshot)
     try:
@@ -265,7 +267,6 @@ def main() -> int:
     except BaseException:
         pending_snapshot_path.unlink(missing_ok=True)
         raise
-    atomic_write(snapshot_path, snapshot)
     pending_snapshot_path.unlink(missing_ok=True)
 
     judgment_prompt = (

@@ -130,6 +130,7 @@
 <p data-anchor="role-reconciler-snapshot-after-validation">A snapshot, sweep state, and worktree are persisted only after every bound fact validates; a failed target HEAD read or canonical sweep leaves none of them behind.</p>
 <p data-anchor="role-reconciler-snapshot-no-partial">The sweep never persists snapshot.md under the final sweep directory before Linear, PR, HEAD, spec, and ADR validation all succeed, and a failing gateway leaves no sweep artifact directory or state behind.</p>
 <p data-anchor="role-reconciler-snapshot-temp-input">A temporary input required only for digest verification lives outside the final sweep directory and is removed on every failure, while a successful sweep still persists its atomic snapshot, receipt, result, and no-op state.</p>
+<p data-anchor="role-reconciler-snapshot-receipt-binding">The persisted receipt binds <code>reconcile.snapshot_path</code> to the final persisted <code>snapshot.md</code>, never the temporary digest-verification input, and that exact file exists with matching bytes and digest before bootstrap starts.</p>
 <p data-anchor="role-reconciler-authority">Sonnet cannot mutate sources, override deterministic mismatches, investigate open-endedly, or silently resolve ambiguity.</p>
 <p data-anchor="role-reconciler-escalation">Missing or unparseable input and semantic ambiguity return <code>needs_fable</code>; Fable judges the case.</p>
 <p data-anchor="role-claude-native">Orchestrated Claude Workflows are the primary loop runtime rather than an adapter target.</p>

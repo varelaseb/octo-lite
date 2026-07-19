@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -514,6 +515,56 @@ class OperatorControlTests(unittest.TestCase):
             self.assertEqual([f"spec/domains/operating-model.spec.html:{spec_blob}"], reconcile["spec_blobs"])
             self.assertEqual([f"spec/adr/0001-operating-model-boundaries.spec.html:{adr_blob}"], reconcile["adr_blobs"])
             self.assertIn("streams/TUR-1/status.md", reconcile["conversation_state_refs"])
+
+    def test_sweep_receipt_snapshot_path_binds_the_final_persisted_snapshot_bootstrap_can_read(self) -> None:
+        # Bootstrap only checks bound sources it can actually read. If the receipt
+        # binds the temporary digest-verification input instead of the final
+        # persisted snapshot, that path is already deleted by the time bootstrap
+        # runs, so a real reconciler can neither verify nor honestly acknowledge it.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            fingerprint = json.loads(result.stdout)["fingerprint"]
+
+            with (control / "sweep-state.toml").open("rb") as handle:
+                state = tomllib.load(handle)
+            with open(state["receipt"], "rb") as handle:
+                receipt = tomllib.load(handle)
+            reconcile = receipt["reconcile"]
+
+            final_snapshot = control / "sweeps" / fingerprint / "snapshot.md"
+            self.assertEqual(str(final_snapshot), reconcile["snapshot_path"])
+            self.assertTrue(final_snapshot.is_file(), "bootstrap-bound snapshot_path must exist before bootstrap starts")
+            actual_digest = hashlib.sha256(final_snapshot.read_bytes()).hexdigest()
+            self.assertEqual(reconcile["snapshot_digest"], actual_digest)
 
     def test_sweep_fails_closed_when_a_declared_canonical_source_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
