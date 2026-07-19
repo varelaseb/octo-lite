@@ -98,13 +98,13 @@ def _validate_envelope_shape(envelope: Mapping[str, Any]) -> None:
     if envelope["pr_head"] != envelope["starting_head"]:
         raise GateError("PR HEAD mismatch")
     if envelope["purpose"] == "shaping-review":
-        if envelope["linear_state"] not in {"Ideas", "Todo", "Shaped"}:
+        if envelope["linear_state"] not in {"Ideas", "Todo", "Shaped", "In Progress"}:
             raise GateError("Linear state invalid for shaping review")
         if envelope["shaping_head"] != envelope["starting_head"]:
             raise GateError("shaping review must start at current HEAD")
     else:
-        if envelope["linear_state"] not in {"Shaped", "Todo"}:
-            raise GateError("Linear state must be Shaped or Todo")
+        if envelope["linear_state"] not in {"Shaped", "Todo", "In Progress"}:
+            raise GateError("Linear state must be Shaped, Todo, or In Progress")
         for name in ("shaping_verdict", "shaping_verdict_head", "shaping_reviewer_receipt"):
             _required(envelope, name)
         if envelope["shaping_verdict"] != "clear":
@@ -596,11 +596,14 @@ def _provider_argv(receipt: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         # A review pass whose tools include a live GitHub or Linear read needs
         # network for its resumed pass; read-only sandbox never grants network,
         # so that resume explicitly opts into workspace-write plus network access
-        # instead. Every other OpenAI resume stays read-only.
+        # instead. Every other OpenAI resume stays read-only. The installed CLI's
+        # resume subcommand rejects the top-level -s flag (exit 2, "unexpected
+        # argument '-s'"), so sandbox selection goes through -c config instead;
+        # only the exec bootstrap above still accepts -s.
         needs_live_reads = {"linear-read", "github-read"} & set(runtime["tools"])
         resume_sandbox = (
-            ["-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"]
-            if needs_live_reads else ["-s", "read-only"]
+            ["-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true"]
+            if needs_live_reads else ["-c", 'sandbox_mode="read-only"']
         )
         mutation = [
             "codex", "exec", "resume", "--json", "-m", runtime["model"],

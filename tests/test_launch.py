@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -310,6 +311,65 @@ class LaunchBoundaryTests(unittest.TestCase):
         receipt = tomllib.loads(prepared.receipt_path.read_text())
         self.assertEqual("shaping-review", receipt["purpose"])
         self.assertEqual(self.head, receipt["workspace"]["starting_head"])
+
+    def test_shaping_review_launches_while_linear_is_in_progress(self) -> None:
+        # Shaping re-review must run after material reconciliation while the
+        # stream orchestrator still holds Linear In Progress.
+        in_progress_issue = dict(self.issue, state="In Progress")
+        envelope = dict(
+            self.envelope,
+            purpose="shaping-review",
+            linear_state="In Progress",
+            linear_fingerprint=exact_fingerprint(in_progress_issue),
+        )
+        for field in (
+            "shaping_verdict", "shaping_verdict_head", "shaping_reviewer_receipt", "shaping_verdict_inputs",
+        ):
+            envelope.pop(field, None)
+        pr_without_verdict = dict(self.pr, comments=[])
+        prepared = self.prepare(
+            envelope=envelope,
+            read_linear=lambda _issue: in_progress_issue,
+            read_pr=lambda _repo, _pr: pr_without_verdict,
+        )
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertEqual("shaping-review", receipt["purpose"])
+        self.assertEqual("In Progress", receipt["issue"]["state"])
+
+    def test_qa_reviewer_delivery_launches_while_linear_is_in_progress_with_fakes(self) -> None:
+        # Turbo-like path: normal code and QA review launch for delivery while
+        # Linear is still In Progress, and the exact shaping-verdict checks
+        # delivery requires stay enforced (self.envelope keeps its clear
+        # verdict comment and shaping_head binding unchanged).
+        in_progress_issue = dict(self.issue, state="In Progress")
+        envelope = dict(
+            self.envelope,
+            linear_state="In Progress",
+            linear_fingerprint=exact_fingerprint(in_progress_issue),
+        )
+        prepared = self.prepare(
+            envelope=envelope,
+            role_name="qa-reviewer",
+            capabilities=set(),
+            worktree=self.worktree_root / "qa-review-in-progress",
+            read_linear=lambda _issue: in_progress_issue,
+        )
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertEqual("delivery", receipt["purpose"])
+        self.assertEqual("In Progress", receipt["issue"]["state"])
+        self.assertEqual("clear", receipt["prior_gates"]["shaping_verdict"])
+
+    def test_shaping_review_and_delivery_reject_awaiting_accept_and_terminal_linear_states(self) -> None:
+        for state in ("Awaiting Accept", "Done"):
+            shaping_envelope = dict(self.envelope, purpose="shaping-review", linear_state=state)
+            with self.assertRaisesRegex(GateError, "Linear state invalid for shaping review"):
+                self.prepare(envelope=shaping_envelope)
+            self.assertFalse(self.worktree.exists())
+
+            delivery_envelope = dict(self.envelope, linear_state=state)
+            with self.assertRaisesRegex(GateError, "Linear state must be"):
+                self.prepare(envelope=delivery_envelope)
+            self.assertFalse(self.worktree.exists())
 
     def test_delivery_purpose_launches_at_current_head_retaining_shaping_verdict_binding(self) -> None:
         (self.repo / "b").write_text("advance\n")
@@ -654,15 +714,41 @@ class LaunchBoundaryTests(unittest.TestCase):
         self.assertFalse(self.worktree.exists())
 
     def test_openai_review_role_needing_live_reads_resumes_with_workspace_write_network_access(self) -> None:
+        # The installed codex CLI's resume subcommand rejects the top-level -s
+        # flag (exit 2, "unexpected argument '-s'"); only the exec bootstrap
+        # accepts it, so resume must select sandbox mode through -c config.
         prepared = self.prepare(role_name="code-reviewer", capabilities=set())
         self.assertEqual("read-only", prepared.bootstrap_argv[prepared.bootstrap_argv.index("-s") + 1])
-        self.assertIn("workspace-write", prepared.mutation_argv)
+        self.assertNotIn("-s", prepared.mutation_argv)
+        self.assertIn('sandbox_mode="workspace-write"', prepared.mutation_argv)
         self.assertIn("sandbox_workspace_write.network_access=true", prepared.mutation_argv)
 
     def test_openai_review_role_without_live_reads_stays_read_only_on_resume(self) -> None:
         prepared = self.prepare(role_name="qa-reviewer", capabilities=set())
-        self.assertNotIn("workspace-write", prepared.mutation_argv)
-        self.assertEqual("read-only", prepared.mutation_argv[prepared.mutation_argv.index("-s") + 1])
+        self.assertNotIn("-s", prepared.mutation_argv)
+        self.assertNotIn('sandbox_mode="workspace-write"', prepared.mutation_argv)
+        self.assertIn('sandbox_mode="read-only"', prepared.mutation_argv)
+
+    def test_openai_resume_argv_is_accepted_by_the_installed_codex_cli_parser(self) -> None:
+        # A string-content assertion on argv cannot prove the actually installed
+        # codex binary's resume parser accepts these exact flags; --help exits
+        # after full argument parsing with no network call or live session, so
+        # this would have caught the prior false green where a bare -s on
+        # resume exits 2 with "unexpected argument '-s'".
+        codex = shutil.which("codex")
+        if not codex:
+            self.skipTest("codex CLI not installed")
+        placeholder_session = str(uuid.uuid4())
+        for role_name in ("code-reviewer", "qa-reviewer"):
+            prepared = self.prepare(
+                role_name=role_name,
+                capabilities=set(),
+                worktree=self.worktree_root / f"parser-smoke-{role_name}",
+            )
+            argv = prepared.mutation_argv_for(placeholder_session) + ["--help"]
+            result = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertNotIn("unexpected argument", result.stderr)
 
     def test_run_bootstrap_fails_closed_when_read_only_worktree_mutates_before_ack(self) -> None:
         prepared = self.prepare(role_name="code-reviewer", capabilities=set())
