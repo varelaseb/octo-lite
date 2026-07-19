@@ -3,8 +3,22 @@
 ## Status
 
 This backlog is reconciled to the canonical operating-model spec through
-Decision 102. It separates the coordinated octo-lite cutover from target-repo
+Decision 104. It separates the coordinated octo-lite cutover from target-repo
 follow-up. The canonical spec wins if wording here drifts.
+
+## Current state
+
+| Category | Status |
+| --- | --- |
+| Generic kernel: roles.toml, 8 role contracts, resolver, generated adapters | Implemented, live-installed |
+| Prompt TDD lean contract (behavior-first, fresh-session red/green, narrow regression) | Implemented in spec, this compliance artifact, and the decision log |
+| One-issue-Opus shaping topology (orchestrator resolves issue-shaper as a skill) | Implemented; real receipt on file, PR 6 fix pass 4 |
+| Codex custom-agent schema, Herdr submission truth, dead-owner liveness probe, cross-issue Linear authority | Fixed in PR 6; carrier PR 6 still exact-head review blocked pending a fresh review of the final head |
+| Turbo PR 423 (target-repo consumer of this model) | Draft, returned to shaping after eight blocking review cycles |
+| Optional control panel, evidence-site visuals, Symphony-derived ideas | Deferred optional; not built, not scheduled |
+
+This table summarizes current status only. It does not replace or rewrite the
+historical backlog below.
 
 ## Approved P0 reliability work
 
@@ -161,6 +175,9 @@ Targets:
 - `agents/octo-lite-reviewer.{md,toml}`
 - New canonical post-grill shaping reviewer, orchestrator, QA capture, QA
   review, meta-operator, issue-shaper, and read-only reconciler role contracts.
+  Superseded by Decision 104: implemented as exactly eight roles, with issue
+  shaping a conditional skill the orchestrator resolves in its own session,
+  not a separate role contract.
 - Pin QA capture to fresh exact `claude-sonnet-5` at high and QA review to
   fresh `gpt-5.6-sol` at high on the fast service tier. Start new instances
   every round.
@@ -434,3 +451,8 @@ control record.
 - Implementer prompts identify the canonical spec/ADR as the detailed
   behavioral contract and Linear as the high-level decision/context/status
   record; conversation logs are review inputs, not implementation instructions.
+- A prompt, role, or skill instruction change proves behavior-first: unchanged
+  instructions in a fresh model session prove red only for a genuinely wrong
+  or ambiguous decision, changed instructions in a different fresh session
+  prove green, narrow adjacent regressions run, and deterministic tests cover
+  only loading, wiring, schema, invariants, and forbidden characters.

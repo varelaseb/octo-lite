@@ -1,5 +1,8 @@
 # Evidence Builder Performance Incident
 
+Status: historical incident evidence, resolved. The canonical operating-model
+spec's `qa-publication-performance` anchor and Decision 17 own current SLA law.
+
 ## Outcome
 
 On 2026-07-17 the TopicFinder evidence index had successful rebuilds taking

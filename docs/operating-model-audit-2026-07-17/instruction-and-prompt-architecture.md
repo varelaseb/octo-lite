@@ -169,7 +169,9 @@ Owned by Turbo-Outreach.
 - Rules for distinguishing branch source, deployed source, and live runtime.
 
 `CLAUDE.md` should contain only Claude-specific compatibility notes that cannot
-live in `AGENTS.md`.
+live in `AGENTS.md`. Rejected: the approved rule (Decision 39, spec anchor
+`instruction-claude`) makes root `CLAUDE.md` a tracked relative symlink to root
+`AGENTS.md`, never independent compatibility prose.
 
 Workflows derive target facts from root `AGENTS.md`, the spec index, git,
 Linear, PRs, evidence manifests, and the signed brief. Add no speculative
@@ -649,7 +651,8 @@ Every command message should carry:
 - The related issue/stream and expected acknowledgment. Authority remains tied
   to the recipient's acknowledged spawn brief; attach a new brief revision only
   when scope, risk, grouping, or an irreversible gate materially changes.
-- Expected acknowledgment state and timeout.
+- Expected acknowledgment state. No timeout; dependency, not duration,
+  determines blocking.
 - Durable artifact pointer for nontrivial detail.
 
 The orchestrator should be able to query delivery state without reading pixels

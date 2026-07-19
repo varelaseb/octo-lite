@@ -234,13 +234,12 @@ The approved supervision tree is:
 
 ```text
 Fable meta-operator
-└── Claude Opus stream orchestrator
-    └── Claude Opus subordinate orchestrator, when useful
-        ├── Claude Sonnet 5 implement/fix workers
-        ├── GPT-5.6 Sol post-grill shaping reviewers
-        ├── GPT-5.6 Sol code reviewers
-        ├── Claude Sonnet 5 QA capture workers
-        └── GPT-5.6 Sol QA reviewers
+└── Claude Opus issue orchestrator (plus one optional epic Opus above it, multi-issue epics only)
+    ├── Claude Sonnet 5 implement/fix workers
+    ├── GPT-5.6 Sol post-grill shaping reviewers
+    ├── GPT-5.6 Sol code reviewers
+    ├── Claude Sonnet 5 QA capture workers
+    └── GPT-5.6 Sol QA reviewers
 ```
 
 - The sole meta-operator uses exact `claude-fable-5` at xhigh in auto mode and
@@ -252,8 +251,10 @@ Fable meta-operator
   coherent stream. Unavailability fails visibly; no silent model fallback.
 - Fable also starts in auto mode. Runtime mode changes interaction friction,
   not authority.
-- Orchestrators may nest to any useful depth, but every orchestrator has
-  exactly one parent.
+- Superseded: arbitrary persistent orchestrator nesting depth. Current rule
+  (Decision 93): every implementation issue has exactly one dedicated Opus
+  issue orchestrator; a multi-issue epic adds exactly one epic Opus above it,
+  at most two Opus layers below Fable.
 - Implementation and every fix pass use exact `claude-sonnet-5` at xhigh.
 - Every post-grill shaping review uses a fresh Codex `gpt-5.6-sol` instance at
   xhigh reasoning effort on the fast service tier.
@@ -281,17 +282,20 @@ recovery, or the next consumer. Detail expands only for a finding, failure,
 ambiguity, operator decision, or explicit request. No arbitrary length cap may
 truncate a required fact; compact schemas and references enforce leanness.
 
-The complete LLM role roster is:
+The complete LLM role roster is exactly eight roles (Decision 104, superseding
+this draft's earlier nine-role list that counted issue shaper separately):
 
 - Meta-operator.
 - Orchestrator.
-- Issue shaper.
 - Post-grill shaping reviewer.
 - Implementer.
 - Code reviewer.
 - QA capture.
 - QA reviewer.
 - Read-only reconciler.
+
+Issue shaping is a conditional skill the orchestrator resolves in its own
+persistent session, never a second persistent role or tab.
 
 Every fix uses a fresh implementer instance, every re-review uses a fresh code
 reviewer, and every nested stream owner uses the same orchestrator contract.
@@ -540,6 +544,17 @@ If Linear's high-level decisions/context conflict with the canonical spec/ADR,
 or if the spec is incomplete for implementation, implementation stops and
 returns to shaping. Neither source silently wins, and the implementer never
 fills the gap from conversation memory.
+
+Prompt, role, and skill instruction changes follow a distinct but analogous
+contract. Define observable behavior first. A fresh model session on the
+unchanged instructions proves red only for a genuinely wrong or ambiguous
+decision, never a missing file, module, export, or script. A different fresh
+session on the changed instructions proves green against the contract, then
+narrow adjacent regression scenarios run. Deterministic tests cover only
+loading, wiring, schema, invariants, and forbidden characters, never prompt
+judgment quality. Red chronology that cannot be honestly reconstructed is
+stated as a gap, never fabricated. Eval evidence stays a lean one-off scenario
+record; there is no eval service or general harness.
 
 ## Branch and release topology
 
@@ -1113,7 +1128,7 @@ The cutover must at minimum:
 3. Symlink installed octo-lite skills, role profiles, and Claude workflows to
    their canonical source, including both global profile entry points and the
    role-skill map.
-4. Consolidate the nine LLM role/model/skill mappings, and expose acceptance,
+4. Consolidate the eight LLM role/model/skill mappings, and expose acceptance,
    merge, publication, Linear transition, promotion, and traffic shift as
    separate deterministic helpers.
 5. Make the Claude workflow load canonical role contracts and required skills.

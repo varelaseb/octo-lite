@@ -69,7 +69,7 @@ is the documented user-skill location in the current Codex manual, so both are
 installed.
 
 Install every directory under `skills/`. `roles.toml` defines required and
-conditional skills for all nine roles. `roles/<role>.md` is the sole prose
+conditional skills for all eight roles. `roles/<role>.md` is the sole prose
 contract. `agents/` is generated and must match the resolver exactly.
 
 Validate or regenerate after role changes:

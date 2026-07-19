@@ -412,7 +412,9 @@ indefinitely. We should distinguish:
 - waiting on a named external condition.
 
 No arbitrary stage-duration SLA is required, but every pass still needs an
-accountable watched condition and recovery action.
+accountable watched condition and recovery action. This is Symphony-comparison
+analysis, not an octo-lite recommendation: octo-lite's own liveness rule is
+activity-based, and timeout alone is never failure.
 
 ### Worker termination does not prove process-tree cleanup
 
@@ -436,7 +438,9 @@ messages, errors, and rate-limit state, and it accepts `POST /api/v1/refresh`.
 Loopback is the safe default, but binding the service broadly exposes
 operational metadata and a control trigger without TLS or authentication.
 This reinforces the choice to keep the hosted octo-lite panel a static,
-read-only projection with explicit access and redaction policy.
+read-only projection. octo-lite itself adds no access-control, redaction,
+retention, or broken-link subsystem (Decision 90); a redaction layer would be
+Symphony's own gap to close, not an octo-lite recommendation.
 
 ### The documented startup command is currently incomplete
 

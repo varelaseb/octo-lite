@@ -1,5 +1,7 @@
 # Evidence Index
 
+Status: historical audit evidence. The canonical operating-model spec wins.
+
 ## Scope and counting notes
 
 The audit window is 2026-07-10 through 2026-07-17 UTC. Counts are corpus

@@ -2,7 +2,7 @@
 
 Status: historical audit evidence. Current required behavior lives in
 `../../spec/domains/operating-model.spec.html`; candidate remedies below do not
-override Decisions 1 through 102.
+override Decisions 1 through 104.
 
 ## Audit question
 
@@ -232,13 +232,18 @@ separate readiness file or control-directory attestation.
 | --- | --- | --- | --- |
 | Meta-operator | Reconcile the whole operation and supervise bounded streams | Implement, accept for the human, or absorb every leaf log | Whole-operation view |
 | Stream orchestrator | Own one bounded stream, topology, resources, and gates | Rewrite approved scope or act as worker/reviewer | Brief and status |
-| Issue shaper | Investigate, debate, grill, reconcile specs/ADRs, high-level Linear context, TDD contract, and same draft PR | Implement, self-review, or mark ready without operator walkthrough and a clear fresh shaping review | Reconciled issue/spec/PR |
+| Issue shaper (superseded by Decision 104) | Investigate, debate, grill, reconcile specs/ADRs, high-level Linear context, TDD contract, and same draft PR | Implement, self-review, or mark ready without operator walkthrough and a clear fresh shaping review | Reconciled issue/spec/PR |
 | Shaping reviewer | Independently audit the spec, relevant conversation logs, Linear issue, repo instructions, TDD contract, and draft-PR readiness HEAD | Edit sources, invent product decisions, implement, or resolve its own findings | Exact-revision `clear` or `blocking` verdict |
 | Implementer | Execute the canonical spec contract within Linear's high-level decisions/context and non-goals, using spec-driven TDD | Infer behavior from chat, reshape, review own work, or merge | PR handoff with red/green evidence |
 | Code reviewer | Review exact HEAD against story/spec/tests | Change scope, approve as human, merge | Exact-head verdict |
 | QA capture | Produce evidence for exact reviewed HEAD | Decide product acceptance | Evidence manifest |
 | QA reviewer | Judge evidence against each AC | Infer missing proof or accept stale HEAD | Exact-head QA verdict |
 | Reconciler | Compare compact normalized facts and flag change, staleness, contradiction, or ambiguity | Mutate sources or overrule deterministic mismatches | Read-only classification |
+
+Current canonical roster is exactly eight roles per Decision 104: meta-operator,
+orchestrator, shaping-reviewer, implementer, code-reviewer, qa-capture,
+qa-reviewer, reconciler. Issue shaping is a conditional skill the orchestrator
+resolves in its own persistent session, not a separate row.
 
 The human operator accepts or rejects. Deterministic operator-authorized
 helpers publish verdicts, transition Linear, merge, promote, and shift traffic;
@@ -278,3 +283,24 @@ The eventual system should prove all of these:
   failure retries only unfinished idempotent steps.
 - `In Staging` cannot be set without the environment identity carrying the
   accepted commit.
+
+## Prompt TDD compliance
+
+Lean contract for every prompt, role, or skill instruction change: define
+observable behavior first; a fresh model session on unchanged instructions
+proves red only for a genuinely wrong or ambiguous decision, never a missing
+file, module, export, or script; a different fresh session on changed
+instructions proves green against the contract, then narrow adjacent
+regressions run; deterministic tests cover only loading, wiring, schema,
+invariants, and forbidden characters; red chronology that cannot be honestly
+reconstructed is stated as a gap, never fabricated; no eval service or general
+harness.
+
+Real receipt on file for the one-issue-Opus shaping topology (PR 6 fix pass 4,
+head `3700238`): RED, unchanged bundle, fresh Opus session (agent
+`a603da4b115c53dfe`), concluded two persistent Opus tabs, wrong. GREEN, fixed
+bundle, different fresh Opus session (agent `ace9043b3f98491e5`), concluded one
+persistent Opus tab for the whole lifecycle, correct. Regression, fixed bundle,
+multi-issue epic scenario, fresh session (agent `ab9d6581bf9e026a7`), confirmed
+the legitimate two-Opus-layer epic topology survived. This pass does not rerun
+or invent new prompt evals; the underlying contract is unchanged.
