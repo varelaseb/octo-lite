@@ -13,12 +13,15 @@ from unittest import mock
 from octo_lite.launch import (
     GateError,
     bootstrap_from_receipt,
+    fetch_stream_binding,
     mutation_prompt,
     parse_pass_output,
     prepare_launch,
+    prepare_reconcile_launch,
     render_receipt,
     run_bootstrap,
     run_launch,
+    run_reconcile_launch,
     verify_bootstrap,
 )
 from octo_lite.runtime import exact_fingerprint, launch_revision, verdict_body
@@ -610,6 +613,182 @@ class LaunchBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "session mismatch"):
             run_launch(prepared, runner=imposter_runner)
         self.assertEqual(2, len(calls))
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertNotIn("result", readback)
+
+
+class ReconcileLaunchBoundaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.repo = base / "repo"
+        self.worktree_root = base / "worktrees"
+        self.worktree = self.worktree_root / "sweep-1"
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        (self.repo / "AGENTS.md").write_text("# Target\n")
+        spec = self.repo / "spec" / "domains" / "operating-model.spec.html"
+        spec.parent.mkdir(parents=True)
+        spec.write_text('<p data-anchor="x">Works.</p>\n')
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
+        self.head = self.git("rev-parse", "HEAD")
+        self.spec_blob = self.git("hash-object", "spec/domains/operating-model.spec.html")
+
+        self.linear = {"identifier": "TUR-1", "state": "Todo", "updatedAt": "2026-07-19T00:00:00Z"}
+        self.pull = {
+            "url": "https://github.com/org/repo/pull/6",
+            "headRefOid": "a" * 40,
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "state": "OPEN",
+            "reviewDecision": "",
+        }
+        self.streams = [
+            {
+                "stream": "TUR-1",
+                **fetch_stream_binding(
+                    linear_issue="TUR-1", pr_repo="org/repo", pr_number=6,
+                    read_linear=lambda _issue: self.linear,
+                    read_pr=lambda _repo, _number: self.pull,
+                ),
+            }
+        ]
+        self.snapshot_path = base / "snapshot.md"
+        self.snapshot_path.write_text("# snapshot\n")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args], check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def prepare(self, **overrides):
+        values = {
+            "root": ROOT,
+            "spawn_id": str(uuid.uuid4()),
+            "parent": "operator-1",
+            "reply_route": "operator-say",
+            "repo": self.repo,
+            "worktree_root": self.worktree_root,
+            "worktree": self.worktree,
+            "receipt_path": Path(self.temp.name) / "reconcile.toml",
+            "execution_location": "remote",
+            "operator_loopback": False,
+            "review_delivery": "reachable_url_required",
+            "snapshot_path": self.snapshot_path,
+            "snapshot_digest": "f" * 64,
+            "streams": self.streams,
+            "spec_blobs": [f"spec/domains/operating-model.spec.html:{self.spec_blob}"],
+            "adr_blobs": [],
+            "conversation_state_refs": ["status.md"],
+            "read_linear": lambda _issue: self.linear,
+            "read_pr": lambda _repo, _number: self.pull,
+        }
+        values.update(overrides)
+        return prepare_reconcile_launch(**values)
+
+    def test_prepare_reconcile_provisions_a_detached_worktree_never_the_control_checkout(self) -> None:
+        prepared = self.prepare()
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertNotEqual(str(self.repo), receipt["workspace"]["worktree"])
+        self.assertEqual(str(self.worktree), receipt["workspace"]["worktree"])
+        self.assertTrue(self.worktree.is_dir())
+        branch = subprocess.run(
+            ["git", "-C", str(self.worktree), "branch", "--show-current"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual("", branch)
+        top = subprocess.run(
+            ["git", "-C", str(self.worktree), "rev-parse", "--show-toplevel"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(str(self.worktree.resolve()), top)
+        self.assertTrue(receipt["workspace"]["child_containment_verified"])
+
+    def test_reconcile_worktree_escaping_allowed_root_fails_closed(self) -> None:
+        outside = Path(self.temp.name) / "outside"
+        with self.assertRaisesRegex(GateError, "escapes allowed root"):
+            self.prepare(worktree=outside)
+
+    def test_receipt_binds_snapshot_digest_spec_and_adr_blobs_control_head_and_stream_facts(self) -> None:
+        prepared = self.prepare()
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        reconcile = receipt["reconcile"]
+        self.assertEqual("f" * 64, reconcile["snapshot_digest"])
+        self.assertEqual(self.head, reconcile["control_head"])
+        self.assertEqual([f"spec/domains/operating-model.spec.html:{self.spec_blob}"], reconcile["spec_blobs"])
+        self.assertEqual([], reconcile["adr_blobs"])
+        self.assertEqual(["status.md"], reconcile["conversation_state_refs"])
+        streams = json.loads(reconcile["streams_json"])
+        self.assertEqual(1, len(streams))
+        self.assertEqual("TUR-1", streams[0]["linear"]["identifier"])
+        self.assertEqual(exact_fingerprint(self.linear), streams[0]["linear"]["fingerprint"])
+        self.assertEqual("main", streams[0]["pull_request"]["base"])
+        self.assertEqual("a" * 40, streams[0]["pull_request"]["head"])
+        self.assertIn("launch_revision", receipt)
+        self.assertEqual(launch_revision(receipt), receipt["launch_revision"])
+
+    def test_stale_linear_input_fails_before_worktree_or_provider(self) -> None:
+        changed_linear = dict(self.linear, state="In Progress")
+        with self.assertRaisesRegex(GateError, "stale Linear input"):
+            self.prepare(read_linear=lambda _issue: changed_linear)
+        self.assertFalse(self.worktree.exists())
+
+    def test_stale_pr_input_fails_before_worktree_or_provider(self) -> None:
+        changed_pull = dict(self.pull, headRefOid="b" * 40)
+        with self.assertRaisesRegex(GateError, "stale PR input"):
+            self.prepare(read_pr=lambda _repo, _number: changed_pull)
+        self.assertFalse(self.worktree.exists())
+
+    def test_stale_spec_blob_fails_before_worktree_or_provider(self) -> None:
+        with self.assertRaisesRegex(GateError, "spec blob mismatch"):
+            self.prepare(spec_blobs=[f"spec/domains/operating-model.spec.html:{'0' * 40}"])
+        self.assertFalse(self.worktree.exists())
+
+    def test_empty_declared_blobs_are_allowed(self) -> None:
+        prepared = self.prepare(spec_blobs=[], adr_blobs=[])
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertEqual([], receipt["reconcile"]["spec_blobs"])
+
+    def test_run_reconcile_launch_is_the_sole_bootstrap_and_mutation_entry_point(self) -> None:
+        prepared = self.prepare()
+        spawn_id = tomllib.loads(prepared.receipt_path.read_text())["spawn_id"]
+        ack = prepared.expected_ack(spawn_id)
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if len(calls) == 1:
+                output = {"session_id": spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+            output = {"session_id": spawn_id, "result": "changed: TUR-1 PR head moved"}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        message = run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
+        self.assertEqual("changed: TUR-1 PR head moved", message)
+        self.assertEqual(2, len(calls))
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertTrue(readback["bootstrap"]["verified"])
+        self.assertTrue(readback["result"]["bound"])
+
+    def test_run_reconcile_launch_fails_closed_on_resumed_session_mismatch(self) -> None:
+        prepared = self.prepare()
+        spawn_id = tomllib.loads(prepared.receipt_path.read_text())["spawn_id"]
+        ack = prepared.expected_ack(spawn_id)
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if len(calls) == 1:
+                output = {"session_id": spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+            output = {"session_id": "spoofed", "result": "changed"}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        with self.assertRaisesRegex(GateError, "session mismatch"):
+            run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
         readback = tomllib.loads(prepared.receipt_path.read_text())
         self.assertNotIn("result", readback)
 

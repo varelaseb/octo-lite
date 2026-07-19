@@ -14,9 +14,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from octo_lite.launch import prepared_from_receipt, run_bootstrap, run_mutation  # noqa: E402
-from octo_lite.runtime import bind_pass_result  # noqa: E402
-from workflows.lib.role_resolver import build_launch_receipt, load_registry, render_receipt, resolve_role  # noqa: E402
+from octo_lite.launch import fetch_stream_binding, prepare_reconcile_launch, run_reconcile_launch  # noqa: E402
+
+CANONICAL_SPEC_PATHS = ("spec/domains/operating-model.spec.html",)
+CANONICAL_ADR_PATHS = ("spec/adr/0001-operating-model-boundaries.spec.html",)
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -38,34 +39,25 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(stream)
 
 
-def run_json(argv: list[str]) -> dict:
-    result = subprocess.run(argv, check=True, capture_output=True, text=True)
-    return json.loads(result.stdout)
+def repo_head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
 
 
-def read_linear_fact(issue: str) -> dict:
-    raw = run_json(["linear", "issue", "view", issue, "--json", "--no-download"])
-    state = raw.get("state")
-    return {
-        "identifier": raw.get("identifier"),
-        "state": state.get("name") if isinstance(state, dict) else state,
-        "updated_at": raw.get("updatedAt"),
-    }
+def canonical_blobs(repo: Path, head: str) -> tuple[list[str], list[str]]:
+    def bind(paths: tuple[str, ...]) -> list[str]:
+        bound = []
+        for relative in paths:
+            probe = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", f"{head}:{relative}"],
+                capture_output=True, text=True,
+            )
+            if probe.returncode == 0:
+                bound.append(f"{relative}:{probe.stdout.strip()}")
+        return bound
 
-
-def read_pr_fact(repo: str, number: int) -> dict:
-    raw = run_json(
-        [
-            "gh", "pr", "view", str(number), "--repo", repo, "--json",
-            "headRefOid,state,reviewDecision,statusCheckRollup",
-        ]
-    )
-    return {
-        "head": raw.get("headRefOid"),
-        "state": raw.get("state"),
-        "review": raw.get("reviewDecision") or "",
-        "ci": raw.get("statusCheckRollup") or [],
-    }
+    return bind(CANONICAL_SPEC_PATHS), bind(CANONICAL_ADR_PATHS)
 
 
 def declared_stream_facts(stream_dir: Path) -> dict:
@@ -73,13 +65,14 @@ def declared_stream_facts(stream_dir: Path) -> dict:
     if not sources_path.is_file():
         return {}
     declared = load_toml(sources_path)
-    facts: dict = {}
     linear_decl = declared.get("linear")
-    if isinstance(linear_decl, dict) and linear_decl.get("issue"):
-        facts["linear"] = read_linear_fact(str(linear_decl["issue"]))
     pr_decl = declared.get("pull_request")
-    if isinstance(pr_decl, dict) and pr_decl.get("repo") and pr_decl.get("number"):
-        facts["pull_request"] = read_pr_fact(str(pr_decl["repo"]), int(pr_decl["number"]))
+    linear_issue = str(linear_decl["issue"]) if isinstance(linear_decl, dict) and linear_decl.get("issue") else None
+    pr_repo = str(pr_decl["repo"]) if isinstance(pr_decl, dict) and pr_decl.get("repo") else None
+    pr_number = int(pr_decl["number"]) if isinstance(pr_decl, dict) and pr_decl.get("number") else None
+    facts: dict = {}
+    if linear_issue or (pr_repo and pr_number):
+        facts.update(fetch_stream_binding(linear_issue=linear_issue, pr_repo=pr_repo, pr_number=pr_number))
     for name in ("evidence", "deployment"):
         decl = declared.get(name)
         if isinstance(decl, dict) and decl.get("path"):
@@ -114,10 +107,18 @@ def main() -> int:
     parts = [f"## {path.relative_to(control)}\n{path.read_text().strip()}\n" for path in paths]
 
     facts = {"owner_route": owner_route}
+    streams = []
     for stream_dir in stream_dirs:
         stream_facts = declared_stream_facts(stream_dir)
         if stream_facts:
             facts[stream_dir.name] = stream_facts
+        if "linear" in stream_facts or "pull_request" in stream_facts:
+            entry = {"stream": stream_dir.name}
+            if "linear" in stream_facts:
+                entry["linear"] = stream_facts["linear"]
+            if "pull_request" in stream_facts:
+                entry["pull_request"] = stream_facts["pull_request"]
+            streams.append(entry)
     normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
 
     snapshot = (
@@ -138,38 +139,41 @@ def main() -> int:
     atomic_write(snapshot_path, snapshot)
 
     root = Path(__file__).resolve().parents[1]
-    registry = load_registry(root)
-    resolved = resolve_role(registry, "reconciler", set())
-    receipt = build_launch_receipt(
-        root,
-        resolved,
+    worktree_root = control / "worktrees"
+    worktree = worktree_root / fingerprint
+    head = repo_head(repo)
+    spec_blobs, adr_blobs = canonical_blobs(repo, head)
+
+    # Sole reconciler launch gateway: same worktree provisioning, containment, and
+    # receipt binding as scripts/octo-launch, narrowed to the reconciler's aggregate
+    # read-only shape. Fails closed before any provider call on stale or substituted
+    # Linear, PR, spec, ADR, or repo HEAD input.
+    prepared = prepare_reconcile_launch(
+        root=root,
         spawn_id=str(uuid.uuid4()),
         parent=owner_route,
         reply_route="operator-say",
         repo=repo,
-        worktree=repo,
+        worktree_root=worktree_root,
+        worktree=worktree,
+        receipt_path=receipt_path,
         execution_location=os.environ.get("OCTO_EXECUTION_LOCATION", "remote"),
         operator_loopback=os.environ.get("OCTO_OPERATOR_LOOPBACK", "false") == "true",
         review_delivery=os.environ.get("OCTO_REVIEW_DELIVERY", "reachable_url_required"),
+        snapshot_path=snapshot_path,
+        snapshot_digest=fingerprint,
+        streams=streams,
+        spec_blobs=spec_blobs,
+        adr_blobs=adr_blobs,
+        conversation_state_refs=[str(path.relative_to(control)) for path in paths],
     )
-    atomic_write(receipt_path, render_receipt(receipt))
 
-    # Phase 1: parent-controlled read-only bootstrap. The reconciler cannot read or
-    # judge the snapshot yet; it only self-verifies the receipt and acknowledges.
-    prepared = prepared_from_receipt(receipt, receipt_path, resolved.contract_text)
-    session_id = run_bootstrap(prepared)
-
-    # Phase 2: resume the exact bootstrap-verified session with the bounded snapshot
-    # for the read-only judgment pass. run_mutation is the same sole-gateway call
-    # octo-launch's run_launch uses; it fails closed unless the response's own
-    # session ID matches the exact resumed session_id, never a self-attested one.
     judgment_prompt = (
         f"Bootstrap verified. Read snapshot {snapshot_path}. "
         "Classify only changed, missing, stale, contradictory, or needs_fable. "
         "Read only. Never mutate. Return a compact delta for the operator as plain text."
     )
-    session_id, message = run_mutation(prepared, session_id, judgment_prompt)
-    bind_pass_result(receipt_path, "reconciler", {"message": message})
+    message = run_reconcile_launch(prepared, judgment_prompt)
     atomic_write(result_path, message)
 
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))

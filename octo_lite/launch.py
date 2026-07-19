@@ -255,6 +255,53 @@ def _verify_sources(
     _verify_blobs(repo, envelope["starting_head"], envelope["adr_blobs"], "ADR")
 
 
+def _linear_binding(linear: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "identifier": linear["identifier"],
+        "revision": _issue_revision(linear),
+        "fingerprint": exact_fingerprint(linear),
+        "state": linear["state"],
+    }
+
+
+def _pull_request_binding(pull: Mapping[str, Any], *, repo: str, number: int) -> dict[str, Any]:
+    return {
+        "repo": repo,
+        "number": number,
+        "url": str(pull["url"]),
+        "branch": str(pull["headRefName"]),
+        "base": str(pull["baseRefName"]),
+        "head": str(pull["headRefOid"]),
+    }
+
+
+def fetch_stream_binding(
+    *,
+    linear_issue: str | None,
+    pr_repo: str | None,
+    pr_number: int | None,
+    read_linear: ReadLinear = read_linear,
+    read_pr: ReadPullRequest = read_pull_request,
+) -> dict[str, Any]:
+    """Fetch and bind one stream's declared Linear issue and pull request, the sole
+    fact shape shared between a snapshot's declared facts and the reconcile
+    gateway's fresh re-verification of those same facts."""
+    binding: dict[str, Any] = {}
+    if linear_issue:
+        linear = dict(read_linear(linear_issue))
+        state = linear.get("state")
+        if isinstance(state, Mapping):
+            linear["state"] = state.get("name")
+        binding["linear"] = _linear_binding(linear)
+    if pr_repo and pr_number:
+        pull = dict(read_pr(pr_repo, pr_number))
+        pr_binding = _pull_request_binding(pull, repo=pr_repo, number=pr_number)
+        pr_binding["state"] = str(pull.get("state") or "")
+        pr_binding["review"] = str(pull.get("reviewDecision") or "")
+        binding["pull_request"] = pr_binding
+    return binding
+
+
 def _worktree_common_dir(path: Path) -> Path:
     value = _git(path, "rev-parse", "--git-common-dir")
     candidate = Path(value)
@@ -262,9 +309,9 @@ def _worktree_common_dir(path: Path) -> Path:
 
 
 # Mutable implement/fix passes attach the exact bound PR branch. Review, QA review,
-# and shaping review are inherently read-only (no Bash/Edit/Write tools) and may use
-# a fresh detached worktree at the exact HEAD instead.
-READ_ONLY_WORKTREE_ROLES = frozenset({"shaping-reviewer", "code-reviewer", "qa-reviewer"})
+# shaping review, and the reconciler are inherently read-only (no Bash/Edit/Write
+# tools) and may use a fresh detached worktree at the exact HEAD instead.
+READ_ONLY_WORKTREE_ROLES = frozenset({"shaping-reviewer", "code-reviewer", "qa-reviewer", "reconciler"})
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
@@ -660,6 +707,121 @@ def prepare_launch(
     return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
 
 
+def prepare_reconcile_launch(
+    *,
+    root: Path,
+    spawn_id: str,
+    parent: str,
+    reply_route: str,
+    repo: Path,
+    worktree_root: Path,
+    worktree: Path,
+    receipt_path: Path,
+    execution_location: str,
+    operator_loopback: bool,
+    review_delivery: str,
+    snapshot_path: Path,
+    snapshot_digest: str,
+    streams: list[Mapping[str, Any]],
+    spec_blobs: list[str],
+    adr_blobs: list[str],
+    conversation_state_refs: list[str] | None = None,
+    minimum_free_bytes: int = 1,
+    resource_conflicts: list[str] | None = None,
+    provider_overloaded: bool = False,
+    read_linear: ReadLinear = read_linear,
+    read_pr: ReadPullRequest = read_pull_request,
+) -> PreparedLaunch:
+    """The sole reconciler launch gateway: same worktree provisioning, containment,
+    and receipt machinery as prepare_launch, narrowed to the reconciler's aggregate
+    multi-stream read-only shape. Every declared stream's Linear and PR facts are
+    refetched and compared to the caller's declared bindings before any worktree or
+    provider call, so a stale or substituted snapshot input fails closed."""
+    root = root.resolve()
+    repo = repo.resolve()
+    worktree_root = worktree_root.resolve()
+    worktree = worktree.resolve()
+    normalize_launch_access(
+        {
+            "execution_location": execution_location,
+            "operator_loopback_access": operator_loopback,
+            "review_delivery": review_delivery,
+        }
+    )
+    if execution_location not in {"local", "remote"}:
+        raise GateError("execution_location must be local or remote")
+    registry = load_registry(root)
+    resolved = resolve_role(registry, "reconciler", set())
+    if Path(_git(repo, "rev-parse", "--show-toplevel")).resolve() != repo:
+        raise GateError("repo must be control git root")
+    control_head = _git(repo, "rev-parse", "HEAD")
+
+    verified_streams: list[dict[str, Any]] = []
+    for stream in streams:
+        name = str(stream["stream"])
+        linear_decl = stream.get("linear")
+        pr_decl = stream.get("pull_request")
+        fresh = fetch_stream_binding(
+            linear_issue=str(linear_decl["identifier"]) if linear_decl else None,
+            pr_repo=str(pr_decl["repo"]) if pr_decl else None,
+            pr_number=int(pr_decl["number"]) if pr_decl else None,
+            read_linear=read_linear,
+            read_pr=read_pr,
+        )
+        if linear_decl and fresh.get("linear") != dict(linear_decl):
+            raise GateError(f"stale Linear input: {name}")
+        if pr_decl and fresh.get("pull_request") != dict(pr_decl):
+            raise GateError(f"stale PR input: {name}")
+        entry = {"stream": name}
+        entry.update(fresh)
+        verified_streams.append(entry)
+
+    _verify_blobs(repo, control_head, spec_blobs, "spec")
+    _verify_blobs(repo, control_head, adr_blobs, "ADR")
+
+    _prepare_worktree(
+        repo,
+        worktree_root,
+        worktree,
+        control_head,
+        "",
+        read_only=True,
+        minimum_free_bytes=minimum_free_bytes,
+        conflicts=list(resource_conflicts or []),
+        provider_overloaded=provider_overloaded,
+    )
+    child_workspace = _child_workspace_check(repo, worktree_root, worktree, control_head, None)
+
+    receipt = build_launch_receipt(
+        root,
+        resolved,
+        spawn_id=spawn_id,
+        parent=parent,
+        reply_route=reply_route,
+        repo=repo,
+        worktree=worktree,
+        execution_location=execution_location,
+        operator_loopback=operator_loopback,
+        review_delivery=review_delivery,
+    )
+    receipt["ready"] = False
+    receipt["manifest_type"] = "octo-lite-reconcile"
+    receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
+    receipt["reconcile"] = {
+        "snapshot_path": str(snapshot_path),
+        "snapshot_digest": str(snapshot_digest),
+        "control_head": control_head,
+        "spec_blobs": list(spec_blobs),
+        "adr_blobs": list(adr_blobs),
+        "conversation_state_refs": list(conversation_state_refs or []),
+        "streams_json": json.dumps(verified_streams, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+    }
+    receipt["launch_revision"] = _launch_revision(receipt)
+    _atomic_write(receipt_path, render_receipt(receipt))
+    bootstrap, mutation = _provider_argv(receipt)
+    return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
+
+
 def verify_bootstrap(receipt_path: Path, acknowledgment: Mapping[str, Any]) -> dict[str, Any]:
     with receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
@@ -918,3 +1080,20 @@ def run_launch(
     result.setdefault("receipt", receipt["spawn_id"])
     result.setdefault("launch_revision", receipt["launch_revision"])
     return result
+
+
+def run_reconcile_launch(
+    prepared: PreparedLaunch,
+    prompt: str,
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    """Sole entry point a reconcile caller uses: bootstrap-verify, then run one
+    read-only judgment pass with the exact resumed session, then bind the result.
+    No caller composes run_bootstrap and run_mutation directly."""
+    session = run_bootstrap(prepared, runner=runner)
+    with prepared.receipt_path.open("rb") as handle:
+        receipt = tomllib.load(handle)
+    _, message = run_mutation(prepared, session, prompt, runner=runner)
+    bind_pass_result(prepared.receipt_path, receipt["role"]["name"], {"message": message})
+    return message

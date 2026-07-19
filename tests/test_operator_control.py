@@ -111,6 +111,18 @@ fi
 
 
 class OperatorControlTests(unittest.TestCase):
+    def test_sweep_imports_only_the_shared_reconcile_gateway_never_low_level_launch_helpers(self) -> None:
+        source = SWEEP.read_text()
+        launch_import = next(line for line in source.splitlines() if line.startswith("from octo_lite.launch import"))
+        imported = {name.strip() for name in launch_import.split("import", 1)[1].split("#")[0].split(",")}
+        self.assertEqual({"fetch_stream_binding", "prepare_reconcile_launch", "run_reconcile_launch"}, imported)
+        for forbidden in (
+            "prepared_from_receipt", "run_bootstrap", "run_mutation",
+            "build_launch_receipt", "resolve_role", "load_registry",
+        ):
+            self.assertNotIn(forbidden, source)
+        self.assertNotIn("worktree=repo", source)
+
     def test_timer_only_wakes_current_operator_through_operator_say(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -323,7 +335,9 @@ class OperatorControlTests(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 "printf 'gh %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
                 "cat <<'JSON'\n"
-                '{"headRefOid": "abc123", "state": "OPEN", "reviewDecision": "", "statusCheckRollup": []}\n'
+                '{"url": "https://github.com/org/repo/pull/6", "headRefOid": "abc123", '
+                '"headRefName": "feature", "baseRefName": "main", '
+                '"state": "OPEN", "reviewDecision": "", "statusCheckRollup": []}\n'
                 "JSON\n"
             )
             for name in ("claude", "operator-say", "linear", "gh"):
@@ -357,6 +371,204 @@ class OperatorControlTests(unittest.TestCase):
             linear_state_file.write_text("In Progress")
             third = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
             self.assertTrue(json.loads(third.stdout)["changed"])
+
+    def test_sweep_runs_the_reconciler_in_a_detached_worktree_never_the_control_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+
+            with (control / "sweep-state.toml").open("rb") as handle:
+                state = tomllib.load(handle)
+            with open(state["receipt"], "rb") as handle:
+                receipt = tomllib.load(handle)
+
+            worktree = Path(receipt["workspace"]["worktree"])
+            self.assertNotEqual(str(repo), receipt["workspace"]["worktree"])
+            self.assertEqual(str((control / "worktrees").resolve()), str(worktree.resolve().parent))
+            self.assertTrue(worktree.is_dir())
+            branch = subprocess.run(
+                ["git", "-C", str(worktree), "branch", "--show-current"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual("", branch)
+            top = subprocess.run(
+                ["git", "-C", str(worktree), "rev-parse", "--show-toplevel"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            self.assertEqual(str(worktree.resolve()), top)
+            self.assertTrue(receipt["workspace"]["child_containment_verified"])
+
+    def test_sweep_receipt_binds_snapshot_digest_control_head_and_canonical_spec_adr_blobs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            spec = repo / "spec" / "domains" / "operating-model.spec.html"
+            spec.parent.mkdir(parents=True)
+            spec.write_text('<p data-anchor="x">Works.</p>\n')
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            head = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            spec_blob = subprocess.run(
+                ["git", "-C", str(repo), "hash-object", "spec/domains/operating-model.spec.html"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            adr_blob = subprocess.run(
+                ["git", "-C", str(repo), "hash-object", "spec/adr/0001-operating-model-boundaries.spec.html"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            fingerprint = json.loads(result.stdout)["fingerprint"]
+
+            with (control / "sweep-state.toml").open("rb") as handle:
+                state = tomllib.load(handle)
+            with open(state["receipt"], "rb") as handle:
+                receipt = tomllib.load(handle)
+            reconcile = receipt["reconcile"]
+            self.assertEqual(fingerprint, reconcile["snapshot_digest"])
+            self.assertEqual(head, reconcile["control_head"])
+            self.assertEqual([f"spec/domains/operating-model.spec.html:{spec_blob}"], reconcile["spec_blobs"])
+            self.assertEqual([f"spec/adr/0001-operating-model-boundaries.spec.html:{adr_blob}"], reconcile["adr_blobs"])
+            self.assertIn("streams/TUR-1/status.md", reconcile["conversation_state_refs"])
+
+    def test_sweep_fails_closed_before_any_provider_call_when_linear_state_races_between_snapshot_and_gateway(self) -> None:
+        # declared_stream_facts() and prepare_reconcile_launch()'s own fresh
+        # re-verification each call the fake `linear` binary once for TUR-1's issue
+        # view. Returning a different state on the second call simulates the exact
+        # race the gateway's final source comparison must catch before any provider
+        # call: a snapshot input that went stale between capture and dispatch.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            stream = control / "streams/TUR-1"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text(
+                "Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n"
+            )
+            (stream / "sources.toml").write_text(
+                'schema_version = 1\n\n[linear]\nissue = "TUR-1"\n'
+            )
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            call_count_file = base / "linear-call-count.txt"
+            call_count_file.write_text("0")
+            (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+            (fake_bin / "operator-say").write_text(
+                "#!/usr/bin/env bash\nprintf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            )
+            (fake_bin / "linear").write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+                'count="$(cat "$CALL_COUNT_FILE")"\n'
+                'count=$((count + 1))\n'
+                'echo -n "$count" >"$CALL_COUNT_FILE"\n'
+                'if [[ "$count" -eq 1 ]]; then state="Todo"; else state="In Progress"; fi\n'
+                "cat <<JSON\n"
+                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "2026-07-19T00:00:00Z"}\n'
+                "JSON\n"
+            )
+            for name in ("claude", "operator-say", "linear"):
+                (fake_bin / name).chmod(0o755)
+            env = dict(
+                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+                CALL_COUNT_FILE=str(call_count_file),
+            )
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("stale Linear input", result.stderr)
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "worktrees").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+            self.assertEqual(2, sum(line.startswith("linear ") for line in calls))
 
     def _write_receipt(self, path: Path, *, role: str, issue: str, provider_session_id: str, verified: bool = True) -> None:
         path.write_text(
