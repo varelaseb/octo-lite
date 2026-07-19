@@ -29,12 +29,18 @@ Stop on missing or stale input. Linear must be `Shaped` or operator-pulled
 
 ## Passes
 
-Every pass is a fresh instance. Never resume a worker. Never use `--last`.
+Every pass is a fresh instance. Never resume a worker for another pass. Never
+use `--last`.
+
+Before each pass, use `octo-launch` to refetch exact sources, create the fresh
+worktree, resolve the role, and verify its session-bound receipt. Invoke one
+Workflow mode with that receipt. Read back its exact output before resolving
+the next pass. Never precompute receipts for future unknown HEADs.
 
 1. Fresh exact Sonnet 5 xhigh implementer.
 2. Require spec-derived intended red, smallest green, refactor, validation,
    exact HEAD, receipt, and durable PR handoff.
-3. Fresh GPT-5.6 Sol high fast code reviewer on that HEAD.
+3. Fresh GPT-5.6 Sol high code reviewer on that HEAD.
 4. Publish one exact-head verdict comment through `octo-control
    verdict-publish`. No formal GitHub Review API gate.
 5. Missing, malformed, ambiguous, blocking, or wrong-head review cannot advance.
@@ -43,8 +49,8 @@ Every pass is a fresh instance. Never resume a worker. Never use `--last`.
 8. Every new HEAD gets a fresh Sol re-review.
 9. After three blocking review and fix cycles, return to shaping.
 
-Use `workflows/octo-loop-qa.js`. Its modes deliberately separate LLM passes
-from deterministic publication and tracker helpers.
+Use `workflows/octo-loop-qa.js`. Run one mode per invocation. Its modes separate
+fresh LLM passes from deterministic publication and tracker helpers.
 
 ## QA
 

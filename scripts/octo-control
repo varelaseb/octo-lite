@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,10 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from octo_lite.runtime import (  # noqa: E402
     GateError,
     append_trace,
+    admit_workspace,
     exact_fingerprint,
     herdr_label,
     normalize_launch_access,
     record_failure,
+    safe_cleanup,
     initialize_stream,
     update_stream_brief,
     write_stream_status,
@@ -244,6 +247,38 @@ def command_stream_status(args) -> dict:
     return state
 
 
+def command_workspace_admit(args) -> dict:
+    root = Path(args.worktree_root)
+    target = Path(args.worktree)
+    admitted = admit_workspace(
+        target,
+        root,
+        disk_free_bytes=shutil.disk_usage(root).free,
+        minimum_free_bytes=args.minimum_free_bytes,
+        conflicts=args.conflict,
+        provider_overloaded=args.provider_overloaded,
+    )
+    return {"admitted": True, "worktree": str(admitted)}
+
+
+def command_workspace_cleanup(args) -> dict:
+    control = Path(args.control_repo)
+
+    def remove(worktree: Path) -> None:
+        subprocess.run(["git", "-C", str(control), "worktree", "remove", str(worktree)], check=True)
+
+    safe_cleanup(
+        Path(args.worktree),
+        worktree_root=Path(args.worktree_root),
+        control_repo=control,
+        handoff=Path(args.handoff),
+        expected_head=args.expected_head,
+        remote_ref=args.remote_ref,
+        remove=remove,
+    )
+    return {"removed": True, "worktree": str(Path(args.worktree).resolve())}
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Small foreground octo-lite gates")
     sub = root.add_subparsers(dest="command", required=True)
@@ -341,6 +376,23 @@ def parser() -> argparse.ArgumentParser:
     stream_status.add_argument("--blocker", default="none")
     stream_status.add_argument("--next-action", default="none")
     stream_status.set_defaults(run=command_stream_status)
+
+    admission = sub.add_parser("workspace-admit")
+    admission.add_argument("--worktree", required=True)
+    admission.add_argument("--worktree-root", required=True)
+    admission.add_argument("--minimum-free-bytes", type=int, required=True)
+    admission.add_argument("--conflict", action="append", default=[])
+    admission.add_argument("--provider-overloaded", action="store_true")
+    admission.set_defaults(run=command_workspace_admit)
+
+    cleanup = sub.add_parser("workspace-cleanup")
+    cleanup.add_argument("--worktree", required=True)
+    cleanup.add_argument("--worktree-root", required=True)
+    cleanup.add_argument("--control-repo", required=True)
+    cleanup.add_argument("--handoff", required=True)
+    cleanup.add_argument("--expected-head", required=True)
+    cleanup.add_argument("--remote-ref", required=True)
+    cleanup.set_defaults(run=command_workspace_cleanup)
     return root
 
 

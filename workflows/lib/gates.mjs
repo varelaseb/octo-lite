@@ -42,10 +42,32 @@ export function assertReadyEnvelope(envelope) {
   if (!Array.isArray(envelope.acceptance_criteria) || envelope.acceptance_criteria.length === 0) {
     throw new Error('acceptance criteria required')
   }
-  for (const role of ['implementer', 'code_reviewer', 'qa_reviewer']) {
-    required(envelope.role_receipts?.[role], `${role} role receipt`)
-  }
   return envelope
+}
+
+export function assertPassReceipt(receipt, role, startingHead) {
+  required(receipt, 'pass receipt')
+  required(receipt.spawn_id, 'pass spawn ID')
+  if (receipt.ready !== true || receipt.bootstrap?.verified !== true) {
+    throw new Error('pass bootstrap not verified')
+  }
+  if (receipt.role?.name !== role) throw new Error('pass role mismatch')
+  if (receipt.workspace?.starting_head !== startingHead) {
+    throw new Error('pass starting HEAD mismatch')
+  }
+  return receipt
+}
+
+export function acceptImplementation(expectedHead, result, spawnId, requireNewHead = true) {
+  required(result, 'implementation result')
+  if (result.blocked !== false) throw new Error('implementation blocked')
+  required(result.head, 'implementation HEAD')
+  if (result.receipt !== spawnId) throw new Error('implementation receipt mismatch')
+  required(result.red, 'implementation red evidence')
+  required(result.green, 'implementation green evidence')
+  required(result.validation, 'implementation validation')
+  if (requireNewHead && result.head === expectedHead) throw new Error('implementation needs new HEAD')
+  return result
 }
 
 export function acceptCodeReview(expectedHead, review) {

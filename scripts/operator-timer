@@ -33,10 +33,13 @@ if [[ "$action" == remove ]]; then
 fi
 
 [[ -d "$control" && -f "$owner" && -d "$repo" && ! -e "$state" ]] || exit 66
-sweep="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/operator-sweep"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+operator_say="$root/skills/herdr-comms/assets/operator-say"
+[[ -x "$operator_say" ]] || exit 66
 systemd-run --user --quiet --collect --unit "$unit" --on-unit-active "$interval" \
+  --setenv="OCTO_OPERATOR_OWNER=$owner" \
   --property Type=oneshot \
-  "$sweep" --control-dir "$control" --owner-file "$owner" --repo "$repo"
+  "$operator_say" --kind info sweep
 temporary="$state.$$.tmp"
 printf 'schema_version = 1\nunit = "%s"\ninterval = "%s"\n' "$unit.timer" "$interval" >"$temporary"
 mv "$temporary" "$state"

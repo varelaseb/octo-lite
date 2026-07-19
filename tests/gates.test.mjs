@@ -4,7 +4,9 @@ import assert from 'node:assert/strict'
 import {
   acceptCodeReview,
   acceptQaReview,
+  acceptImplementation,
   acceptPublication,
+  assertPassReceipt,
   assertReadyEnvelope,
   evidenceMode,
 } from '../workflows/lib/gates.mjs'
@@ -44,6 +46,33 @@ test('ready envelope rejects wrong lifecycle and incomplete bindings', () => {
   assert.throws(() => assertReadyEnvelope({ ...ready, linear_state: 'Ideas' }), /Linear state/)
   assert.throws(() => assertReadyEnvelope({ ...ready, spec_blobs: [] }), /spec blobs/)
   assert.throws(() => assertReadyEnvelope({ ...ready, pr_head: 'old' }), /PR head/)
+})
+
+test('pass receipt binds fresh role and exact starting head', () => {
+  const receipt = {
+    spawn_id: 'spawn-1',
+    ready: true,
+    role: { name: 'implementer' },
+    workspace: { starting_head: 'abc' },
+    bootstrap: { verified: true },
+  }
+  assert.deepEqual(assertPassReceipt(receipt, 'implementer', 'abc'), receipt)
+  assert.throws(() => assertPassReceipt(receipt, 'code-reviewer', 'abc'), /role/)
+  assert.throws(() => assertPassReceipt(receipt, 'implementer', 'old'), /starting HEAD/)
+  assert.throws(
+    () => assertPassReceipt({ ...receipt, bootstrap: { verified: false } }, 'implementer', 'abc'),
+    /bootstrap/,
+  )
+})
+
+test('implementation requires TDD evidence, exact receipt, and new fix head', () => {
+  const result = {
+    head: 'def', receipt: 'spawn-1', red: 'fails', green: 'passes', validation: 'suite', blocked: false,
+  }
+  assert.deepEqual(acceptImplementation('abc', result, 'spawn-1', true), result)
+  assert.throws(() => acceptImplementation('abc', { ...result, red: '' }, 'spawn-1', true), /red/)
+  assert.throws(() => acceptImplementation('abc', { ...result, receipt: 'old' }, 'spawn-1', true), /receipt/)
+  assert.throws(() => acceptImplementation('abc', { ...result, head: 'abc' }, 'spawn-1', true), /new HEAD/)
 })
 
 test('code review rejects wrong head, ambiguous, and missing receipt', () => {

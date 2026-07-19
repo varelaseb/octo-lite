@@ -444,21 +444,47 @@ def append_trace(trace_path: Path, status_path: Path, event: Mapping[str, object
 def safe_cleanup(
     worktree: Path,
     *,
+    worktree_root: Path,
+    control_repo: Path,
     handoff: Path,
     expected_head: str,
     remote_ref: str,
+    remote_head: Callable[[Path, str], str] | None = None,
     remove: Callable[[Path], None],
 ) -> None:
     if not handoff.is_file():
         raise GateError("durable handoff missing")
+    target = worktree.resolve()
+    allowed = worktree_root.resolve()
+    if os.path.commonpath((allowed, target)) != str(allowed) or target == allowed:
+        raise GateError("cleanup path escapes worktree root")
     top = subprocess.run(
         ["git", "-C", str(worktree), "rev-parse", "--show-toplevel"],
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    if Path(top).resolve() != worktree.resolve():
+    if Path(top).resolve() != target:
         raise GateError("cleanup path is not the worktree root")
+    worktree_common_raw = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    control_common_raw = subprocess.run(
+        ["git", "-C", str(control_repo), "rev-parse", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    worktree_common = Path(worktree_common_raw)
+    control_common = Path(control_common_raw)
+    worktree_common = (target / worktree_common).resolve() if not worktree_common.is_absolute() else worktree_common.resolve()
+    control_root = control_repo.resolve()
+    control_common = (control_root / control_common).resolve() if not control_common.is_absolute() else control_common.resolve()
+    if worktree_common != control_common:
+        raise GateError("worktree belongs to another control repo")
     head = subprocess.run(
         ["git", "-C", str(worktree), "rev-parse", "HEAD"],
         check=True,
@@ -467,12 +493,18 @@ def safe_cleanup(
     ).stdout.strip()
     if head != expected_head:
         raise GateError("worktree HEAD mismatch")
-    remote = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "--verify", remote_ref],
-        capture_output=True,
-        text=True,
-    )
-    if remote.returncode != 0 or remote.stdout.strip() != head:
+    if not remote_ref.startswith("refs/heads/"):
+        raise GateError("remote branch ref required")
+    if remote_head is None:
+        remote = subprocess.run(
+            ["git", "-C", str(control_repo), "ls-remote", "--exit-code", "origin", remote_ref],
+            capture_output=True,
+            text=True,
+        )
+        pushed = remote.stdout.split(maxsplit=1)[0] if remote.returncode == 0 and remote.stdout.strip() else ""
+    else:
+        pushed = remote_head(control_repo, remote_ref)
+    if pushed != head:
         raise GateError("remote push proof missing")
     result = subprocess.run(
         ["git", "-C", str(worktree), "status", "--porcelain"],

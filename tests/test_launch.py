@@ -87,6 +87,16 @@ class LaunchBoundaryTests(unittest.TestCase):
             "adr_blobs": [],
             "conversation_cutoff": "session.jsonl:6824",
             "acceptance_criteria": ["launch is exact"],
+            "resource_claims": {
+                "branch": "feature",
+                "fixtures": [],
+                "ports": [3100],
+                "pids": [],
+                "artifact_roots": [str(Path(self.temp.name) / "artifacts")],
+            },
+            "resource_conflicts": [],
+            "provider_overloaded": False,
+            "minimum_free_bytes": 1,
         }
         self.spawn_id = str(uuid.uuid4())
 
@@ -129,6 +139,9 @@ class LaunchBoundaryTests(unittest.TestCase):
         self.assertEqual(self.spec_blob, receipt["spec"]["revision"])
         self.assertEqual(self.head, receipt["pull_request"]["head"])
         self.assertEqual(2, receipt["topology"]["revision"])
+        self.assertEqual("octo-lite-pass", receipt["manifest_type"])
+        self.assertEqual("feature", receipt["resources"]["branch"])
+        self.assertEqual([3100], receipt["resources"]["ports"])
         self.assertEqual("review-session-1", receipt["prior_gates"]["shaping_reviewer_receipt"])
         self.assertFalse(receipt["bootstrap"]["verified"])
         self.assertTrue(self.worktree.is_dir())
@@ -159,6 +172,16 @@ class LaunchBoundaryTests(unittest.TestCase):
         stale_pr = dict(self.pr, headRefOid="0" * 40)
         with self.assertRaisesRegex(GateError, "PR HEAD mismatch"):
             self.prepare(read_pr=lambda _repo, _pr: stale_pr)
+        self.assertFalse(self.worktree.exists())
+
+    def test_resource_conflict_or_provider_overload_refuses_admission(self) -> None:
+        conflict = dict(self.envelope, resource_conflicts=["port:3100"])
+        with self.assertRaisesRegex(GateError, "resource conflict"):
+            self.prepare(envelope=conflict)
+        self.assertFalse(self.worktree.exists())
+        overload = dict(self.envelope, provider_overloaded=True)
+        with self.assertRaisesRegex(GateError, "provider overload"):
+            self.prepare(envelope=overload)
         self.assertFalse(self.worktree.exists())
 
     def test_escape_and_missing_ack_fail_closed(self) -> None:

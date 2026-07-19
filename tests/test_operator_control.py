@@ -11,9 +11,44 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SWEEP = ROOT / "scripts/operator-sweep"
+TIMER = ROOT / "scripts/operator-timer"
 
 
 class OperatorControlTests(unittest.TestCase):
+    def test_timer_only_wakes_current_operator_through_operator_say(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            control = base / "control"
+            repo = base / "repo"
+            control.mkdir()
+            repo.mkdir()
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            call_log = base / "systemd-run.txt"
+            runner = fake_bin / "systemd-run"
+            runner.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >"$CALL_LOG"\n')
+            runner.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(call_log))
+
+            subprocess.run(
+                [
+                    str(TIMER), "install", "--name", "operator-1",
+                    "--control-dir", str(control), "--owner-file", str(owner),
+                    "--repo", str(repo),
+                ],
+                env=env,
+                check=True,
+            )
+
+            call = call_log.read_text()
+            self.assertIn("operator-say --kind info sweep", call)
+            self.assertIn(f"OCTO_OPERATOR_OWNER={owner}", call)
+            self.assertNotIn("operator-sweep", call)
+
     def test_changed_sweep_is_fresh_and_unchanged_sweep_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

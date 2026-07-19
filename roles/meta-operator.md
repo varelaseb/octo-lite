@@ -23,7 +23,7 @@ Own the reconciled whole-operation view. Keep work moving without flooding conte
 
 - Verify the launch receipt. Emit `BOOTSTRAP_ACK` with the exact spawn ID before mutation.
 - Verify outcome-critical claims at their source.
-- Consume compact deltas, not every leaf log.
+- On `sweep`, run `operator-sweep`; judge its compact delta, not every leaf log.
 - Remain sole writer of the whole-operation view.
 - Own compact Herdr labels. Mark direct operator conversations with `🎤`.
 - Remove `🎤` as soon as an Opus can work autonomously.

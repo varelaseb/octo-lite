@@ -224,13 +224,51 @@ class RuntimeContractTests(unittest.TestCase):
             )
             (repo / "a").write_text("dirty\n")
             with self.assertRaises(GateError):
-                safe_cleanup(repo, handoff=handoff, expected_head=head, remote_ref="origin/pass", remove=lambda _p: None)
+                safe_cleanup(
+                    repo,
+                    worktree_root=Path(td),
+                    control_repo=repo,
+                    handoff=handoff,
+                    expected_head=head,
+                    remote_ref="refs/heads/pass",
+                    remote_head=lambda _repo, _ref: head,
+                    remove=lambda _p: None,
+                )
             subprocess.run(["git", "-C", str(repo), "restore", "a"], check=True)
             with self.assertRaises(GateError):
-                safe_cleanup(repo, handoff=handoff, expected_head=head, remote_ref="origin/missing", remove=lambda _p: None)
+                safe_cleanup(
+                    repo,
+                    worktree_root=Path(td),
+                    control_repo=repo,
+                    handoff=handoff,
+                    expected_head=head,
+                    remote_ref="refs/heads/missing",
+                    remote_head=lambda _repo, _ref: "",
+                    remove=lambda _p: None,
+                )
             removed = []
-            safe_cleanup(repo, handoff=handoff, expected_head=head, remote_ref="origin/pass", remove=removed.append)
+            safe_cleanup(
+                repo,
+                worktree_root=Path(td),
+                control_repo=repo,
+                handoff=handoff,
+                expected_head=head,
+                remote_ref="refs/heads/pass",
+                remote_head=lambda _repo, _ref: head,
+                remove=removed.append,
+            )
             self.assertEqual([repo], removed)
+            with self.assertRaises(GateError):
+                safe_cleanup(
+                    repo,
+                    worktree_root=Path(td) / "other-root",
+                    control_repo=repo,
+                    handoff=handoff,
+                    expected_head=head,
+                    remote_ref="refs/heads/pass",
+                    remote_head=lambda _repo, _ref: head,
+                    remove=removed.append,
+                )
 
     def test_workspace_admission_rejects_escape_and_conflict(self):
         with tempfile.TemporaryDirectory() as td:

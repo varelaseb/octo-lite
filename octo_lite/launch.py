@@ -98,6 +98,25 @@ def _validate_envelope_shape(envelope: Mapping[str, Any]) -> None:
         value = envelope.get(name)
         if not isinstance(value, list) or (not allow_empty and not value):
             raise GateError(f"{name.replace('_', ' ')} required")
+    claims = envelope.get("resource_claims")
+    if not isinstance(claims, Mapping) or set(claims) != {
+        "branch", "fixtures", "ports", "pids", "artifact_roots",
+    }:
+        raise GateError("complete resource claims required")
+    if not isinstance(claims["branch"], str) or not claims["branch"]:
+        raise GateError("resource branch required")
+    for name in ("fixtures", "artifact_roots"):
+        if not isinstance(claims[name], list) or any(not isinstance(item, str) or not item for item in claims[name]):
+            raise GateError(f"resource {name} invalid")
+    for name in ("ports", "pids"):
+        if not isinstance(claims[name], list) or any(not isinstance(item, int) or item < 1 for item in claims[name]):
+            raise GateError(f"resource {name} invalid")
+    if not isinstance(envelope.get("resource_conflicts"), list):
+        raise GateError("resource conflicts required")
+    if not isinstance(envelope.get("provider_overloaded"), bool):
+        raise GateError("provider overload fact required")
+    if not isinstance(envelope.get("minimum_free_bytes"), int) or envelope["minimum_free_bytes"] < 1:
+        raise GateError("minimum free bytes required")
 
 
 def _issue_revision(issue: Mapping[str, Any]) -> str:
@@ -211,16 +230,25 @@ def _worktree_common_dir(path: Path) -> Path:
     return (path / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
 
 
-def _prepare_worktree(repo: Path, root: Path, worktree: Path, head: str) -> None:
+def _prepare_worktree(
+    repo: Path,
+    root: Path,
+    worktree: Path,
+    head: str,
+    *,
+    minimum_free_bytes: int,
+    conflicts: list[str],
+    provider_overloaded: bool,
+) -> None:
     root.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(root).free
     admit_workspace(
         worktree,
         root,
         disk_free_bytes=free,
-        minimum_free_bytes=1,
-        conflicts=[],
-        provider_overloaded=False,
+        minimum_free_bytes=minimum_free_bytes,
+        conflicts=conflicts,
+        provider_overloaded=provider_overloaded,
     )
     if not worktree.exists():
         subprocess.run(
@@ -310,7 +338,7 @@ def _toml_value(value: Any) -> str:
         return str(value)
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+    if isinstance(value, list) and all(isinstance(item, (str, int)) for item in value):
         return "[" + ", ".join(json.dumps(item, ensure_ascii=False) for item in value) + "]"
     raise GateError(f"unsupported receipt value: {type(value).__name__}")
 
@@ -473,7 +501,15 @@ def prepare_launch(
     number = _pull_number(envelope["pr"])
     pull = dict(read_pr(str(envelope["repo"]), number))
     _verify_sources(repo, envelope, linear, pull)
-    _prepare_worktree(repo, worktree_root, worktree, str(envelope["shaping_head"]))
+    _prepare_worktree(
+        repo,
+        worktree_root,
+        worktree,
+        str(envelope["shaping_head"]),
+        minimum_free_bytes=int(envelope["minimum_free_bytes"]),
+        conflicts=list(envelope["resource_conflicts"]),
+        provider_overloaded=bool(envelope["provider_overloaded"]),
+    )
     child_workspace = _child_workspace_check(
         repo,
         worktree_root,
@@ -494,6 +530,7 @@ def prepare_launch(
         review_delivery=review_delivery,
     )
     receipt["ready"] = False
+    receipt["manifest_type"] = "octo-lite-pass"
     receipt["workspace"]["remote"] = origin
     receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
     receipt["issue"] = {
@@ -518,6 +555,7 @@ def prepare_launch(
         "shaping_head": str(envelope["shaping_head"]),
     }
     receipt["topology"] = {"revision": int(envelope["topology_revision"])}
+    receipt["resources"] = dict(envelope["resource_claims"])
     receipt["prior_gates"] = {
         "shaping_verdict": "clear",
         "shaping_verdict_head": str(envelope["shaping_verdict_head"]),
