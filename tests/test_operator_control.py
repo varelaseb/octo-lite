@@ -630,19 +630,40 @@ class OperatorControlTests(unittest.TestCase):
             self.assertEqual("new-session", json.loads(transfer.stdout)["owner_session_id"])
             self.assertEqual("new-route", json.loads(transfer.stdout)["owner_route"])
 
-    def test_owner_recover_probes_provider_session_and_herdr_route_before_swap(self) -> None:
-        # No caller-supplied --liveness exists any more. octo-control must probe the
-        # exact owner provider session (via `herdr pane list`) and the exact Herdr
-        # route (via `herdr agent get`/`herdr pane get`) itself, and only proceed
-        # when both are cleanly proven absent. A route or session still live in the
-        # fake herdr's response blocks recovery exactly like a missing authorization.
+    def test_owner_recover_command_is_absent_from_octo_control(self) -> None:
+        # Dead-owner recovery is not an agent-callable command. Any attempt to run
+        # it is an argparse usage error, not a runtime authorization decision.
+        result = subprocess.run(
+            [str(CONTROL), "owner-recover", "--owner-file", "/tmp/owner.toml"],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("invalid choice", result.stderr.lower())
+        self.assertIn("owner-recover", result.stderr)
+
+        help_result = subprocess.run([str(CONTROL), "--help"], capture_output=True, text=True)
+        self.assertNotIn("owner-recover", help_result.stdout)
+
+    def test_recover_dead_owner_and_liveness_probes_no_longer_exist(self) -> None:
+        from octo_lite import runtime as runtime_module
+
+        self.assertFalse(hasattr(runtime_module, "recover_dead_owner"))
+        self.assertFalse(hasattr(runtime_module, "_require_proven_absent"))
+
+    def test_dead_owner_record_blocks_every_transfer_attempt_and_stays_unchanged(self) -> None:
+        # With no recovery command, the only remaining owner-mutation surface is
+        # owner-transfer, which requires the caller to be the exact recorded owner.
+        # A dead owner (no live caller can ever again be that exact session) leaves
+        # the record permanently blocked; only a manual, out-of-band edit of
+        # operator-owner.toml (outside any role or command authority) can move it.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             owner = base / "operator-owner.toml"
-            owner.write_text(
+            original = (
                 'schema_version = 1\nowner_session_id = "dead-session"\nowner_route = "dead-route"\n'
                 'handoff_revision = 1\ncontrol_dir = "/control"\n'
             )
+            owner.write_text(original)
             handoff = base / "handoffs" / "0002.md"
             handoff.parent.mkdir()
             handoff.write_text("ready\n")
@@ -653,69 +674,19 @@ class OperatorControlTests(unittest.TestCase):
                 ],
                 check=True, capture_output=True, text=True,
             )
-            base_argv = [
-                str(CONTROL), "owner-recover", "--owner-file", str(owner),
-                "--expected-owner", "dead-session", "--expected-route", "dead-route", "--expected-revision", "1",
-                "--new-owner", "successor", "--new-route", "new-route",
-                "--revision", "2", "--control-dir", "/control", "--handoff", str(handoff),
-                "--successor-readiness", str(base / "ready.toml"),
-            ]
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            fake_herdr = fake_bin / "herdr"
-            fake_herdr.write_text(
-                """#!/usr/bin/env bash
-set -eu
-if [[ "$1 $2" == "agent get" ]]; then
-  if [[ -n "${FAKE_ROUTE_LIVE:-}" ]]; then
-    echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
-  else
-    echo '{"error":{"code":"agent_not_found","message":"not found"}}'
-    exit 1
-  fi
-elif [[ "$1 $2" == "pane list" ]]; then
-  if [[ -n "${FAKE_SESSION_LIVE:-}" ]]; then
-    echo '{"result":{"panes":[{"agent_session":{"value":"dead-session"}}]}}'
-  else
-    echo '{"result":{"panes":[]}}'
-  fi
-else
-  exit 2
-fi
-"""
-            )
-            fake_herdr.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
-
-            unauthorized = subprocess.run(base_argv, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, unauthorized.returncode)
-
-            live_route = subprocess.run(
-                base_argv + ["--operator-authorized"],
-                env=dict(env, FAKE_ROUTE_LIVE="1"),
+            result = subprocess.run(
+                [
+                    str(CONTROL), "owner-transfer", "--owner-file", str(owner),
+                    "--expected-owner", "dead-session", "--expected-route", "dead-route", "--expected-revision", "1",
+                    "--caller", "successor", "--new-owner", "successor", "--new-route", "new-route",
+                    "--revision", "2", "--control-dir", "/control", "--handoff", str(handoff),
+                    "--successor-readiness", str(base / "ready.toml"),
+                ],
                 capture_output=True, text=True,
             )
-            self.assertNotEqual(0, live_route.returncode)
-
-            live_session = subprocess.run(
-                base_argv + ["--operator-authorized"],
-                env=dict(env, FAKE_SESSION_LIVE="1"),
-                capture_output=True, text=True,
-            )
-            self.assertNotEqual(0, live_session.returncode)
-            self.assertEqual(
-                'schema_version = 1\nowner_session_id = "dead-session"\nowner_route = "dead-route"\n'
-                'handoff_revision = 1\ncontrol_dir = "/control"\n',
-                owner.read_text(),
-            )
-
-            recovered = subprocess.run(
-                base_argv + ["--operator-authorized"],
-                env=env, check=True, capture_output=True, text=True,
-            )
-            self.assertEqual("successor", json.loads(recovered.stdout)["owner_session_id"])
-            self.assertEqual("new-route", json.loads(recovered.stdout)["owner_route"])
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("caller", result.stderr.lower())
+            self.assertEqual(original, owner.read_text())
 
     def test_acceptance_record_never_infers_and_verifies_operator_caller(self) -> None:
         with tempfile.TemporaryDirectory() as td:

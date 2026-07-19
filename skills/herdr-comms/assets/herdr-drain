@@ -9,25 +9,18 @@ case "$target" in
 esac
 [[ -n "$pane" ]] || exit 66
 
+# herdr-drain never infers composer state, consumption, or delivery from pane
+# transcript text. This read only detects a modal or question dialog, never the
+# sent text itself.
 dialog_open() {
   herdr pane read "$pane" --source visible --lines 40 2>/dev/null \
     | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
-}
-
-# `pane run` can exit 0 (Enter was sent) while the exact text is still sitting
-# unsubmitted in the composer. Only a read that proves the text is gone counts
-# as consumption; an unreadable pane is ambiguous, never a submitted proof.
-composer_cleared() {
-  local text="$1" observed
-  observed="$(herdr pane read "$pane" --source visible --lines 6 2>/dev/null)" || return 1
-  [[ "$observed" != *"$text"* ]]
 }
 
 inbox="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/inbox/$target"
 [[ -d "$inbox" ]] || exit 0
 for queued in "$inbox"/*; do
   [[ -f "$queued" ]] || continue
-  dialog_open && exit 75
   lock="$queued.lock"
   exec 9>"$lock"
   flock -n 9 || { exec 9>&-; continue; }
@@ -55,26 +48,12 @@ PY
     suffix=" [msg:$id kind:${values[1]}] Acknowledge with: herdr-ack $id acknowledged --by $target"
   fi
 
-  write_submitted() {
-    quote() { jq -Rn --arg value "$1" '$value'; }
-    temporary="$state.$$.tmp"
-    {
-      echo 'schema_version = 1'
-      echo "message_id = $(quote "$id")"
-      echo "target = $(quote "${values[0]}")"
-      echo "kind = $(quote "${values[1]}")"
-      echo "status = $(quote submitted)"
-      echo "artifact = $(quote "${values[2]}")"
-      echo "message = $(quote "${values[3]}")"
-      echo "created_at = $(quote "${values[4]}")"
-      echo "submitted_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-    } >"$temporary"
-    mv "$temporary" "$state"
+  clear_retry() {
     rm -f "$queued" "$lock"
-    echo "message_id=$id status=submitted"
+    echo "message_id=$id status=pending"
   }
 
-  write_pasted() {
+  write_pending() {
     quote() { jq -Rn --arg value "$1" '$value'; }
     temporary="$state.$$.tmp"
     {
@@ -82,7 +61,7 @@ PY
       echo "message_id = $(quote "$id")"
       echo "target = $(quote "${values[0]}")"
       echo "kind = $(quote "${values[1]}")"
-      echo "status = $(quote pasted)"
+      echo "status = $(quote pending)"
       echo "artifact = $(quote "${values[2]}")"
       echo "message = $(quote "${values[3]}")"
       echo "created_at = $(quote "${values[4]}")"
@@ -90,22 +69,32 @@ PY
     mv "$temporary" "$state"
   }
 
-  if [[ "${values[5]}" == "pasted" ]]; then
+  if [[ "${values[5]}" == "pending" ]]; then
     # Text already landed in the prompt from an earlier attempt. Never re-send: only
-    # recheck safety and press Enter once it is safe. Stay pasted for the next drain
-    # unless the composer is observed clear of the exact message.
-    if ! dialog_open && herdr pane run "$pane" "" >/dev/null 2>&1 && composer_cleared "${values[3]}"; then
-      write_submitted
-    fi
-  elif herdr agent send "$target" "${values[3]}$suffix" >/dev/null 2>&1 \
-    || herdr agent send "$pane" "${values[3]}$suffix" >/dev/null 2>&1; then
-    sleep 0.5
+    # recheck safety and press Enter once it is safe. Stays pending, in the inbox,
+    # for the next retry unless this attempt's own Enter transport succeeds.
     if dialog_open; then
-      write_pasted
-    elif herdr pane run "$pane" "" >/dev/null 2>&1 && composer_cleared "${values[3]}"; then
-      write_submitted
-    else
-      write_pasted
+      exec 9>&-
+      exit 75
+    fi
+    if herdr pane run "$pane" "" >/dev/null 2>&1; then
+      clear_retry
+    fi
+  else
+    if dialog_open; then
+      exec 9>&-
+      exit 75
+    fi
+    if herdr agent send "$target" "${values[3]}$suffix" >/dev/null 2>&1 \
+      || herdr agent send "$pane" "${values[3]}$suffix" >/dev/null 2>&1; then
+      sleep 0.5
+      if dialog_open; then
+        write_pending
+      elif herdr pane run "$pane" "" >/dev/null 2>&1; then
+        clear_retry
+      else
+        write_pending
+      fi
     fi
   fi
   exec 9>&-

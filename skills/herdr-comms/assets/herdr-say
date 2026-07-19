@@ -50,18 +50,12 @@ write_state() {
   mv "$temporary" "$state"
 }
 
+# herdr-say never infers composer state, consumption, or delivery from pane
+# transcript text. This read only detects a modal or question dialog, so it
+# never injects text or Enter into one; it never checks for the sent text itself.
 dialog_open() {
   herdr pane read "$pane" --source visible --lines 40 2>/dev/null \
     | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
-}
-
-# `pane run` can exit 0 (Enter was sent) while the exact text is still sitting
-# unsubmitted in the composer. Only a read that proves the text is gone counts
-# as consumption; an unreadable pane is ambiguous, never a submitted proof.
-composer_cleared() {
-  local text="$1" observed
-  observed="$(herdr pane read "$pane" --source visible --lines 6 2>/dev/null)" || return 1
-  [[ "$observed" != *"$text"* ]]
 }
 
 suffix=""
@@ -76,13 +70,12 @@ queue_and_exit() {
   exit 75
 }
 
-paste_pending_exit() {
-  # Text already landed in the prompt from this call's paste, but the prompt state
-  # changed (or Enter failed) before submission was verified safe. Never re-paste on
-  # retry: a drain of a "pasted" message only rechecks safety and presses Enter.
-  write_state pasted
+# A send or Enter transport attempt leaves the message pending, never re-pasted
+# on retry. Only an explicit herdr-ack from the recipient proves delivery.
+pending_deferred_exit() {
+  write_state pending
   printf '%s\n' "$id" >"$inbox/$id"
-  echo "herdr-say: paste landed, submission deferred message_id=$id" >&2
+  echo "herdr-say: transport attempted, delivery pending message_id=$id" >&2
   exit 75
 }
 
@@ -94,13 +87,13 @@ if herdr agent send "$target" "$message$suffix" >/dev/null 2>&1 \
   || herdr agent send "$pane" "$message$suffix" >/dev/null 2>&1; then
   sleep 0.5
   if dialog_open; then
-    paste_pending_exit
+    pending_deferred_exit
   fi
-  if herdr pane run "$pane" "" >/dev/null 2>&1 && composer_cleared "$message"; then
-    write_state submitted
-    echo "message_id=$id status=submitted"
+  if herdr pane run "$pane" "" >/dev/null 2>&1; then
+    write_state pending
+    echo "message_id=$id status=pending"
   else
-    paste_pending_exit
+    pending_deferred_exit
   fi
 else
   queue_and_exit

@@ -777,6 +777,49 @@ def parse_pass_output(provider: str, output: str) -> tuple[str, dict[str, Any]]:
     return session, _extract_json_object(message)
 
 
+def _codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"))
+
+
+def _read_codex_rollout_identity(session_id: str) -> dict[str, str]:
+    """Read the exact effective provider, model, and effort Codex itself recorded
+    for this session, from its own rollout file, never from the model's self-report."""
+    sessions_dir = _codex_home() / "sessions"
+    matches = sorted(sessions_dir.rglob(f"rollout-*-{session_id}.jsonl")) if sessions_dir.is_dir() else []
+    if not matches:
+        raise GateError(f"codex effective identity unprovable: no rollout session file for {session_id}")
+    provider = ""
+    model = ""
+    effort = ""
+    for line in matches[-1].read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if event.get("type") == "session_meta":
+            provider = str(payload.get("model_provider") or provider)
+        elif event.get("type") == "turn_context":
+            model = str(payload.get("model") or model)
+            effort = str(payload.get("effort") or effort)
+    if not provider or not model or not effort:
+        raise GateError(f"codex effective identity unprovable: rollout session file incomplete for {session_id}")
+    return {"provider": provider, "model": model, "effort": effort}
+
+
+def verify_codex_effective_identity(receipt: Mapping[str, Any], session_id: str) -> None:
+    runtime = receipt["runtime"]
+    actual = _read_codex_rollout_identity(session_id)
+    expected = {"provider": runtime["provider"], "model": runtime["model"], "effort": runtime["effort"]}
+    mismatches = [key for key in expected if actual[key] != expected[key]]
+    if mismatches:
+        raise GateError(f"codex effective identity mismatch: {', '.join(mismatches)}")
+
+
 def run_bootstrap(
     prepared: PreparedLaunch,
     *,
@@ -796,11 +839,14 @@ def run_bootstrap(
     )
     if bootstrap.returncode != 0:
         raise GateError(f"bootstrap provider failed: {bootstrap.stderr.strip()}")
-    session, acknowledgment = parse_bootstrap_output(receipt["runtime"]["provider"], bootstrap.stdout)
+    provider = receipt["runtime"]["provider"]
+    session, acknowledgment = parse_bootstrap_output(provider, bootstrap.stdout)
     claimed_session = acknowledgment.get("provider_session_id")
     if claimed_session not in {None, "", session}:
         raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
     acknowledgment["provider_session_id"] = session
+    if provider == "openai":
+        verify_codex_effective_identity(receipt, session)
     verify_bootstrap(prepared.receipt_path, acknowledgment)
     return session
 

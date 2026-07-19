@@ -42,8 +42,8 @@ current_status="${values[5]}"
   echo "herdr-ack: acknowledger does not match target" >&2
   exit 65
 }
-[[ "$current_status" == "submitted" ]] || {
-  echo "herdr-ack: message not yet submitted" >&2
+[[ "$current_status" == "pending" ]] || {
+  echo "herdr-ack: message not yet pending delivery" >&2
   exit 65
 }
 [[ -n "$artifact" ]] || artifact="${values[2]}"

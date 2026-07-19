@@ -21,12 +21,15 @@ herdr-say [--kind info|command|ruling|ownership|question] \
   [--artifact REF] TARGET MESSAGE
 ```
 
-Never hand-run raw send plus Enter. `herdr-say` reads the pane first. At a safe
-prompt it pastes, settles, and submits. At a modal it queues immediately and
-returns 75. Queued is not failed, submitted, acknowledged, or completed.
+Never hand-run raw send plus Enter. `herdr-say` reads the pane only to detect a
+modal, never to infer composer state, consumption, or delivery. At a safe
+prompt it pastes and presses Enter, leaving the message pending. At a modal it
+queues immediately and returns 75. Queued and pending are not acknowledged or
+completed.
 
-On every wake, run `herdr-drain <own-agent-name>`. It submits queued text only
-when the prompt is safe.
+On every wake, run `herdr-drain <own-agent-name>`. It retries transport only
+when the prompt is safe, and for a pending message it only presses Enter,
+never re-pastes text that already landed.
 
 Commands, rulings, ownership transfers, and blocking questions require:
 

@@ -150,7 +150,7 @@ fi
             with states[0].open("rb") as handle:
                 self.assertEqual("queued", tomllib.load(handle)["status"])
 
-    def test_say_defers_to_pasted_when_modal_appears_after_paste_and_never_presses_enter(self):
+    def test_say_defers_to_pending_when_modal_appears_after_paste_and_never_presses_enter(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
@@ -167,37 +167,38 @@ fi
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
             self.assertEqual(1, len(states))
             with states[0].open("rb") as handle:
-                self.assertEqual("pasted", tomllib.load(handle)["status"])
+                self.assertEqual("pending", tomllib.load(handle)["status"])
             message_id = states[0].stem
             inbox = Path(td) / "state/octo-lite/inbox/agent1" / message_id
             self.assertTrue(inbox.is_file())
 
-    def test_say_persists_pasted_when_pane_run_exits_zero_but_message_stays_in_composer(self):
-        # Adversarial boundary: `pane run` can return 0 (Enter was sent) while the
-        # exact message text is still visibly sitting in the composer, unsubmitted.
-        # herdr-say must observe consumption, not trust the exit code alone.
+    def test_say_marks_pending_after_exactly_two_pane_reads_never_checking_post_enter_text(self):
+        # herdr-say must never infer composer state or delivery from pane transcript
+        # text. Only two pane reads ever happen (the pre-send and pre-enter modal
+        # safety checks); a zero exit from `pane run` alone ends the attempt, with
+        # no third read of the pane to "verify" the composer or transcript.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
-            env["FAKE_PANE_TEXT_AFTER"] = "prompt still shows: do work"
-            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "2"
-            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            read_count_path = Path(td) / "pane-read-count"
+            env["FAKE_PANE_READ_COUNT"] = str(read_count_path)
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
                 env=env,
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(75, result.returncode)
+            self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(["send", "run"], log.read_text().splitlines())
+            self.assertIn("status=pending", result.stdout)
+            self.assertEqual(2, int(read_count_path.read_text()))
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
             self.assertEqual(1, len(states))
             with states[0].open("rb") as handle:
-                self.assertEqual("pasted", tomllib.load(handle)["status"])
+                self.assertEqual("pending", tomllib.load(handle)["status"])
             message_id = states[0].stem
-            inbox = Path(td) / "state/octo-lite/inbox/agent1" / message_id
-            self.assertTrue(inbox.is_file())
+            self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
 
-    def test_say_defers_to_pasted_when_enter_fails_and_does_not_claim_submitted(self):
+    def test_say_defers_to_pending_when_enter_fails_and_does_not_claim_delivered(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             env["FAKE_RUN_FAIL"] = "1"
@@ -211,9 +212,9 @@ fi
             self.assertEqual(["send", "run-failed"], log.read_text().splitlines())
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
             with states[0].open("rb") as handle:
-                self.assertEqual("pasted", tomllib.load(handle)["status"])
+                self.assertEqual("pending", tomllib.load(handle)["status"])
 
-    def test_drain_only_presses_enter_for_a_pasted_message_and_never_resends(self):
+    def test_drain_only_presses_enter_for_a_pending_message_and_never_resends(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
@@ -226,9 +227,9 @@ fi
             self.assertEqual(75, queue.returncode)
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
             with states[0].open("rb") as handle:
-                self.assertEqual("pasted", tomllib.load(handle)["status"])
+                self.assertEqual("pending", tomllib.load(handle)["status"])
 
-            # The pane is safe now: draining a pasted message must only press Enter,
+            # The pane is safe now: draining a pending message must only press Enter,
             # never re-send the text, or the pane would see the message twice.
             log.write_text("")
             drain_env = dict(env)
@@ -238,15 +239,14 @@ fi
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(["run"], log.read_text().splitlines())
             with states[0].open("rb") as handle:
-                self.assertEqual("submitted", tomllib.load(handle)["status"])
+                self.assertEqual("pending", tomllib.load(handle)["status"])
             message_id = states[0].stem
             self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
 
-    def test_drain_retries_enter_only_and_stays_pasted_when_composer_never_clears(self):
-        # Same adversarial boundary as herdr-say, hit from herdr-drain's "pasted"
-        # retry path: `pane run` exits 0 but the composer still shows the message.
-        # Drain must never re-send text on this path, only retry Enter, and must
-        # not claim submitted without observing the composer clear.
+    def test_drain_marks_pending_done_after_exactly_one_pane_read_never_checking_post_enter_text(self):
+        # Same boundary as herdr-say, hit from herdr-drain's retry path: a zero exit
+        # from `pane run` alone ends the retry loop, with no read of the pane after
+        # Enter to "verify" the composer or transcript.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
@@ -258,25 +258,52 @@ fi
             )
             self.assertEqual(75, queue.returncode)
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
-            with states[0].open("rb") as handle:
-                self.assertEqual("pasted", tomllib.load(handle)["status"])
             message_id = states[0].stem
 
-            # The modal is gone now, but the composer still visibly shows the message
-            # after Enter: drain must retry Enter only, and stay pasted, never resend.
             log.write_text("")
-            drain_env = dict(env, FAKE_PANE_TEXT="prompt still shows: do work")
+            read_count_path = Path(td) / "drain-pane-read-count"
+            drain_env = dict(env, FAKE_PANE_TEXT="ready", FAKE_PANE_READ_COUNT=str(read_count_path))
             drain_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
             drain_env.pop("FAKE_PANE_TEXT_AFTER", None)
             drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
             result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(["run"], log.read_text().splitlines())
+            self.assertEqual(1, int(read_count_path.read_text()))
             with states[0].open("rb") as handle:
-                self.assertEqual("pasted", tomllib.load(handle)["status"])
+                self.assertEqual("pending", tomllib.load(handle)["status"])
+            self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
+
+    def test_drain_retries_enter_only_and_stays_pending_when_enter_transport_fails(self):
+        # A genuine transport-level failure (nonzero exit from `pane run` itself,
+        # never a pane-text match) keeps the message pending and in the inbox for
+        # the next retry, and drain must never re-send the text on this path.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
+            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
+            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+
+            log.write_text("")
+            drain_env = dict(env, FAKE_PANE_TEXT="ready", FAKE_RUN_FAIL="1")
+            drain_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
+            drain_env.pop("FAKE_PANE_TEXT_AFTER", None)
+            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
+            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["run-failed"], log.read_text().splitlines())
+            with states[0].open("rb") as handle:
+                self.assertEqual("pending", tomllib.load(handle)["status"])
             self.assertTrue((Path(td) / "state/octo-lite/inbox/agent1" / message_id).is_file())
 
-    def test_drain_leaves_a_pasted_message_queued_while_the_modal_is_still_open(self):
+    def test_drain_leaves_a_pending_message_queued_while_the_modal_is_still_open(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
@@ -299,10 +326,10 @@ fi
             self.assertEqual(75, result.returncode)
             self.assertEqual([], log.read_text().splitlines())
             with states[0].open("rb") as handle:
-                self.assertEqual("pasted", tomllib.load(handle)["status"])
+                self.assertEqual("pending", tomllib.load(handle)["status"])
             self.assertTrue((Path(td) / "state/octo-lite/inbox/agent1" / message_id).is_file())
 
-    def test_safe_prompt_submits_then_requires_ack(self):
+    def test_safe_prompt_marks_pending_then_requires_ack(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             result = subprocess.run(
@@ -313,6 +340,7 @@ fi
                 text=True,
             )
             self.assertEqual(["send", "run"], log.read_text().splitlines())
+            self.assertIn("status=pending", result.stdout)
             message_id = result.stdout.split("message_id=", 1)[1].split()[0]
             subprocess.run(
                 ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
@@ -323,7 +351,25 @@ fi
             with state.open("rb") as handle:
                 self.assertEqual("acknowledged", tomllib.load(handle)["status"])
 
-    def test_send_queues_on_transport_failure_without_recording_false_submitted(self):
+    def test_info_kind_never_carries_an_ack_instruction_or_claims_acknowledged(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "fyi status update"],
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("status=pending", result.stdout)
+            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
+            state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
+            with state.open("rb") as handle:
+                stored = tomllib.load(handle)
+            self.assertEqual("pending", stored["status"])
+            self.assertNotIn("Acknowledge with", stored["message"])
+
+    def test_send_queues_on_transport_failure_without_recording_false_pending(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             env["FAKE_SEND_FAIL"] = "1"
@@ -378,7 +424,7 @@ fi
             self.assertIn("send", log.read_text().splitlines())
             self.assertFalse(inbox_item.exists())
 
-    def test_ack_requires_prior_submission(self):
+    def test_ack_requires_a_prior_transport_attempt(self):
         with tempfile.TemporaryDirectory() as td:
             env, _ = self.environment(td, "Quick safety check: trust this folder")
             queued = subprocess.run(

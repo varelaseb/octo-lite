@@ -34,15 +34,17 @@ at them with symlinks:
 ~/.codex/AGENTS.md -> profile/AGENTS.md
 ~/.codex/octo-lite/roles.toml -> roles.toml
 ~/.codex/octo-lite/roles/<role>.md -> roles/<role>.md
-~/.codex/octo-lite/adapters/<role>.toml -> agents/<role>.toml
 ~/.codex/skills/<skill> -> skills/<skill>
 ~/.agents/skills/<skill> -> skills/<skill>
 ```
 
+Codex has no generated custom-agent adapter. An OpenAI-backed role pass is one
+explicit `codex exec` relay launched by octo-launch, carrying the canonical
+role contract as the exec prompt; see ADR 0001.
+
 The Claude Code surface reuses the same source repo. Skills share the SKILL.md
-format and symlink directly, but subagents use a different format
-(Markdown + YAML frontmatter instead of Codex TOML), so the repo carries
-parallel `agents/*.md` profiles that install the same way:
+format and symlink directly. Claude uses generated Markdown + YAML frontmatter
+subagent adapters, which install the same way:
 
 ```text
 ~/.claude/CLAUDE.md -> profile/AGENTS.md

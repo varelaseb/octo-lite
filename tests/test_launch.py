@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import tomllib
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 from octo_lite.launch import (
     GateError,
@@ -15,6 +17,7 @@ from octo_lite.launch import (
     parse_pass_output,
     prepare_launch,
     render_receipt,
+    run_bootstrap,
     run_launch,
     verify_bootstrap,
 )
@@ -22,6 +25,29 @@ from octo_lite.runtime import exact_fingerprint, launch_revision, verdict_body
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def openai_provider_output(session_id: str, message: dict) -> str:
+    lines = [
+        json.dumps({"type": "thread.started", "thread_id": session_id}),
+        json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(message)}}),
+    ]
+    return "\n".join(lines)
+
+
+def write_codex_rollout(codex_home: Path, session_id: str, *, model: str, effort: str, provider: str = "openai") -> None:
+    sessions_dir = codex_home / "sessions" / "2026" / "07" / "19"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    rollout = sessions_dir / f"rollout-2026-07-19T00-00-00-{session_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "session_meta", "payload": {"session_id": session_id, "model_provider": provider}}),
+                json.dumps({"type": "turn_context", "payload": {"model": model, "effort": effort}}),
+            ]
+        )
+        + "\n"
+    )
 
 
 class LaunchBoundaryTests(unittest.TestCase):
@@ -473,6 +499,62 @@ class LaunchBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "worktree creation failed"):
             self.prepare()
         self.assertFalse(self.worktree.exists())
+
+    def test_run_bootstrap_fails_closed_when_openai_effective_identity_is_unprovable(self) -> None:
+        prepared = self.prepare(role_name="code-reviewer", capabilities=set())
+        session_id = str(uuid.uuid4())
+        ack = prepared.expected_ack(session_id)
+        ack.pop("provider_session_id")
+
+        def runner(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout=openai_provider_output(session_id, ack), stderr="")
+
+        with tempfile.TemporaryDirectory() as codex_home:
+            with mock.patch.dict(os.environ, {"CODEX_HOME": codex_home}):
+                with self.assertRaisesRegex(GateError, "codex effective identity"):
+                    run_bootstrap(prepared, runner=runner)
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertFalse(readback["bootstrap"]["verified"])
+
+    def test_run_bootstrap_fails_closed_when_openai_effective_identity_mismatches(self) -> None:
+        prepared = self.prepare(role_name="code-reviewer", capabilities=set())
+        session_id = str(uuid.uuid4())
+        ack = prepared.expected_ack(session_id)
+        ack.pop("provider_session_id")
+
+        def runner(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout=openai_provider_output(session_id, ack), stderr="")
+
+        with tempfile.TemporaryDirectory() as codex_home:
+            write_codex_rollout(Path(codex_home), session_id, model="gpt-4.1-mini", effort="high")
+            with mock.patch.dict(os.environ, {"CODEX_HOME": codex_home}):
+                with self.assertRaisesRegex(GateError, "codex effective identity mismatch"):
+                    run_bootstrap(prepared, runner=runner)
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertFalse(readback["bootstrap"]["verified"])
+
+        with tempfile.TemporaryDirectory() as codex_home:
+            write_codex_rollout(Path(codex_home), session_id, model="gpt-5.6-sol", effort="low")
+            with mock.patch.dict(os.environ, {"CODEX_HOME": codex_home}):
+                with self.assertRaisesRegex(GateError, "codex effective identity mismatch"):
+                    run_bootstrap(prepared, runner=runner)
+
+    def test_run_bootstrap_succeeds_when_openai_effective_identity_is_proven(self) -> None:
+        prepared = self.prepare(role_name="code-reviewer", capabilities=set())
+        session_id = str(uuid.uuid4())
+        ack = prepared.expected_ack(session_id)
+        ack.pop("provider_session_id")
+
+        def runner(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout=openai_provider_output(session_id, ack), stderr="")
+
+        with tempfile.TemporaryDirectory() as codex_home:
+            write_codex_rollout(Path(codex_home), session_id, model="gpt-5.6-sol", effort="high")
+            with mock.patch.dict(os.environ, {"CODEX_HOME": codex_home}):
+                returned_session = run_bootstrap(prepared, runner=runner)
+        self.assertEqual(session_id, returned_session)
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertTrue(readback["bootstrap"]["verified"])
 
     def test_run_launch_fails_closed_when_mutation_call_returns_a_different_session(self) -> None:
         prepared = self.prepare()

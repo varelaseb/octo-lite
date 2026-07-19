@@ -42,6 +42,14 @@ legacy_links=(
   ".claude/agents/octo-lite-reviewer.md"
   ".codex/agents/octo-lite-implementer.toml"
   ".codex/agents/octo-lite-reviewer.toml"
+  ".codex/agents/meta-operator.toml"
+  ".codex/agents/orchestrator.toml"
+  ".codex/agents/shaping-reviewer.toml"
+  ".codex/agents/implementer.toml"
+  ".codex/agents/code-reviewer.toml"
+  ".codex/agents/qa-capture.toml"
+  ".codex/agents/qa-reviewer.toml"
+  ".codex/agents/reconciler.toml"
 )
 
 migrate_legacy_link() {
@@ -93,10 +101,6 @@ done
 for source in "$root"/agents/*.md; do
   name="$(basename "$source")"
   link_one "$source" "$prefix/.claude/agents/$name"
-done
-for source in "$root"/agents/*.toml; do
-  name="$(basename "$source")"
-  link_one "$source" "$prefix/.codex/agents/$name"
 done
 
 for source in "$root"/scripts/*; do

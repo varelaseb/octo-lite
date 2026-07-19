@@ -19,6 +19,18 @@ class CutoverConformanceTests(unittest.TestCase):
             self.assertIn("Be extremely concise. Sacrifice grammar for the sake of concision.", text, path.name)
             self.assertIn("No em-dashes or en-dashes. Ever.", text, path.name)
 
+    def test_herdr_comms_skill_states_ack_only_delivery_wiring(self) -> None:
+        text = (ROOT / "skills/herdr-comms/SKILL.md").read_text()
+        self.assertIn("leaving the message pending", text)
+        self.assertIn("Queued and pending are not acknowledged or", text)
+        self.assertIn("never re-pastes text", text)
+
+    def test_qa_evidence_capture_skill_states_screenshot_default_wiring(self) -> None:
+        text = (ROOT / "skills/qa-evidence-capture/SKILL.md").read_text()
+        self.assertIn("Screenshots are the default proof", text)
+        self.assertIn("Video only when", text)
+        self.assertIn("Backend-only work skips browser capture", text)
+
     def test_active_instructions_have_no_unicode_dashes_or_target_leaks(self) -> None:
         forbidden = ("Turbo-Outreach", "TopicFinder", "codex-uploads", "Notion")
         for root in ACTIVE_TEXT:
@@ -110,6 +122,43 @@ class CutoverConformanceTests(unittest.TestCase):
             self.assertTrue(unrelated.is_file())
             self.assertFalse(unrelated.is_symlink())
             self.assertEqual("not ours\n", unrelated.read_text())
+
+    CODEX_AGENT_LEGACY_LINKS = tuple(
+        f".codex/agents/{role}.toml"
+        for role in (
+            "meta-operator", "orchestrator", "shaping-reviewer", "implementer",
+            "code-reviewer", "qa-capture", "qa-reviewer", "reconciler",
+        )
+    )
+
+    def test_install_migrates_dangling_codex_role_adapter_links_for_all_eight_roles(self) -> None:
+        # Codex custom agents are removed: agents/<role>.toml no longer exists, so
+        # every previously installed per-role Codex adapter link is now dangling.
+        # Install must migrate each of the eight exact former names and never touch
+        # an unrelated file that happens to sit at one of those paths.
+        installer = ROOT / "scripts/install-octo-lite"
+        with tempfile.TemporaryDirectory() as td:
+            prefix = Path(td)
+            for relative in self.CODEX_AGENT_LEGACY_LINKS:
+                target = prefix / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # agents/<role>.toml no longer exists at all, so a real prior
+                # install's link at this exact name is now dangling.
+                target.symlink_to(ROOT / "agents" / Path(relative).name)
+
+            unrelated = prefix / ".codex/agents/unrelated-role.toml"
+            unrelated.parent.mkdir(parents=True, exist_ok=True)
+            unrelated.write_text("not ours\n")
+
+            subprocess.run([str(installer), "--prefix", str(prefix)], check=True, capture_output=True, text=True)
+            for relative in self.CODEX_AGENT_LEGACY_LINKS:
+                path = prefix / relative
+                self.assertFalse(path.is_symlink() or path.exists(), relative)
+            self.assertTrue(unrelated.is_file())
+            self.assertFalse(unrelated.is_symlink())
+            self.assertEqual("not ours\n", unrelated.read_text())
+
+            subprocess.run([str(installer), "--prefix", str(prefix), "--check"], check=True, capture_output=True, text=True)
 
     def test_repo_claude_entrypoint_is_relative_symlink(self) -> None:
         entry = ROOT / "CLAUDE.md"

@@ -23,7 +23,6 @@ from octo_lite.runtime import (  # noqa: E402
     normalize_launch_access,
     record_acceptance,
     record_failure,
-    recover_dead_owner,
     safe_cleanup,
     initialize_stream,
     update_stream_brief,
@@ -199,60 +198,6 @@ def command_owner(args) -> dict:
     )
 
 
-def _herdr_json(argv: list[str]) -> tuple[int, dict]:
-    result = subprocess.run(argv, capture_output=True, text=True)
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise GateError(f"herdr probe parse failure: {error}") from error
-    return result.returncode, payload
-
-
-def probe_herdr_route(route: str) -> dict:
-    argv = ["herdr", "pane", "get", route] if ":p" in route else ["herdr", "agent", "get", route]
-    returncode, payload = _herdr_json(argv)
-    if returncode == 0:
-        return {"checked": route, "present": True}
-    if payload.get("error", {}).get("code") in {"pane_not_found", "agent_not_found"}:
-        return {"checked": route, "present": False}
-    raise GateError(f"herdr route probe failed: {payload}")
-
-
-def probe_provider_session(session_id: str) -> dict:
-    returncode, payload = _herdr_json(["herdr", "pane", "list"])
-    if returncode != 0:
-        raise GateError(f"herdr pane list failed: {payload}")
-    panes = payload.get("result", {}).get("panes")
-    if not isinstance(panes, list):
-        raise GateError("herdr pane list result malformed")
-    live = any(
-        isinstance(pane, dict) and pane.get("agent_session", {}).get("value") == session_id
-        for pane in panes
-    )
-    return {"checked": session_id, "present": live}
-
-
-def command_owner_recover(args) -> dict:
-    handoff = Path(args.handoff)
-    if not handoff.is_file():
-        raise GateError("immutable handoff missing")
-    return recover_dead_owner(
-        Path(args.owner_file),
-        args.expected_owner,
-        args.expected_route,
-        args.expected_revision,
-        args.new_owner,
-        args.new_route,
-        args.revision,
-        str(Path(args.control_dir).resolve()),
-        probe_provider_session=probe_provider_session,
-        probe_herdr_route=probe_herdr_route,
-        operator_authorized=args.operator_authorized,
-        handoff=handoff,
-        successor_readiness_path=Path(args.successor_readiness),
-    )
-
-
 def command_successor_ready(args) -> dict:
     return declare_successor_ready(
         Path(args.path), caller=args.caller, session_id=args.session_id, handoff_revision=args.handoff_revision,
@@ -359,7 +304,7 @@ def command_stream_status(args) -> dict:
         )
     if result.returncode not in {0, 75}:
         raise GateError("parent notification failed")
-    state["notification"] = "queued" if result.returncode == 75 else "submitted"
+    state["notification"] = "queued" if result.returncode == 75 else "pending"
     return state
 
 
@@ -450,20 +395,6 @@ def parser() -> argparse.ArgumentParser:
     owner.add_argument("--handoff", required=True)
     owner.add_argument("--successor-readiness", required=True)
     owner.set_defaults(run=command_owner)
-
-    recover = sub.add_parser("owner-recover")
-    recover.add_argument("--owner-file", required=True)
-    recover.add_argument("--expected-owner", required=True)
-    recover.add_argument("--expected-route", required=True)
-    recover.add_argument("--expected-revision", type=int, required=True)
-    recover.add_argument("--new-owner", required=True)
-    recover.add_argument("--new-route", required=True)
-    recover.add_argument("--revision", type=int, required=True)
-    recover.add_argument("--control-dir", required=True)
-    recover.add_argument("--handoff", required=True)
-    recover.add_argument("--successor-readiness", required=True)
-    recover.add_argument("--operator-authorized", action="store_true")
-    recover.set_defaults(run=command_owner_recover)
 
     successor_ready = sub.add_parser("successor-ready")
     successor_ready.add_argument("--path", required=True)

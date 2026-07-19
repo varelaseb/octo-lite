@@ -119,7 +119,10 @@
 <p data-anchor="role-machine-map"><code>roles.toml</code> exclusively owns provider, exact model, effort, permission mode, tools, required and conditional skills, and contract path.</p>
 <p data-anchor="role-authority-split">Role prose owns responsibilities, authority, stop conditions, inputs, and outputs without repeating machine configuration.</p>
 <p data-anchor="role-resolver">One small resolver combines the canonical role contract and machine mapping before every Workflow agent invocation or Sol relay.</p>
-<p data-anchor="role-adapters">Claude Markdown and Codex TOML adapters are generated launcher inputs and diagnostic surfaces, never alternate role-bearing spawn paths.</p>
+<p data-anchor="role-adapters">Claude Markdown adapters are generated launcher inputs and diagnostic surfaces, never alternate role-bearing spawn paths.</p>
+<p data-anchor="role-no-codex-adapter">Codex has no generated custom-agent adapter; Codex custom agents are not part of correctness or fallback for any role.</p>
+<p data-anchor="role-openai-relay">An OpenAI-backed role pass is one explicit codex exec relay launched by octo-launch, carrying exact model, effort, service tier, worktree, receipt, and the canonical contract as the exec prompt, and it never discovers or depends on a Codex custom agent.</p>
+<p data-anchor="role-openai-fail-closed">The relay fails closed unless the exact effective provider, model, and effort are independently read back from the Codex session's own rollout record before any mutation.</p>
 <p data-anchor="role-no-prompt-copy">Claude Workflows load canonical role prose verbatim and Sol relays receive the same prose without copied workflow literals.</p>
 <p data-anchor="role-skill-map">The launcher loads every required skill plus only matched conditional skills and records the actual resolved set.</p>
 <p data-anchor="role-receipt">The launch receipt records role path and git blob, <code>roles.toml</code> revision, exact runtime values, and resolved skills.</p>
@@ -272,12 +275,14 @@
 
 <section data-anchor="messaging">
 <h3>Messaging</h3>
-<p data-anchor="message-herdr-say">Every Herdr message uses <code>herdr-say</code>, which submits at a verified safe prompt or durably queues without acting on a modal.</p>
-<p data-anchor="message-queued-submit">Queued text may auto-submit when the recipient reaches a verified safe prompt.</p>
-<p data-anchor="message-visible">Visible, injected, or queued TUI text is not acknowledgment.</p>
+<p data-anchor="message-herdr-say">Every Herdr message uses <code>herdr-say</code>, which attempts transport at a verified safe prompt or durably queues without acting on a modal.</p>
+<p data-anchor="message-no-composer-inference"><code>herdr-say</code> and <code>herdr-drain</code> never infer composer state, consumption, or delivery from pane transcript text.</p>
+<p data-anchor="message-pending">A send or Enter transport attempt leaves a message pending; retry reuses the same message ID, retries transport only, and never re-pastes text that already landed.</p>
+<p data-anchor="message-visible">Visible, injected, pending, or queued TUI text is not acknowledgment.</p>
 <p data-anchor="message-ack">Commands, operator rulings, ownership transfers, and blocking questions require explicit recipient acknowledgment before dependent action.</p>
 <p data-anchor="message-no-timeout">Acknowledgment has no arbitrary timeout because dependency, not duration, determines blocking.</p>
 <p data-anchor="message-complete">Completion requires the named durable artifact or observable outcome, not acknowledgment alone.</p>
+<p data-anchor="message-info-best-effort">An info-kind message stays best-effort transport and never claims acknowledged delivery.</p>
 </section>
 
 <section data-anchor="supervision">
@@ -303,8 +308,8 @@
 <p data-anchor="handoff-atomic">A locked expected-owner and revision check plus atomic TOML rename is the sole authority commit.</p>
 <p data-anchor="handoff-routing">The timer and top-level child notifications resolve the owner through <code>operator-say</code>, so the next message observes the same atomic commit.</p>
 <p data-anchor="handoff-old-owner">The old operator becomes read-only at commit and may only forward late direct messages until cleanup.</p>
-<p data-anchor="handoff-dead-owner">Dead-owner takeover requires explicit operator authorization, verified dead or absent exact session identity, fresh reconciliation, and the same atomic replace.</p>
-<p data-anchor="handoff-no-failover">Ambiguous liveness blocks and no timeout or automatic failover transfers authority.</p>
+<p data-anchor="handoff-dead-owner">A dead or ambiguous owner record has no agent-callable recovery path; only an explicit manual operator takeover outside role authority may replace it.</p>
+<p data-anchor="handoff-no-failover">No probe, self-asserted authorization, timeout, or automatic failover transfers authority; a blocked owner record stays blocked until manual takeover.</p>
 </section>
 
 <section data-anchor="workspace-retry">
@@ -355,6 +360,7 @@
 <h2>Interfaces and contracts</h2>
 <section data-anchor="launch-interface">
 <h3>Role launch</h3>
+<p data-anchor="launch-correctness-path">octo-launch is the sole mechanism that bootstraps, verifies, and runs a role pass; a Claude Workflow performs deterministic gating over an already-completed, receipt-bound pass result and never spawns a worker session itself.</p>
 <p data-anchor="launch-readback">The launch helper performs final exact Linear and PR and HEAD readback before dispatch.</p>
 <p data-anchor="launch-worktree">It provisions a fresh contained worktree from the declared base and starts the exact role, model, effort, mode, and skill set.</p>
 <p data-anchor="launch-identity">It captures the exact provider session ID and requires a compact bootstrap acknowledgment before mutation.</p>
@@ -407,7 +413,7 @@ handoffs/0001.md</code></pre>
 <p data-anchor="edge-evidence-missing">A generated packet that is not readable on the served evidence site is not ready for acceptance.</p>
 <p data-anchor="edge-self-review">A PR-owning GitHub identity does not block review because the canonical gate is the exact-HEAD verdict comment, never a fabricated formal review state.</p>
 <p data-anchor="edge-trace-corrupt">A malformed trace blocks the relevant CI contract check but does not retroactively invalidate authoritative gate artifacts.</p>
-<p data-anchor="edge-owner-corrupt">A missing or ambiguous owner record blocks operator-owned mutations until explicit recovery.</p>
+<p data-anchor="edge-owner-corrupt">A missing or ambiguous owner record blocks every operator-owned mutation until manual operator takeover outside role authority; no role or command may self-authorize recovery.</p>
 </section>
 
 <section data-anchor="constraints">
@@ -427,6 +433,8 @@ handoffs/0001.md</code></pre>
 <p data-anchor="non-goal-langfuse">Running Langfuse or OpenTelemetry infrastructure is out of scope.</p>
 <p data-anchor="non-goal-test-matrix">Building a broad Cartesian workflow conformance matrix is out of scope.</p>
 <p data-anchor="non-goal-transcript">Making transcript replay, memory, pane pixels, or queued text a correctness dependency is out of scope.</p>
+<p data-anchor="non-goal-owner-recovery-service">Building an agent-callable dead-owner recovery command, liveness-probe authority, or cryptographic operator-authentication service is out of scope.</p>
+<p data-anchor="non-goal-codex-agent">Depending on Codex custom-agent discovery for role identity or fallback is out of scope.</p>
 </section>
 
 <section data-anchor="open-questions">
@@ -438,7 +446,8 @@ handoffs/0001.md</code></pre>
 <h2>Decision log and references</h2>
 <p data-anchor="source-issue">The coordinated cutover carrier is <a href="https://linear.app/martellventures/issue/TUR-443">TUR-443</a>.</p>
 <p data-anchor="source-slices">Bounded delivery slices are <a href="https://linear.app/martellventures/issue/TUR-445">TUR-445</a>, <a href="https://linear.app/martellventures/issue/TUR-447">TUR-447</a>, <a href="https://linear.app/martellventures/issue/TUR-449">TUR-449</a>, <a href="https://linear.app/martellventures/issue/TUR-446">TUR-446</a>, <a href="https://linear.app/martellventures/issue/TUR-444">TUR-444</a>, and <a href="https://linear.app/martellventures/issue/TUR-448">TUR-448</a>.</p>
-<p data-anchor="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 102.</p>
+<p data-anchor="boundary-adr">Decision 104's boundaries are signed in the canonical ADR at <a href="../adr/0001-operating-model-boundaries.spec.html">0001-operating-model-boundaries.spec.html</a>.</p>
+<p data-anchor="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 104.</p>
 <p data-anchor="audit-draft">The integrated working narrative is preserved in <a href="../../docs/operating-model-audit-2026-07-17/operating-model-draft.md">operating-model-draft.md</a>.</p>
 <p data-anchor="failure-catalog">Observed failure modes are preserved in <a href="../../docs/operating-model-audit-2026-07-17/failure-catalog.md">failure-catalog.md</a>.</p>
 <p data-anchor="symphony-assessment">The reference-only Symphony comparison is preserved in <a href="../../docs/operating-model-audit-2026-07-17/symphony-assessment.md">symphony-assessment.md</a>.</p>

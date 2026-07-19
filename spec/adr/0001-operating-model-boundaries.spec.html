@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0001: operating model boundaries</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header">
+<h1>ADR 0001: operating model boundaries</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/operating-model.spec.html">operating model</a> / ADR 0001</nav>
+<p>Boundary decisions closing the fresh exact-head review at PR 6 head <code>3a2c90edff3be3b8f2a71c82b7956aa1fc1a244e</code>.</p>
+</header>
+
+<section data-anchor="status">
+<h2>Status</h2>
+<p data-anchor="status-value">Accepted.</p>
+</section>
+
+<section data-anchor="context">
+<h2>Context</h2>
+<p data-anchor="context-review">A fresh exact-head review of PR 6 found four executable divergences between claimed and actual behavior.</p>
+<p data-anchor="context-codex">Generated Codex custom-agent files loaded with a null role, a generic model, and generic instructions in a live smoke test, so role identity never reached the Codex session.</p>
+<p data-anchor="context-codex-skills">The same generated files used relative <code>skills.config</code> paths that resolve only from <code>~/.codex/agents</code>, missing the installed skill locations entirely.</p>
+<p data-anchor="context-herdr">herdr-say and herdr-drain inferred composer consumption by grepping recent pane text for the sent message, so a successful send whose transcript echoed the message stayed <code>pasted</code> forever.</p>
+<p data-anchor="context-owner">Dead-owner recovery combined a real liveness probe with a caller-supplied boolean <code>--operator-authorized</code> flag, so any caller could self-assert operator authorization.</p>
+<p data-anchor="context-decisions">The canonical spec closed its decision chronology at Decision 102 while the audit packet already recorded Decisions 103 and 104, and no ADR existed to sign the boundary.</p>
+<p data-anchor="context-churn">Five prior fix passes iterated machinery around these paths instead of removing the unreliable surface, exceeding the three-cycle return rule.</p>
+</section>
+
+<section data-anchor="decision">
+<h2>Decision</h2>
+
+<section data-anchor="decision-adapters">
+<h3>Generated adapters</h3>
+<p data-anchor="decision-claude-only">Adapter generation renders Claude Markdown only; no Codex custom-agent file is generated, installed, or checked.</p>
+<p data-anchor="decision-install-migration">Install migrates a dangling or repo-owned legacy Codex custom-agent link at each of the eight exact former role names and leaves any other file at that path untouched.</p>
+</section>
+
+<section data-anchor="decision-relay">
+<h3>OpenAI role launch</h3>
+<p data-anchor="decision-exec-relay">An OpenAI-backed role pass is one explicit <code>codex exec</code> relay launched by octo-launch, carrying exact model, effort, service tier, worktree, receipt, and the canonical role contract as the exec prompt.</p>
+<p data-anchor="decision-no-discovery">The relay never discovers, references, or depends on a Codex custom agent.</p>
+<p data-anchor="decision-fail-closed-identity">The relay fails closed unless the exact effective provider, model, and effort are independently read back from the Codex session's own rollout record before mutation proceeds.</p>
+<p data-anchor="decision-identity-source">Effective identity is read from the <code>session_meta</code> and latest <code>turn_context</code> entries of the exact session's rollout file, never from the model's own self-report.</p>
+</section>
+
+<section data-anchor="decision-herdr">
+<h3>Herdr delivery proof</h3>
+<p data-anchor="decision-no-transcript-inference">herdr-say and herdr-drain never read pane transcript text to infer composer state, consumption, or delivery.</p>
+<p data-anchor="decision-pending">A send or Enter transport attempt leaves a message <code>pending</code>; only the tool call's own exit status decides retry, never a text match.</p>
+<p data-anchor="decision-ack-only">Only an explicit herdr-ack from the exact recipient proves delivery for a correctness-bearing message.</p>
+<p data-anchor="decision-retry-same-id">Retry reuses the same message ID, presses Enter or retries transport only, and never re-pastes text that already landed.</p>
+<p data-anchor="decision-info-best-effort">An info-kind message stays best-effort and never claims acknowledged delivery.</p>
+</section>
+
+<section data-anchor="decision-owner">
+<h3>Dead-owner handling</h3>
+<p data-anchor="decision-no-recover-command">octo-control has no dead-owner recovery command and no agent-callable path asserts operator authorization.</p>
+<p data-anchor="decision-manual-takeover">A dead or ambiguous owner record blocks every operator-owned mutation until an explicit manual operator takeover outside role authority.</p>
+<p data-anchor="decision-no-invented-auth">No cryptographic operator-authentication mechanism or recovery service is introduced to compensate.</p>
+</section>
+
+<section data-anchor="decision-chronology">
+<h3>Decision chronology</h3>
+<p data-anchor="decision-through-104">The canonical decision chronology in <code>optimal-model-grill.md</code> is authoritative through Decision 104.</p>
+</section>
+</section>
+
+<section data-anchor="consequences">
+<h2>Consequences</h2>
+<p data-anchor="consequence-codex-surface">Codex custom-agent discovery, <code>skills.config</code> paths, and per-role generated <code>.toml</code> diagnostics are removed load-bearing surfaces; only Claude Markdown adapters remain generated.</p>
+<p data-anchor="consequence-identity-proof">OpenAI role identity is provable from Codex's own session record instead of assumed from CLI exit status alone.</p>
+<p data-anchor="consequence-herdr-honesty">Herdr delivery status can no longer silently misreport a successful send as unsubmitted, or an unconfirmed one as submitted; a pending message stays honestly unconfirmed until acknowledged.</p>
+<p data-anchor="consequence-owner-availability">A dead or ambiguous owner record is a hard stop that trades availability for removing self-asserted agent authority.</p>
+<p data-anchor="consequence-spec-closed">The spec decision-log reference and this ADR agree, closing the conflict the review found blocking.</p>
+</section>
+
+<section data-anchor="links">
+<h2>Links</h2>
+<p data-anchor="link-spec">Canonical spec: <a href="../domains/operating-model.spec.html">operating-model.spec.html</a>, sections Role and model topology, Role launch, Messaging, and Operator handoff.</p>
+<p data-anchor="link-review">Closes the findings in the PR 6 fresh exact-head review posted 2026-07-19T05:30:19Z.</p>
+<p data-anchor="link-code">Implementing surfaces: <code>workflows/lib/role_resolver.py</code>, <code>octo_lite/launch.py</code>, <code>skills/herdr-comms/assets/herdr-say</code>, <code>skills/herdr-comms/assets/herdr-drain</code>, <code>skills/herdr-comms/assets/herdr-ack</code>, <code>octo_lite/runtime.py</code>, <code>scripts/octo-control</code>, <code>scripts/install-octo-lite</code>.</p>
+</section>
+</article>
+</body>
+</html>

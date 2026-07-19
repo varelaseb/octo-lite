@@ -69,15 +69,15 @@ Counts are distinct paths inside each repository.
 | --- | --- | ---: |
 | octo-lite | Standing authority and loading | 4 |
 | octo-lite | Canonical role contracts | 8 |
-| octo-lite | Generated launch adapters | 16 |
-| octo-lite | Skill contracts | 17 |
+| octo-lite | Generated launch adapters | 8 |
+| octo-lite | Skill contracts | 18 |
 | octo-lite | Skill discovery descriptors | 4 |
 | octo-lite | Skill assets, templates, and launch prompts | 14 |
-| octo-lite | Canonical specs | 2 |
+| octo-lite | Canonical specs | 3 |
 | octo-lite | Product docs and audit context | 13 |
 | octo-lite | Runtime wiring and prompt builders | 14 |
 | octo-lite | Conformance tests and fixtures | 14 |
-| octo-lite | Total | 106 |
+| octo-lite | Total | 100 |
 | Turbo | Standing authority and loading | 5 |
 | Turbo | Canonical specs | 24 |
 | Turbo | Repo skill and skill lock | 2 |
@@ -114,26 +114,20 @@ CLAUDE.md is a tracked relative symlink to AGENTS.md.
 - roles/reconciler.md
 - roles/shaping-reviewer.md
 
-### Generated launch adapters, 16
+### Generated launch adapters, 8
+
+Claude Markdown only. Codex has no generated custom-agent adapter; see ADR 0001.
 
 - agents/code-reviewer.md
-- agents/code-reviewer.toml
 - agents/implementer.md
-- agents/implementer.toml
 - agents/meta-operator.md
-- agents/meta-operator.toml
 - agents/orchestrator.md
-- agents/orchestrator.toml
 - agents/qa-capture.md
-- agents/qa-capture.toml
 - agents/qa-reviewer.md
-- agents/qa-reviewer.toml
 - agents/reconciler.md
-- agents/reconciler.toml
 - agents/shaping-reviewer.md
-- agents/shaping-reviewer.toml
 
-### Skill contracts, 17
+### Skill contracts, 18
 
 - skills/commit/SKILL.md
 - skills/frontend-design/SKILL.md
@@ -150,6 +144,7 @@ CLAUDE.md is a tracked relative symlink to AGENTS.md.
 - skills/pull/SKILL.md
 - skills/push/SKILL.md
 - skills/python/SKILL.md
+- skills/qa-evidence-capture/SKILL.md
 - skills/tdd/SKILL.md
 - skills/typescript/SKILL.md
 
@@ -177,10 +172,11 @@ CLAUDE.md is a tracked relative symlink to AGENTS.md.
 - skills/octo-lite-issue-shaper/assets/spec-index.md
 - skills/octo-lite-loop/assets/handoff.md
 
-### Canonical specs, 2
+### Canonical specs, 3
 
 - spec/index.spec.html
 - spec/domains/operating-model.spec.html
+- spec/adr/0001-operating-model-boundaries.spec.html
 
 ### Product docs and audit context, 13
 
@@ -579,6 +575,7 @@ Nested tool plans, 2:
 12. This revision (PR 6 fix pass 4) reconciled the pinned Turbo head to `c0c27be9f3661a0007aeef49e9dd06f663b1e4ee` (tree `c85d86616fbad1b6302484b566b520ecfd2fae75`). Diffed against note 11's `83b6b507` pin: zero files added or removed, only content edits inside five already-listed `tools/evidence-site/*` files; every Turbo category and the 282 total are unchanged. octo-lite removed the separately persistent `issue-shaper` role and its two generated adapters (`roles/issue-shaper.md`, `agents/issue-shaper.md`, `agents/issue-shaper.toml`): the one issue orchestrator now resolves the `octo-lite-issue-shaper` skill conditionally in shaping mode instead of a second persistent role, per the one-dedicated-Opus contract. Canonical role contracts moved 9 to 8, Generated launch adapters 18 to 16, octo-lite total 109 to 106. Every listed path in both repositories was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
 13. This revision (PR 6 fix pass 5) reconciled the pinned Turbo head to `578abfdf2d9effdeecba922a6227482d573763ec` (tree `cd4af035283d1a57ecfdec2a020228c05252142c`), Turbo PR 423's exact head refetched immediately before this commit. Diffed against note 12's `c0c27be` pin: one file added, `tools/evidence-site/test/symlinkContainment.test.js`; zero files removed; the remaining edits are content-only inside the same seven already-listed `tools/evidence-site/*` files. Evidence operating-model tests moves 7 to 8, Turbo total 282 to 283; no other Turbo category changed and the 120 historical plan count is exact. The `/root/Turbo-Outreach-tur450-operating-model` worktree was clean and pushed to Turbo PR 423's exact head at verification time; this reconciliation read the pushed PR 423 head content directly through `git show`/`git diff` against the exact commit. octo-lite's own count is unaffected: this fix pass changed code and tests, not the counted-category file set. Every listed path in both repositories was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
 14. This revision (docs reconciliation pass, PR 6, starting octo-lite head `1419f1072cc259a17acec2dd31a22f91822d8a0e`) is docs-only: no code, script, role, skill, generated agent, test, or spec changed, so octo-lite and Turbo counts and the `578abfd` Turbo pin are unchanged from note 13. This pass removed note 12's unsupported "named by the operator as final" claim and corrected note 13's false dirty-worktree claim: the Turbo worktree was clean and pushed at that verification, not dirty.
+15. This revision (PR 6, boundary cut signed by ADR 0001) is octo-lite only; Turbo is untouched and its counts and `578abfd` pin are unchanged from note 13. Generated launch adapters drops 16 to 8: `workflows/lib/role_resolver.py` no longer renders a Codex custom-agent file at all (`render_codex_adapter` is removed), so the eight `agents/*.toml` files are deleted rather than fixed. Skill contracts moves 17 to 18 for the new `skills/qa-evidence-capture/SKILL.md`. Canonical specs moves 2 to 3 for `spec/adr/0001-operating-model-boundaries.spec.html`. octo-lite total moves 106 to 100. Every listed path was verified to exist at its exact head, with no duplicates and category sums matching declared totals.
 
 ## Failures recorded, PR 6 fix pass 5
 
@@ -591,6 +588,10 @@ Exact-head review at `37002380b0288a6a73a52f6d5d4ff5ff80505111` (https://github.
 5. Caller-supplied liveness. `recover_dead_owner` accepted a caller-supplied `--liveness dead|absent` flag with no independent verification. Fix: `--liveness` removed from `scripts/octo-control`; recovery now probes the exact provider session (`herdr pane list`, matched against `agent_session.value`) and the exact Herdr route (`herdr agent get`/`herdr pane get`) under the same lock as the compare-and-swap in `octo_lite/runtime.py:recover_dead_owner`/`_swap_owner`. A live match, checked-identity mismatch, command failure, parse failure, or ambiguous result all block. Tests: `tests/test_runtime.py::test_dead_owner_recovery_probes_provider_session_and_herdr_route_before_swap`, `tests/test_operator_control.py::test_owner_recover_probes_provider_session_and_herdr_route_before_swap`.
 6. Cross-issue authority. `octo-control`'s `_verify_transition_authority` `--stream` path checked caller session and role but never checked that the stream's `stream_id` equals the requested issue, so a valid TUR-1 stream owner could authorize a TUR-999 transition. Fix: added a `stream_id` equality check before any Linear read or mutation. Test: `tests/test_operator_control.py::test_linear_transition_denies_a_foreign_issue_from_the_exact_stream_owner` (asserts the fake `linear` binary is never invoked).
 7. Repeated long fix loops. PR 6 has run five consecutive fix passes since the shaping-review gate opened (`56637e0`, `898ea5d`, `dfc4031`, `3700238`, and this pass), each following a fresh blocking review comment on the PR; `gate_state` in the PR body's train manifest still reads `shaping-review-pending`. This pass does not decide whether the cycle returns to shaping; that determination and any PR-metadata update are the issue orchestrator's, per this pass's own launch instructions.
+
+## Boundary cut, PR 6
+
+Items 1, 4, and 5 above (Codex custom-agent schema, false Herdr `submitted` receipts, caller-supplied liveness) are superseded, not further patched. A fresh exact-head review found the fix-pass-5 machinery itself unreliable and exceeding the three-cycle return rule. ADR 0001 (`spec/adr/0001-operating-model-boundaries.spec.html`) signs the boundary: no generated Codex adapter, an explicit `codex exec` relay with rollout-readback identity proof, ack-only Herdr delivery truth, and no agent-callable dead-owner recovery path. This inventory's counts and paths reflect the ADR-driven state; see the ADR for the decision text.
 
 ## Review focus
 

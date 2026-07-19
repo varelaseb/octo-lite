@@ -13,7 +13,8 @@ follow-up. The canonical spec wins if wording here drifts.
 | Generic kernel: roles.toml, 8 role contracts, resolver, generated adapters | Implemented, live-installed |
 | Prompt TDD lean contract (behavior-first, fresh-session red/green, narrow regression) | Implemented in spec, this compliance artifact, and the decision log |
 | One-issue-Opus shaping topology (orchestrator resolves issue-shaper as a skill) | Implemented; real receipt on file, PR 6 fix pass 4 |
-| Codex custom-agent schema, Herdr submission truth, dead-owner liveness probe, cross-issue Linear authority | Fixed in PR 6; carrier PR 6 still exact-head review blocked pending a fresh review of the final head |
+| Codex custom-agent adapter, Herdr ack-only delivery, dead-owner recovery, cross-issue Linear authority | Boundary cut and signed by ADR 0001, superseding PR 6's fix-pass-5 patches; carrier PR 6 still exact-head review blocked pending a fresh review of the final head |
+| Repo-owned generic QA evidence capture skill (`skills/qa-evidence-capture`) | Implemented; qa-capture role no longer depends on an external profile copy |
 | Turbo PR 423 (target-repo consumer of this model) | Draft, returned to shaping after eight blocking review cycles |
 | Optional control panel, evidence-site visuals, Symphony-derived ideas | Deferred optional; not built, not scheduled |
 
