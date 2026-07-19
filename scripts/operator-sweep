@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from octo_lite.launch import fetch_stream_binding, prepare_reconcile_launch, run_reconcile_launch  # noqa: E402
 
-CANONICAL_SPEC_PATHS = ("spec/domains/operating-model.spec.html",)
-CANONICAL_ADR_PATHS = ("spec/adr/0001-operating-model-boundaries.spec.html",)
+CANONICAL_SPEC_SIGNAL = "Canonical spec paths:"
+CANONICAL_ADR_SIGNAL = "Canonical ADR paths:"
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -45,30 +45,90 @@ def repo_head(repo: Path) -> str:
     ).stdout.strip()
 
 
+def _agents_md_text(repo: Path, head: str) -> str:
+    kind = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-t", f"{head}:AGENTS.md"],
+        capture_output=True, text=True,
+    )
+    if kind.returncode != 0 or kind.stdout.strip() != "blob":
+        raise SystemExit("operator-sweep: target AGENTS.md missing at head")
+    return subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-p", f"{head}:AGENTS.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def _signal_value(text: str, signal: str) -> str | None:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            stripped = stripped[2:].strip()
+        if stripped.startswith(signal):
+            return stripped[len(signal):].strip()
+    return None
+
+
+def _declared_paths(text: str, signal: str, *, label: str) -> list[str]:
+    value = _signal_value(text, signal)
+    if not value:
+        raise SystemExit(f"operator-sweep: no canonical {label} paths declared")
+    entries = [entry.strip() for entry in value.split(",")]
+    if any(not entry for entry in entries):
+        raise SystemExit(f"operator-sweep: malformed canonical {label} declaration")
+    if len(set(entries)) != len(entries):
+        raise SystemExit(f"operator-sweep: duplicate canonical {label} path declared")
+    for entry in entries:
+        segments = entry.split("/")
+        if entry.startswith("/") or entry.startswith("~") or any(part in ("", "..", ".") for part in segments):
+            raise SystemExit(f"operator-sweep: escaped canonical {label} path: {entry}")
+    return entries
+
+
+def _tree_entry(repo: Path, head: str, relative: str) -> tuple[str, str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", head, "--", relative],
+        capture_output=True, text=True,
+    )
+    line = result.stdout.strip()
+    if result.returncode != 0 or not line:
+        return "", ""
+    fields = line.split()
+    return fields[0], fields[1]
+
+
 def canonical_blobs(repo: Path, head: str) -> tuple[list[str], list[str]]:
-    def bind(paths: tuple[str, ...], label: str) -> list[str]:
-        if not paths:
-            raise SystemExit(f"operator-sweep: no canonical {label} paths declared")
+    text = _agents_md_text(repo, head)
+
+    def bind(signal: str, label: str) -> list[str]:
         bound = []
-        for relative in paths:
-            kind = subprocess.run(
-                ["git", "-C", str(repo), "cat-file", "-t", f"{head}:{relative}"],
-                capture_output=True, text=True,
-            )
-            if kind.returncode != 0:
+        for relative in _declared_paths(text, signal, label=label):
+            mode, kind = _tree_entry(repo, head, relative)
+            if not kind:
                 raise SystemExit(f"operator-sweep: canonical {label} path missing: {relative}")
-            if kind.stdout.strip() != "blob":
+            if mode == "120000":
+                raise SystemExit(f"operator-sweep: canonical {label} path is a symlink: {relative}")
+            if kind != "blob":
                 raise SystemExit(f"operator-sweep: canonical {label} path is not a regular file: {relative}")
+            size = subprocess.run(
+                ["git", "-C", str(repo), "cat-file", "-s", f"{head}:{relative}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            if size == "0":
+                raise SystemExit(f"operator-sweep: canonical {label} path is empty: {relative}")
             digest = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", f"{head}:{relative}"],
                 check=True, capture_output=True, text=True,
             ).stdout.strip()
             bound.append(f"{relative}:{digest}")
-        if not bound:
-            raise SystemExit(f"operator-sweep: canonical {label} sweep produced no sources")
         return bound
 
-    return bind(CANONICAL_SPEC_PATHS, "spec"), bind(CANONICAL_ADR_PATHS, "ADR")
+    spec_bound = bind(CANONICAL_SPEC_SIGNAL, "spec")
+    adr_bound = bind(CANONICAL_ADR_SIGNAL, "ADR")
+    spec_paths = {entry.split(":", 1)[0] for entry in spec_bound}
+    adr_paths = {entry.split(":", 1)[0] for entry in adr_bound}
+    if spec_paths & adr_paths:
+        raise SystemExit("operator-sweep: canonical path declared as both spec and ADR")
+    return spec_bound, adr_bound
 
 
 def declared_stream_facts(stream_dir: Path) -> dict:
@@ -117,7 +177,14 @@ def main() -> int:
     paths.extend(sorted(path for stream_dir in stream_dirs for path in [stream_dir / "status.md"] if path.is_file()))
     parts = [f"## {path.relative_to(control)}\n{path.read_text().strip()}\n" for path in paths]
 
-    facts = {"owner_route": owner_route}
+    # Every bound fact, including target HEAD and canonical spec/ADR blobs, is
+    # refetched and validated before any unchanged decision or snapshot write, so
+    # a drifted or invalid source can never hide behind an unchanged Linear
+    # fingerprint or leave a persisted artifact behind on failure.
+    head = repo_head(repo)
+    spec_blobs, adr_blobs = canonical_blobs(repo, head)
+
+    facts = {"owner_route": owner_route, "control_head": head, "canonical": {"spec_blobs": spec_blobs, "adr_blobs": adr_blobs}}
     streams = []
     for stream_dir in stream_dirs:
         stream_facts = declared_stream_facts(stream_dir)
@@ -152,8 +219,6 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     worktree_root = control / "worktrees"
     worktree = worktree_root / fingerprint
-    head = repo_head(repo)
-    spec_blobs, adr_blobs = canonical_blobs(repo, head)
 
     # Sole reconciler launch gateway: same worktree provisioning, containment, and
     # receipt binding as scripts/octo-launch, narrowed to the reconciler's aggregate

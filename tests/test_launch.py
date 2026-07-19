@@ -97,6 +97,57 @@ class GitHubReadFacadeTests(unittest.TestCase):
             )
 
 
+class StatusCheckNormalizationTests(unittest.TestCase):
+    def _pull(self, rollup: list) -> dict:
+        return {
+            "url": "https://github.com/org/repo/pull/6",
+            "headRefOid": "a" * 40,
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "state": "OPEN",
+            "reviewDecision": "",
+            "statusCheckRollup": rollup,
+        }
+
+    def test_duplicate_name_checks_with_differing_outcomes_normalize_identically_regardless_of_api_order(
+        self,
+    ) -> None:
+        entries = [
+            {"__typename": "CheckRun", "name": "conformance", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "name": "conformance", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]
+        forward = fetch_stream_binding(
+            linear_issue=None, pr_repo="org/repo", pr_number=6,
+            read_pr=lambda _repo, _number: self._pull(entries),
+        )
+        reversed_entries = list(reversed(entries))
+        reversed_binding = fetch_stream_binding(
+            linear_issue=None, pr_repo="org/repo", pr_number=6,
+            read_pr=lambda _repo, _number: self._pull(reversed_entries),
+        )
+        self.assertEqual(2, len(forward["pull_request"]["status_checks"]))
+        self.assertEqual(
+            forward["pull_request"]["status_checks"],
+            reversed_binding["pull_request"]["status_checks"],
+        )
+
+    def test_status_checks_retain_current_status_alongside_outcome_for_in_progress_and_completed_states(
+        self,
+    ) -> None:
+        entries = [
+            {"__typename": "CheckRun", "name": "conformance", "status": "IN_PROGRESS", "conclusion": None},
+            {"__typename": "CheckRun", "name": "conformance", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+        binding = fetch_stream_binding(
+            linear_issue=None, pr_repo="org/repo", pr_number=6,
+            read_pr=lambda _repo, _number: self._pull(entries),
+        )
+        checks = binding["pull_request"]["status_checks"]
+        self.assertEqual(2, len(checks))
+        self.assertNotEqual(checks[0], checks[1])
+        self.assertEqual({"IN_PROGRESS", "COMPLETED"}, {check["status"] for check in checks})
+
+
 class LaunchBoundaryTests(unittest.TestCase):
     def test_foreground_cli_exposes_prepare_launch_and_verify(self) -> None:
         result = subprocess.run(
@@ -786,7 +837,7 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         self.assertEqual("OPEN", streams[0]["pull_request"]["state"])
         self.assertEqual("", streams[0]["pull_request"]["review"])
         self.assertEqual(
-            [{"name": "conformance", "outcome": "SUCCESS"}],
+            [{"name": "conformance", "status": "COMPLETED", "outcome": "SUCCESS"}],
             streams[0]["pull_request"]["status_checks"],
         )
         self.assertIn("launch_revision", receipt)

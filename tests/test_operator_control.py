@@ -111,19 +111,29 @@ fi
 """
 
 
-def _init_target_repo(repo: Path, *, with_canonical_sources: bool = True) -> None:
+def _init_target_repo(
+    repo: Path,
+    *,
+    with_canonical_sources: bool = True,
+    spec_path: str = "spec/domains/operating-model.spec.html",
+    adr_path: str = "spec/adr/0001-operating-model-boundaries.spec.html",
+) -> None:
     repo.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-    (repo / "AGENTS.md").write_text("# Target\n")
     if with_canonical_sources:
-        spec = repo / "spec" / "domains" / "operating-model.spec.html"
-        spec.parent.mkdir(parents=True)
+        (repo / "AGENTS.md").write_text(
+            f"# Target\n\n- Canonical spec paths: {spec_path}\n- Canonical ADR paths: {adr_path}\n"
+        )
+        spec = repo / spec_path
+        spec.parent.mkdir(parents=True, exist_ok=True)
         spec.write_text('<p data-anchor="x">Works.</p>\n')
-        adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-        adr.parent.mkdir(parents=True)
+        adr = repo / adr_path
+        adr.parent.mkdir(parents=True, exist_ok=True)
         adr.write_text('<p data-anchor="x">Decided.</p>\n')
+    else:
+        (repo / "AGENTS.md").write_text("# Target\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
 
@@ -431,19 +441,7 @@ class OperatorControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
-            spec = repo / "spec" / "domains" / "operating-model.spec.html"
-            spec.parent.mkdir(parents=True)
-            spec.write_text('<p data-anchor="x">Works.</p>\n')
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            _init_target_repo(repo)
             head = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
             ).stdout.strip()
@@ -531,6 +529,7 @@ class OperatorControlTests(unittest.TestCase):
             self.assertIn("canonical", result.stderr.lower())
             self.assertFalse((control / "sweep-state.toml").exists())
             self.assertFalse((control / "worktrees").exists())
+            self.assertFalse((control / "sweeps").exists())
             calls = log.read_text().splitlines() if log.exists() else []
             self.assertFalse(any(line.startswith("claude ") for line in calls))
             self.assertFalse(any(line.startswith("operator ") for line in calls))
@@ -543,7 +542,11 @@ class OperatorControlTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
             subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
             # The declared canonical spec path resolves to a tree object, not a blob.
             bogus = repo / "spec" / "domains" / "operating-model.spec.html"
             bogus.mkdir(parents=True)
@@ -583,8 +586,326 @@ class OperatorControlTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("canonical", result.stderr.lower())
             self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "sweeps").exists())
             calls = log.read_text().splitlines() if log.exists() else []
             self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_discovers_target_owned_canonical_paths_declared_in_agents_md(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(
+                repo,
+                spec_path="docs/behavior.spec.html",
+                adr_path="docs/decisions/0001.spec.html",
+            )
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertTrue(json.loads(result.stdout)["changed"])
+
+            with (control / "sweep-state.toml").open("rb") as handle:
+                state = tomllib.load(handle)
+            with open(state["receipt"], "rb") as handle:
+                receipt = tomllib.load(handle)
+            reconcile = receipt["reconcile"]
+            self.assertEqual(1, len(reconcile["spec_blobs"]))
+            self.assertTrue(reconcile["spec_blobs"][0].startswith("docs/behavior.spec.html:"))
+            self.assertEqual(1, len(reconcile["adr_blobs"]))
+            self.assertTrue(reconcile["adr_blobs"][0].startswith("docs/decisions/0001.spec.html:"))
+
+    def test_sweep_fails_closed_on_a_symlinked_canonical_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
+            real = repo / "spec" / "domains" / "real.spec.html"
+            real.parent.mkdir(parents=True)
+            real.write_text('<p data-anchor="x">Works.</p>\n')
+            link = repo / "spec" / "domains" / "operating-model.spec.html"
+            link.symlink_to("real.spec.html")
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertFalse((control / "sweeps").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_fails_closed_on_an_empty_canonical_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
+            spec = repo / "spec" / "domains" / "operating-model.spec.html"
+            spec.parent.mkdir(parents=True)
+            spec.write_text("")
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_fails_closed_on_duplicate_canonical_path_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: spec/domains/operating-model.spec.html, "
+                "spec/domains/operating-model.spec.html\n"
+                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
+            spec = repo / "spec" / "domains" / "operating-model.spec.html"
+            spec.parent.mkdir(parents=True)
+            spec.write_text('<p data-anchor="x">Works.</p>\n')
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_fails_closed_on_an_escaped_canonical_path_declaration(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text(
+                "# Target\n\n"
+                "- Canonical spec paths: ../outside.spec.html\n"
+                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
+            )
+            # A valid file at octo-lite's own default spec path proves the sweep
+            # honors and rejects the escaped declaration rather than coincidentally
+            # falling back to a hardcoded default it never actually reads.
+            decoy = repo / "spec" / "domains" / "operating-model.spec.html"
+            decoy.parent.mkdir(parents=True)
+            decoy.write_text('<p data-anchor="x">Works.</p>\n')
+            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
+            adr.parent.mkdir(parents=True)
+            adr.write_text('<p data-anchor="x">Decided.</p>\n')
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("canonical", result.stderr.lower())
+            self.assertFalse((control / "sweep-state.toml").exists())
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+
+    def test_sweep_detects_changed_target_head_even_when_linear_and_pr_facts_are_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+
+            control = base / "control"
+            status = control / "streams/TUR-1/status.md"
+            status.parent.mkdir(parents=True)
+            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            for name, body in {
+                "claude": FAKE_RECONCILER_CLAUDE,
+                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
+            }.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+
+            command = [
+                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ]
+            first = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertTrue(json.loads(first.stdout)["changed"])
+
+            # A trivial commit moves the target HEAD without touching Linear, PR,
+            # stream status, or canonical spec/ADR blob content at all.
+            (repo / "unrelated.txt").write_text("noise\n")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "unrelated"], check=True)
+
+            second = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertTrue(json.loads(second.stdout)["changed"])
+            self.assertNotEqual(
+                json.loads(first.stdout)["fingerprint"], json.loads(second.stdout)["fingerprint"]
+            )
 
     def test_sweep_fails_closed_before_any_provider_call_when_linear_state_races_between_snapshot_and_gateway(self) -> None:
         # declared_stream_facts() and prepare_reconcile_launch()'s own fresh

@@ -296,9 +296,14 @@ def _normalized_status_checks(rollup: Any) -> list[dict[str, str]]:
         if not isinstance(entry, Mapping):
             continue
         name = str(entry.get("name") or entry.get("context") or "")
+        status = str(entry.get("status") or "")
         outcome = str(entry.get("conclusion") or entry.get("state") or "")
-        normalized.append({"name": name, "outcome": outcome})
-    return sorted(normalized, key=lambda item: item["name"])
+        normalized.append({"name": name, "status": status, "outcome": outcome})
+    # Sorting on the full normalized content, not only name, makes duplicate-name
+    # entries land in the same order regardless of the API's own return order, so
+    # differing outcomes or in-progress states never collapse or reorder the
+    # fingerprint for the same actual rollup.
+    return sorted(normalized, key=lambda item: (item["name"], item["status"], item["outcome"]))
 
 
 def _pull_request_binding(pull: Mapping[str, Any], *, repo: str, number: int) -> dict[str, Any]:
