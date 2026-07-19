@@ -5,6 +5,11 @@ description: Push the current octo-lite branch and create or update the linked G
 
 # Push
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill when an implementer needs to publish branch changes and open or
 update the PR for shaped Linear-first work or an explicitly GitHub-first issue.
 

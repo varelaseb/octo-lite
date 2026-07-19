@@ -5,6 +5,11 @@ description: Run a docs-backed grilling session for octo-lite issue shaping; str
 
 # Grill With Docs
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill from `$octo-lite-issue-shaper` when a new idea, rough Linear or
 GitHub issue, or issue draft needs clarification before it can be marked ready.
 

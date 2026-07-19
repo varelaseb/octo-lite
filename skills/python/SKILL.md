@@ -5,6 +5,11 @@ description: Python stack policy for octo-lite implementer work when durable rep
 
 # Python
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill only when the target repo contains durable Python signals such
 as `.py` files, `pyproject.toml`, requirements files, `uv.lock`,
 `poetry.lock`, `Pipfile`, Python tests, or Python CI docs.
@@ -20,4 +25,3 @@ as `.py` files, `pyproject.toml`, requirements files, `uv.lock`,
 
 Stop for Issue Shaper/operator clarification when Python packaging or runtime
 behavior needs a durable decision not present in specs or repo docs.
-

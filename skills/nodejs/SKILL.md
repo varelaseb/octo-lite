@@ -5,6 +5,11 @@ description: Node.js runtime policy for octo-lite implementer work when durable 
 
 # Node.js
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill only when the target repo contains durable Node.js signals such
 as `package.json`, lockfiles, Node config, server entrypoints, or Node-specific
 validation docs.
@@ -20,4 +25,3 @@ validation docs.
 
 If the issue needs a runtime policy decision that is not already specified,
 route back to Issue Shaper before implementing.
-

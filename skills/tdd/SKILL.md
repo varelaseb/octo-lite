@@ -1,13 +1,18 @@
 ---
 name: tdd
-description: Apply a red-green-refactor loop during octo-lite implementer work when the issue, specs, or operator asks for test-first development.
+description: Apply mandatory spec-driven red-green-refactor during behavior-changing octo-lite implementer work.
 ---
 
 # Test-Driven Development
 
-Use this skill when the Linear/GitHub issue, specs, ADRs, or operator explicitly asks
-for TDD, test-first work, red-green-refactor, or integration-test-first
-development.
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
+Use this skill for every behavior-changing implementation and fix. Only a narrow
+operator-approved shaping waiver may replace it, and that waiver must name the
+alternative proof.
 
 ## Workflow
 
@@ -18,6 +23,9 @@ development.
 5. Refactor while keeping tests green.
 6. Broaden validation according to risk and target repo conventions.
 7. Record red/green validation evidence in the PR or handoff.
+
+Do not call a test red when it fails for setup, syntax, missing dependencies, or
+another unintended reason. Database coverage that silently skips is not green.
 
 Do not write brittle tests around implementation details when a user-visible
 contract, API behavior, or durable spec can be tested directly.

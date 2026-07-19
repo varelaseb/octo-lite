@@ -1,50 +1,27 @@
-# Agent Instructions
+# Repository Instructions
 
-## Repository Role
+Spec format: markdown
 
-This repository uses octo-lite for Linear-first development unless the operator
-explicitly selects GitHub-first tracking for a specific task.
-Repo-specific guidance in this file overrides generic octo-lite defaults for
-this repository's code, commands, architecture, and validation.
+## Commands
 
-## Durable Sources
+- TODO: install, test, lint, typecheck, build, and run commands.
 
-- Linear issues define issue-specific scope, status, dependencies, and
-  acceptance criteria for Linear-tracked work.
-- `spec/` defines durable product and system behavior.
-- `spec/adr/` records hard-to-reverse architectural decisions.
-- GitHub pull requests provide implementation evidence, code discussion, and
-  human review.
-- GitHub issues are not the canonical tracking surface for Linear-tracked work
-  unless the operator explicitly asks for a GitHub issue operation.
+## Architecture
 
-## Spec Format
-
-- Omit the format signal, or declare `Spec format: markdown`, to use the
-  backward-compatible Markdown spec layout.
-- Declare the exact signal `Spec format: spec-chat` only when this repo commits
-  spec-chat scaffolding and treats `*.spec.html` as its canonical spec source.
-- Spec-chat repos keep prose one sentence per line, anchor every meaningful
-  block with `data-anchor`, store visual state in pretty-printed semantic-island
-  JSON, vendor the shared `.viz/` runtime for offline rendering, and ignore
-  `*.review/` event spools.
-- Shaping runs the spec-chat review loop (serve, annotate, hand off, drain,
-  edit, reply) before readiness; agents do not regenerate Markdown counterparts.
-
-## Local Workflow
-
-- Shape work with octo-lite before implementation.
-- Do not implement from vague or unresolved issue scope.
-- Keep `.octo-lite/drafts/` uncommitted.
-- Update `spec/` or `spec/adr/` when implementation changes durable behavior.
-- For Linear-tracked work, PR bodies should reference the Linear issue key, for
-  example `Tracks TUR-50`, rather than closing a GitHub issue mirror.
+- TODO: repo-specific boundaries and dependency rules.
 
 ## Validation
 
-- TODO: add repo test, lint, typecheck, and build commands.
+- TODO: required checks by change type.
+
+## Deployment
+
+- TODO: repo-specific environments and release rules.
+
+## Fixtures
+
+- TODO: safe test data and concurrency constraints.
 
 ## Conventions
 
-- TODO: add repo-specific code, architecture, naming, dependency, and review
-  conventions.
+- TODO: repo-specific naming and review conventions.

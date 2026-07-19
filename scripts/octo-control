@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from octo_lite.runtime import (  # noqa: E402
+    GateError,
+    append_trace,
+    exact_fingerprint,
+    herdr_label,
+    normalize_launch_access,
+    record_failure,
+    transfer_owner,
+    transition_linear,
+    verdict_body,
+)
+
+
+def run_json(argv: list[str]) -> dict:
+    result = subprocess.run(argv, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
+def linear_read(issue: str) -> dict:
+    raw = run_json(["linear", "issue", "view", issue, "--json", "--no-download"])
+    state = raw.get("state")
+    normalized = dict(raw)
+    normalized["state"] = state.get("name") if isinstance(state, dict) else state
+    return {"issue": normalized, "fingerprint": exact_fingerprint(normalized)}
+
+
+def write_status(path: Path, issue: dict, args) -> None:
+    text = (
+        f"Outcome: {args.outcome}\n"
+        f"Gate: {args.gate}\n"
+        f"Blocker: {args.blocker}\n"
+        f"Next operator action: {args.next_action}\n"
+        f"Issue: {issue['identifier']}\n"
+        f"Linear state: {issue['state']}\n"
+        f"Linear fingerprint: {exact_fingerprint(issue)}\n"
+    )
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary.write_text(text)
+    os.replace(temporary, path)
+
+
+def command_linear_read(args) -> dict:
+    return linear_read(args.issue)
+
+
+def command_linear_transition(args) -> dict:
+    allowed = {("Todo", "In Progress"), ("In Progress", "Awaiting Accept")}
+    if (args.expected, args.target) not in allowed:
+        raise GateError("stream orchestrator transition not allowed")
+
+    def read():
+        return linear_read(args.issue)["issue"]
+
+    def mutate(target):
+        subprocess.run(
+            ["linear", "issue", "update", args.issue, "--state", target],
+            check=True,
+        )
+
+    def status(issue):
+        write_status(Path(args.status), dict(issue), args)
+
+    def notify(issue):
+        if not args.parent:
+            raise GateError("parent route required")
+        subprocess.run(
+            [
+                "herdr-say",
+                args.parent,
+                f"{args.issue} entered {issue['state']}; status {Path(args.status).resolve()}",
+            ],
+            check=True,
+        )
+
+    return transition_linear(
+        args.issue,
+        args.expected,
+        args.target,
+        Path(args.progress),
+        read,
+        mutate,
+        status,
+        notify,
+    )
+
+
+def command_verdict(args) -> dict:
+    current = run_json(
+        ["gh", "pr", "view", str(args.pr), "--repo", args.repo, "--json", "headRefOid"]
+    )["headRefOid"]
+    if current != args.head:
+        raise GateError("PR HEAD mismatch")
+    body = verdict_body(
+        args.review_type,
+        args.verdict,
+        args.head,
+        args.bound_input,
+        args.finding,
+        args.receipt,
+    )
+    marker = f"<!-- octo-lite-verdict:{args.review_type} -->"
+    comments = run_json(
+        ["gh", "api", f"repos/{args.repo}/issues/{args.pr}/comments", "--paginate"]
+    )
+    existing = next((item for item in comments if marker in item.get("body", "")), None)
+    if existing:
+        published = run_json(
+            [
+                "gh", "api", "--method", "PATCH",
+                f"repos/{args.repo}/issues/comments/{existing['id']}",
+                "-f", f"body={body}",
+            ]
+        )
+    else:
+        published = run_json(
+            [
+                "gh", "api", "--method", "POST",
+                f"repos/{args.repo}/issues/{args.pr}/comments",
+                "-f", f"body={body}",
+            ]
+        )
+    readback = run_json(
+        ["gh", "api", f"repos/{args.repo}/issues/comments/{published['id']}"]
+    )
+    if readback.get("body") != body:
+        raise GateError("verdict comment readback mismatch")
+    return {"url": readback["html_url"], "head": args.head, "verdict": args.verdict}
+
+
+def command_owner(args) -> dict:
+    handoff = Path(args.handoff)
+    if not handoff.is_file():
+        raise GateError("immutable handoff missing")
+    if not args.successor_ready:
+        raise GateError("successor readiness required")
+    return transfer_owner(
+        Path(args.owner_file),
+        args.expected_owner,
+        args.new_owner,
+        args.revision,
+        str(Path(args.control_dir).resolve()),
+        caller=args.expected_owner,
+        handoff=handoff,
+        successor_ready=args.successor_ready,
+    )
+
+
+def command_trace(args) -> dict:
+    event = json.loads(Path(args.event).read_text())
+    written = append_trace(Path(args.trace), Path(args.status), event)
+    return {"written": written, "degraded": not written}
+
+
+def command_access(args) -> dict:
+    values = {
+        "execution_location": args.execution_location,
+        "operator_loopback_access": args.operator_loopback_access,
+        "review_delivery": args.review_delivery,
+    }
+    return normalize_launch_access({key: value for key, value in values.items() if value is not None})
+
+
+def command_failure(args) -> dict:
+    return record_failure(
+        args.attempt,
+        args.error,
+        args.category,
+        args.useful_work,
+        args.owner,
+        args.next_action,
+    )
+
+
+def command_label(args) -> dict:
+    return {
+        "label": herdr_label(
+            kind=args.kind,
+            issue=args.issue,
+            pr=args.pr,
+            outcome=args.outcome,
+            direct=args.direct,
+        )
+    }
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(description="Small foreground octo-lite gates")
+    sub = root.add_subparsers(dest="command", required=True)
+
+    read = sub.add_parser("linear-read")
+    read.add_argument("issue")
+    read.set_defaults(run=command_linear_read)
+
+    transition = sub.add_parser("linear-transition")
+    transition.add_argument("issue")
+    transition.add_argument("--expected", required=True)
+    transition.add_argument("--target", required=True)
+    transition.add_argument("--progress", required=True)
+    transition.add_argument("--status", required=True)
+    transition.add_argument("--parent", required=True)
+    transition.add_argument("--outcome", required=True)
+    transition.add_argument("--gate", required=True)
+    transition.add_argument("--blocker", default="none")
+    transition.add_argument("--next-action", default="none")
+    transition.set_defaults(run=command_linear_transition)
+
+    verdict = sub.add_parser("verdict-publish")
+    verdict.add_argument("--repo", required=True)
+    verdict.add_argument("--pr", type=int, required=True)
+    verdict.add_argument("--review-type", choices=["shaping", "code"], required=True)
+    verdict.add_argument("--verdict", choices=["clear", "blocking"], required=True)
+    verdict.add_argument("--head", required=True)
+    verdict.add_argument("--receipt", required=True)
+    verdict.add_argument("--bound-input", action="append", default=[])
+    verdict.add_argument("--finding", action="append", default=[])
+    verdict.set_defaults(run=command_verdict)
+
+    owner = sub.add_parser("owner-transfer")
+    owner.add_argument("--owner-file", required=True)
+    owner.add_argument("--expected-owner", required=True)
+    owner.add_argument("--new-owner", required=True)
+    owner.add_argument("--revision", type=int, required=True)
+    owner.add_argument("--control-dir", required=True)
+    owner.add_argument("--handoff", required=True)
+    owner.add_argument("--successor-ready", action="store_true")
+    owner.set_defaults(run=command_owner)
+
+    trace = sub.add_parser("trace-append")
+    trace.add_argument("--trace", required=True)
+    trace.add_argument("--status", required=True)
+    trace.add_argument("--event", required=True)
+    trace.set_defaults(run=command_trace)
+
+    access = sub.add_parser("launch-access")
+    access.add_argument("--execution-location")
+    access.add_argument("--operator-loopback-access", action="store_true", default=None)
+    access.add_argument("--review-delivery")
+    access.set_defaults(run=command_access)
+
+    failure = sub.add_parser("failure-record")
+    failure.add_argument("--attempt", type=int, required=True)
+    failure.add_argument("--error", required=True)
+    failure.add_argument("--category", required=True)
+    failure.add_argument("--useful-work", default="")
+    failure.add_argument("--owner", required=True)
+    failure.add_argument("--next-action", required=True)
+    failure.set_defaults(run=command_failure)
+
+    label = sub.add_parser("herdr-label")
+    label.add_argument("--kind", choices=["operator", "epic", "issue"], required=True)
+    label.add_argument("--issue", type=int)
+    label.add_argument("--pr", type=int)
+    label.add_argument("--outcome")
+    label.add_argument("--direct", action="store_true")
+    label.set_defaults(run=command_label)
+    return root
+
+
+def main() -> int:
+    try:
+        args = parser().parse_args()
+        print(json.dumps(args.run(args), sort_keys=True, ensure_ascii=False))
+        return 0
+    except (GateError, subprocess.CalledProcessError, json.JSONDecodeError, OSError) as error:
+        print(f"octo-control: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

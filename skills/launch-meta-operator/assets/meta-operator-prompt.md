@@ -227,9 +227,9 @@ to build, a migration, a rebrand — default to this delegation shape:
   and packet as ONE unit; never force parallelism onto serial or small work
   — the session states its chosen topology in its report.
 - Model roles follow the pins in `workflows/octo-loop-qa.js`: implementation
-  and fix passes = Codex `gpt-5.6-luna` (reasoning ultra), code review =
-  Codex `gpt-5.6-sol` (reasoning high), QA capture and judging = Claude
-  Opus. Orchestrator and shaping sessions run the operator-class model
+  and fix passes = Anthropic `claude-sonnet-5` (effort xhigh), code review =
+  Codex `gpt-5.6-sol` (reasoning high), QA capture and judging = independent
+  Claude roles. Orchestrator and shaping sessions run the operator-class model
   (Fable) — supervision and adversarial shaping only, never implementation.
   Ad-hoc subagents outside the loop follow the same mapping.
 - You retain, across all streams: branch/merge topology and merge order, the

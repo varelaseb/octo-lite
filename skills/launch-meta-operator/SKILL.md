@@ -5,6 +5,11 @@ description: Launch a persistent operator-level Claude or Codex session in Herdr
 
 # Launch Meta-Operator
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Create a new interactive Herdr session whose first job is a read-only inventory,
 not immediate execution. The spawned session owns the operator role after the
 user confirms its objective and authority.
@@ -15,7 +20,7 @@ a background orchestration session.
 ## Choose the Runtime
 
 - Always use `claude` (operator directive 2026-07-12): meta-operators run on
-  Fable only — the launcher pins Fable at xhigh effort and uses
+  Fable only; the launcher pins Fable at xhigh effort and uses
   `--permission-mode auto`. Sol/Codex is a poor meta-orchestrator; do not
   launch a `codex` meta-operator even if a Codex session is the caller.
 - The `codex` runtime remains in the launcher only as an explicit operator

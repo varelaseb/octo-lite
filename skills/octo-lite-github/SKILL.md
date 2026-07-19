@@ -5,6 +5,11 @@ description: Use GitHub PRs, branches, reviews, and explicitly requested GitHub 
 
 # octo-lite GitHub
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill whenever an octo-lite role needs branch, PR, review, comment, or
 explicit GitHub issue context.
 
@@ -19,7 +24,7 @@ explicit GitHub issue context.
 - In GitHub-first target repos, `.octo-lite/drafts/<slug>.md` is canonical until
   the operator approves GitHub mutation; after finalization, the GitHub issue
   body and `octo-lite:ready` label are the issue source of truth.
-- During implementation and review, the PR is the durable loop surface.
+- The evolving draft PR is the durable shaping and delivery surface.
 - Specs under `spec/` and ADRs under `spec/adr/` remain durable behavior sources
   and can outrank stale Linear, GitHub issue, or PR text.
 
@@ -61,7 +66,8 @@ Do not create extra workflow labels unless the operator explicitly asks.
   the target repo's existing branch convention or
   `octo-lite/<linear-key-lower>-<slug>`. For GitHub-first work, use
   `octo-lite/<issue-number>-<slug>`.
-- Open or update exactly one PR for the tracked unit of work.
+- Continue the shaped unit's existing draft PR. Open it only when shaping did
+  not already create it. Never create a second implementation PR for the unit.
 - For Linear-first work, the PR body starts with `Tracks <LINEAR-KEY>` and
   includes `## Summary` and `## Validation`.
 - For GitHub-first work, the PR body starts with `Closes #<issue-number>` and
@@ -70,13 +76,14 @@ Do not create extra workflow labels unless the operator explicitly asks.
 - Do not merge.
 - Do not approve as the human reviewer.
 
-## Reviewer Mutations
+## Verdict Mutations
 
-- Post a real GitHub PR review with `gh pr review`.
-- Use request-changes for blocking findings.
-- Use a non-approving comment when no blocking findings remain.
-- Keep findings first and include file/line references when possible.
-- Do not merge and do not approve as the human reviewer.
+- The reviewer returns a clear or blocking finding set bound to exact HEAD.
+- A deterministic helper creates or updates one machine-readable PR verdict
+  comment for shaping review and one for code review.
+- The comment binds HEAD, inputs, findings, and reviewer receipt.
+- Do not depend on the formal Review API, reviewer identity, checks, or labels.
+- Never merge or approve as the human reviewer.
 
 ## Boundaries
 

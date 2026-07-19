@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+id="${1:-}"
+status="${2:-}"
+shift 2 || true
+by=""
+artifact=""
+while (($#)); do
+  case "$1" in
+    --by) by="${2:?}"; shift 2 ;;
+    --artifact) artifact="${2:?}"; shift 2 ;;
+    *) echo "herdr-ack: unknown option $1" >&2; exit 64 ;;
+  esac
+done
+case "$status" in acknowledged|rejected|completed) ;; *) exit 64 ;; esac
+[[ -n "$id" && -n "$by" ]] || exit 64
+[[ "$status" != "completed" || -n "$artifact" ]] || {
+  echo "herdr-ack: completed requires --artifact" >&2
+  exit 64
+}
+
+root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/messages"
+state="$root/$id.toml"
+[[ -f "$state" ]] || { echo "herdr-ack: unknown message $id" >&2; exit 66; }
+
+readarray -t values < <(python3 - "$state" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    data = tomllib.load(f)
+print(data['target'])
+print(data['kind'])
+print(data.get('artifact', ''))
+print(data['message'])
+print(data['created_at'])
+PY
+)
+target="${values[0]}"
+[[ "$by" == "$target" || "$target" == *:p* ]] || {
+  echo "herdr-ack: acknowledger does not match target" >&2
+  exit 65
+}
+[[ -n "$artifact" ]] || artifact="${values[2]}"
+quote() { jq -Rn --arg value "$1" '$value'; }
+temporary="$state.$$.tmp"
+{
+  echo 'schema_version = 1'
+  echo "message_id = $(quote "$id")"
+  echo "target = $(quote "$target")"
+  echo "kind = $(quote "${values[1]}")"
+  echo "status = $(quote "$status")"
+  echo "artifact = $(quote "$artifact")"
+  echo "message = $(quote "${values[3]}")"
+  echo "created_at = $(quote "${values[4]}")"
+  echo "acknowledged_by = $(quote "$by")"
+  echo "acknowledged_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+} >"$temporary"
+mv "$temporary" "$state"
+echo "message_id=$id status=$status"

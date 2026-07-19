@@ -5,6 +5,11 @@ description: Shape new ideas or rough Linear/GitHub issues into concise, spec-ba
 
 # octo-lite Issue Shaper
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill when the user wants to create, clarify, refine, or finalize
 Linear-first or explicitly GitHub-first work with octo-lite. This is a
 user-facing operator workflow, not an implementer/reviewer role.
@@ -15,7 +20,7 @@ Linear issue/spec updates are intentionally concise.
 
 ## Role Skills
 
-Use only the Issue Shaper role skills from `role-skills.json`:
+Use only skills resolved for `issue-shaper` from `roles.toml`:
 
 - `$octo-lite-issue-shaper` for the operator-facing shaping workflow.
 - `$grill-with-docs` for docs-backed clarification.
@@ -135,7 +140,7 @@ The draft must use exactly these headings:
 User stories are feature-level and user-voiced: `As a <specific user or the
 operator>, I want <capability>, so <benefit>`. Never write a story voiced as
 "the team", "the product", or "the flip", and never put a User Story
-section on an epic — epics carry `## Epic goal` instead. The story is the
+section on an epic; epics carry `## Epic goal` instead. The story is the
 operator's artifact: shaped at intake, consumed verbatim by loops, QA
 review, the octo-lite dashboard, and the story catalog.
 
@@ -148,14 +153,14 @@ decision is unresolved, represent it as `TBD` in the relevant final section.
 Once the draft stabilizes and before the grill pass, run a two-model debate on
 it (operator convention 2026-07-12, order fixed same day: debate first, then
 grill): Fable (Claude) and Sol (`gpt-5.6-sol`, reasoning effort high) each
-attack the draft — cheapest-viable scope, missing or unobservable ACs, hidden
+attack the draft; cheapest-viable scope, missing or unobservable ACs, hidden
 dependencies, spec conflicts, and what the other side rationalized. Whichever
 runtime hosts the shaping session relays to the other model (Claude host →
 `codex` relay / `codex exec -m gpt-5.6-sol -c model_reasoning_effort="high"`;
 Codex host → Claude subagent). Fold each side's surviving objections into the
 draft or the grill agenda; record material disagreements and their resolutions
 in the issue's Context/decision log, and carry unresolved splits into the
-grill as operator questions with recommended answers — never silently pick a
+grill as operator questions with recommended answers; never silently pick a
 side.
 
 ### 4. Grill With Docs
@@ -267,6 +272,10 @@ Before marking work ready, all of this must be true:
 - No unresolved `TBD` remains.
 - Acceptance criteria were reviewed and are observable.
 - Relevant specs/ADRs are updated, or no-change rationale is explicit.
+- The target user-story surface is updated when the approved work creates,
+  changes, or retires a user outcome.
+- The spec-chat review batch is handed off, drained, reconciled, and replied to
+  when the target uses spec-chat.
 - Env/config needs are known, scoped out, or recorded as operator-owned
   prerequisites.
 - Target repo initialization files are present when needed.
@@ -276,32 +285,41 @@ Before marking work ready, all of this must be true:
 - The operator explicitly approved final tracker mutation.
 - The Issue Shaper role used `$grill-with-docs` or recorded why docs-backed
   grilling was not applicable.
+- The same evolving draft PR contains Linear-aligned scope, specs, ADRs, and
+  story changes.
+- A fresh shaping reviewer has checked that exact PR HEAD, complete Linear
+  issue, target instructions, specs and ADRs, pinned conversation-log cutoff,
+  and hard TDD contract.
+- One deterministic PR verdict comment binds a clear result to all those exact
+  inputs and the reviewer receipt.
 
 ### 10. Commit Durable Artifacts
 
-Use a shaping branch:
+Use one branch and evolving draft PR:
 
 ```text
-octo-lite/shape/<slug>
+octo-lite/<linear-key-lower>-<slug>
 ```
 
 After operator approval, commit only durable artifacts such as repo init files,
 specs, ADRs, repo docs, and `.gitignore` updates. Do not commit
 `.octo-lite/drafts/`, scratch notes, raw logs, or secrets.
 
-Do not open a separate artifact-only PR. The implementer later creates the
-implementation branch from the shaping branch commit.
+Open or update the one draft PR during shaping. Implementation continues the
+same branch and PR. The shaping readiness HEAD remains immutable evidence while
+later commits advance PR HEAD.
 
 ### 11. Finalize Tracker
 
 For Linear-first repos, after approval and durable commit:
 
 1. Create or update the Linear issue using the approved draft body.
-2. Set or confirm the Linear status/labels/dependencies requested by the
-   operator.
-3. Leave GitHub issues untouched unless the operator explicitly requested a
+2. Publish and read back the clear shaping verdict comment on the draft PR.
+3. Link that verdict from Linear and set the issue to `Shaped` only after exact
+   readback succeeds.
+4. Leave GitHub issues untouched unless the operator explicitly requested a
    GitHub issue operation.
-4. Delete `.octo-lite/drafts/<slug>.md` when finalization succeeds.
+5. Delete `.octo-lite/drafts/<slug>.md` when finalization succeeds.
 
 For GitHub-first repos, after approval and durable commit:
 

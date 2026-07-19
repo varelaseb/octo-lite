@@ -5,6 +5,11 @@ description: Create or maintain pnpm dependency patches for octo-lite implemente
 
 # pnpm Patching
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill only when the repo is pnpm-managed and the issue or debugging
 evidence requires patching a third-party dependency.
 
@@ -18,4 +23,3 @@ evidence requires patching a third-party dependency.
 - Document why the patch exists, what would remove it, and how it was verified.
 - Do not introduce pnpm patches in npm, yarn, bun, uv, cargo, or other package
   manager repos.
-

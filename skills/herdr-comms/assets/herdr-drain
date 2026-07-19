@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${1:-}"
+[[ -n "$target" ]] || { echo "usage: herdr-drain TARGET" >&2; exit 64; }
+case "$target" in
+  *:p*) pane="$target" ;;
+  *) pane="$(herdr agent get "$target" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" ;;
+esac
+[[ -n "$pane" ]] || exit 66
+
+dialog_open() {
+  herdr pane read "$pane" --source visible --lines 40 2>/dev/null \
+    | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
+}
+
+inbox="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/inbox/$target"
+[[ -d "$inbox" ]] || exit 0
+for queued in "$inbox"/*; do
+  [[ -f "$queued" ]] || continue
+  dialog_open && exit 75
+  id="$(<"$queued")"
+  state="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/messages/$id.toml"
+  [[ -f "$state" ]] || { rm -f "$queued"; continue; }
+  readarray -t values < <(python3 - "$state" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    data = tomllib.load(f)
+for key in ('target', 'kind', 'artifact', 'message', 'created_at'):
+    print(data.get(key, ''))
+PY
+)
+  suffix=""
+  if [[ "${values[1]}" != "info" ]]; then
+    suffix=" [msg:$id kind:${values[1]}] Acknowledge with: herdr-ack $id acknowledged --by $target"
+  fi
+  herdr agent send "$target" "${values[3]}$suffix" >/dev/null 2>&1 \
+    || herdr agent send "$pane" "${values[3]}$suffix" >/dev/null 2>&1
+  sleep 0.5
+  herdr pane run "$pane" "" >/dev/null 2>&1
+
+  quote() { jq -Rn --arg value "$1" '$value'; }
+  temporary="$state.$$.tmp"
+  {
+    echo 'schema_version = 1'
+    echo "message_id = $(quote "$id")"
+    echo "target = $(quote "${values[0]}")"
+    echo "kind = $(quote "${values[1]}")"
+    echo "status = $(quote submitted)"
+    echo "artifact = $(quote "${values[2]}")"
+    echo "message = $(quote "${values[3]}")"
+    echo "created_at = $(quote "${values[4]}")"
+    echo "submitted_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  } >"$temporary"
+  mv "$temporary" "$state"
+  rm -f "$queued"
+  echo "message_id=$id status=submitted"
+done

@@ -1,50 +1,75 @@
-#!/bin/bash
-# herdr-say — modal-safe, ordered message delivery to a herdr agent pane.
-#
-# Usage: herdr-say <target> <one-line message>
-#   target = herdr agent name (preferred, e.g. gp-b) or pane id (w7:p3C)
-#
-# Guarantees (the three failure modes this exists to prevent):
-#   1. NEVER presses Enter before the text is pasted (fixed order + settle).
-#   2. NEVER injects into a pane showing a question/permission/trust dialog
-#      (would select an option on the human's behalf) — waits up to 2 min,
-#      then queues to ~/.local/state/herdr-inbox/<target>/ and exits 75.
-#   3. Always submits (send alone does not submit to an idle claude REPL).
-#
-# Exit codes: 0 delivered · 75 queued to inbox (deliver later; if the target
-# is the meta-operator it reads its inbox on wake, no action needed) ·
-# 64/66 usage/resolve errors.
-set -u
-TARGET="${1:-}"; shift || true
-MSG="${*:-}"
-[ -z "$TARGET" ] || [ -z "$MSG" ] && { echo "usage: herdr-say <target> <message>" >&2; exit 64; }
+#!/usr/bin/env bash
+set -euo pipefail
 
-case "$TARGET" in
-  *:p*) PANE="$TARGET" ;;
-  *)    PANE=$(herdr agent get "$TARGET" 2>/dev/null | jq -r '.result.agent.pane_id // empty') ;;
+kind="info"
+artifact=""
+while (($#)); do
+  case "$1" in
+    --kind) kind="${2:?}"; shift 2 ;;
+    --artifact) artifact="${2:?}"; shift 2 ;;
+    --) shift; break ;;
+    -*) echo "herdr-say: unknown option $1" >&2; exit 64 ;;
+    *) break ;;
+  esac
+done
+
+target="${1:-}"
+shift || true
+message="$*"
+case "$kind" in info|command|ruling|ownership|question) ;; *) exit 64 ;; esac
+[[ -n "$target" && -n "$message" ]] || {
+  echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE" >&2
+  exit 64
+}
+
+case "$target" in
+  *:p*) pane="$target" ;;
+  *) pane="$(herdr agent get "$target" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" ;;
 esac
-[ -z "$PANE" ] && { echo "herdr-say: cannot resolve target '$TARGET' to a pane" >&2; exit 66; }
+[[ -n "$pane" ]] || { echo "herdr-say: unresolved target $target" >&2; exit 66; }
+
+root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/messages"
+inbox="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/inbox/$target"
+mkdir -p "$root" "$inbox"
+id="$(date -u +%Y%m%dT%H%M%S)-$$-$RANDOM"
+state="$root/$id.toml"
+
+quote() { jq -Rn --arg value "$1" '$value'; }
+write_state() {
+  local status="$1" temporary="$state.$$.tmp"
+  {
+    echo 'schema_version = 1'
+    echo "message_id = $(quote "$id")"
+    echo "target = $(quote "$target")"
+    echo "kind = $(quote "$kind")"
+    echo "status = $(quote "$status")"
+    echo "artifact = $(quote "$artifact")"
+    echo "message = $(quote "$message")"
+    echo "created_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  } >"$temporary"
+  mv "$temporary" "$state"
+}
 
 dialog_open() {
-  # NB: `herdr pane read` outputs RAW TEXT (no JSON envelope) — do not jq it.
-  herdr pane read "$PANE" --source visible --lines 40 2>/dev/null \
+  herdr pane read "$pane" --source visible --lines 40 2>/dev/null \
     | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
 }
 
-for _ in $(seq 1 24); do
-  if ! dialog_open; then
-    herdr agent send "$TARGET" "$MSG" >/dev/null 2>&1 \
-      || herdr agent send "$PANE" "$MSG" >/dev/null 2>&1
-    sleep 0.5                      # let the paste settle BEFORE Enter
-    herdr pane run "$PANE" "" >/dev/null 2>&1   # bare Enter = submit
-    exit 0
-  fi
-  sleep 5
-done
+suffix=""
+if [[ "$kind" != "info" ]]; then
+  suffix=" [msg:$id kind:$kind] Acknowledge with: herdr-ack $id acknowledged --by $target"
+fi
 
-INBOX="$HOME/.local/state/herdr-inbox/$TARGET"
-mkdir -p "$INBOX"
-F="$INBOX/$(date +%Y%m%dT%H%M%S)-$$.msg"
-printf '%s\n' "$MSG" > "$F"
-echo "herdr-say: '$TARGET' pane showed a dialog for 2min; message QUEUED to $F (not injected)." >&2
-exit 75
+if dialog_open; then
+  write_state queued
+  printf '%s\n' "$id" >"$inbox/$id"
+  echo "herdr-say: queued message_id=$id" >&2
+  exit 75
+fi
+
+write_state submitted
+herdr agent send "$target" "$message$suffix" >/dev/null 2>&1 \
+  || herdr agent send "$pane" "$message$suffix" >/dev/null 2>&1
+sleep 0.5
+herdr pane run "$pane" "" >/dev/null 2>&1
+echo "message_id=$id status=submitted"
