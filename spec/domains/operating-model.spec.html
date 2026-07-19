@@ -394,6 +394,8 @@
 <p data-anchor="launch-access-context">The initial launch context and receipt state only execution location, operator loopback reachability, and required review delivery path.</p>
 <p data-anchor="launch-access-default">Unless launch context explicitly confirms operator loopback access, every role treats loopback as unreachable and never presents a localhost URL as usable operator access.</p>
 <p data-anchor="launch-access-ownership">Durable access behavior belongs in octo-lite specs and roles, durable target-specific conventions belong in target <code>AGENTS.md</code>, current access facts belong in the receipt or stream status, and temporary routes belong only in stream status.</p>
+<p data-anchor="launch-shaping-authority">A canonical launcher-produced receipt binds a <code>[shaping]</code> table with repo, PR number, and exact starting HEAD from the freshly verified PR only for role <code>orchestrator</code> and purpose <code>shaping-review</code>; every other role or purpose carries no shaping authority.</p>
+<p data-anchor="launch-review-sandbox-integrity">An OpenAI review pass needing live GitHub or Linear reads bootstraps read-only, then resumes with explicit <code>workspace-write</code> sandbox and network access, and launch rejects any read-only review-pass worktree HEAD or status change found after bootstrap or after the resumed pass.</p>
 </section>
 <section data-anchor="stream-interface">
 <h3>Stream control</h3>

@@ -359,6 +359,25 @@ def _worktree_common_dir(path: Path) -> Path:
 READ_ONLY_WORKTREE_ROLES = frozenset({"shaping-reviewer", "code-reviewer", "qa-reviewer", "reconciler"})
 
 
+def _verify_review_worktree_unmutated(receipt: Mapping[str, Any], stage: str) -> None:
+    """A read-only role's OpenAI resume may run under workspace-write plus network
+    access to reach live GitHub or Linear; this independently proves that capability
+    was never used to change the review-pass worktree itself."""
+    if receipt["role"]["name"] not in READ_ONLY_WORKTREE_ROLES:
+        return
+    worktree = Path(receipt["workspace"]["worktree"])
+    expected_head = str(receipt["workspace"]["starting_head"])
+    try:
+        actual_head = _git(worktree, "rev-parse", "HEAD")
+        dirty = _git(worktree, "status", "--porcelain")
+    except subprocess.CalledProcessError as error:
+        raise GateError(f"review-pass worktree verification failed after {stage}") from error
+    if actual_head != expected_head:
+        raise GateError(f"review-pass worktree HEAD mutated after {stage}")
+    if dirty:
+        raise GateError(f"review-pass worktree status mutated after {stage}")
+
+
 def _branch_exists(repo: Path, branch: str) -> bool:
     result = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -574,9 +593,18 @@ def _provider_argv(receipt: Mapping[str, Any]) -> tuple[list[str], list[str]]:
             "codex", "exec", "--json", "-C", worktree, "-m", runtime["model"],
             *config, "-s", "read-only", "-",
         ]
+        # A review pass whose tools include a live GitHub or Linear read needs
+        # network for its resumed pass; read-only sandbox never grants network,
+        # so that resume explicitly opts into workspace-write plus network access
+        # instead. Every other OpenAI resume stays read-only.
+        needs_live_reads = {"linear-read", "github-read"} & set(runtime["tools"])
+        resume_sandbox = (
+            ["-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"]
+            if needs_live_reads else ["-s", "read-only"]
+        )
         mutation = [
             "codex", "exec", "resume", "--json", "-m", runtime["model"],
-            *config, "{provider_session_id}", "-",
+            *config, *resume_sandbox, "{provider_session_id}", "-",
         ]
     else:
         raise GateError("unsupported provider")
@@ -746,6 +774,10 @@ def prepare_launch(
         "instruction": str(envelope["pass_instruction"]),
         "context_json": json.dumps(dict(envelope.get("pass_context") or {}), sort_keys=True, ensure_ascii=False),
     }
+    # Only an orchestrator's own shaping-review pass may carry authority to drive a
+    # Shaped transition; every other role or purpose gets no [shaping] table at all.
+    if role_name == "orchestrator" and receipt["purpose"] == "shaping-review":
+        receipt["shaping"] = {"repo": str(envelope["repo"]), "pr": number, "head": str(envelope["starting_head"])}
     receipt["launch_revision"] = _launch_revision(receipt)
     _atomic_write(receipt_path, render_receipt(receipt))
     bootstrap, mutation = _provider_argv(receipt)
@@ -1080,6 +1112,7 @@ def run_bootstrap(
     acknowledgment["provider_session_id"] = session
     if provider == "openai":
         verify_codex_effective_identity(receipt, session)
+    _verify_review_worktree_unmutated(receipt, "bootstrap")
     verify_bootstrap(prepared.receipt_path, acknowledgment)
     return session
 
@@ -1129,6 +1162,7 @@ def run_mutation(
     mutation_session, message = parse_provider_message(receipt["runtime"]["provider"], mutation.stdout)
     if mutation_session != session:
         raise GateError("provider pass session mismatch")
+    _verify_review_worktree_unmutated(receipt, "resumed pass")
     return mutation_session, message
 
 

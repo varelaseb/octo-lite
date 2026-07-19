@@ -24,6 +24,7 @@ from octo_lite.launch import (
     render_receipt,
     run_bootstrap,
     run_launch,
+    run_mutation,
     run_reconcile_launch,
     verify_bootstrap,
 )
@@ -324,6 +325,24 @@ class LaunchBoundaryTests(unittest.TestCase):
         self.assertEqual(current_head, receipt["workspace"]["starting_head"])
         self.assertEqual(self.head, receipt["pull_request"]["shaping_head"])
         self.assertEqual("delivery", receipt["purpose"])
+
+    def test_orchestrator_shaping_review_receipt_binds_shaping_authority_table(self) -> None:
+        envelope = dict(self.envelope, purpose="shaping-review")
+        for field in (
+            "shaping_verdict", "shaping_verdict_head", "shaping_reviewer_receipt", "shaping_verdict_inputs",
+        ):
+            envelope.pop(field, None)
+        pr_without_verdict = dict(self.pr, comments=[])
+        prepared = self.prepare(
+            envelope=envelope, role_name="orchestrator", read_pr=lambda _repo, _pr: pr_without_verdict,
+        )
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertEqual({"repo": "org/repo", "pr": 6, "head": self.head}, receipt["shaping"])
+
+    def test_non_orchestrator_or_non_shaping_review_receipt_carries_no_shaping_authority(self) -> None:
+        prepared = self.prepare()
+        receipt = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertNotIn("shaping", receipt)
 
     def test_delivery_purpose_still_requires_clear_verdict(self) -> None:
         envelope = dict(self.envelope, shaping_verdict="blocking")
@@ -633,6 +652,60 @@ class LaunchBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "worktree creation failed"):
             self.prepare()
         self.assertFalse(self.worktree.exists())
+
+    def test_openai_review_role_needing_live_reads_resumes_with_workspace_write_network_access(self) -> None:
+        prepared = self.prepare(role_name="code-reviewer", capabilities=set())
+        self.assertEqual("read-only", prepared.bootstrap_argv[prepared.bootstrap_argv.index("-s") + 1])
+        self.assertIn("workspace-write", prepared.mutation_argv)
+        self.assertIn("sandbox_workspace_write.network_access=true", prepared.mutation_argv)
+
+    def test_openai_review_role_without_live_reads_stays_read_only_on_resume(self) -> None:
+        prepared = self.prepare(role_name="qa-reviewer", capabilities=set())
+        self.assertNotIn("workspace-write", prepared.mutation_argv)
+        self.assertEqual("read-only", prepared.mutation_argv[prepared.mutation_argv.index("-s") + 1])
+
+    def test_run_bootstrap_fails_closed_when_read_only_worktree_mutates_before_ack(self) -> None:
+        prepared = self.prepare(role_name="code-reviewer", capabilities=set())
+        session_id = str(uuid.uuid4())
+        ack = prepared.expected_ack(session_id)
+        ack.pop("provider_session_id")
+
+        def runner(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout=openai_provider_output(session_id, ack), stderr="")
+
+        (self.worktree / "stray.txt").write_text("mutated before ack\n")
+        with tempfile.TemporaryDirectory() as codex_home:
+            write_codex_rollout(Path(codex_home), session_id, model="gpt-5.6-sol", effort="high")
+            with mock.patch.dict(os.environ, {"CODEX_HOME": codex_home}):
+                with self.assertRaisesRegex(GateError, "review-pass worktree"):
+                    run_bootstrap(prepared, runner=runner)
+        readback = tomllib.loads(prepared.receipt_path.read_text())
+        self.assertFalse(readback["bootstrap"]["verified"])
+
+    def test_run_mutation_fails_closed_when_read_only_worktree_mutates_after_resumed_pass(self) -> None:
+        prepared = self.prepare(role_name="code-reviewer", capabilities=set())
+        session_id = str(uuid.uuid4())
+        ack = prepared.expected_ack(session_id)
+        ack.pop("provider_session_id")
+
+        def bootstrap_runner(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout=openai_provider_output(session_id, ack), stderr="")
+
+        with tempfile.TemporaryDirectory() as codex_home:
+            write_codex_rollout(Path(codex_home), session_id, model="gpt-5.6-sol", effort="high")
+            with mock.patch.dict(os.environ, {"CODEX_HOME": codex_home}):
+                returned_session = run_bootstrap(prepared, runner=bootstrap_runner)
+        self.assertEqual(session_id, returned_session)
+
+        (self.worktree / "stray.txt").write_text("mutated after resumed pass\n")
+
+        def mutation_runner(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=openai_provider_output(session_id, {"verdict": "clear"}), stderr="",
+            )
+
+        with self.assertRaisesRegex(GateError, "review-pass worktree"):
+            run_mutation(prepared, session_id, "prompt", runner=mutation_runner)
 
     def test_run_bootstrap_fails_closed_when_openai_effective_identity_is_unprovable(self) -> None:
         prepared = self.prepare(role_name="code-reviewer", capabilities=set())
@@ -966,7 +1039,10 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         self.assertTrue(readback["result"]["bound"])
         self.assertFalse(self.worktree.exists())
 
-    def test_run_reconcile_launch_preserves_a_dirty_worktree_after_a_successful_bind(self) -> None:
+    def test_run_reconcile_launch_fails_closed_and_preserves_a_worktree_dirtied_before_bootstrap(self) -> None:
+        # A read-only reconcile worktree must stay exactly as admitted; a stray
+        # mutation found before bootstrap completes now fails the whole pass
+        # closed instead of letting a dirty worktree reach a bound result.
         prepared = self.prepare()
         spawn_id = tomllib.loads(prepared.receipt_path.read_text())["spawn_id"]
         ack = prepared.expected_ack(spawn_id)
@@ -974,17 +1050,15 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
 
         def runner(argv, **kwargs):
             calls.append(list(argv))
-            if len(calls) == 1:
-                output = {"session_id": spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
-                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
-            output = {"session_id": spawn_id, "result": "changed"}
+            output = {"session_id": spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
 
         (self.worktree / "stray.txt").write_text("uncommitted diagnostic residue\n")
-        message = run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
-        self.assertEqual("changed", message)
+        with self.assertRaisesRegex(GateError, "review-pass worktree status mutated"):
+            run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
+        self.assertEqual(1, len(calls))
         readback = tomllib.loads(prepared.receipt_path.read_text())
-        self.assertTrue(readback["result"]["bound"])
+        self.assertNotIn("result", readback)
         self.assertTrue(self.worktree.exists())
         self.assertTrue((self.worktree / "stray.txt").is_file())
 
