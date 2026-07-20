@@ -43,13 +43,13 @@ result by the workflow journal plus a schema-forced acknowledgment echo of the
 bound inputs verified before mutation. There is no octo-launch CLI pass and no
 worker TOML receipt; the pass produces a machine-readable `pass_result`.
 
-Then invoke one `workflows/octo-loop-qa.js` mode, passing that exact receipt and
-`pass_result`. The Workflow never launches a worker itself; it only performs
-deterministic gating: it independently recomputes the result binding, checks it
-against the receipt's stored binding, checks role, launch revision, exact HEAD,
-and mode-specific schema, then advances or returns a fix or blocked stage. Read
-back its exact output before resolving the next pass. Never precompute receipts
-for future unknown HEADs. Never run a second worker for the same pass.
+The same workflow then gates that pass deterministically from the journal: it
+independently recomputes the result binding, checks it against the journalled
+bound inputs and acknowledgment echo, checks role, exact HEAD, and mode-specific
+schema, then advances or returns a fix or blocked stage. No worker TOML receipt
+exists to pass anywhere. Read back the exact gate output before resolving the
+next pass. Never precompute bindings for future unknown HEADs. Never run a
+second worker for the same pass.
 
 1. Fresh exact Sonnet 5 xhigh implementer.
 2. Require spec-derived intended red, smallest green, refactor, validation,
