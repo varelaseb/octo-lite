@@ -25,8 +25,11 @@ Resolve roles through `roles.toml`. Refetch before launch:
 - target `AGENTS.md` blob
 - parent, reply route, brief, and launch access facts
 
-Stop on missing or stale input. Linear must be `Shaped` or operator-pulled
-`Todo`. Conversation logs are shaping evidence, never implementation prompts.
+Stop on missing or stale input. Delivery enters only from the `Shaped`
+readiness gate per the canonical delivery-entry-gate in delivery-lifecycle
+spec; loop fire performs the mechanical `Shaped -> Todo` first delivery step,
+and the loop may continue while Linear is `Todo` or `In Progress`. Conversation
+logs are shaping evidence, never implementation prompts.
 
 ## Passes
 

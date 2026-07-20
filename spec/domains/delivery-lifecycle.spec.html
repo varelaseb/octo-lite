@@ -785,6 +785,8 @@
 
 <section data-anchor="delivery-loop" id="delivery-loop">
 <h2>Delivery loop</h2>
+<p data-anchor="delivery-entry-gate" id="delivery-entry-gate">This is the single canonical delivery entry gate: delivery enters only from the <code>Shaped</code> readiness gate, loop fire performs the one mechanical <code>Shaped -&gt; Todo</code> transition making <code>Todo</code> the first delivery step, and delivery then proceeds through <code>Todo</code>, <code>In Progress</code>, and <code>Awaiting Accept</code>.</p>
+<p data-anchor="delivery-entry-gate-authority" id="delivery-entry-gate-authority">The <code>octo-lite-loop</code> skill, the launcher <code>launch-linear-state-gate</code>, and <code>profile/AGENTS.md</code> all defer to this definition and never restate a divergent entry rule.</p>
 <p data-anchor="delivery-fix-review" id="delivery-fix-review">Every fix changes HEAD and requires a fresh code review before QA.</p>
 <p data-anchor="delivery-cycle-limit" id="delivery-cycle-limit">At most three fresh review and fix cycles may run before the issue returns to shaping.</p>
 <p data-anchor="delivery-invalidation" id="delivery-invalidation">Behavior or contract changes invalidate review and QA while packet-only wording changes do not.</p>

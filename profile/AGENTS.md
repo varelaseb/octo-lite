@@ -25,7 +25,9 @@ source or fix link.
   and final fresh shaping review.
 - Linear `Shaped` means the complete issue, specs, draft PR, pinned logs, hard
   TDD contract, and clear exact-head shaping verdict agree.
-- Use `$octo-lite-loop` only from that readiness gate.
+- Use `$octo-lite-loop` only from that readiness gate; loop fire performs the
+  mechanical `Shaped -> Todo` first delivery step per the canonical
+  delivery-entry-gate, never `Shaped -> In Progress`.
 - Every behavior change and fix uses spec-derived red, green, refactor unless
   shaping records a narrow operator waiver and alternative proof.
 - Every implement, fix, review, re-review, QA capture, and QA review pass is a
