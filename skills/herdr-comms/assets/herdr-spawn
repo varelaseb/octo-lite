@@ -34,19 +34,38 @@ value_after() {
   return 1
 }
 
+flag_present() {
+  local wanted="$1"
+  shift
+  for value in "$@"; do
+    [[ "$value" == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
 [[ "$1" == claude ]] || { echo "herdr-spawn: persistent tabs require Claude" >&2; exit 65; }
 model="$(value_after --model "$@" || true)"
 effort="$(value_after --effort "$@" || true)"
 mode="$(value_after --permission-mode "$@" || true)"
 agent="$(value_after --agent "$@" || true)"
+# herdr-label-remote-control-gate: every 🎤 or 🧠 spawn must enable Claude
+# remote control durably at launch (--rc), never post-hoc. Fail closed.
+require_remote_control() {
+  flag_present --rc "$@" || {
+    echo "herdr-spawn: 🎤/🧠 spawn requires remote control at launch (--rc)" >&2
+    exit 65
+  }
+}
 case "$role" in
   meta-operator)
     [[ "$model" == claude-fable-5 && "$effort" == xhigh && "$mode" == auto && "$agent" == meta-operator ]] || exit 65
     [[ "$label" == "🧠 operator" ]] || exit 65
+    require_remote_control "$@"
     ;;
   orchestrator)
     [[ "$model" == 'claude-opus-4-8[1m]' && "$effort" == high && "$mode" == auto && "$agent" == "$role" ]] || exit 65
     grep -Eq '^(🎤 )?(◆)?[0-9]+(/[0-9]+)? · .+$' <<<"$label" || exit 65
+    [[ "$label" == 🎤* ]] && require_remote_control "$@"
     ;;
   *) echo "herdr-spawn: role has no persistent tab" >&2; exit 65 ;;
 esac

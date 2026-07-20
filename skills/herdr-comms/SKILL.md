@@ -69,3 +69,9 @@ Labels:
 `◆` marks epic Opus. Normal issues have no marker. `🎤` appears only during a
 direct investigation, grill, diagnosis, or decision that needs the operator.
 Fable removes it as soon as the Opus can work autonomously. No worker tabs.
+
+Remote control: every `🎤` or `🧠` session must have Claude remote control
+enabled durably at launch through the launcher (`claude --rc` flag or a
+`remoteControlAtStartup` settings injection), never post-hoc. `herdr-spawn`
+fails closed on a `🎤` or `🧠` spawn without it. Flipping `🎤` on is a Fable
+duty that requires ensuring remote control is active on that session.

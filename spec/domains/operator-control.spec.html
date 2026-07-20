@@ -1717,6 +1717,10 @@ handoffs/0001.md</code></pre>
 <p data-anchor="herdr-label-scope" id="herdr-label-scope">Only persistent Fable and Opus orchestrator sessions receive Herdr tab labels; workflow subagents run inside the owning Opus session and never create tabs.</p>
 <p data-anchor="herdr-label-sparse" id="herdr-label-sparse">Normal unattended tabs use no status emoji, and every label uses the fewest characters that remain unique and human-readable.</p>
 <p data-anchor="herdr-label-receipt-bind" id="herdr-label-receipt-bind">The passed persistent spawn role and canonical cwd must exactly equal the receipt's <code>role.name</code> and <code>workspace.worktree</code> before any bootstrap call or pane creation.</p>
+<p data-anchor="herdr-label-remote-control" id="herdr-label-remote-control">Every <code>🎤</code> or <code>🧠</code> persistent session must have Claude remote control enabled.</p>
+<p data-anchor="herdr-label-remote-control-at-launch" id="herdr-label-remote-control-at-launch">Remote control is enabled durably at launch through the launcher mechanism, the <code>claude --rc</code> flag or a <code>remoteControlAtStartup</code> settings injection, never post-hoc.</p>
+<p data-anchor="herdr-label-remote-control-gate" id="herdr-label-remote-control-gate"><code>herdr-spawn</code> treats a <code>🎤</code> or <code>🧠</code> spawn without remote control as a launch-gate failure and fails closed.</p>
+<p data-anchor="herdr-label-direct-remote-control" id="herdr-label-direct-remote-control">Flipping <code>🎤</code> on is a Fable duty that requires ensuring remote control is active on that session.</p>
 <pre data-anchor="herdr-label-examples" id="herdr-label-examples"><code>🧠 operator
 🎤 ◆443/6 · operating model
 ◆443/6 · operating model

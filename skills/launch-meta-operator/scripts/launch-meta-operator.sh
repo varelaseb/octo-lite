@@ -79,8 +79,10 @@ python3 "$resolver" resolve meta-operator \
 # herdr-spawn verifies BOOTSTRAP_ACK itself before this prompt ever runs; it is a
 # post-bootstrap mutation instruction only, never a bootstrap-ack instruction.
 prompt="Bootstrap already verified. Load and acknowledge $receipt, the canonical meta-operator role, target instructions, and $brief. Verify cwd and access facts. Write current state to $status. Begin read-only inventory."
+# herdr-label-remote-control-at-launch: the 🧠 operator session enables Claude
+# remote control durably at launch via --rc; herdr-spawn fails closed without it.
 spawn_output="$("$spawn" --workspace "$workspace" --name "$name" --label "🧠 operator" --cwd "$cwd" --role meta-operator --receipt "$receipt" -- \
-  claude --agent meta-operator --model claude-fable-5 --effort xhigh --permission-mode auto -n "$name" "$prompt")"
+  claude --rc --agent meta-operator --model claude-fable-5 --effort xhigh --permission-mode auto -n "$name" "$prompt")"
 echo "$spawn_output"
 provider_session_id="$(grep -oE 'provider_session_id=[^ ]+' <<<"$spawn_output" | cut -d= -f2)"
 [[ -n "$provider_session_id" ]] || { echo "launch-meta-operator: missing verified provider session id" >&2; exit 1; }

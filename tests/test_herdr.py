@@ -734,6 +734,96 @@ fi
             )
             assert_blocked_before_bootstrap(result, log)
 
+    def spawn_mic_command(self, receipt, cwd=None, rc=False):
+        # A mic-labeled orchestrator spawn; rc controls the --rc launch flag.
+        claude = ["claude"]
+        if rc:
+            claude.append("--rc")
+        claude += [
+            "--model", "claude-opus-4-8[1m]", "--effort", "high",
+            "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
+        ]
+        return [
+            str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(cwd or ROOT),
+            "--role", "orchestrator", "--label", "🎤 443/6 · operating model",
+            "--receipt", str(receipt), "--", *claude,
+        ]
+
+    def spawn_git_repo(self, path):
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        subprocess.run(["git", "-C", str(path), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(path), "config", "user.name", "Test"], check=True)
+        (path / "AGENTS.md").write_text("# Target\n")
+        subprocess.run(["git", "-C", str(path), "add", "AGENTS.md"], check=True)
+        subprocess.run(["git", "-C", str(path), "commit", "-qm", "target"], check=True)
+
+    def test_spawn_fails_closed_on_mic_label_without_remote_control_at_launch(self):
+        # herdr-label-remote-control-gate: a mic-labeled spawn without the --rc
+        # launch flag is a launch-gate failure before bootstrap and pane creation.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_mic_command(receipt_path, cwd=repo, rc=False),
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(call.startswith("tab create") for call in calls))
+            self.assertFalse(any(call.startswith("agent start") for call in calls))
+
+    def test_spawn_fails_closed_on_operator_label_without_remote_control_at_launch(self):
+        # herdr-label-remote-control: the 🧠 operator session requires remote
+        # control durably at launch; a spawn without --rc fails closed.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            registry = load_registry(ROOT)
+            resolved = resolve_role(registry, "meta-operator", set())
+            receipt = build_launch_receipt(
+                ROOT, resolved, spawn_id=str(uuid.uuid4()), parent="human",
+                reply_route="human", repo=repo, worktree=repo,
+                execution_location="remote", operator_loopback=False,
+                review_delivery="reachable_url_required",
+            )
+            receipt_path.write_text(render_receipt(receipt))
+            env, log = self.spawn_environment(td)
+            argv = [
+                str(SPAWN), "--workspace", "w1", "--name", "meta-1", "--cwd", str(repo),
+                "--role", "meta-operator", "--label", "🧠 operator",
+                "--receipt", str(receipt_path), "--",
+                "claude", "--model", "claude-fable-5", "--effort", "xhigh",
+                "--permission-mode", "auto", "--agent", "meta-operator", "prompt",
+            ]
+            result = subprocess.run(argv, env=env, capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(call.startswith("tab create") for call in calls))
+            self.assertFalse(any(call.startswith("agent start") for call in calls))
+
+    def test_spawn_admits_mic_label_with_remote_control_at_launch(self):
+        # With --rc at launch the mic-labeled spawn proceeds through the normal
+        # verified-bootstrap path; unlabeled spawns stay valid without --rc
+        # (covered by the existing happy-path test).
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            receipt = build_orchestrator_receipt(repo, receipt_path)
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_mic_command(receipt_path, cwd=repo, rc=True),
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn(f"provider_session_id={receipt['spawn_id']}", result.stdout)
+
     def test_spawn_creates_no_pane_on_unreadable_receipt(self):
         with tempfile.TemporaryDirectory() as td:
             receipt_path = Path(td) / "launch.toml"
