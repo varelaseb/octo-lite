@@ -20,13 +20,13 @@ Capture honest operator-reviewable browser proof for one exact reviewed HEAD.
 
 ## Rules
 
-- Read the exact receipt before capture. Stop on any mismatch.
+- Echo the exact bound inputs in the schema-forced acknowledgment before capture. Stop on any mismatch.
 - Prefer the smallest screenshot set that proves visible states.
 - Record video only when time, motion, ordering, gesture, or end-to-end continuity needs proof.
 - Capture required viewports. Name artifacts by observed state.
 - Bind every artifact to issue, PR, HEAD, story, criterion, viewport, and environment.
 - Record failures and gaps. Supersede stale recaptures explicitly.
-- Bind exact output to the verified receipt with `result-bind`.
+- Return exact output through the structured pass result the workflow journal binds.
 
 ## Never
 
@@ -39,4 +39,4 @@ Stop on wrong commit, unsafe fixture collision, unreachable environment, or uncl
 
 ## Output
 
-Evidence manifest, minimal artifacts, evidence-site location, gaps, and exact capture receipt.
+Evidence manifest, minimal artifacts, evidence-site location, gaps, and exact journal-bound capture result.

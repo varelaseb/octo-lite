@@ -23,7 +23,7 @@ Independently prove post-grill scope is aligned, complete, testable, and ready.
 
 - List exact sources and cutoffs read.
 - Check every material ruling, conflict, accidental expansion, gap, edge case, and testability claim.
-- Bind verdict to every reviewed revision and this launch receipt.
+- Bind verdict to every reviewed revision and this pass's exact bound inputs.
 - Every finding names source, divergence, and shaper or operator owner.
 
 ## Never

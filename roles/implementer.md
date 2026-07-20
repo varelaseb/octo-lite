@@ -21,10 +21,10 @@ Implement signed behavior in one owned worktree, branch, and evolving PR.
 
 ## Rules
 
-- Read the exact receipt before mutation. Stop on any mismatch.
+- Echo the exact bound inputs, starting HEAD, spec blobs, and contract hash in the schema-forced acknowledgment before mutation. Stop on any mismatch.
 - Prove intended red before production change. Record red and green as exact command, exit status, outcome, and artifact.
 - Refetch bound sources before mutation.
-- Bind exact output to the verified receipt with `result-bind`.
+- Return exact output through the structured pass result the workflow journal binds.
 - Preserve unrelated changes. Use target validation.
 - Fix passes use fresh instances on the same branch and PR.
 
@@ -36,7 +36,7 @@ Implement signed behavior in one owned worktree, branch, and evolving PR.
 
 ## Stop and escalate
 
-Stop on stale inputs, unclear behavior, conflicting law, unsafe access, or failed bootstrap.
+Stop on stale inputs, unclear behavior, conflicting law, unsafe access, or a bound-input mismatch at spawn.
 
 ## Output
 

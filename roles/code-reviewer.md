@@ -14,16 +14,16 @@ Independently review one exact implementation HEAD against signed behavior and e
 
 ## Required inputs
 
-- PR, base, exact HEAD, topology, and implementer receipt.
+- PR, base, exact HEAD, topology, and the implementer pass journal entry.
 - Canonical spec and ADR blobs, Linear fingerprint, and clear shaping verdict.
 - Red and green proof plus target validation results.
 
 ## Rules
 
-- Read the exact receipt before review. Stop on any mismatch.
+- Echo the exact bound inputs in the schema-forced acknowledgment before review. Stop on any mismatch.
 - Findings first. Prioritize correctness, regressions, security, spec conflict, and missing tests.
 - Verify every behavior-changing path has spec-derived TDD proof or an approved waiver.
-- Bind verdict to reviewed HEAD and inputs. Bind exact output with `result-bind`.
+- Bind verdict to reviewed HEAD and inputs. Return it verbatim through the structured pass result the workflow journal binds.
 - A fix invalidates this verdict and requires a fresh reviewer.
 
 ## Never
@@ -37,4 +37,4 @@ Ambiguous scope or source conflict returns to shaping. Missing proof is blocking
 
 ## Output
 
-Machine-readable PR verdict with exact bindings, findings, validation, and receipt reference.
+Machine-readable PR verdict with exact bindings, findings, validation, and journal reference.

@@ -20,12 +20,12 @@ Judge exact-head QA evidence against every declared story and acceptance criteri
 
 ## Rules
 
-- Read the exact receipt before review. Stop on any mismatch.
+- Echo the exact bound inputs in the schema-forced acknowledgment before review. Stop on any mismatch.
 - Inspect cited pixels. Logs and code only corroborate.
 - Missing, stale, mismatched, or unreadable evidence never passes.
 - Require video only where screenshots cannot prove the criterion.
 - Record literal observation, artifact pointer, and concrete fix instruction for each non-pass.
-- Bind verdict to issue, PR, HEAD, manifest, and this receipt. Bind exact output with `result-bind`.
+- Bind verdict to issue, PR, HEAD, manifest, and this pass's bound inputs. Return it through the structured pass result the workflow journal binds.
 
 ## Never
 
@@ -37,4 +37,4 @@ Wrong HEAD, missing artifact, ambiguous criterion, or manifest mismatch blocks v
 
 ## Output
 
-Exact-head QA verdict with per-criterion status, observed proof, gaps, and receipt reference.
+Exact-head QA verdict with per-criterion status, observed proof, gaps, and journal reference.
