@@ -11,16 +11,16 @@
 <header data-anchor="header" id="header">
 <h1>octo-lite operator control</h1>
 <nav><a href="../index.spec.html">Specifications</a> / <a href="./operating-model.spec.html">operating model</a> / operator control</nav>
-<p>Canonical messaging, supervision, handoff, control-file, label, trace, and panel behavior.</p>
+<p>Canonical messaging, supervision, handoff, control-file, label, trace, and dashboard behavior.</p>
 </header>
 
 <section data-anchor="diagram-control-panel" id="diagram-control-panel">
-<h2>Control panel authority boundary</h2>
+<h2>Dashboard authority boundary</h2>
 <script type="application/spec+json" data-render="chart" data-lib="echarts">
 {
   "aria": {
     "enabled": true,
-    "description": "The hosted panel is read-only. Local mode may edit a four-pattern allowlist, validate, and show a diff, but cannot commit or push. Target operation never depends on the panel."
+    "description": "The hosted dashboard is read-only. Local mode may edit a four-pattern allowlist, validate, and show a diff, but cannot commit or push. Target operation never depends on the dashboard."
   },
   "tooltip": {
     "trigger": "item"
@@ -83,7 +83,7 @@
           }
         },
         {
-          "name": "Hosted panel",
+          "name": "Hosted dashboard",
           "x": 360,
           "y": 100,
           "symbolSize": [
@@ -95,7 +95,7 @@
           }
         },
         {
-          "name": "Local panel",
+          "name": "Local dashboard",
           "x": 360,
           "y": 360,
           "symbolSize": [
@@ -170,7 +170,7 @@
       "links": [
         {
           "source": "Canonical sources",
-          "target": "Hosted panel",
+          "target": "Hosted dashboard",
           "value": "read",
           "lineStyle": {
             "curveness": 0
@@ -178,14 +178,14 @@
         },
         {
           "source": "Canonical sources",
-          "target": "Local panel",
+          "target": "Local dashboard",
           "value": "read",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Hosted panel",
+          "source": "Hosted dashboard",
           "target": "Read-only projection",
           "value": "only",
           "lineStyle": {
@@ -193,7 +193,7 @@
           }
         },
         {
-          "source": "Local panel",
+          "source": "Local dashboard",
           "target": "Four-path edit allowlist",
           "value": "may edit",
           "lineStyle": {
@@ -238,18 +238,18 @@
 </section>
 
 <section data-anchor="control-panel-boundary" id="control-panel-boundary">
-<h2>Control panel boundary</h2>
-<p data-anchor="runtime-control-panel-package" id="runtime-control-panel-package">The optional control panel lives inside octo-lite under <code>control-panel/</code>, with frontend dependencies and build output isolated from the core workflow.</p>
+<h2>Dashboard boundary</h2>
+<p data-anchor="runtime-control-panel-package" id="runtime-control-panel-package">The optional dashboard lives inside octo-lite under <code>dashboard/</code>, with frontend dependencies and build output isolated from the core workflow.</p>
 <p data-anchor="runtime-control-panel-no-sibling" id="runtime-control-panel-no-sibling">It is not a sibling repository and does not require independent schema-version coordination with octo-lite.</p>
-<p data-anchor="runtime-control-panel-optional" id="runtime-control-panel-optional">Core installation and workflow execution do not build, launch, or depend on the panel unless explicitly invoked.</p>
+<p data-anchor="runtime-control-panel-optional" id="runtime-control-panel-optional">Core installation and workflow execution do not build, launch, or depend on the dashboard unless explicitly invoked.</p>
 <p data-anchor="runtime-control-panel-static" id="runtime-control-panel-static">Hosted mode remains a static read-only projection; local operator mode may edit only approved canonical octo-lite files, validate, and show a git diff.</p>
 <p data-anchor="runtime-control-panel-edit-allowlist" id="runtime-control-panel-edit-allowlist">Local edit paths are exactly <code>roles/*.md</code>, <code>roles.toml</code>, <code>profile/AGENTS.md</code>, and <code>skills/*/SKILL.md</code>.</p>
-<p data-anchor="runtime-control-panel-edit-readonly" id="runtime-control-panel-edit-readonly">Generated adapters, workflows, target-repo instructions, specs, and runtime state remain read-only in the panel.</p>
+<p data-anchor="runtime-control-panel-edit-readonly" id="runtime-control-panel-edit-readonly">Generated adapters, workflows, target-repo instructions, specs, and runtime state remain read-only in the dashboard.</p>
 <p data-anchor="runtime-control-panel-edit-effects" id="runtime-control-panel-edit-effects">A save validates and shows the git diff but never commits or pushes; no per-file edit registry exists.</p>
-<p data-anchor="runtime-control-panel-inspector" id="runtime-control-panel-inspector">The role inspector shows current roles, model, effort, mode, Linear mappings, actual resolved skills, workflow spawn graph, symlink health, editable canonical role prompts, and the generic system or profile prompt.</p>
+<p data-anchor="runtime-control-panel-inspector" id="runtime-control-panel-inspector">The dashboard role inspector shows current roles, model, effort, mode, Linear mappings, actual resolved skills, workflow spawn graph, symlink health, editable canonical role prompts, and the generic system or profile prompt.</p>
 <p data-anchor="runtime-control-panel-pinning" id="runtime-control-panel-pinning">Validated prompt or mapping changes affect only newly spawned sessions; existing sessions remain pinned to their launch contract.</p>
-<p data-anchor="runtime-control-panel-target-discovery" id="runtime-control-panel-target-discovery">The panel derives target values from existing repo instructions, specs, git, Linear, PRs, and evidence manifests; a target has no control-panel adapter by default.</p>
-<p data-anchor="runtime-control-panel-target-override" id="runtime-control-panel-target-override">Only a shaped, proven non-derivable presentation mapping may add <code>.octo-lite/control-panel.toml</code>; it contains no agent instructions, lifecycle state, secrets, or product dependency.</p>
+<p data-anchor="runtime-control-panel-target-discovery" id="runtime-control-panel-target-discovery">The panel derives target values from existing repo instructions, specs, git, Linear, PRs, and evidence manifests; a target has no dashboard adapter by default.</p>
+<p data-anchor="runtime-control-panel-target-override" id="runtime-control-panel-target-override">Only a shaped, proven non-derivable presentation mapping may add <code>.octo-lite/dashboard.toml</code>; it contains no agent instructions, lifecycle state, secrets, or product dependency.</p>
 </section>
 
 <section data-anchor="diagram-message-lifecycle" id="diagram-message-lifecycle">

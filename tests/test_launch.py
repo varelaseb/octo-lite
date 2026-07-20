@@ -575,7 +575,7 @@ class LaunchBoundaryTests(unittest.TestCase):
         self.assertTrue(readback["bootstrap"]["verified"])
 
     def test_bootstrap_from_receipt_works_before_the_role_contract_is_committed(self) -> None:
-        # A control-panel edit to roles/*.md is a plain working-tree change until the
+        # A dashboard edit to roles/*.md is a plain working-tree change until the
         # operator commits it. Bootstrap must not require `git cat-file` lookup of an
         # object that was never written to the object database.
         role_repo = Path(self.temp.name) / "role-src"
