@@ -946,6 +946,7 @@
 <h2>Operator supervision</h2>
 <p data-anchor="supervision-view" id="supervision-view">Fable is the sole writer of the reconciled whole-operation view but does not ingest every raw log.</p>
 <p data-anchor="supervision-report-order" id="supervision-report-order">Upward status leads with product outcome, current gate, blocker, and next operator action; tracker and run identifiers are secondary.</p>
+<p data-anchor="supervision-operator-gate-no-hashes" id="supervision-operator-gate-no-hashes">An operator gate never presents or requests an exact head or hash; the ask carries plain-language what-changed context and rendered pages, while tooling stamps the exact head at approval time and records the binding on the PR and status surfaces.</p>
 <p data-anchor="supervision-notifications" id="supervision-notifications">Proactive operator messages are limited to required decisions, blockers, failures, and meaningful gate or outcome changes.</p>
 <p data-anchor="supervision-primary-surface" id="supervision-primary-surface">A target operations view becomes primary only when it is accurate and digestible across all workstreams; until then Fable supplies the complete operation update.</p>
 <p data-anchor="supervision-files" id="supervision-files">Each stream uses one parent-owned <code>brief.md</code> and one child-owned <code>status.md</code> in the operator control directory.</p>

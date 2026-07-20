@@ -114,3 +114,6 @@ PR.
 Stop and return to shaping on ambiguity, source conflict, stale readiness,
 three failed cycles, unavailable exact model, or missing acceptance-critical
 validation. Report issue, PR, HEAD, current gate, blocker, and next action.
+An operator-facing gate ask never presents or requests an exact head or hash;
+give plain-language what-changed context and rendered pages, and let tooling
+stamp the exact head at approval time onto the PR and status surfaces.
