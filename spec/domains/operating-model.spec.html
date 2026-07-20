@@ -1145,9 +1145,10 @@
 <p data-anchor="constraint-concise" id="constraint-concise">Prompts, roles, skills, and receipts remain extremely concise and use progressive disclosure.</p>
 <p data-anchor="constraint-no-dashes" id="constraint-no-dashes">Skills use no em dash or en dash characters.</p>
 <p data-anchor="constraint-no-copy" id="constraint-no-copy">Generic octo-lite mechanics are not copied into target repos.</p>
-<p data-anchor="constraint-no-turbo" id="constraint-no-turbo">Turbo-specific paths, credentials, fixtures, states, and dashboard mechanics do not live in generic octo-lite prompts or skills.</p>
+<p data-anchor="constraint-no-topicfinder" id="constraint-no-topicfinder">TopicFinder-specific paths, credentials, fixtures, states, and dashboard mechanics do not live in generic octo-lite prompts or skills.</p>
 <p data-anchor="constraint-control-panel" id="constraint-control-panel">The optional hosted control panel is read-only and never becomes a second control plane.</p>
 <p data-anchor="constraint-static-view" id="constraint-static-view">Source systems and control artifacts remain authoritative if every generated view is unavailable.</p>
+<p data-anchor="constraint-ruling-propagation" id="constraint-ruling-propagation">A cross-cutting ruling propagates by a full semantic sweep of every durable surface, reading each file whole and judging its meaning under Decision 108 discipline with one writer per file, never a grep-only or pattern-only pass.</p>
 </section>
 
 <section data-anchor="non-goals" id="non-goals">
@@ -1189,7 +1190,9 @@
 <p data-anchor="decision-108-one-representation" id="decision-108-one-representation">Each rule has one primary representation.</p>
 <p data-anchor="decision-108-other-representation" id="decision-108-other-representation">The other representation may clarify or link but should not overlap.</p>
 <p data-anchor="decision-108-mismatch" id="decision-108-mismatch">A mismatch invalidates the spec and blocks shaping until reconciled, with neither representation silently taking precedence.</p>
-<p data-anchor="decision-log" id="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 108.</p>
+<p data-anchor="decision-109-workflow-native" id="decision-109-workflow-native">Decision 109 runs every worker role as a Claude Workflow subagent of the owning session, retires the octo-launch CLI pass model, and runs OpenAI review roles through a Claude relay subagent that returns codex findings verbatim.</p>
+<p data-anchor="decision-109-binding" id="decision-109-binding">Worker binding proof is the workflow journal plus a schema-forced acknowledgment echo of the exact bound inputs the orchestrator verifies before mutation, durable TOML receipts bind only persistent sessions, and the launch admission and revalidation gates re-home to workflow-layer helpers.</p>
+<p data-anchor="decision-log" id="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 109.</p>
 <p data-anchor="audit-draft" id="audit-draft">The integrated working narrative is preserved in <a href="../../docs/operating-model-audit-2026-07-17/operating-model-draft.md">operating-model-draft.md</a>.</p>
 <p data-anchor="failure-catalog" id="failure-catalog">Observed failure modes are preserved in <a href="../../docs/operating-model-audit-2026-07-17/failure-catalog.md">failure-catalog.md</a>.</p>
 <p data-anchor="symphony-assessment" id="symphony-assessment">The reference-only Symphony comparison is preserved in <a href="../../docs/operating-model-audit-2026-07-17/symphony-assessment.md">symphony-assessment.md</a>.</p>

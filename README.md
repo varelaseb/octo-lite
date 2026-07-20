@@ -38,9 +38,11 @@ at them with symlinks:
 ~/.agents/skills/<skill> -> skills/<skill>
 ```
 
-Codex has no generated custom-agent adapter. An OpenAI-backed role pass is one
-explicit `codex exec` relay launched by octo-launch, carrying the canonical
-role contract as the exec prompt; see ADR 0001.
+Codex has no generated custom-agent adapter. Per Decision 109 every worker role
+runs as a Claude Workflow subagent of the owning session, and an OpenAI-backed
+role pass runs inside a Claude relay subagent that executes one explicit
+`codex exec` relay, carrying the canonical role contract as the exec prompt and
+returning the codex findings verbatim; see ADR 0001.
 
 The Claude Code surface reuses the same source repo. Skills share the SKILL.md
 format and symlink directly. Claude uses generated Markdown + YAML frontmatter

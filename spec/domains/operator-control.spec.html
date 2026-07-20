@@ -1446,8 +1446,10 @@ streams/&lt;stream&gt;/status.md
 streams/&lt;stream&gt;/trace.jsonl
 operator-owner.toml
 handoffs/0001.md</code></pre>
+<p data-anchor="stream-registry-sole" id="stream-registry-sole">The control-directory <code>streams/</code> tree is the sole sweep-visible stream registry; Fable is the sole writer of the registry itself, meaning which streams exist, while each child writes only its own <code>status.md</code> within its stream.</p>
 <p data-anchor="stream-brief-owner" id="stream-brief-owner">Only the parent writes a child brief.</p>
 <p data-anchor="stream-status-owner" id="stream-status-owner">Only the child writes its status.</p>
+<p data-anchor="stream-status-whole" id="stream-status-whole">A <code>status.md</code> is rewritten whole to reflect current truth, never patched piecemeal or appended, so no stale fragment survives a status update.</p>
 <p data-anchor="stream-owner-writer" id="stream-owner-writer">Only the owner-transfer helper replaces <code>operator-owner.toml</code>.</p>
 <p data-anchor="stream-trace-writer" id="stream-trace-writer">Only deterministic workflow and gate helpers append trace events.</p>
 <p data-anchor="stream-mutation-caller" id="stream-mutation-caller">Operator-owned mutation helpers verify the exact caller against <code>operator-owner.toml</code>; ordinary read-only commands do not.</p>

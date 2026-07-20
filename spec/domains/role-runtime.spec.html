@@ -558,7 +558,7 @@
 {
   "aria": {
     "enabled": true,
-    "description": "Machine mapping, canonical role prose, requested purpose, conditional skills, and target instructions resolve once into the effective provider contract and receipt."
+    "description": "Machine mapping, canonical role prose, requested purpose, conditional skills, and target instructions resolve once into the effective provider contract, which the owning session's workflow dispatches as a Claude subagent, or as a codex relay subagent for OpenAI roles."
   },
   "tooltip": {
     "trigger": "item"
@@ -693,7 +693,7 @@
           }
         },
         {
-          "name": "Launch receipt",
+          "name": "Journal and ack",
           "x": 700,
           "y": 400,
           "symbolSize": [
@@ -705,7 +705,7 @@
           }
         },
         {
-          "name": "octo-launch dispatch",
+          "name": "Workflow dispatch",
           "x": 880,
           "y": 250,
           "symbolSize": [
@@ -717,7 +717,7 @@
           }
         },
         {
-          "name": "Claude pass",
+          "name": "Claude subagent",
           "x": 1010,
           "y": 140,
           "symbolSize": [
@@ -729,7 +729,7 @@
           }
         },
         {
-          "name": "Codex relay",
+          "name": "Relay subagent",
           "x": 1010,
           "y": 360,
           "symbolSize": [
@@ -792,40 +792,40 @@
         },
         {
           "source": "Role resolver",
-          "target": "Launch receipt",
-          "value": "source blobs",
+          "target": "Journal and ack",
+          "value": "bound inputs",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
           "source": "Provider contract",
-          "target": "octo-launch dispatch",
+          "target": "Workflow dispatch",
           "value": "effective identity",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Launch receipt",
-          "target": "octo-launch dispatch",
-          "value": "bootstrap and run",
+          "source": "Journal and ack",
+          "target": "Workflow dispatch",
+          "value": "verified pre-mutation",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "octo-launch dispatch",
-          "target": "Claude pass",
+          "source": "Workflow dispatch",
+          "target": "Claude subagent",
           "value": "Claude roles",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "octo-launch dispatch",
-          "target": "Codex relay",
-          "value": "OpenAI roles",
+          "source": "Workflow dispatch",
+          "target": "Relay subagent",
+          "value": "OpenAI verbatim",
           "lineStyle": {
             "curveness": 0
           }
@@ -1194,14 +1194,15 @@
 <p data-anchor="role-reconciler-bootstrap-snapshot-proof" id="role-reconciler-bootstrap-snapshot-proof">Reconciler bootstrap opens the exact file at the receipt-bound <code>reconcile.snapshot_path</code>, hashes its bytes, and refuses acknowledgment when that file is missing or its digest does not match <code>reconcile.snapshot_digest</code>.</p>
 <p data-anchor="role-reconciler-authority" id="role-reconciler-authority">Sonnet cannot mutate sources, override deterministic mismatches, investigate open-endedly, or silently resolve ambiguity.</p>
 <p data-anchor="role-reconciler-escalation" id="role-reconciler-escalation">Missing or unparseable input and semantic ambiguity return <code>needs_fable</code>; Fable judges the case.</p>
-<p data-anchor="role-claude-native" id="role-claude-native">Orchestrated Claude Workflows are the primary loop runtime rather than an adapter target.</p>
+<p data-anchor="role-claude-native" id="role-claude-native">Orchestrated Claude Workflows are the primary loop runtime rather than an adapter target, and every worker role runs as a subagent of the owning session's workflow.</p>
+<p data-anchor="role-worker-migration" id="role-worker-migration">Every worker role migrates to a Claude Workflow subagent, including implementer, qa-capture, and reconciler; reconciler and the review roles run under a Read-restricted subagent type, OpenAI review roles run through the codex relay subagent, and only the meta-operator and the epic and issue orchestrators remain persistent host sessions.</p>
 <p data-anchor="role-contract-source" id="role-contract-source">Each <code>roles/&lt;role&gt;.md</code> is the sole canonical prose contract for that role.</p>
 <p data-anchor="role-machine-map" id="role-machine-map"><code>roles.toml</code> exclusively owns provider, exact model, effort, permission mode, tools, required and conditional skills, and contract path.</p>
 <p data-anchor="role-authority-split" id="role-authority-split">Role prose owns responsibilities, authority, stop conditions, inputs, and outputs without repeating machine configuration.</p>
 <p data-anchor="role-resolver" id="role-resolver">One small resolver combines the canonical role contract and machine mapping before every Workflow agent invocation or Sol relay.</p>
 <p data-anchor="role-adapters" id="role-adapters">Claude Markdown adapters are generated launcher inputs and diagnostic surfaces, never alternate role-bearing spawn paths.</p>
 <p data-anchor="role-no-codex-adapter" id="role-no-codex-adapter">Codex has no generated custom-agent adapter; Codex custom agents are not part of correctness or fallback for any role.</p>
-<p data-anchor="role-openai-relay" id="role-openai-relay">An OpenAI-backed role pass is one explicit codex exec relay launched by octo-launch, carrying exact model, effort, service tier, worktree, receipt, and the canonical contract as the exec prompt, and it never discovers or depends on a Codex custom agent.</p>
+<p data-anchor="role-openai-relay" id="role-openai-relay">An OpenAI-backed role pass runs inside a Claude relay subagent that executes one explicit codex exec relay, carrying exact model, effort, service tier, worktree, and the canonical contract as the exec prompt, and returns the codex final message verbatim with a hash the workflow binds; it never summarizes the relay output and never discovers or depends on a Codex custom agent.</p>
 <p data-anchor="role-openai-fail-closed" id="role-openai-fail-closed">The relay fails closed unless the exact effective provider, model, and effort are independently read back from the Codex session's own rollout record before any mutation.</p>
 <p data-anchor="role-no-prompt-copy" id="role-no-prompt-copy">Claude Workflows load canonical role prose verbatim and Sol relays receive the same prose without copied workflow literals.</p>
 <p data-anchor="role-skill-map" id="role-skill-map">The launcher loads every required skill plus only matched conditional skills and records the actual resolved set.</p>
@@ -1220,7 +1221,7 @@
 {
   "aria": {
     "enabled": true,
-    "description": "Launch validates current source facts, role-purpose capability, Linear state, prior verdicts, manifest shape, and revision before starting a provider. Mutation begins only after contained bootstrap and acknowledgment."
+    "description": "The workflow validates current source facts, role-purpose capability, Linear state, prior verdicts, manifest shape, and revision before spawning a worker subagent. Mutation begins only after a contained subagent and its verified acknowledgment echo."
   },
   "tooltip": {
     "trigger": "item"
@@ -1331,7 +1332,7 @@
           }
         },
         {
-          "name": "Provider bootstrap",
+          "name": "Subagent spawn",
           "x": 1000,
           "y": 230,
           "symbolSize": [
@@ -1343,7 +1344,7 @@
           }
         },
         {
-          "name": "Receipt revalidation",
+          "name": "Journal revalidation",
           "x": 1000,
           "y": 500,
           "symbolSize": [
@@ -1355,7 +1356,7 @@
           }
         },
         {
-          "name": "Bootstrap acknowledgment",
+          "name": "Ack echo",
           "x": 700,
           "y": 500,
           "symbolSize": [
@@ -1442,30 +1443,30 @@
         },
         {
           "source": "Fresh worktree",
-          "target": "Provider bootstrap",
+          "target": "Subagent spawn",
           "value": "contained",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Provider bootstrap",
-          "target": "Receipt revalidation",
-          "value": "before runner",
+          "source": "Subagent spawn",
+          "target": "Journal revalidation",
+          "value": "before spawn",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Receipt revalidation",
-          "target": "Bootstrap acknowledgment",
+          "source": "Journal revalidation",
+          "target": "Ack echo",
           "value": "valid",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Bootstrap acknowledgment",
+          "source": "Ack echo",
           "target": "Mutation permitted",
           "value": "verified",
           "lineStyle": {
@@ -1511,12 +1512,14 @@
 
 <section data-anchor="launch-interface" id="launch-interface">
 <h2>Role launch</h2>
-<p data-anchor="launch-correctness-path" id="launch-correctness-path">octo-launch is the sole mechanism that bootstraps, verifies, and runs a role pass; a Claude Workflow performs deterministic gating over an already-completed, receipt-bound pass result and never spawns a worker session itself.</p>
+<p data-anchor="launch-correctness-path" id="launch-correctness-path">A Claude Workflow inside the owning orchestrator session spawns, gates, and runs every worker role pass as a subagent; the deterministic admission and revalidation gates run in the workflow-layer helpers, and OpenAI review roles run through a Claude relay subagent that executes the codex exec relay and returns findings verbatim. Persistent sessions are hosts that run these workflows, never subagents spawned by them.</p>
 <p data-anchor="launch-readback" id="launch-readback">The launch helper performs final exact Linear and PR and HEAD readback before dispatch.</p>
 <p data-anchor="launch-worktree" id="launch-worktree">It provisions a fresh contained worktree from the declared base and starts the exact role, model, effort, mode, and skill set.</p>
-<p data-anchor="launch-identity" id="launch-identity">It captures the exact provider session ID and requires a compact bootstrap acknowledgment before mutation.</p>
+<p data-anchor="launch-identity" id="launch-identity">A worker subagent requires a schema-forced acknowledgment echo of its exact bound inputs before mutation; the host session owns the subagent, so no separate provider session ID handshake is captured for a Claude worker, and only the codex relay subagent returns its proven codex session identity.</p>
 <p data-anchor="launch-containment" id="launch-containment">Workspace containment is checked exactly at provisioning and child bootstrap, not before every command.</p>
-<p data-anchor="launch-receipt" id="launch-receipt">The receipt binds spawn, parent and reply route, role, runtime, repo, instructions, issue, spec, PR, topology, starting HEAD, and required prior gates.</p>
+<p data-anchor="launch-receipt" id="launch-receipt">A worker pass binds no durable TOML receipt; its binding proof is the workflow journal plus a schema-forced acknowledgment echo of the exact bound inputs, meaning starting HEAD, spec blobs, and contract hash, which the owning orchestrator deterministically verifies before any mutation phase.</p>
+<p data-anchor="launch-receipt-persistent" id="launch-receipt-persistent">A durable TOML receipt binds only a persistent session: spawn, parent and reply route, role, runtime, repo, instructions, control identity, and required prior gates.</p>
+<p data-anchor="launch-gates-workflow-layer" id="launch-gates-workflow-layer">The admission matrix, Linear-state gate, manifest-shape and launch-revision revalidation, and bound-result checks run as deterministic workflow-layer helpers the orchestrator calls before each subagent spawn and before every mutation phase.</p>
 <p data-anchor="launch-access-context" id="launch-access-context">The initial launch context and receipt state only execution location, operator loopback reachability, and required review delivery path.</p>
 <p data-anchor="launch-access-default" id="launch-access-default">Unless launch context explicitly confirms operator loopback access, every role treats loopback as unreachable and never presents a localhost URL as usable operator access.</p>
 <p data-anchor="launch-access-ownership" id="launch-access-ownership">Durable access behavior belongs in octo-lite specs and roles, durable target-specific conventions belong in target <code>AGENTS.md</code>, current access facts belong in the receipt or stream status, and temporary routes belong only in stream status.</p>
