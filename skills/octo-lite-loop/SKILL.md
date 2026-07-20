@@ -8,7 +8,8 @@ description: Run the native octo-lite delivery loop after exact shaping readines
 Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
-Use after operator-approved shaping and a clear exact-head shaping verdict.
+Use after shaping under prior explicit operator intent and a clear exact-head
+shaping verdict; tooling records the operator-intent binding at action time.
 Linear is primary for tracked work. Specs define detailed behavior. One evolving
 draft PR carries shaping and implementation.
 
@@ -118,6 +119,6 @@ PR.
 Stop and return to shaping on ambiguity, source conflict, stale readiness,
 three failed cycles, unavailable exact model, or missing acceptance-critical
 validation. Report issue, PR, HEAD, current gate, blocker, and next action.
-An operator-facing gate ask never presents or requests an exact head or hash;
+An operator notification never presents or requests an exact head or hash;
 give plain-language what-changed context and rendered pages, and let tooling
-stamp the exact head at approval time onto the PR and status surfaces.
+stamp the exact head at action time onto the PR and status surfaces.
