@@ -272,6 +272,8 @@
 <p data-anchor="shaping-complete" id="shaping-complete">Shaping is not complete without an aligned Linear issue, canonical spec, evolving draft PR, and final fresh shaping-review verdict.</p>
 <p data-anchor="shaping-review-inputs" id="shaping-review-inputs">The shaping reviewer reads canonical specs and ADRs, relevant conversation logs through a pinned cutoff, Linear, repo instructions, the same draft-PR readiness HEAD, and the TDD contract.</p>
 <p data-anchor="shaping-state" id="shaping-state">Linear <code>Shaped</code> is the canonical readiness state and is set only after a clear final shaping verdict.</p>
+<p data-anchor="shaping-operator-approval" id="shaping-operator-approval">Explicit operator approval precedes <code>Shaped</code>, recorded as a durable acknowledged operator-approval decision, and the clear final shaping-review verdict on the draft PR is the separate readiness proof.</p>
+<p data-anchor="shaping-operator-approval-order" id="shaping-operator-approval-order">The verified issue orchestrator sets <code>Shaped</code> only after both that operator approval and a live clear-verdict readback, and this operator approval of shaped scope never substitutes for the distinct operator acceptance that precedes merge.</p>
 <p data-anchor="shaping-state-transition" id="shaping-state-transition">A verified issue orchestrator in shaping mode may move Ideas or Todo to Shaped only after live readback of one canonical clear shaping verdict at the exact PR HEAD and a <code>linear:&lt;issue&gt;:&lt;fingerprint&gt;</code> binding for the exact current Linear issue.</p>
 <p data-anchor="shaping-state-transition-scope" id="shaping-state-transition-scope">Existing delivery and operator boundaries remain unchanged.</p>
 <p data-anchor="shaping-verdict-location" id="shaping-verdict-location">The final shaping verdict is a durable artifact on the evolving draft PR, not a separate readiness file.</p>
@@ -1935,7 +1937,9 @@
 <p data-anchor="qa-manifest" id="qa-manifest">Evidence records exact app identity, runtime, HEAD, viewports, fixtures, artifacts, and per-criterion evidence rationale.</p>
 <p data-anchor="qa-verdict" id="qa-verdict">A fresh QA reviewer visually inspects the artifacts and grades every criterion pass, fail, or not evidenced.</p>
 <p data-anchor="qa-publication-boundary" id="qa-publication-boundary">QA capture produces artifacts and a manifest; a deterministic publication helper updates the evidence site and its index.</p>
-<p data-anchor="qa-publication-performance" id="qa-publication-performance">Routine publication is incremental; full-archive repair is explicit and never the normal readiness path. Target specs own concrete service-level objectives.</p>
+<p data-anchor="qa-publication-performance" id="qa-publication-performance">Routine publication is incremental.</p>
+<p data-anchor="qa-publication-repair" id="qa-publication-repair">Full-archive repair is explicit and never the normal readiness path.</p>
+<p data-anchor="qa-publication-slo-owner" id="qa-publication-slo-owner">Target specs own concrete service-level objectives.</p>
 <p data-anchor="qa-site-purpose" id="qa-site-purpose">The evidence site is the operator's acceptance-review surface for QA artifacts and the fresh QA reviewer's satisfied or blocking verdict.</p>
 <p data-anchor="qa-served" id="qa-served">Every issue entering Awaiting Accept has a served evidence card, including backend-only work, and readiness is not claimed until the card is readable for the exact issue, PR, HEAD, verdict, story IDs, and criterion coverage.</p>
 <p data-anchor="qa-acceptance-chain" id="qa-acceptance-chain">Every acceptance packet requires a satisfied fresh QA-review verdict before it is offered for operator acceptance.</p>
@@ -1957,6 +1961,14 @@
 <p data-anchor="edge-db-skip" id="edge-db-skip">A test command that silently skips required database coverage is not green validation.</p>
 <p data-anchor="edge-evidence-missing" id="edge-evidence-missing">A generated packet that is not readable on the served evidence site is not ready for acceptance.</p>
 <p data-anchor="edge-self-review" id="edge-self-review">A PR-owning GitHub identity does not block review because the canonical gate is the exact-HEAD verdict comment, never a fabricated formal review state.</p>
+</section>
+
+<section data-anchor="related-specs" id="related-specs">
+<h2>Sources and related specs</h2>
+<p data-anchor="related-overview" id="related-overview">Overview: <a href="./operating-model.spec.html">operating-model.spec.html</a>.</p>
+<p data-anchor="related-role-runtime" id="related-role-runtime">Sibling: <a href="./role-runtime.spec.html">role-runtime.spec.html</a> for role, model, launch, and reconcile runtime.</p>
+<p data-anchor="related-operator-control" id="related-operator-control">Sibling: <a href="./operator-control.spec.html">operator-control.spec.html</a> for messaging, status, and operator handoff.</p>
+<p data-anchor="related-adr" id="related-adr">Boundary: <a href="../adr/0001-operating-model-boundaries.spec.html">ADR 0001 operating-model boundaries</a>.</p>
 </section>
 
 </article>
