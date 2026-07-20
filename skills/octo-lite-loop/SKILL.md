@@ -36,11 +36,12 @@ logs are shaping evidence, never implementation prompts.
 Every pass is a fresh instance. Never resume a worker for another pass. Never
 use `--last`.
 
-Before each pass, run `octo-launch launch`. It refetches exact sources, creates
-the fresh worktree, resolves the role, bootstraps and verifies BOOTSTRAP_ACK,
-then resumes that exact same provider session to run the pass. It is the sole
-LLM execution for the pass. It parses the role's structured result, binds it to
-the receipt, and prints the exact receipt plus a machine-readable `pass_result`.
+Before each pass, the workflow spawns the resolved role as a fresh Claude
+subagent, or a codex relay subagent for an OpenAI role, after the workflow-layer
+gates admit it. It refetches exact sources, resolves the role, and binds the
+result by the workflow journal plus a schema-forced acknowledgment echo of the
+bound inputs verified before mutation. There is no octo-launch CLI pass and no
+worker TOML receipt; the pass produces a machine-readable `pass_result`.
 
 Then invoke one `workflows/octo-loop-qa.js` mode, passing that exact receipt and
 `pass_result`. The Workflow never launches a worker itself; it only performs

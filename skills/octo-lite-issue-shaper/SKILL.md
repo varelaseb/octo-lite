@@ -91,10 +91,11 @@ alternative proof.
 
 ## Final shaping review
 
-After grilling and reconciliation, run `octo-launch launch` for one fresh
-`shaping-reviewer` resolved through `roles.toml`. It is the sole LLM execution
-for this pass: it bootstraps, verifies BOOTSTRAP_ACK, and resumes that exact
-session. The reviewer reads:
+After grilling and reconciliation, the workflow spawns one fresh
+`shaping-reviewer` resolved through `roles.toml` as a codex relay subagent that
+returns findings verbatim. The workflow-layer gates admit it and bind its result
+by the workflow journal plus a schema-forced acknowledgment echo. The reviewer
+reads:
 
 - exact Linear issue and content fingerprint
 - same draft PR and immutable shaping HEAD
