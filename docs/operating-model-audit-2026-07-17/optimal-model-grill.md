@@ -1,6 +1,6 @@
 # Optimal Operating Model Grill
 
-Status: complete through Decision 107. The decision table is the chronological
+Status: complete through Decision 108. The decision table is the chronological
 authority for this audit. Earlier questions and recommendations are historical
 grill material and may be superseded by later rulings.
 
@@ -662,3 +662,4 @@ Record each ruling here during the grill:
 | 105 | One-time historical cutover sequencing exception | Approved for PR 6 commits through `bc02cc600b3ebbad02890976ed594fc429e1344a`, made while the readiness and launch gates were themselves being built. | Preserve that implementation evidence. Waive no TDD, current-head shaping review, code review, QA, operator acceptance, or future requirement to reach Linear `Shaped` before implementation. This exception cannot authorize any later pass. | Restart grill, 2026-07-20 |
 | 106 | Four-page canonical operating-model structure | Approved: replace the single broad spec with one concise `operating-model.spec.html` overview plus `delivery-lifecycle.spec.html`, `role-runtime.spec.html`, and `operator-control.spec.html`. | Split by independent change and review boundaries. Preserve exact cross-links. Do not create one spec per subsection. Diagram scope remains under grill. | Document visual semantics |
 | 107 | Diagram-first canonical specs | Approved: use diagrams wherever relevant or possible across all four operating-model pages, especially for hierarchy, sequence, state transition, ownership, mapping, and multi-party flow. Prefer diagrams to prose. | Retain terse prose for exact rules, edge conditions, accessibility, and behavior a diagram cannot express precisely. Each diagram adds a distinct mental model and uses document-native semantic data, not a parallel visualization source. | Diagram authority |
+| 108 | Non-overlapping visual and prose authority | Approved: diagrams are normative for the states and relationships they explicitly encode; terse prose is normative for constraints and exceptions. Keep them aligned and avoid overlap. | Each rule has one primary representation. The other may clarify or link but should not restate it. Any mismatch invalidates the spec and blocks shaping until reconciled; neither silently wins. | Grill complete, apply spec split and visual model |
