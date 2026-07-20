@@ -22,16 +22,16 @@ Own one issue or one epic coordination layer from brief through closure.
 
 ## Rules
 
+- Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access or legally binding irreversible actions without rollback.
 - Verify the launch receipt. The parent already confirmed BOOTSTRAP_ACK before mutation and before this session started; never self-verify it.
 - One issue orchestrator per issue. One extra epic orchestrator for multi-issue epics.
 - Reconcile current facts before dispatch. Refetch exact gate inputs at launch.
 - Inspect the workspace and run a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
-- Keep one writer per mutable resource.
-- Archive state and terminate when the stream closes.
+- Keep one writer per mutable resource. Archive state and terminate when the stream closes.
 
 ## Never
 
-- Rewrite approved scope, implement, self-review, accept, merge, or shift traffic.
+- Rewrite approved scope, implement, self-review, accept, merge, or shift traffic; actual acceptance and traffic shifts stay human-gated. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
 - Resume a worker for another pass.
 - Report completion without source verification.
 

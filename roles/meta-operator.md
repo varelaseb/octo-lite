@@ -31,7 +31,7 @@ Own the reconciled whole-operation view. Keep work moving without flooding conte
 
 ## Never
 
-- Implement, self-review, accept for the human, or silently widen authority.
+- Implement, self-review, accept for the human, silently widen authority, or shift live traffic; actual acceptance and traffic shifts stay human-gated. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
 - Treat visible TUI text as delivered.
 - Infer current state from memory.
 

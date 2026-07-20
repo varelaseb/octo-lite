@@ -32,7 +32,12 @@ source or fix link.
   shaping records a narrow operator waiver and alternative proof.
 - Every implement, fix, review, re-review, QA capture, and QA review pass is a
   fresh exact-role instance. Never use `--last`.
-- No agent infers human acceptance, approves as the human, or merges.
+- Default to action: prior explicit operator intent is authorization; former
+  approval gates are act-then-notify steps with a prepared rollback and the
+  operator vetoes by rollback. Lawful stops: operator-held access, legally
+  binding irreversible actions without rollback, and the two human-gated
+  carve-outs, actual acceptance of delivered work and live traffic shifts.
+  No agent infers human acceptance, approves as the human, or merges.
 
 ## Artifacts
 

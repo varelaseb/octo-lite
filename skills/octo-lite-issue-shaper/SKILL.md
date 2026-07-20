@@ -116,12 +116,13 @@ grill. Material reconciliation requires another fresh shaping review.
 
 ## Finalize
 
-Ask for operator approval with human-sensical context only: a plain-language
-what-changed-since-your-last-look summary plus the rendered pages. Never present
-or request an exact head or hash in the ask; tooling stamps the exact head at
-approval time and records the binding on the PR and status surfaces.
+Default to action: prior explicit operator intent authorizes finalization.
+Notify the operator with human-sensical context only: a plain-language
+what-changed-since-your-last-look summary plus the rendered pages, never an
+exact head or hash; tooling stamps the exact head at action time onto the PR
+and status surfaces. The operator vetoes by rollback.
 
-Only after explicit operator approval and clear verdict readback:
+On clear verdict readback, act then notify:
 
 1. Commit durable spec, ADR, story, repo instruction, and PR changes.
 2. Update Linear with concise high-level context and the verdict link.

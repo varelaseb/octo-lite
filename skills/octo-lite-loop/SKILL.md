@@ -83,8 +83,12 @@ QA starts only from a clear code verdict for the same HEAD.
 - Only then may the orchestrator use the named Linear helper to enter
   `Awaiting Accept`.
 
-Operator acceptance is explicit and exact-head bound. No agent accepts,
-approves as the human, merges, or infers acceptance.
+Actual operator acceptance is explicit, exact-head bound, and human-gated by
+carve-out: no agent accepts, approves as the human, merges, or infers
+acceptance. Every earlier gate on the way to Awaiting Accept runs
+act-then-notify with prepared rollback under prior explicit operator intent;
+the operator vetoes by rollback. The other lawful stops are operator-held
+access and legally binding irreversible actions without rollback.
 
 ## Linear authority
 
