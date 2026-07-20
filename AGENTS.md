@@ -22,7 +22,7 @@ target repositories.
 ## Target Spec Format Capability
 
 - Spec format: spec-chat
-- Canonical spec paths: spec/domains/operating-model.spec.html
+- Canonical spec paths: spec/domains/operating-model.spec.html, spec/domains/delivery-lifecycle.spec.html, spec/domains/role-runtime.spec.html, spec/domains/operator-control.spec.html
 - Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.
