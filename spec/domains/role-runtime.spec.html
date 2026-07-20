@@ -807,11 +807,27 @@
           }
         },
         {
-          "source": "Journal and ack",
-          "target": "Workflow dispatch",
-          "value": "verified pre-mutation",
+          "source": "Workflow dispatch",
+          "target": "Journal and ack",
+          "value": "journals spawn",
           "lineStyle": {
             "curveness": 0
+          }
+        },
+        {
+          "source": "Claude subagent",
+          "target": "Journal and ack",
+          "value": "ack echo pre-mutation",
+          "lineStyle": {
+            "curveness": 0.2
+          }
+        },
+        {
+          "source": "Relay subagent",
+          "target": "Journal and ack",
+          "value": "ack echo pre-mutation",
+          "lineStyle": {
+            "curveness": 0.2
           }
         },
         {
@@ -1443,24 +1459,24 @@
         },
         {
           "source": "Fresh worktree",
-          "target": "Subagent spawn",
+          "target": "Journal revalidation",
           "value": "contained",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Subagent spawn",
-          "target": "Journal revalidation",
-          "value": "before spawn",
+          "source": "Journal revalidation",
+          "target": "Subagent spawn",
+          "value": "valid before spawn",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Journal revalidation",
+          "source": "Subagent spawn",
           "target": "Ack echo",
-          "value": "valid",
+          "value": "echo bound inputs",
           "lineStyle": {
             "curveness": 0
           }

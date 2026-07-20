@@ -41,7 +41,7 @@
 
 <section data-anchor="decision-relay">
 <h3>OpenAI role launch</h3>
-<p data-anchor="decision-exec-relay">An OpenAI-backed role pass is one explicit <code>codex exec</code> relay launched by octo-launch, carrying exact model, effort, service tier, worktree, receipt, and the canonical role contract as the exec prompt.</p>
+<p data-anchor="decision-exec-relay">Superseded by the Decision 109 amendment below: an OpenAI-backed role pass now runs inside a Claude relay subagent, not an octo-launch pass with a worker receipt. Historical rule as originally signed: an OpenAI-backed role pass is one explicit <code>codex exec</code> relay launched by octo-launch, carrying exact model, effort, service tier, worktree, receipt, and the canonical role contract as the exec prompt.</p>
 <p data-anchor="decision-no-discovery">The relay never discovers, references, or depends on a Codex custom agent.</p>
 <p data-anchor="decision-fail-closed-identity">The relay fails closed unless the exact effective provider, model, and effort are independently read back from the Codex session's own rollout record before mutation proceeds.</p>
 <p data-anchor="decision-identity-source">Effective identity is read from the <code>session_meta</code> and latest <code>turn_context</code> entries of the exact session's rollout file, never from the model's own self-report.</p>
