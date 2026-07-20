@@ -179,7 +179,7 @@
         {
           "source": "Epic Opus",
           "target": "Issue Opus A",
-          "value": "compacted status",
+          "value": "spawns",
           "lineStyle": {
             "curveness": 0
           }
@@ -187,7 +187,7 @@
         {
           "source": "Epic Opus",
           "target": "Issue Opus B",
-          "value": "compacted status",
+          "value": "spawns",
           "lineStyle": {
             "curveness": 0
           }
@@ -705,12 +705,24 @@
           }
         },
         {
-          "name": "Claude Workflow",
-          "x": 990,
-          "y": 180,
+          "name": "octo-launch dispatch",
+          "x": 880,
+          "y": 250,
           "symbolSize": [
-            142,
-            54
+            150,
+            56
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Claude pass",
+          "x": 1010,
+          "y": 140,
+          "symbolSize": [
+            132,
+            52
           ],
           "itemStyle": {
             "color": "#2563eb"
@@ -718,11 +730,11 @@
         },
         {
           "name": "Codex relay",
-          "x": 990,
-          "y": 330,
+          "x": 1010,
+          "y": 360,
           "symbolSize": [
-            142,
-            54
+            132,
+            52
           ],
           "itemStyle": {
             "color": "#7c3aed"
@@ -788,14 +800,30 @@
         },
         {
           "source": "Provider contract",
-          "target": "Claude Workflow",
+          "target": "octo-launch dispatch",
+          "value": "effective identity",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Launch receipt",
+          "target": "octo-launch dispatch",
+          "value": "bootstrap and run",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "octo-launch dispatch",
+          "target": "Claude pass",
           "value": "Claude roles",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Provider contract",
+          "source": "octo-launch dispatch",
           "target": "Codex relay",
           "value": "OpenAI roles",
           "lineStyle": {
@@ -968,12 +996,24 @@
           }
         },
         {
-          "name": "Missing or stale",
-          "x": 400,
+          "name": "Missing",
+          "x": 340,
           "y": 620,
           "symbolSize": [
-            142,
-            54
+            118,
+            50
+          ],
+          "itemStyle": {
+            "color": "#dc2626"
+          }
+        },
+        {
+          "name": "Stale",
+          "x": 500,
+          "y": 620,
+          "symbolSize": [
+            118,
+            50
           ],
           "itemStyle": {
             "color": "#dc2626"
@@ -1063,7 +1103,15 @@
         },
         {
           "source": "Fresh Sonnet reconciler",
-          "target": "Missing or stale",
+          "target": "Missing",
+          "value": "classify",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh Sonnet reconciler",
+          "target": "Stale",
           "value": "classify",
           "lineStyle": {
             "curveness": 0
@@ -1481,6 +1529,7 @@
 <p data-anchor="launch-resume-sandbox-config" id="launch-resume-sandbox-config">Every OpenAI resume call selects its sandbox through <code>-c sandbox_mode=...</code> config, never the top-level <code>-s</code> flag, because the installed CLI's <code>resume</code> subcommand rejects <code>-s</code> while its top-level <code>exec</code> bootstrap still accepts it.</p>
 <p data-anchor="launch-linear-state-gate" id="launch-linear-state-gate">Launch admits a shaping-review purpose only for Linear state <code>Ideas</code>, <code>Todo</code>, <code>Shaped</code>, or <code>In Progress</code>, and admits a delivery purpose only for Linear state <code>Shaped</code>, <code>Todo</code>, or <code>In Progress</code>; every other state, including <code>Awaiting Accept</code> and terminal states, is rejected for both purposes.</p>
 <p data-anchor="launch-linear-state-in-progress" id="launch-linear-state-in-progress">Admitting <code>In Progress</code> for both purposes lets shaping re-review run after material reconciliation and lets implementation, code review, re-review, and QA review workers launch while the stream orchestrator holds <code>In Progress</code>, without weakening the exact shaping-verdict checks a delivery purpose still requires.</p>
+<p data-anchor="launch-loop-fire-first-act" id="launch-loop-fire-first-act">Loop fire acts on Linear state <code>Shaped</code> and its first act is the mechanical <code>Shaped -&gt; Todo</code> transition; shaped-not-started work therefore rests at <code>Shaped</code> until fire and enters <code>Todo</code> as the first delivery step before any delivery-purpose worker launches against it, and launch never treats <code>Shaped</code> as a direct <code>In Progress</code> predecessor.</p>
 </section>
 
 <section data-anchor="diagram-workspace-retry" id="diagram-workspace-retry">

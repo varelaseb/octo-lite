@@ -783,16 +783,6 @@
 
 <section data-anchor="delivery-loop" id="delivery-loop">
 <h2>Delivery loop</h2>
-<pre data-anchor="delivery-flow" id="delivery-flow"><code>shape and reconcile
-  -&gt; fresh shaping review
-  -&gt; implement with spec-derived red and green proof
-  -&gt; fresh code review
-  -&gt; fresh fix when blocking
-  -&gt; fresh re-review
-  -&gt; QA capture when user-facing
-  -&gt; fresh QA review
-  -&gt; operator acceptance
-  -&gt; merge and lifecycle transition</code></pre>
 <p data-anchor="delivery-fix-review" id="delivery-fix-review">Every fix changes HEAD and requires a fresh code review before QA.</p>
 <p data-anchor="delivery-cycle-limit" id="delivery-cycle-limit">At most three fresh review and fix cycles may run before the issue returns to shaping.</p>
 <p data-anchor="delivery-invalidation" id="delivery-invalidation">Behavior or contract changes invalidate review and QA while packet-only wording changes do not.</p>
@@ -1059,7 +1049,7 @@
 {
   "aria": {
     "enabled": true,
-    "description": "Shaping may establish Shaped after exact proof. Stream orchestration may perform mechanical delivery transitions. Acceptance, merge, and target-defined promotion remain operator-owned."
+    "description": "Shaping may establish Shaped after exact proof. Loop fire mechanically moves Shaped to Todo, the first delivery step. Stream orchestration may perform mechanical Todo, In Progress, and Awaiting Accept transitions. Acceptance, merge, and target-defined promotion remain operator-owned."
   },
   "tooltip": {
     "trigger": "item"
@@ -1110,9 +1100,21 @@
       },
       "data": [
         {
-          "name": "Ideas or Todo",
+          "name": "Ideas",
           "x": 100,
-          "y": 100,
+          "y": 55,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Todo",
+          "x": 100,
+          "y": 150,
           "symbolSize": [
             142,
             54
@@ -1220,7 +1222,7 @@
       ],
       "links": [
         {
-          "source": "Ideas or Todo",
+          "source": "Ideas",
           "target": "Shaped",
           "value": "clear shaping verdict",
           "lineStyle": {
@@ -1228,7 +1230,23 @@
           }
         },
         {
+          "source": "Todo",
+          "target": "Shaped",
+          "value": "clear shaping verdict",
+          "lineStyle": {
+            "curveness": 0.2
+          }
+        },
+        {
           "source": "Shaped",
+          "target": "Todo",
+          "value": "loop fire",
+          "lineStyle": {
+            "curveness": 0.2
+          }
+        },
+        {
+          "source": "Todo",
           "target": "In Progress",
           "value": "mechanical",
           "lineStyle": {
@@ -1265,6 +1283,14 @@
           "value": "authorized",
           "lineStyle": {
             "curveness": 0
+          }
+        },
+        {
+          "source": "Stream helper",
+          "target": "Todo",
+          "value": "authorized",
+          "lineStyle": {
+            "curveness": 0.2
           }
         },
         {
@@ -1318,6 +1344,7 @@
 <p data-anchor="linear-transition" id="linear-transition">A mechanical transition compares expected state, mutates once, reads back, updates stream status, and notifies the parent before reporting success.</p>
 <p data-anchor="linear-transition-retry" id="linear-transition-retry">A partial transition failure retries only unfinished idempotent steps and never blindly repeats a completed state mutation.</p>
 <p data-anchor="linear-stream-authority" id="linear-stream-authority">Stream orchestrators may perform only <code>Todo -&gt; In Progress -&gt; Awaiting Accept</code> through that helper.</p>
+<p data-anchor="linear-loop-fire-transition" id="linear-loop-fire-transition">Loop fire is the one mechanical <code>Shaped -&gt; Todo</code> transition through that helper, moving shaped-not-started work into <code>Todo</code> as the first delivery step, and it never moves <code>Shaped</code> directly to <code>In Progress</code>.</p>
 <p data-anchor="linear-operator-authority" id="linear-operator-authority">Acceptance, merge, staging, preproduction, and live transitions remain operator-owned.</p>
 <p data-anchor="linear-train" id="linear-train">Acceptance inside a stack or release train remains an acceptance-ledger fact while Linear stays <code>Awaiting Accept</code> until the commit reaches <code>main</code>.</p>
 <p data-anchor="linear-deployment-target-owned" id="linear-deployment-target-owned">Generic octo-lite defines only that post-acceptance deployment and promotion states are durable, operator-authorized, and evidence-backed; the exact state names and the concrete facts that trigger each one are target-owned Linear state mapping, defined in the target repo, never in generic octo-lite.</p>
