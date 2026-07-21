@@ -85,7 +85,7 @@ execution = "workflow-subagent"
 subagent_access = "standard"
 service_tier = "default"
 tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"]
-required_skills = ["tdd", "commit", "octo-lite-github", "push"]
+required_skills = ["tdd", "octo-lite-github"]
 
 [[roles.implementer.conditional_skills]]
 skill = "frontend-design"

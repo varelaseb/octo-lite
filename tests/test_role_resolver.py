@@ -114,14 +114,17 @@ class RoleResolverTest(unittest.TestCase):
         registry = self.resolver.load_registry(ROOT)
         base = self.resolver.resolve_role(registry, "implementer", set())
         ui = self.resolver.resolve_role(registry, "implementer", {"ui", "typescript", "pnpm"})
-        self.assertEqual(base.skills, ("tdd", "commit", "octo-lite-github", "push"))
+        # TUR-447 cycle2 pass1b: the implementer no longer commits or pushes (the host does),
+        # so the commit and push skills are removed from its mandatory skill set to avoid
+        # conflicting guidance.
+        self.assertEqual(base.skills, ("tdd", "octo-lite-github"))
+        self.assertNotIn("commit", base.skills)
+        self.assertNotIn("push", base.skills)
         self.assertEqual(
             ui.skills,
             (
                 "tdd",
-                "commit",
                 "octo-lite-github",
-                "push",
                 "frontend-design",
                 "pnpm",
                 "typescript",
@@ -261,7 +264,7 @@ class RoleResolverTest(unittest.TestCase):
         self.assertEqual(parsed["runtime"]["model"], "claude-sonnet-5")
         self.assertEqual(parsed["runtime"]["effort"], "xhigh")
         self.assertEqual(parsed["runtime"]["mode"], "auto")
-        self.assertEqual(parsed["skills"]["resolved"], ["tdd", "commit", "octo-lite-github", "push", "python"])
+        self.assertEqual(parsed["skills"]["resolved"], ["tdd", "octo-lite-github", "python"])
         self.assertEqual(
             parsed["skills"]["paths"],
             [f"skills/{name}/SKILL.md" for name in parsed["skills"]["resolved"]],

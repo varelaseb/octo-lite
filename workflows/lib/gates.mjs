@@ -444,6 +444,63 @@ function assertRedEvidenceArtifact(red, expectedHead) {
   return evidence
 }
 
+// TUR-447 cycle2 pass1b TDD independent-observer fix (delivery-lifecycle prompt-tdd-red,
+// prompt-tdd-green, prompt-tdd-no-fabrication; and the spec-derived red-green-refactor contract).
+// The prior gate consumed only the MUTATING WORKER's own red evidence: a worker-authored
+// {captured_output, exit_status, head, scenario} object with no corroborating result passed, so a
+// fabricated red chronology could authorize the host push. This gate consumes a SEPARATE read-only
+// OBSERVER's result instead of the worker's evidence. The observer is a DISTINCT subagent from the
+// mutating worker (source stamped, and its identity must not be the worker) that INDEPENDENTLY
+// re-ran the worker's claimed red scenario: it confirmed the scenario FAILS at the unchanged
+// starting HEAD (a separate checkout of the starting HEAD, red_exit nonzero) and PASSES at the
+// worker's mutated tree (green_exit zero), for the SAME scenario the worker reported. A
+// worker-supplied evidence object with no independent observer result is rejected; an observation
+// stamped by the worker (source not the independent observer) is rejected; a red the observer did
+// not see fail at the starting HEAD, or a green it did not see pass at the mutated tree, is
+// rejected. The host consumes THIS result, not result.red.evidence.
+export const INDEPENDENT_OBSERVER_SOURCE = 'independent-tdd-observer'
+
+export function assertObservedRed(observation, expectedRed, expectedHead) {
+  required(observation, 'independent TDD observation')
+  // Provenance: the observation must be stamped by the independent read-only observer, never the
+  // mutating worker. A worker-authored (or unstamped) observation fails closed here.
+  if (observation.source !== INDEPENDENT_OBSERVER_SOURCE) {
+    throw new Error('TDD observation rejected: not from the independent read-only observer')
+  }
+  // The observer must have exercised the SAME scenario the worker reported red/green for.
+  requiredNonEmptyString(observation.scenario, 'observed scenario')
+  if (observation.scenario !== expectedRed.scenario) {
+    throw new Error('TDD observation rejected: observed scenario differs from the reported red scenario')
+  }
+  // The observer independently RE-RAN the red at the unchanged starting HEAD and saw it FAIL.
+  requiredNonEmptyString(observation.starting_head, 'observed starting HEAD')
+  if (observation.starting_head !== expectedHead) {
+    throw new Error('TDD observation rejected: observer did not run the red at the unchanged starting HEAD')
+  }
+  if (!Number.isInteger(observation.red_exit_at_starting_head)) {
+    throw new Error('TDD observation rejected: observed red exit status required')
+  }
+  if (observation.red_exit_at_starting_head === 0) {
+    throw new Error('TDD observation rejected: observer did not see the red FAIL at the starting HEAD')
+  }
+  requiredNonEmptyString(observation.red_output, 'observed red output')
+  // The observer independently RE-RAN the same scenario at the worker's MUTATED tree and saw it PASS.
+  if (!Number.isInteger(observation.green_exit_at_mutated_tree)) {
+    throw new Error('TDD observation rejected: observed green exit status required')
+  }
+  if (observation.green_exit_at_mutated_tree !== 0) {
+    throw new Error('TDD observation rejected: observer did not see the scenario PASS at the mutated tree')
+  }
+  requiredNonEmptyString(observation.green_output, 'observed green output')
+  // The independent observer must not be the mutating worker: an observed_by equal to the worker
+  // identity is rejected, so the observer cannot be the worker.
+  requiredNonEmptyString(observation.observed_by, 'observer identity')
+  if (observation.mutating_worker !== undefined && observation.observed_by === observation.mutating_worker) {
+    throw new Error('TDD observation rejected: the observer cannot be the mutating worker')
+  }
+  return observation
+}
+
 // TUR-447 cycle2 pass1 host-gated push (delivery-lifecycle prompt-tdd-red, prompt-tdd-green;
 // role-runtime launch-identity, launch-receipt; operating-model decision-109-binding). The
 // mutating worker no longer commits or pushes: it produces the mutation in the contained
@@ -454,7 +511,7 @@ function assertRedEvidenceArtifact(red, expectedHead) {
 // already committed or pushed is rejected, because a post-hoc worktree reset cannot undo an
 // already-pushed mutation. requireNewHead now governs the HOST commit that follows acceptance,
 // so acceptImplementation binds the pre-commit worker result, not a worker-produced new HEAD.
-export function acceptImplementation(expectedHead, result, requireHostGatedPush = true) {
+export function acceptImplementation(expectedHead, result, requireHostGatedPush = true, observation = undefined) {
   required(result, 'implementation result')
   if (result.blocked !== false) throw new Error('implementation blocked')
   required(result.head, 'implementation HEAD')
@@ -462,9 +519,14 @@ export function acceptImplementation(expectedHead, result, requireHostGatedPush 
   assertProof(result.green, 'implementation green evidence')
   if (result.red.exit_status === 0) throw new Error('red must fail before production change')
   if (result.green.exit_status !== 0) throw new Error('green must pass after production change')
-  // The red is proven by an independently-observed captured artifact bound to the unchanged
-  // starting HEAD, not by worker-supplied strings.
+  // The red carries a captured artifact bound to the unchanged starting HEAD, but a worker-authored
+  // artifact alone proves nothing (the worker could fabricate it). The chronology is bound to an
+  // INDEPENDENT read-only observer's result: assertObservedRed consumes a SEPARATE observer that
+  // re-ran the SAME scenario and saw it fail at the starting HEAD and pass at the mutated tree. A
+  // worker result with no independent observation, or an observation the worker itself authored, is
+  // rejected here before any host commit/push.
   assertRedEvidenceArtifact(result.red, expectedHead)
+  assertObservedRed(observation, result.red, expectedHead)
   required(result.validation, 'implementation validation')
   // Host-gated push: the worker must NOT commit or push. Its output is verified BEFORE any
   // commit/push, so it stops at the working-tree mutation over the unchanged starting HEAD.

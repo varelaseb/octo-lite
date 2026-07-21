@@ -22,7 +22,7 @@ Implement signed behavior in one owned worktree, branch, and evolving PR.
 ## Rules
 
 - Echo the exact bound inputs, starting HEAD, spec blobs, and contract hash in the schema-forced acknowledgment before mutation. Stop on any mismatch.
-- Prove intended red at the unchanged starting HEAD before production change. Capture the actual failing test output as a bound evidence artifact (captured output, exit status, HEAD). Run green after the working-tree mutation, still at the unchanged starting HEAD, on the same scenario. Record red and green as exact command, exit status, outcome, and artifact.
+- Prove intended red at the unchanged starting HEAD before production change. Capture the actual failing test output as a bound evidence artifact (captured output, exit status, HEAD). Run green after the working-tree mutation, still at the unchanged starting HEAD, on the same scenario. Record red and green as exact command, exit status, outcome, and artifact. Your echo is not the proof: a separate read-only observer re-runs the same scenario, sees it fail at the starting HEAD and pass at the mutated tree, and the host binds that observer result, so report the exact command and scenario.
 - Echo the liveness fields you read: Linear state, Linear fingerprint, and branch. The host reconfirms them live before it pushes.
 - Refetch bound sources before mutation.
 - Return exact output through the structured pass result the workflow journal binds.

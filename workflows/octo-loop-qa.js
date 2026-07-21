@@ -472,6 +472,63 @@ function assertRedEvidenceArtifact(red, expectedHead) {
   return evidence
 }
 
+// TUR-447 cycle2 pass1b TDD independent-observer fix (delivery-lifecycle prompt-tdd-red,
+// prompt-tdd-green, prompt-tdd-no-fabrication; and the spec-derived red-green-refactor contract).
+// The prior gate consumed only the MUTATING WORKER's own red evidence: a worker-authored
+// {captured_output, exit_status, head, scenario} object with no corroborating result passed, so a
+// fabricated red chronology could authorize the host push. This gate consumes a SEPARATE read-only
+// OBSERVER's result instead of the worker's evidence. The observer is a DISTINCT subagent from the
+// mutating worker (source stamped, and its identity must not be the worker) that INDEPENDENTLY
+// re-ran the worker's claimed red scenario: it confirmed the scenario FAILS at the unchanged
+// starting HEAD (a separate checkout of the starting HEAD, red_exit nonzero) and PASSES at the
+// worker's mutated tree (green_exit zero), for the SAME scenario the worker reported. A
+// worker-supplied evidence object with no independent observer result is rejected; an observation
+// stamped by the worker (source not the independent observer) is rejected; a red the observer did
+// not see fail at the starting HEAD, or a green it did not see pass at the mutated tree, is
+// rejected. The host consumes THIS result, not result.red.evidence.
+const INDEPENDENT_OBSERVER_SOURCE = 'independent-tdd-observer'
+
+function assertObservedRed(observation, expectedRed, expectedHead) {
+  required(observation, 'independent TDD observation')
+  // Provenance: the observation must be stamped by the independent read-only observer, never the
+  // mutating worker. A worker-authored (or unstamped) observation fails closed here.
+  if (observation.source !== INDEPENDENT_OBSERVER_SOURCE) {
+    throw new Error('TDD observation rejected: not from the independent read-only observer')
+  }
+  // The observer must have exercised the SAME scenario the worker reported red/green for.
+  requiredNonEmptyString(observation.scenario, 'observed scenario')
+  if (observation.scenario !== expectedRed.scenario) {
+    throw new Error('TDD observation rejected: observed scenario differs from the reported red scenario')
+  }
+  // The observer independently RE-RAN the red at the unchanged starting HEAD and saw it FAIL.
+  requiredNonEmptyString(observation.starting_head, 'observed starting HEAD')
+  if (observation.starting_head !== expectedHead) {
+    throw new Error('TDD observation rejected: observer did not run the red at the unchanged starting HEAD')
+  }
+  if (!Number.isInteger(observation.red_exit_at_starting_head)) {
+    throw new Error('TDD observation rejected: observed red exit status required')
+  }
+  if (observation.red_exit_at_starting_head === 0) {
+    throw new Error('TDD observation rejected: observer did not see the red FAIL at the starting HEAD')
+  }
+  requiredNonEmptyString(observation.red_output, 'observed red output')
+  // The observer independently RE-RAN the same scenario at the worker's MUTATED tree and saw it PASS.
+  if (!Number.isInteger(observation.green_exit_at_mutated_tree)) {
+    throw new Error('TDD observation rejected: observed green exit status required')
+  }
+  if (observation.green_exit_at_mutated_tree !== 0) {
+    throw new Error('TDD observation rejected: observer did not see the scenario PASS at the mutated tree')
+  }
+  requiredNonEmptyString(observation.green_output, 'observed green output')
+  // The independent observer must not be the mutating worker: an observed_by equal to the worker
+  // identity is rejected, so the observer cannot be the worker.
+  requiredNonEmptyString(observation.observed_by, 'observer identity')
+  if (observation.mutating_worker !== undefined && observation.observed_by === observation.mutating_worker) {
+    throw new Error('TDD observation rejected: the observer cannot be the mutating worker')
+  }
+  return observation
+}
+
 // TUR-447 cycle2 pass1 host-gated push (delivery-lifecycle prompt-tdd-red, prompt-tdd-green;
 // role-runtime launch-identity, launch-receipt; operating-model decision-109-binding). The
 // mutating worker no longer commits or pushes: it produces the mutation in the contained
@@ -482,7 +539,7 @@ function assertRedEvidenceArtifact(red, expectedHead) {
 // already committed or pushed is rejected, because a post-hoc worktree reset cannot undo an
 // already-pushed mutation. requireNewHead now governs the HOST commit that follows acceptance,
 // so acceptImplementation binds the pre-commit worker result, not a worker-produced new HEAD.
-function acceptImplementation(expectedHead, result, requireHostGatedPush = true) {
+function acceptImplementation(expectedHead, result, requireHostGatedPush = true, observation = undefined) {
   required(result, 'implementation result')
   if (result.blocked !== false) throw new Error('implementation blocked')
   required(result.head, 'implementation HEAD')
@@ -490,9 +547,14 @@ function acceptImplementation(expectedHead, result, requireHostGatedPush = true)
   assertProof(result.green, 'implementation green evidence')
   if (result.red.exit_status === 0) throw new Error('red must fail before production change')
   if (result.green.exit_status !== 0) throw new Error('green must pass after production change')
-  // The red is proven by an independently-observed captured artifact bound to the unchanged
-  // starting HEAD, not by worker-supplied strings.
+  // The red carries a captured artifact bound to the unchanged starting HEAD, but a worker-authored
+  // artifact alone proves nothing (the worker could fabricate it). The chronology is bound to an
+  // INDEPENDENT read-only observer's result: assertObservedRed consumes a SEPARATE observer that
+  // re-ran the SAME scenario and saw it fail at the starting HEAD and pass at the mutated tree. A
+  // worker result with no independent observation, or an observation the worker itself authored, is
+  // rejected here before any host commit/push.
   assertRedEvidenceArtifact(result.red, expectedHead)
+  assertObservedRed(observation, result.red, expectedHead)
   required(result.validation, 'implementation validation')
   // Host-gated push: the worker must NOT commit or push. Its output is verified BEFORE any
   // commit/push, so it stops at the working-tree mutation over the unchanged starting HEAD.
@@ -1028,6 +1090,31 @@ const IMPLEMENT_SCHEMA = {
     // against the bound ground truth and reconfirms them live before push.
     linear_state: { type: 'string' },
     linear_fingerprint: { type: 'string' },
+  },
+}
+
+// TUR-447 cycle2 pass1b TDD independent-observer: the SEPARATE read-only observer subagent (distinct
+// from the mutating worker) re-runs the worker's claimed red scenario and returns what it observed:
+// the scenario name, the exact starting HEAD it checked out, the red exit + captured output it saw at
+// that unchanged starting HEAD (must FAIL), and the green exit + captured output it saw at the
+// worker's mutated tree (must PASS), stamped with its own identity and source. assertObservedRed
+// consumes THIS, not the worker's evidence.
+const OBSERVATION_SCHEMA = {
+  type: 'object',
+  required: [
+    'source', 'observed_by', 'scenario', 'starting_head',
+    'red_exit_at_starting_head', 'red_output', 'green_exit_at_mutated_tree', 'green_output',
+  ],
+  properties: {
+    source: { type: 'string' },
+    observed_by: { type: 'string' },
+    mutating_worker: { type: 'string' },
+    scenario: { type: 'string' },
+    starting_head: { type: 'string' },
+    red_exit_at_starting_head: { type: 'integer' },
+    red_output: { type: 'string' },
+    green_exit_at_mutated_tree: { type: 'integer' },
+    green_output: { type: 'string' },
   },
 }
 
@@ -1616,20 +1703,94 @@ async function acceptWorkerEchoOrDiscard(role, phaseTitle, bound, result, worktr
   throw echoError
 }
 
+// TUR-447 cycle2 pass1b rejected-mutation cleanup (role-runtime workspace-cleanup; operating-model
+// decision-109-binding). Shared worktree reset: on ANY rejection in the host-gated flow (echo,
+// liveness, TDD observer, pre-push readback), the contained worktree must be reset to the unchanged
+// starting HEAD and every uncommitted change cleared BEFORE the rejection propagates, so a rejected
+// dirty mutation can never survive into a later pass. The loop cannot touch the filesystem, so the
+// reset runs in a spawned subagent that resets and reads back a clean tree at the starting HEAD.
+async function resetWorktreeOrThrow(reason, phaseTitle, bound, worktree) {
+  const cleaned = await agent([
+    `You are a fresh octo-lite workspace-cleanup subagent for a REJECTED pass (${reason}). One pass only.`,
+    'The host rejected this pass, so its uncommitted mutation must be DISCARDED and nothing committed or',
+    'pushed. In the contained worktree below, reset the working tree to the exact bound starting HEAD and',
+    'clear every uncommitted change:',
+    `  worktree: ${worktree}`,
+    `  starting_head: ${bound.starting_head}`,
+    'Run the reset (git reset --hard to the starting HEAD and git clean of untracked changes), then read',
+    'back and return the resulting HEAD and `git status --porcelain` (empty status proves a clean tree).',
+  ].join('\n'), {
+    label: `workspace-cleanup:${bound.issue}`, phase: phaseTitle,
+    schema: {
+      type: 'object', required: ['cleaned', 'head', 'status'],
+      properties: { cleaned: { type: 'boolean' }, head: { type: 'string' }, status: { type: 'string' } },
+    },
+  })
+  if (cleaned === null || cleaned.cleaned !== true || cleaned.head !== bound.starting_head || cleaned.status !== '') {
+    throw new Error(`rejected mutation discard failed: worktree not clean at starting HEAD (${reason})`)
+  }
+}
+
+// TUR-447 cycle2 pass1b TDD independent-observer spawn (delivery-lifecycle prompt-tdd-red,
+// prompt-tdd-green, prompt-tdd-no-fabrication). The mutating worker's own red/green evidence is
+// worker-authored and proves nothing on its own. This spawns a SEPARATE read-only Explore observer
+// subagent, DISTINCT from the mutating worker, that INDEPENDENTLY re-runs the worker's claimed red
+// scenario: it checks out the unchanged starting HEAD in a scratch checkout and runs the scenario
+// (must FAIL), then runs the same scenario against the worker's mutated working tree (must PASS), and
+// returns what it observed stamped with the independent-observer source and its own identity. The
+// host consumes the observer's result, not the worker's evidence; assertObservedRed fails closed
+// unless the observer genuinely saw red-at-starting-HEAD then green-at-mutated-tree for the SAME
+// scenario. The observer is read-only (agentType 'Explore'); its scratch checkout must not touch the
+// worker's contained worktree HEAD.
+async function observeRed(role, phaseTitle, bound, result, worktree) {
+  const scenario = result.red?.scenario ?? ''
+  const command = result.red?.command ?? ''
+  const observation = await agent([
+    `You are a fresh READ-ONLY octo-lite independent TDD observer for the ${role} pass. You are a`,
+    'DISTINCT subagent from the mutating worker and you never mutate a source. One pass only.',
+    'Independently RE-RUN the worker\'s claimed red scenario yourself; do NOT trust the worker\'s reported',
+    'evidence. Observe two runs:',
+    `1. At the UNCHANGED starting HEAD ${bound.starting_head}: check out that exact HEAD in a SEPARATE`,
+    `   scratch checkout (never touch the worker worktree ${worktree} HEAD) and run the scenario`,
+    `   \`${command}\`. It MUST fail; capture its exit status (red_exit_at_starting_head, nonzero) and`,
+    '   output (red_output).',
+    `2. At the worker\'s MUTATED working tree (${worktree}, the uncommitted change): run the SAME scenario.`,
+    '   It MUST pass; capture its exit status (green_exit_at_mutated_tree, zero) and output (green_output).',
+    `Return source "${INDEPENDENT_OBSERVER_SOURCE}", observed_by (your own subagent identity), scenario`,
+    `"${scenario}", starting_head ${bound.starting_head}, and the four run fields you actually observed.`,
+    'A run you did not genuinely execute, or a red that did not fail, or a green that did not pass, must be',
+    'reported honestly; do not fabricate a passing/failing status.',
+  ].join('\n'), {
+    label: `${role}-tdd-observer:${bound.issue}`, phase: phaseTitle, schema: OBSERVATION_SCHEMA,
+    agentType: 'Explore',
+  })
+  if (observation === null) throw new Error(`${role} independent TDD observation returned no result`)
+  return observation
+}
+
 // TUR-447 cycle2 pass1 host-gated push (delivery-lifecycle prompt-tdd-green, delivery-entry-gate;
 // role-runtime launch-readback, launch-identity, launch-receipt; operating-model
 // decision-109-binding). The mutating worker leaves an uncommitted working-tree mutation and does
 // NOT push. This helper is the HOST push gate, run ONLY after acceptImplementation has verified the
-// worker echo and the TDD proof. In order it: (1) verifies the worker's liveness echo against the
-// bound (post-fire reconciled) ground truth; (2) takes a FRESH live readback immediately before the
-// commit and rejects if the live Linear state, Linear fingerprint, PR head, branch, or git HEAD
-// changed since bind; and (3) ONLY THEN spawns a write-capable commit/push subagent that commits
-// the working-tree mutation and pushes, returning the new delivered HEAD. On any failure the
-// contained worktree is reset and NOTHING is pushed. Because a fresh readback and a real
-// worktree reset both need the filesystem/network the loop lacks, each runs in a spawned subagent.
+// worker echo, the INDEPENDENT TDD observer's red/green chronology, and that the worker did not
+// commit/push. In order it: (1) verifies the worker's liveness echo against the bound (post-fire
+// reconciled) ground truth; (2) takes a FRESH live readback immediately before the commit and rejects
+// if the live Linear state, Linear fingerprint, PR head, branch, or git HEAD changed since bind; (3)
+// spawns a write-capable commit/push subagent that commits the working-tree mutation and pushes; and
+// (4) independently READS BACK the actual pushed HEAD and confirms it equals the expected new HEAD
+// before returning. TUR-447 cycle2 pass1b: on ANY rejection in this flow the contained worktree is
+// reset to the starting HEAD and NOTHING is pushed, so a rejected dirty mutation never survives into a
+// later pass. Because a fresh readback, a worktree reset, and a git/gh readback all need the
+// filesystem/network the loop lacks, each runs in a spawned subagent.
 async function hostGatedCommitPush(role, phaseTitle, envelope, bound, result, worktree) {
-  // (1) The worker echoed the liveness fields it read; they must equal the bound ground truth.
-  assertWorkerLivenessEcho(envelope, result)
+  // (1) The worker echoed the liveness fields it read; they must equal the bound ground truth. On a
+  // mismatch, reset the worktree before rethrowing so the rejected mutation does not survive.
+  try {
+    assertWorkerLivenessEcho(envelope, result)
+  } catch (error) {
+    await resetWorktreeOrThrow(`${role} liveness echo mismatch`, phaseTitle, bound, worktree)
+    throw error
+  }
   // (2) Fresh live readback immediately before the push. This is a NEW read, distinct from the
   // spawn-start liveReadback, so a change during the resolver/ack/mutation passes is caught.
   const issue = required(A.issue, 'issue')
@@ -1648,16 +1809,25 @@ async function hostGatedCommitPush(role, phaseTitle, envelope, bound, result, wo
     label: `${role}-prepush-readback:${issue}`, phase: phaseTitle, schema: FRESH_READS_SCHEMA,
     agentType: 'Explore', effort: 'low',
   })
-  if (freshAfter === null) throw new Error(`${role} pre-push readback returned no result`)
+  if (freshAfter === null) {
+    await resetWorktreeOrThrow(`${role} pre-push readback missing`, phaseTitle, bound, worktree)
+    throw new Error(`${role} pre-push readback returned no result`)
+  }
   // The bound ground truth for the pre-push comparison is the post-fire reconciled envelope plus
-  // the exact starting HEAD (git_head) the worker mutated over.
-  assertPrePushReadback(
-    {
-      linear_state: envelope.linear_state, linear_fingerprint: envelope.linear_fingerprint,
-      pr_head: envelope.pr_head, branch: envelope.branch, git_head: bound.starting_head,
-    },
-    freshAfter,
-  )
+  // the exact starting HEAD (git_head) the worker mutated over. On a stale-race rejection, reset the
+  // worktree before rethrowing so nothing dirty survives.
+  try {
+    assertPrePushReadback(
+      {
+        linear_state: envelope.linear_state, linear_fingerprint: envelope.linear_fingerprint,
+        pr_head: envelope.pr_head, branch: envelope.branch, git_head: bound.starting_head,
+      },
+      freshAfter,
+    )
+  } catch (error) {
+    await resetWorktreeOrThrow(`${role} pre-push stale race`, phaseTitle, bound, worktree)
+    throw error
+  }
   // (3) Only now: the host commits the working-tree mutation and pushes. This is the sole
   // commit/push seam; the worker never reached it. A write-capable subagent runs the commit and
   // push and returns the new delivered HEAD.
@@ -1683,6 +1853,32 @@ async function hostGatedCommitPush(role, phaseTitle, envelope, bound, result, wo
   }
   if (pushed.head === bound.starting_head) {
     throw new Error(`${role} host commit produced no new HEAD`)
+  }
+  // (4) Post-push readback (role-runtime launch-readback): host push success is NOT accepted from the
+  // push subagent's booleans + claimed HEAD alone. A SEPARATE read-only Explore subagent independently
+  // reads back the ACTUAL pushed HEAD (git rev-parse and the remote/PR head) and the host confirms it
+  // equals the expected new HEAD before advancing to code-review, so a false advance is impossible.
+  const readback = await agent([
+    `You are a fresh READ-ONLY octo-lite post-push readback subagent for the ${role} pass. One pass;`,
+    'never mutate. The host just committed and pushed. INDEPENDENTLY read back the actual pushed HEAD so',
+    'the host can confirm the advance:',
+    `- local_head: the live git HEAD (git rev-parse HEAD) of the contained worktree ${worktree}.`,
+    `- remote_head: the live pushed head oid on the remote branch ${branch} (git rev-parse the`,
+    `  remote-tracking ref, or gh pr view ${pr} --json headRefOid).`,
+    'Read each yourself; do NOT copy any value from this prompt or the push subagent.',
+  ].join('\n'), {
+    label: `${role}-postpush-readback:${bound.issue}`, phase: phaseTitle,
+    schema: {
+      type: 'object', required: ['local_head', 'remote_head'],
+      properties: { local_head: { type: 'string' }, remote_head: { type: 'string' } },
+    },
+    agentType: 'Explore', effort: 'low',
+  })
+  if (readback === null) throw new Error(`${role} post-push readback returned no result`)
+  requiredNonEmptyString(readback.local_head, 'post-push local HEAD')
+  requiredNonEmptyString(readback.remote_head, 'post-push remote HEAD')
+  if (readback.local_head !== pushed.head || readback.remote_head !== pushed.head) {
+    throw new Error(`${role} post-push readback: pushed HEAD does not match the expected new HEAD`)
   }
   return pushed.head
 }
@@ -1956,15 +2152,23 @@ if (mode === 'implement') {
   }
   const implementation = await spawnWorker('implementer', 'Implement', A.shaping_head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'implement', implementation }
-  // Host-gated push (TUR-447 cycle2 pass1): the worker left an uncommitted working-tree mutation
-  // and did NOT push. acceptImplementation verifies the echo, the independently-observed red
-  // evidence bound to the unchanged starting HEAD, and that the worker did not commit/push. ONLY
-  // THEN the host performs the pre-push readback and commits/pushes, producing the delivered HEAD.
-  acceptImplementation(A.shaping_head, implementation, true)
+  const implWorktree = assertContainment(required(A.worktree_root, 'worktree root'), required(A.worktree, 'worker worktree'))
+  const implBound = journalledBoundInputs('implementer', A.shaping_head)
+  // Host-gated push (TUR-447 cycle2 pass1/pass1b): the worker left an uncommitted working-tree
+  // mutation and did NOT push. A SEPARATE read-only observer subagent (distinct from the mutating
+  // worker) independently re-runs the red scenario and reports what it saw; acceptImplementation
+  // consumes THAT observation, not the worker's own evidence. It verifies the echo, the independently
+  // observed red-at-starting-HEAD then green-at-mutated-tree chronology, and that the worker did not
+  // commit/push. ONLY THEN the host performs the pre-push readback and commits/pushes.
+  const implObservation = await observeRed('implementer', 'Implement', implBound, implementation, implWorktree)
+  try {
+    acceptImplementation(A.shaping_head, implementation, true, implObservation)
+  } catch (error) {
+    await resetWorktreeOrThrow('implementer TDD observer rejection', 'Implement', implBound, implWorktree)
+    throw error
+  }
   const deliveredHead = await hostGatedCommitPush(
-    'implementer', 'Implement', A,
-    journalledBoundInputs('implementer', A.shaping_head), implementation,
-    assertContainment(required(A.worktree_root, 'worktree root'), required(A.worktree, 'worker worktree')),
+    'implementer', 'Implement', A, implBound, implementation, implWorktree,
   )
   return {
     stage: 'code-review-required', issue: A.issue, pr: A.pr, head: deliveredHead,
@@ -2000,14 +2204,21 @@ if (mode === 'fix') {
   if (!Array.isArray(A.findings) || A.findings.length === 0) throw new Error('blocking findings required')
   const implementation = await spawnWorker('implementer', 'Fix', head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'fix', implementation }
-  // Host-gated push (TUR-447 cycle2 pass1): identical to implement mode. The fix worker leaves an
-  // uncommitted working-tree mutation; the host verifies echo + red evidence + no worker push,
-  // then does the pre-push readback and commits/pushes the delivered HEAD.
-  acceptImplementation(head, implementation, true)
+  const fixWorktree = assertContainment(required(A.worktree_root, 'worktree root'), required(A.worktree, 'worker worktree'))
+  const fixBound = journalledBoundInputs('implementer', head)
+  // Host-gated push (TUR-447 cycle2 pass1/pass1b): identical to implement mode. The fix worker leaves
+  // an uncommitted working-tree mutation; a SEPARATE read-only observer independently re-runs the red
+  // scenario, and acceptImplementation consumes that observation. Then the host does the pre-push
+  // readback and commits/pushes the delivered HEAD.
+  const fixObservation = await observeRed('implementer', 'Fix', fixBound, implementation, fixWorktree)
+  try {
+    acceptImplementation(head, implementation, true, fixObservation)
+  } catch (error) {
+    await resetWorktreeOrThrow('implementer TDD observer rejection', 'Fix', fixBound, fixWorktree)
+    throw error
+  }
   const deliveredHead = await hostGatedCommitPush(
-    'implementer', 'Fix', A,
-    journalledBoundInputs('implementer', head), implementation,
-    assertContainment(required(A.worktree_root, 'worktree root'), required(A.worktree, 'worker worktree')),
+    'implementer', 'Fix', A, fixBound, implementation, fixWorktree,
   )
   return {
     stage: 'code-review-required', issue: A.issue, pr: A.pr, head: deliveredHead,

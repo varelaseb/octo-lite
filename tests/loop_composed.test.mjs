@@ -160,16 +160,34 @@ const RESOLVED_REVIEWER_RUNTIME = {
 // readback -> ack (Explore) -> mutation (write, host-gated: committed/pushed false, green at the
 // UNCHANGED starting HEAD, red carries a captured evidence artifact bound to the starting HEAD,
 // liveness fields echoed) -> pre-push readback -> host commit/push (produces the new HEAD).
+const SCENARIO = 'shaped-member-fires-todo'
+
+// TUR-447 cycle2 pass1b: the INDEPENDENT read-only observer's result a genuine observer subagent
+// returns. It is a DISTINCT subagent from the mutating worker: it re-ran the same scenario itself and
+// saw it fail at the unchanged starting HEAD and pass at the mutated tree. The host consumes THIS,
+// not the worker's own red.evidence.
+function observationFor(overrides = {}) {
+  return {
+    source: 'independent-tdd-observer', observed_by: 'observer-subagent-1', mutating_worker: 'implementer-subagent',
+    scenario: SCENARIO, starting_head: HEAD,
+    red_exit_at_starting_head: 1, red_output: 'AssertionError: expected reconciled fingerprint\n1 failing',
+    green_exit_at_mutated_tree: 0, green_output: 'ok\nall passing',
+    ...overrides,
+  }
+}
+
 function implementScript({
   fresh = freshReads(), red, green, mutationAck = ackFor('implementer'),
   fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
   mutationOverrides = {}, prePush = freshReads(), commitResult,
+  observation = observationFor(), postPush,
   liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
 } = {}) {
   const goodRed = red ?? {
     command: 'node --test tests/', exit_status: 1, outcome: 'FAIL: behavior wrong',
-    artifact: `${PR}#c1`, head: HEAD, scenario: 'shaped-member-fires-todo',
-    // Independently-observed evidence artifact bound to the unchanged starting HEAD.
+    artifact: `${PR}#c1`, head: HEAD, scenario: SCENARIO,
+    // Worker-authored evidence artifact bound to the unchanged starting HEAD (corroborated by the
+    // independent observer below).
     evidence: {
       captured_output: 'AssertionError: expected reconciled fingerprint, got stale\n1 failing',
       exit_status: 1, head: HEAD,
@@ -178,7 +196,7 @@ function implementScript({
   // Host-gated push: green runs at the UNCHANGED starting HEAD (working-tree mutation, no commit).
   const goodGreen = green ?? {
     command: 'node --test tests/', exit_status: 0, outcome: 'PASS: behavior right',
-    artifact: `${PR}#c2`, head: HEAD, scenario: 'shaped-member-fires-todo',
+    artifact: `${PR}#c2`, head: HEAD, scenario: SCENARIO,
   }
   return [
     ['loop-fire:', {
@@ -196,11 +214,15 @@ function implementScript({
       linear_state: liveness.linear_state, linear_fingerprint: liveness.linear_fingerprint,
       ...mutationOverrides,
     }],
+    // Independent TDD observer: a SEPARATE read-only subagent re-runs the red scenario.
+    ['implementer-tdd-observer:', observation],
     ['workspace-cleanup:', { cleaned: true, head: HEAD, status: '' }],
     // Pre-push readback: a fresh live read immediately before the host commit.
     ['implementer-prepush-readback:', prePush],
     // Host commit/push: the ONLY commit/push seam, run after all verifies; produces the new HEAD.
     ['host-commit-push:', commitResult ?? { committed: true, pushed: true, head: NEWHEAD }],
+    // Post-push readback: independent git/gh read back of the actual pushed HEAD.
+    ['implementer-postpush-readback:', postPush ?? { local_head: NEWHEAD, remote_head: NEWHEAD }],
   ]
 }
 
@@ -388,7 +410,9 @@ test('TDD gate: a red/green whose SCENARIO differs is REJECTED (not the same beh
     command: 'node --test tests/', exit_status: 0, outcome: 'PASS',
     artifact: `${PR}#c2`, head: HEAD, scenario: 'scenario-B',
   }
-  const agent = makeAgent(implementScript({ red, green }))
+  // The observer observed scenario-A (matching the red), so it passes assertObservedRed; the
+  // rejection is specifically the green/red scenario mismatch in acceptImplementation.
+  const agent = makeAgent(implementScript({ red, green, observation: observationFor({ scenario: 'scenario-A' }) }))
   const A = readyEnvelope()
   await assert.rejects(
     () => factory(agent, JSON.stringify(A), noop),
@@ -403,6 +427,149 @@ test('TDD gate: a genuine red-before-mutation-then-green sequence is ACCEPTED', 
   const result = await factory(agent, JSON.stringify(A), noop)
   assert.equal(result.stage, 'code-review-required')
   assert.equal(result.implementation.green.exit_status, 0)
+})
+
+// TUR-447 cycle2 pass1b ANTI-GAMING: the red-green chronology is INDEPENDENTLY OBSERVED, not
+// worker-authored. The host spawns a SEPARATE read-only observer subagent (distinct from the mutating
+// worker) that re-runs the worker's claimed red scenario, and consumes the OBSERVER's result, not the
+// worker's evidence. These tests fail-closed if the observer wiring is removed or a worker forges the
+// observation.
+
+test('TDD observer: a SEPARATE read-only observer subagent runs, distinct from the mutating worker, and its result is bound', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  const A = readyEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'code-review-required')
+  // The observer spawn ran read-only (Explore), AFTER the mutation and BEFORE the host commit/push.
+  const order = agent.calls.map((c) => `${c.label}|${c.agentType}`)
+  const mutIdx = order.findIndex((l) => l === `implementer:${ISSUE}|null`)
+  const obsIdx = order.findIndex((l) => l.startsWith(`implementer-tdd-observer:${ISSUE}|Explore`))
+  const pushIdx = order.findIndex((l) => l.startsWith('host-commit-push:'))
+  assert.ok(obsIdx > mutIdx, 'independent observer runs after the mutation (mutated tree exists)')
+  assert.ok(obsIdx >= 0 && obsIdx < pushIdx, 'observer runs before the host commit/push')
+  // The observer prompt tells it to RE-RUN the red at the starting HEAD and green at the mutated tree,
+  // independently, not to trust the worker.
+  const obsCall = agent.calls.find((c) => c.label === `implementer-tdd-observer:${ISSUE}`)
+  assert.ok(/RE-RUN/i.test(obsCall.prompt), 'observer instructed to re-run the scenario')
+  assert.ok(/do NOT trust the worker/i.test(obsCall.prompt), 'observer must not trust worker evidence')
+  assert.ok(obsCall.prompt.includes(HEAD), 'observer re-runs at the unchanged starting HEAD')
+})
+
+test('TDD observer: a worker with perfect self-authored evidence but NO independent observation is REJECTED (fails closed if the observer wiring is removed)', async () => {
+  const factory = loadLoop()
+  // The worker's own red/green evidence is flawless; only the independent observation is absent.
+  // Removing the observer wiring surfaces here: acceptImplementation must reject without it.
+  const agent = makeAgent(implementScript({ observation: null }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /independent TDD observation/,
+  )
+  assert.ok(
+    !agent.calls.some((c) => c.label.startsWith('host-commit-push:')),
+    'nothing pushed without an independent observation',
+  )
+})
+
+test('TDD observer: a forged observation stamped as the worker (not the independent observer) is REJECTED', async () => {
+  const factory = loadLoop()
+  // The worker forges its own observation but cannot stamp the independent-observer source.
+  const agent = makeAgent(implementScript({ observation: observationFor({ source: 'implementer' }) }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /not from the independent read-only observer/,
+  )
+})
+
+test('TDD observer: an observation whose observer identity IS the mutating worker is REJECTED (observer cannot be the worker)', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({
+    observation: observationFor({ observed_by: 'implementer-subagent', mutating_worker: 'implementer-subagent' }),
+  }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /the observer cannot be the mutating worker/,
+  )
+})
+
+test('TDD observer: an observer that did NOT see the red fail at the starting HEAD is REJECTED', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ observation: observationFor({ red_exit_at_starting_head: 0 }) }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /observer did not see the red FAIL at the starting HEAD/,
+  )
+})
+
+test('TDD observer: an observer that did NOT see the scenario pass at the mutated tree is REJECTED', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ observation: observationFor({ green_exit_at_mutated_tree: 1 }) }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /observer did not see the scenario PASS at the mutated tree/,
+  )
+})
+
+test('TDD observer: an observation whose starting HEAD is not the unchanged starting HEAD is REJECTED', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ observation: observationFor({ starting_head: NEWHEAD }) }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /observer did not run the red at the unchanged starting HEAD/,
+  )
+})
+
+test('TDD observer: an observation whose scenario differs from the reported red is REJECTED', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ observation: observationFor({ scenario: 'a-different-scenario' }) }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /observed scenario differs from the reported red scenario/,
+  )
+})
+
+test('rejected TDD observation resets the worktree so a dirty mutation does not survive', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ observation: observationFor({ red_exit_at_starting_head: 0 }) }))
+  const A = readyEnvelope()
+  await assert.rejects(() => factory(agent, JSON.stringify(A), noop))
+  // The worktree cleanup ran on the observer rejection: the dirty mutation was discarded.
+  assert.ok(
+    agent.calls.some((c) => c.label.startsWith('workspace-cleanup:')),
+    'worktree reset on TDD observer rejection',
+  )
+})
+
+test('post-push readback: a pushed HEAD that does NOT match the expected new HEAD is REJECTED (no false advance)', async () => {
+  const factory = loadLoop()
+  // The push subagent claims NEWHEAD, but the independent post-push readback reads a different head.
+  const agent = makeAgent(implementScript({ postPush: { local_head: 'someOtherHead', remote_head: 'someOtherHead' } }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /post-push readback: pushed HEAD does not match the expected new HEAD/,
+  )
+})
+
+test('post-push readback: an independent git/gh read back of the pushed HEAD runs before advancing', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  const A = readyEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'code-review-required')
+  const order = agent.calls.map((c) => c.label)
+  const pushIdx = order.findIndex((l) => l.startsWith('host-commit-push:'))
+  const readbackIdx = order.findIndex((l) => l.startsWith('implementer-postpush-readback:'))
+  assert.ok(readbackIdx > pushIdx, 'post-push readback runs after the push, before advancing')
+  const rb = agent.calls.find((c) => c.label === `implementer-postpush-readback:${ISSUE}`)
+  assert.equal(rb.agentType, 'Explore', 'post-push readback is read-only')
 })
 
 // TUR-447 cycle1 pass2 F2 composed-runtime proof: a delivery worker pass ACTUALLY resolves its

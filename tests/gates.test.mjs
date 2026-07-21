@@ -9,6 +9,8 @@ import {
   assertAdmission,
   acceptQaReview,
   acceptImplementation,
+  assertObservedRed,
+  INDEPENDENT_OBSERVER_SOURCE,
   acceptPublication,
   assertContainment,
   assertLaunchReadback,
@@ -167,60 +169,122 @@ function implFixture(overrides = {}) {
   }
 }
 
+// TUR-447 cycle2 pass1b: the INDEPENDENT read-only observer's result. Distinct from the mutating
+// worker (source stamped independent-tdd-observer, observed_by not the worker); it re-ran the same
+// scenario and saw it fail at the starting HEAD and pass at the mutated tree.
+function observationFixture(overrides = {}) {
+  return {
+    source: INDEPENDENT_OBSERVER_SOURCE, observed_by: 'observer-1', mutating_worker: 'implementer-1',
+    scenario: 'delivery-entry-gate', starting_head: 'abc',
+    red_exit_at_starting_head: 1, red_output: 'FAILED (errors=1)',
+    green_exit_at_mutated_tree: 0, green_output: 'OK',
+    ...overrides,
+  }
+}
+
 test('implementation requires TDD evidence, validation, and host-gated push (no worker commit)', () => {
   const result = implFixture()
-  assert.deepEqual(acceptImplementation('abc', result, true), result)
-  assert.throws(() => acceptImplementation('abc', { ...result, red: null }, true), /red/)
+  const obs = observationFixture()
+  assert.deepEqual(acceptImplementation('abc', result, true, obs), result)
+  assert.throws(() => acceptImplementation('abc', { ...result, red: null }, true, obs), /red/)
   assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ command: '' }) }, true),
+    () => acceptImplementation('abc', { ...result, red: proof({ command: '' }) }, true, obs),
     /red/,
   )
   assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ exit_status: 0 }) }, true),
+    () => acceptImplementation('abc', { ...result, red: proof({ exit_status: 0 }) }, true, obs),
     /red must fail/,
   )
   assert.throws(
-    () => acceptImplementation('abc', { ...result, green: greenProof({ exit_status: 1 }) }, true),
+    () => acceptImplementation('abc', { ...result, green: greenProof({ exit_status: 1 }) }, true, obs),
     /green must pass/,
   )
   // Host-gated push: a worker that committed or pushed is rejected.
-  assert.throws(() => acceptImplementation('abc', { ...result, committed: true }, true), /worker must not commit/)
-  assert.throws(() => acceptImplementation('abc', { ...result, pushed: true }, true), /worker must not push/)
+  assert.throws(() => acceptImplementation('abc', { ...result, committed: true }, true, obs), /worker must not commit/)
+  assert.throws(() => acceptImplementation('abc', { ...result, pushed: true }, true, obs), /worker must not push/)
   // A worker head that already moved off the starting HEAD (a committed HEAD) is rejected.
-  assert.throws(() => acceptImplementation('abc', { ...result, head: 'def' }, true), /unchanged starting HEAD/)
-  assert.throws(() => acceptImplementation('abc', { ...result, blocked: true }, true), /blocked/)
+  assert.throws(() => acceptImplementation('abc', { ...result, head: 'def' }, true, obs), /unchanged starting HEAD/)
+  assert.throws(() => acceptImplementation('abc', { ...result, blocked: true }, true, obs), /blocked/)
 })
 
-test('TDD gate independently observes the red evidence artifact bound to the starting HEAD', () => {
+test('TDD gate requires a captured red evidence artifact bound to the starting HEAD', () => {
   const result = implFixture()
+  const obs = observationFixture()
   // A proof missing head or scenario is rejected at assertProof.
-  assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ head: '' }) }, true), /HEAD/)
-  assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ scenario: '' }) }, true), /scenario/)
-  // A red with NO evidence artifact is rejected: independent observation, not bare strings.
+  assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ head: '' }) }, true, obs), /HEAD/)
+  assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ scenario: '' }) }, true, obs), /scenario/)
+  // A red with NO evidence artifact is rejected.
   assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ evidence: undefined }) }, true),
+    () => acceptImplementation('abc', { ...result, red: proof({ evidence: undefined }) }, true, obs),
     /red evidence artifact required/,
   )
   // An evidence artifact bound to a DIFFERENT head (not the unchanged starting HEAD) is rejected.
   assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ evidence: { captured_output: 'x', exit_status: 1, head: 'def' } }) }, true),
+    () => acceptImplementation('abc', { ...result, red: proof({ evidence: { captured_output: 'x', exit_status: 1, head: 'def' } }) }, true, obs),
     /red evidence must be bound to the unchanged starting HEAD/,
   )
   // An evidence exit status disagreeing with the reported red exit is rejected.
   assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ evidence: { captured_output: 'x', exit_status: 0, head: 'abc' } }) }, true),
+    () => acceptImplementation('abc', { ...result, red: proof({ evidence: { captured_output: 'x', exit_status: 0, head: 'abc' } }) }, true, obs),
     /red evidence must record a genuinely failing run|red evidence exit status must match/,
   )
-  // A green whose scenario differs from red is rejected: not the same behavior.
+  // A green whose scenario differs from red is rejected: not the same behavior. The observation
+  // matches the red scenario so the rejection is the green/red mismatch.
   assert.throws(
-    () => acceptImplementation('abc', { ...result, green: greenProof({ scenario: 'other' }) }, true),
+    () => acceptImplementation('abc', { ...result, green: greenProof({ scenario: 'other' }) }, true, observationFixture({ scenario: 'delivery-entry-gate' })),
     /green must prove the same scenario as red/,
   )
   // A green that did not run at the unchanged starting HEAD is rejected under host-gated push.
   assert.throws(
-    () => acceptImplementation('abc', { ...result, green: greenProof({ head: 'def' }) }, true),
+    () => acceptImplementation('abc', { ...result, green: greenProof({ head: 'def' }) }, true, obs),
     /green must run at the unchanged starting HEAD/,
   )
+})
+
+test('TDD gate binds the red-green chronology to an INDEPENDENT observer, not the worker evidence', () => {
+  const result = implFixture()
+  // A worker result with flawless self-authored evidence but NO independent observation is rejected:
+  // the chronology must come from a separate observer. This fails closed if the observer is dropped.
+  assert.throws(() => acceptImplementation('abc', result, true, undefined), /independent TDD observation/)
+  // An observation the worker forged (source not the independent observer) is rejected.
+  assert.throws(
+    () => acceptImplementation('abc', result, true, observationFixture({ source: 'implementer-1' })),
+    /not from the independent read-only observer/,
+  )
+  // The observer cannot be the mutating worker.
+  assert.throws(
+    () => acceptImplementation('abc', result, true, observationFixture({ observed_by: 'implementer-1' })),
+    /the observer cannot be the mutating worker/,
+  )
+  // The observer must have re-run the red at the UNCHANGED starting HEAD and seen it FAIL.
+  assert.throws(
+    () => acceptImplementation('abc', result, true, observationFixture({ starting_head: 'def' })),
+    /observer did not run the red at the unchanged starting HEAD/,
+  )
+  assert.throws(
+    () => acceptImplementation('abc', result, true, observationFixture({ red_exit_at_starting_head: 0 })),
+    /observer did not see the red FAIL at the starting HEAD/,
+  )
+  // The observer must have re-run the SAME scenario at the mutated tree and seen it PASS.
+  assert.throws(
+    () => acceptImplementation('abc', result, true, observationFixture({ green_exit_at_mutated_tree: 1 })),
+    /observer did not see the scenario PASS at the mutated tree/,
+  )
+  assert.throws(
+    () => acceptImplementation('abc', result, true, observationFixture({ scenario: 'other-scenario' })),
+    /observed scenario differs from the reported red scenario/,
+  )
+  // A genuine independent observation with a matching worker chronology is accepted.
+  assert.deepEqual(acceptImplementation('abc', result, true, observationFixture()), result)
+})
+
+test('assertObservedRed rejects a worker-forged or incomplete observation and accepts a genuine one', () => {
+  const red = proof()
+  assert.throws(() => assertObservedRed(undefined, red, 'abc'), /independent TDD observation/)
+  assert.throws(() => assertObservedRed(observationFixture({ source: 'relay' }), red, 'abc'), /not from the independent/)
+  assert.throws(() => assertObservedRed(observationFixture({ red_output: '' }), red, 'abc'), /observed red output/)
+  assert.throws(() => assertObservedRed(observationFixture({ green_output: '' }), red, 'abc'), /observed green output/)
+  assert.deepEqual(assertObservedRed(observationFixture(), red, 'abc'), observationFixture())
 })
 
 const PR = 'https://example.test/pr/1'
