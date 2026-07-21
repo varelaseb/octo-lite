@@ -611,11 +611,10 @@ const FIRE_SCHEMA = {
   },
 }
 
-function required(value, label) {
-  if (value === undefined || value === null || value === '') throw new Error(`${label} required`)
-  return value
-}
-
+// `required` is the embedded gates.mjs helper above (GATES-EMBED region), the
+// single source shared by the inline gates and this loop. A Workflow script is one
+// flat top-level scope, so re-declaring it here would be a duplicate top-level
+// declaration SyntaxError at load. The loop uses the embedded canonical `required`.
 function cycle() {
   const value = Number(A.cycle ?? 1)
   if (!Number.isInteger(value) || value < 1 || value > 3) throw new Error('cycle must be 1 through 3')

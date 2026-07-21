@@ -65,6 +65,26 @@ def module_load_tokens(text: str) -> list[tuple[int, str]]:
     return hits
 
 
+def top_level_declarations(text: str) -> list[tuple[int, str]]:
+    # Column-zero `const`/`let`/`var`/`function`/`class` declarations (optionally
+    # prefixed by `export ` and/or `async `) are the module top-level bindings. A
+    # Workflow script is ONE flat top-level scope, so every such name shares the
+    # same namespace, including names inside the GATES-EMBED region (which is not a
+    # nested scope, just inline source). Declarations inside function bodies are
+    # indented and never start at column zero, so they are not matched. Returns
+    # (line_index, declared_name) pairs in source order.
+    pattern = re.compile(
+        r"^(?:export\s+)?(?:async\s+)?(?:const|let|var|function|class)\s+"
+        r"([A-Za-z_$][\w$]*)"
+    )
+    hits: list[tuple[int, str]] = []
+    for index, raw in enumerate(strip_line_and_block_comments(text).splitlines()):
+        match = pattern.match(raw)
+        if match:
+            hits.append((index, match.group(1)))
+    return hits
+
+
 def static_import_specifiers(text: str) -> list[str]:
     specifiers: list[str] = []
     stripped = strip_line_and_block_comments(text)
@@ -207,6 +227,47 @@ class CutoverConformanceTests(unittest.TestCase):
             [], loads,
             f"module load token(s) in the Workflow loop at lines {loads}",
         )
+
+    def test_loop_has_no_duplicate_top_level_declaration(self) -> None:
+        # TUR-488 (role-runtime launch-gates-workflow-layer): a Workflow script is ONE
+        # flat top-level scope. The loop embeds gates.mjs inline between the
+        # GATES-EMBED markers, so every top-level name the loop declares AND every
+        # top-level name inside the embedded region live in the same namespace. Two
+        # top-level declarations of the same identifier are a duplicate-declaration
+        # SyntaxError the real Workflow tool rejects at load
+        # ("Identifier 'required' has already been declared"). The prior 6d5eccc file
+        # declared a loop-local `function required` on top of the embedded gates.mjs
+        # `required`, so it collided. This asserts NO top-level identifier is declared
+        # twice, across the whole script including the embed region.
+        loop = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        declarations = top_level_declarations(loop)
+        names = [name for _, name in declarations]
+
+        # Parse sanity check that catches THIS class of error: the count of top-level
+        # declarations must equal the count of distinct declared names. A single
+        # duplicate anywhere breaks this equality and cannot pass.
+        self.assertEqual(
+            len(names), len(set(names)),
+            "duplicate top-level declaration count mismatch: "
+            f"{len(names)} declarations, {len(set(names))} unique names",
+        )
+
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for name in names:
+            if name in seen and name not in duplicates:
+                duplicates.append(name)
+            seen.add(name)
+        self.assertEqual(
+            [], duplicates,
+            "top-level identifier(s) declared more than once in the flat Workflow "
+            f"scope (duplicate-declaration SyntaxError at load): {duplicates}",
+        )
+
+        # The embedded gates.mjs `required` helper is present exactly once and is the
+        # single shared source, so removing the loop-local duplicate did not drop it.
+        self.assertIn("required", names)
+        self.assertEqual(1, names.count("required"))
 
     def test_loop_inline_gates_are_drift_guarded_against_gates_module(self) -> None:
         # TUR-488 drift guard (role-runtime launch-gates-workflow-layer): the loop
