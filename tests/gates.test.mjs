@@ -57,10 +57,24 @@ test('shaping-review admits only shaping-reviewer or orchestrator with resolved 
   }
 })
 
-test('delivery admits only implementer, code-reviewer, qa-capture, and qa-reviewer', () => {
+test('delivery admits only implementer, code-reviewer, qa-capture, qa-reviewer, and the Read-restricted tdd-observer', () => {
   for (const role of ['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer']) {
     assert.deepEqual(assertAdmission({ purpose: 'delivery', role, linearState: 'Todo' }), { purpose: 'delivery', role })
   }
+  // The tdd-observer is admitted for delivery only as a Read-restricted subagent
+  // (role-runtime role-tdd-observer, launch-purpose-delivery-roles).
+  assert.deepEqual(
+    assertAdmission({ purpose: 'delivery', role: 'tdd-observer', readRestricted: true, linearState: 'Todo' }),
+    { purpose: 'delivery', role: 'tdd-observer' },
+  )
+  assert.throws(
+    () => assertAdmission({ purpose: 'delivery', role: 'tdd-observer', readRestricted: false, linearState: 'Todo' }),
+    /Read-restricted/,
+  )
+  assert.throws(
+    () => assertAdmission({ purpose: 'delivery', role: 'tdd-observer', linearState: 'Todo' }),
+    /Read-restricted/,
+  )
   for (const role of ['shaping-reviewer', 'orchestrator', 'reconciler', 'meta-operator']) {
     assert.throws(
       () => assertAdmission({ purpose: 'delivery', role, capabilities: ['shaping'] }),

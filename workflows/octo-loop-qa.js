@@ -161,7 +161,11 @@ function required(value, label) {
   return value
 }
 
-const DELIVERY_ROLES = new Set(['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer'])
+const DELIVERY_ROLES = new Set(['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer', 'tdd-observer'])
+// The tdd-observer runs committed states in an isolated worktree and never mutates,
+// so it is admitted for delivery only as a Read-restricted subagent
+// (role-runtime role-tdd-observer, launch-purpose-delivery-roles).
+const DELIVERY_READ_RESTRICTED_ROLES = new Set(['tdd-observer'])
 
 // Linear-state gate (role-runtime launch-linear-state-gate): shaping-review launches
 // only from Ideas, Todo, Shaped, or In Progress; delivery only from Shaped, Todo, or
@@ -193,6 +197,9 @@ function assertAdmission({ purpose, role, capabilities = [], readRestricted = fa
     assertLinearState(purpose, linearState, SHAPING_REVIEW_STATES)
   } else if (purpose === 'delivery') {
     if (!DELIVERY_ROLES.has(role)) throw new Error(`role ${role} not admitted for delivery purpose`)
+    if (DELIVERY_READ_RESTRICTED_ROLES.has(role) && readRestricted !== true) {
+      throw new Error(`role ${role} admitted for delivery only as a Read-restricted subagent`)
+    }
     assertLinearState(purpose, linearState, DELIVERY_STATES)
   } else if (purpose === 'reconcile') {
     if (role !== 'reconciler') throw new Error(`role ${role} not admitted for reconcile purpose`)

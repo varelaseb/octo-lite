@@ -872,5 +872,96 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
 
 
+    def test_delivery_tdd_shaping_tighten_closes_five_completeness_gaps(self) -> None:
+        # TUR-447 reshape spec tighten (shaping-review BLOCKING F1..F5, gpt-5.6-sol):
+        # the canonical delivery-tdd contract, the new tdd-observer role, and the named
+        # smallest-failing delivery TDD close all five completeness gaps. Structural
+        # assertions over stable data-anchors plus load-bearing phrases and the roster.
+        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
+        role_runtime = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
+
+        # F1 trusted observer command source: the observer derives its invocation only
+        # from the committed test files and the target AGENTS.md canonical validation
+        # command, never from a worker-supplied string; worker strings never enter the
+        # observer prompt or execution inputs.
+        for anchor in ("delivery-tdd-trusted-command-source",):
+            self.assertIn(f'data-anchor="{anchor}"', delivery, anchor)
+            self.assertIn(f'id="{anchor}"', delivery, anchor)
+        self.assertIn("committed test files", delivery)
+        self.assertIn("canonical validation command declared in the target", delivery)
+        self.assertIn("never enter the observer's prompt or execution inputs", delivery)
+        self.assertIn(
+            "worker-controlled command or scenario strings are never interpolated into the observer's prompt, execution inputs, or verdict",
+            delivery,
+        )
+
+        # F2 bind test identity across red and green by path and content digest.
+        self.assertIn('data-anchor="delivery-tdd-test-identity-binding"', delivery)
+        self.assertIn('id="delivery-tdd-test-identity-binding"', delivery)
+        self.assertIn("bound by path and content digest, not by name alone", delivery)
+        self.assertIn("the green commit changes production only and never the bound test", delivery)
+        self.assertIn("a green that removes, weakens, or edits the red's failing test is rejected", delivery)
+
+        # F3 final-HEAD verification: the exact final pushed HEAD after any refactor is
+        # independently executed green by the observer before the push is accepted.
+        self.assertIn('data-anchor="delivery-tdd-final-head-verification"', delivery)
+        self.assertIn('id="delivery-tdd-final-head-verification"', delivery)
+        self.assertIn("exact final pushed HEAD, after any refactor", delivery)
+        self.assertIn("nothing is pushed whose final HEAD is not independently verified", delivery)
+        self.assertIn('data-anchor="delivery-loop-final-head-observed"', delivery)
+        self.assertIn('id="delivery-loop-final-head-observed"', delivery)
+
+        # F4 tdd-observer role identity and delivery admission.
+        for anchor in ("role-tdd-observer", "role-tdd-observer-trusted-source"):
+            self.assertIn(f'data-anchor="{anchor}"', role_runtime, anchor)
+            self.assertIn(f'id="{anchor}"', role_runtime, anchor)
+        self.assertIn("dedicated Read-restricted delivery role", role_runtime)
+        self.assertIn(
+            "or the Read-restricted <code>tdd-observer</code>; every other role is rejected",
+            role_runtime,
+        )
+        # The role exists in the roster with a canonical prose contract and adapter.
+        self.assertTrue((ROOT / "roles/tdd-observer.md").is_file())
+        self.assertTrue((ROOT / "agents/tdd-observer.md").is_file())
+        import sys
+        sys.path.insert(0, str(ROOT / "workflows/lib"))
+        import role_resolver
+        registry = role_resolver.load_registry(ROOT)
+        self.assertIn("tdd-observer", registry.roles)
+        observer = registry.roles["tdd-observer"]
+        self.assertEqual(observer.subagent_access, "read-restricted")
+        self.assertEqual(observer.execution, "workflow-subagent")
+        # gates.mjs admits tdd-observer for delivery only as a Read-restricted subagent,
+        # and the inline embedded copy carries the same rule (drift-guarded elsewhere).
+        gates = (ROOT / "workflows/lib/gates.mjs").read_text()
+        self.assertIn("'tdd-observer'", gates)
+        self.assertIn("DELIVERY_READ_RESTRICTED_ROLES", gates)
+        loop = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        self.assertIn("DELIVERY_READ_RESTRICTED_ROLES", loop)
+
+        # F5 named smallest-failing delivery TDD are enumerated with stable anchors and
+        # exact test names.
+        self.assertIn('data-anchor="delivery-tdd-named-tests"', delivery)
+        self.assertIn('id="delivery-tdd-named-tests"', delivery)
+        named_tests = (
+            "test_observer_replays_committed_red_then_green",
+            "test_observer_rejects_worker_supplied_observation",
+            "test_observer_inputs_exclude_worker_strings",
+            "test_invalid_red_missing_file_rejected",
+            "test_invalid_red_that_does_not_fail_rejected",
+            "test_test_identity_binding_green_may_not_weaken_red",
+            "test_push_ordering_host_push_only_after_observation_echo_readback",
+            "test_rejection_abandons_unpushed_branch",
+            "test_final_head_independently_verified_green",
+            "test_push_readback_uses_live_remote",
+        )
+        for name in named_tests:
+            self.assertIn(f"<code>{name}</code>", delivery, name)
+
+        # No Markdown counterpart is generated for either spec-chat canonical document.
+        self.assertFalse((ROOT / "spec/domains/delivery-lifecycle.spec.md").exists())
+        self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
