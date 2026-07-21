@@ -208,7 +208,11 @@ class OperatorControlTests(unittest.TestCase):
         self.assertEqual(1, len(module._signal_lines(text, module.CANONICAL_SPEC_SIGNAL)))
         self.assertEqual(1, len(module._signal_lines(text, module.CANONICAL_ADR_SIGNAL)))
 
-    def test_timer_only_wakes_current_operator_through_operator_say(self) -> None:
+    def test_timer_runs_the_sweep_directly_and_never_messages_a_periodic_wake(self) -> None:
+        # Operator directive: no periodic wake messages; the timer runs the
+        # deterministic sweep itself (primed with --on-active so it fires
+        # before any manual start), and only a changed sweep messages the
+        # operator through operator-sweep's own delta path.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             control = base / "control"
@@ -238,9 +242,13 @@ class OperatorControlTests(unittest.TestCase):
             )
 
             call = call_log.read_text()
-            self.assertIn("operator-say --kind info sweep", call)
-            self.assertIn(f"OCTO_OPERATOR_OWNER={owner}", call)
-            self.assertNotIn("operator-sweep", call)
+            self.assertIn("operator-sweep", call)
+            self.assertIn(f"--control-dir {control}", call)
+            self.assertIn(f"--owner-file {owner}", call)
+            self.assertIn(f"--repo {repo}", call)
+            self.assertIn("--on-active", call)
+            self.assertIn("--on-unit-active", call)
+            self.assertNotIn("operator-say --kind info sweep", call)
 
     def test_changed_sweep_is_fresh_and_unchanged_sweep_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as td:

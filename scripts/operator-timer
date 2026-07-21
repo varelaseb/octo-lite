@@ -34,12 +34,16 @@ fi
 
 [[ -d "$control" && -f "$owner" && -d "$repo" && ! -e "$state" ]] || exit 66
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-operator_say="$root/skills/herdr-comms/assets/operator-say"
-[[ -x "$operator_say" ]] || exit 66
-systemd-run --user --quiet --collect --unit "$unit" --on-unit-active "$interval" \
+operator_sweep="$root/scripts/operator-sweep"
+[[ -x "$operator_sweep" ]] || exit 66
+# The timer runs the deterministic sweep directly; only a changed sweep
+# messages the operator (operator-sweep's own delta path), so no periodic wake
+# enters the operator's context. --on-active primes the first fire so the
+# timer works without a manual service start.
+systemd-run --user --quiet --collect --unit "$unit" --on-active "$interval" --on-unit-active "$interval" \
   --setenv="OCTO_OPERATOR_OWNER=$owner" \
   --property Type=oneshot \
-  "$operator_say" --kind info sweep
+  "$operator_sweep" --control-dir "$control" --owner-file "$owner" --repo "$repo"
 temporary="$state.$$.tmp"
 printf 'schema_version = 1\nunit = "%s"\ninterval = "%s"\n' "$unit.timer" "$interval" >"$temporary"
 mv "$temporary" "$state"
