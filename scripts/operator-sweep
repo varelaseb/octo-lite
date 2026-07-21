@@ -241,6 +241,18 @@ def _derive_carried_issues(stream_dir: Path, linear_decl) -> list[str]:
     return ordered
 
 
+# Read failures we tolerate around a single carried-issue Linear read so one bad
+# issue (rate-limit, network, deleted issue, missing auth) never crashes the whole
+# sweep and takes down the live timer (sweep-graceful-degradation). Programming
+# errors in our own code path are NOT swallowed; only external read failures are.
+_CARRIED_READ_ERRORS: tuple[type[BaseException], ...] = (
+    subprocess.CalledProcessError,
+    subprocess.SubprocessError,
+    OSError,
+    ValueError,
+)
+
+
 def declared_stream_facts(stream_dir: Path) -> dict:
     sources_path = stream_dir / "sources.toml"
     declared = load_toml(sources_path) if sources_path.is_file() else {}
@@ -250,25 +262,55 @@ def declared_stream_facts(stream_dir: Path) -> dict:
     pr_repo = str(pr_decl["repo"]) if isinstance(pr_decl, dict) and pr_decl.get("repo") else None
     pr_number = int(pr_decl["number"]) if isinstance(pr_decl, dict) and pr_decl.get("number") else None
     facts: dict = {}
+    read_errors: list[dict] = []
+
+    def _read_one(issue: str, *, with_pr: bool) -> dict | None:
+        """Read a single carried issue's Linear binding (plus the pull request on the
+        primary read) with the whole read GUARDED: any external read failure is
+        recorded and skipped so it never crashes the sweep (sweep-graceful-
+        degradation). Returns the binding dict, or None when the read failed."""
+        try:
+            return fetch_stream_binding(
+                linear_issue=issue,
+                pr_repo=pr_repo if with_pr else None,
+                pr_number=pr_number if with_pr else None,
+            )
+        except _CARRIED_READ_ERRORS as error:
+            read_errors.append({"issue": issue, "error": str(error)})
+            return None
+
     # The first carried issue plus the pull request keep the original single-issue
-    # binding shape the reconcile gateway re-verifies; the full carried set is read
-    # and surfaced through carried_linear below.
+    # binding shape the reconcile gateway re-verifies WHEN that primary read
+    # succeeds; a failed primary read degrades (primary binding absent) yet the
+    # remaining carried issues are still read and every successful gated issue is
+    # still surfaced. The full carried set is surfaced through carried_linear below.
     primary_issue = carried[0] if carried else None
     if primary_issue or (pr_repo and pr_number):
-        facts.update(fetch_stream_binding(linear_issue=primary_issue, pr_repo=pr_repo, pr_number=pr_number))
+        if primary_issue:
+            primary_binding = _read_one(primary_issue, with_pr=bool(pr_repo and pr_number))
+            if primary_binding is not None:
+                facts.update(primary_binding)
+        elif pr_repo and pr_number:
+            # No carried issue but a declared PR: the PR read is a plain binding
+            # read, not a per-issue read, so it keeps the original (uncaught)
+            # reconcile-gateway shape.
+            facts.update(fetch_stream_binding(linear_issue=None, pr_repo=pr_repo, pr_number=pr_number))
     if carried:
         carried_linear = []
-        # The primary issue's binding is already fetched above; reuse it and read
-        # only the remaining carried issues, so each carried issue is read exactly
-        # once (sweep-carried-issues) with no redundant Linear call.
+        # The primary issue's binding is reused if it succeeded above; the remaining
+        # carried issues are each read exactly once (sweep-carried-issues) with no
+        # redundant Linear call. A failed read of any carried issue is skipped and
+        # noted, never fatal.
         if facts.get("linear"):
             carried_linear.append(facts["linear"])
         for issue in carried[1:]:
-            binding = fetch_stream_binding(linear_issue=issue, pr_repo=None, pr_number=None)
-            if "linear" in binding:
+            binding = _read_one(issue, with_pr=False)
+            if binding is not None and "linear" in binding:
                 carried_linear.append(binding["linear"])
         if carried_linear:
             facts["carried_linear"] = carried_linear
+    if read_errors:
+        facts["carried_read_errors"] = read_errors
     for name in ("evidence", "deployment"):
         decl = declared.get(name)
         if isinstance(decl, dict) and decl.get("path"):
@@ -329,6 +371,25 @@ def operator_gate_lines(stream_dirs: list[Path], facts: dict, waits_root: Path) 
         for wait in operator_waits(waits_root, stream_dir.name):
             lines.append(f"OPERATOR ACTION NEEDED: {stream_dir.name} asks: {wait['ask']}")
     return lines
+
+
+def degraded_read_notes(stream_dirs: list[Path], facts: dict) -> list[str]:
+    """Distinct, clearly-labeled degraded-read notes (sweep-graceful-degradation):
+    one per carried issue whose Linear read failed and was skipped. Deliberately NOT
+    an `OPERATOR ACTION NEEDED` gate line: a transient read failure must never be
+    mistaken for an operator gate."""
+    notes: list[str] = []
+    for stream_dir in stream_dirs:
+        stream_facts = facts.get(stream_dir.name)
+        if not isinstance(stream_facts, dict):
+            continue
+        for entry in stream_facts.get("carried_read_errors") or []:
+            issue = str(entry.get("issue") or "")
+            notes.append(
+                f"SWEEP NOTE (degraded read): {stream_dir.name} skipped {issue} - "
+                "linear read failed, other carried issues still read"
+            )
+    return notes
 
 
 def sanitize_project_dir(cwd: str) -> str:
@@ -530,6 +591,7 @@ def main() -> int:
         )
 
     gate_lines = operator_gate_lines(stream_dirs, facts, waits_root)
+    degraded_notes = degraded_read_notes(stream_dirs, facts)
     normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
 
     snapshot = (
@@ -549,7 +611,9 @@ def main() -> int:
         # (sweep-operator-gate-unsuppressible): even on the noop path the loud
         # lines are surfaced to stdout and delivered to the operator.
         _emit_operator_gate(gate_lines, root, owner_file, owner_route)
-        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "liveness": liveness, "operator_gate": gate_lines}))
+        for note in degraded_notes:
+            print(note)
+        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "liveness": liveness, "operator_gate": gate_lines, "degraded_reads": degraded_notes}))
         return 0
 
     sweep_dir = control / "sweeps" / fingerprint
@@ -627,6 +691,10 @@ def main() -> int:
     # surfaces even where the delivered artifact is not read.
     for line in gate_lines:
         print(line)
+    # Degraded-read notes are surfaced as distinct, clearly-labeled notes, never
+    # gate lines (sweep-graceful-degradation).
+    for note in degraded_notes:
+        print(note)
 
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
     # systemd user services run with a bare PATH (live FileNotFoundError
@@ -652,7 +720,7 @@ def main() -> int:
         f"journal = {json.dumps(str(journal_path))}\n"
         f"result = {json.dumps(str(result_path))}\n",
     )
-    print(json.dumps({"changed": True, "fingerprint": fingerprint, "owner": owner_route, "result": str(result_path)}))
+    print(json.dumps({"changed": True, "fingerprint": fingerprint, "owner": owner_route, "result": str(result_path), "degraded_reads": degraded_notes}))
     return 0
 
 

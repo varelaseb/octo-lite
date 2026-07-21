@@ -3122,3 +3122,219 @@ class OperatorGateTests(unittest.TestCase):
                     any(pid in line and line.startswith("linear ") for line in log.read_text().splitlines()),
                     f"{pid} must not be read from Linear",
                 )
+
+
+# A per-issue linear fake that FAILS (exits nonzero) for a specific issue id read
+# from LINEAR_FAIL_ISSUE, and otherwise echoes the mapped state. Reproduces the
+# live crash cause: one carried-issue Linear read raising CalledProcessError.
+FAKE_LINEAR_FAILS_FOR_ISSUE = (
+    "#!/usr/bin/env bash\n"
+    "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+    'issue=""\n'
+    'for a in "$@"; do case "$a" in TUR-*|OCTO-*) issue="$a" ;; esac; done\n'
+    'if [[ "$issue" == "${LINEAR_FAIL_ISSUE:-}" ]]; then\n'
+    '  echo "linear: read failed for $issue" >&2\n'
+    "  exit 7\n"
+    "fi\n"
+    'state="$(python3 -c \'import json,os,sys; print(json.load(open(os.environ[\"LINEAR_STATE_MAP\"])).get(sys.argv[1], \"Todo\"))\' "$issue")"\n'
+    "python3 -c 'import json,sys; print(json.dumps({\"identifier\": sys.argv[1], \"state\": {\"name\": sys.argv[2]}, \"updatedAt\": \"2026-07-19T00:00:00Z\"}))' \"$issue\" \"$state\"\n"
+)
+
+
+class SweepGracefulDegradationTests(unittest.TestCase):
+    """TUR-489: a single carried-issue Linear read failure must NEVER crash the
+    whole sweep (it took down the live timer). The failing issue is skipped and
+    noted; every successfully-read operator-gated issue still surfaces."""
+
+    def _write_owner(self, base: Path, control: Path) -> Path:
+        owner = base / "operator-owner.toml"
+        owner.write_text(
+            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+        )
+        return owner
+
+    def _fake_bins(self, base: Path) -> tuple[Path, Path, dict]:
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        log = base / "calls.jsonl"
+        (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+        (fake_bin / "operator-say").write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
+        )
+        (fake_bin / "linear").write_text(FAKE_LINEAR_FAILS_FOR_ISSUE)
+        for name in ("claude", "operator-say", "linear"):
+            (fake_bin / name).chmod(0o755)
+        env = dict(
+            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+        )
+        return fake_bin, log, env
+
+    def test_first_carried_read_failure_never_crashes_and_other_issue_surfaces(self) -> None:
+        # Two carried issues; the FIRST (primary) read FAILS. The sweep must still
+        # exit 0, still surface the second issue's operator-gate line, and skip +
+        # note the failing one - never emit a gate line for the failing read.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-carrier"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text(
+                'schema_version = 1\n\n[linear]\nissues = ["TUR-BAD", "TUR-479"]\n'
+            )
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["LINEAR_FAIL_ISSUE"] = "TUR-BAD"
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            # No crash: exit 0.
+            self.assertEqual(0, result.returncode, result.stderr)
+            # The good carried issue still surfaces loudly.
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
+            # The failing issue was attempted (read) and then skipped + noted.
+            calls = log.read_text().splitlines()
+            self.assertTrue(any("TUR-BAD" in line and line.startswith("linear ") for line in calls))
+            self.assertNotIn("OPERATOR ACTION NEEDED: TUR-BAD", result.stdout)
+            payload = _sweep_stdout_json(result.stdout)
+            self.assertTrue(
+                any("TUR-BAD" in note for note in payload.get("degraded_reads", [])),
+                payload,
+            )
+            self.assertTrue(
+                all("OPERATOR ACTION NEEDED" not in note for note in payload.get("degraded_reads", [])),
+            )
+
+    def test_only_carried_read_failure_completes_cleanly_with_no_gate_line(self) -> None:
+        # The ONLY carried issue's read fails: the sweep still completes cleanly
+        # (exit 0), surfaces NO gate line for it, and notes the degraded read.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-solo"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text(
+                'schema_version = 1\n\n[linear]\nissue = "TUR-BAD"\n'
+            )
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["LINEAR_FAIL_ISSUE"] = "TUR-BAD"
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertNotIn("OPERATOR ACTION NEEDED", result.stdout)
+            payload = _sweep_stdout_json(result.stdout)
+            self.assertTrue(
+                any("TUR-BAD" in note for note in payload.get("degraded_reads", [])),
+                payload,
+            )
+
+
+class TimerLinearAuthTests(unittest.TestCase):
+    """TUR-489: a fresh timer install must pass LINEAR_API_KEY to the transient
+    unit so the timer-run sweep's Source A `linear issue view` works without a
+    manual systemd drop-in."""
+
+    def _install(self, base: Path, env: dict) -> tuple[Path, subprocess.CompletedProcess]:
+        control = base / "control"
+        repo = base / "repo"
+        control.mkdir()
+        repo.mkdir()
+        owner = base / "operator-owner.toml"
+        owner.write_text(
+            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+        )
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        call_log = base / "systemd-run.txt"
+        runner = fake_bin / "systemd-run"
+        runner.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >"$CALL_LOG"\n')
+        runner.chmod(0o755)
+        run_env = dict(
+            env,
+            PATH=f"{fake_bin}:{os.environ['PATH']}",
+            CALL_LOG=str(call_log),
+            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+        )
+        result = subprocess.run(
+            [
+                str(TIMER), "install", "--name", "operator-1",
+                "--control-dir", str(control), "--owner-file", str(owner),
+                "--repo", str(repo),
+            ],
+            env=run_env,
+            capture_output=True,
+            text=True,
+        )
+        return call_log, result
+
+    def test_install_passes_linear_api_key_from_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            linear_env = base / ".linear.env"
+            linear_env.write_text("export LINEAR_API_KEY='lin_test_KEY'\n")
+            env = dict(os.environ)
+            env.pop("LINEAR_API_KEY", None)
+            env["OCTO_LINEAR_ENV_FILE"] = str(linear_env)
+            call_log, result = self._install(base, env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            call = call_log.read_text()
+            self.assertIn("--setenv=LINEAR_API_KEY=lin_test_KEY", call)
+            self.assertIn("--setenv=PATH=", call)
+            self.assertIn("--setenv=OCTO_OPERATOR_OWNER=", call)
+
+    def test_install_prefers_already_set_linear_api_key_over_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            linear_env = base / ".linear.env"
+            linear_env.write_text("export LINEAR_API_KEY='lin_file_value'\n")
+            env = dict(os.environ)
+            env["LINEAR_API_KEY"] = "lin_env_value"
+            env["OCTO_LINEAR_ENV_FILE"] = str(linear_env)
+            call_log, result = self._install(base, env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            call = call_log.read_text()
+            self.assertIn("--setenv=LINEAR_API_KEY=lin_env_value", call)
+
+    def test_install_handles_double_quoted_env_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            linear_env = base / ".linear.env"
+            linear_env.write_text('export LINEAR_API_KEY="lin_double_quoted"\n')
+            env = dict(os.environ)
+            env.pop("LINEAR_API_KEY", None)
+            env["OCTO_LINEAR_ENV_FILE"] = str(linear_env)
+            call_log, result = self._install(base, env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("--setenv=LINEAR_API_KEY=lin_double_quoted", call_log.read_text())
+
+    def test_install_succeeds_without_env_file_or_key_and_omits_setenv(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            missing = base / "does-not-exist.env"
+            env = dict(os.environ)
+            env.pop("LINEAR_API_KEY", None)
+            env["OCTO_LINEAR_ENV_FILE"] = str(missing)
+            call_log, result = self._install(base, env)
+            # Install still succeeds (graceful): no crash.
+            self.assertEqual(0, result.returncode, result.stderr)
+            call = call_log.read_text()
+            self.assertNotIn("--setenv=LINEAR_API_KEY", call)
+            # PATH and owner are still passed as before.
+            self.assertIn("--setenv=PATH=", call)
+            self.assertIn("--setenv=OCTO_OPERATOR_OWNER=", call)
