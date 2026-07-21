@@ -36,13 +36,34 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 operator_sweep="$root/scripts/operator-sweep"
 [[ -x "$operator_sweep" ]] || exit 66
+# The timer-run sweep's Source A `linear issue view` needs LINEAR_API_KEY, which
+# a bare transient unit does not inherit. Obtain it robustly so a FRESH install
+# works with no manual systemd drop-in: prefer an already-set $LINEAR_API_KEY,
+# else parse a shell linear env file (default /root/.linear.env, overridable via
+# OCTO_LINEAR_ENV_FILE) that holds `export LINEAR_API_KEY='...'` (shell export +
+# single/double quotes). Sourced in a clean subshell so quoting is handled by the
+# shell itself. If no key is found, proceed without it (graceful degradation now
+# keeps the sweep from crashing) and never print the secret.
+linear_env_file="${OCTO_LINEAR_ENV_FILE:-/root/.linear.env}"
+linear_api_key="${LINEAR_API_KEY:-}"
+if [[ -z "$linear_api_key" && -f "$linear_env_file" ]]; then
+  linear_api_key="$(env -i bash -c 'set -a; . "$1" >/dev/null 2>&1 || true; printf "%s" "${LINEAR_API_KEY:-}"' _ "$linear_env_file" 2>/dev/null || true)"
+fi
+
+setenv_args=(
+  --setenv="OCTO_OPERATOR_OWNER=$owner"
+  --setenv="PATH=$PATH"
+)
+if [[ -n "$linear_api_key" ]]; then
+  setenv_args+=(--setenv="LINEAR_API_KEY=$linear_api_key")
+fi
+
 # The timer runs the deterministic sweep directly; only a changed sweep
 # messages the operator (operator-sweep's own delta path), so no periodic wake
 # enters the operator's context. --on-active primes the first fire so the
 # timer works without a manual service start.
 systemd-run --user --quiet --collect --unit "$unit" --on-active "$interval" --on-unit-active "$interval" \
-  --setenv="OCTO_OPERATOR_OWNER=$owner" \
-  --setenv="PATH=$PATH" \
+  "${setenv_args[@]}" \
   --property Type=oneshot \
   "$operator_sweep" --control-dir "$control" --owner-file "$owner" --repo "$repo"
 temporary="$state.$$.tmp"
