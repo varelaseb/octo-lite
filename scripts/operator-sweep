@@ -666,6 +666,21 @@ def main() -> int:
     atomic_write(liveness_path, json.dumps(liveness, sort_keys=True, indent=1) + "\n")
     atomic_write(pending_snapshot_path, snapshot)
     try:
+        # HEADLESS RECONCILE MODE (ruling-48, TUR-489): this sweep runs from the
+        # 2-minute systemd --user timer with NO owning Claude session and no
+        # Workflow runtime. It therefore KEEPS the provider-argv subprocess relay
+        # (prepare_reconcile_launch / run_reconcile_launch, a `claude` subprocess),
+        # which is a legitimate headless reconcile path, not a retired worker-pass
+        # bypass. It deliberately does NOT use the additive Workflow-native
+        # reconciler (octo_lite.launch.bind_reconcile_workflow_journal driving
+        # octo-loop-qa.js spawnReconciler via the Workflow tool's agent(),
+        # agentType 'Explore'), because agent() only runs inside an owning session;
+        # migrating this headless timer to it would leave the live sweep unable to
+        # spawn its reconciler and crash it. The Workflow-native path is for
+        # session-driven loop contexts only; F4b-C does not remove these relay
+        # functions. Trust-critical operator-gate surfacing is deterministic and
+        # independent of the reconcile mechanism.
+        #
         # Sole reconciler launch gateway: same worktree provisioning and
         # containment as the worker launch path, narrowed to the reconciler's
         # aggregate read-only shape and bound through the sweep's journal.json
