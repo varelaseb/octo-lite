@@ -2043,287 +2043,393 @@ class OperatorControlTests(unittest.TestCase):
             )
             self.assertNotEqual(0, result.returncode)
 
-    def _write_shaping_receipt(
-        self, path: Path, *, role: str, issue: str, caller: str,
-        verified: bool = True, purpose: str = "shaping-review",
-        repo: str = "org/repo", pr: int = 7, head: str = "deadbeef123",
-        omit_revision: bool = False, omit_shaping: bool = False,
+    # Unit J shaped-transition authority migration (role-runtime
+    # launch-shaping-authority, launch-shaping-authority-issue,
+    # launch-receipt-persistent; delivery-lifecycle
+    # shaping-operator-approval-order; operating-model decision-109-binding):
+    # a Shaped transition binds to the verified generic persistent
+    # issue-orchestrator receipt whose launcher-resolved skill set includes
+    # shaping, the journalled clear shaping verdict carrying relay-verbatim
+    # rollout-record provenance at the exact issue, repo, PR, and fresh PR
+    # head, and the Unit L operator-intent record stamping that same head.
+    # The retired worker shaping-review receipt and the interim
+    # published-verdict ack-echo path (tur-416 style) carry no authority.
+
+    def _write_persistent_orchestrator_receipt(
+        self, path: Path, *, caller: str, role: str = "orchestrator",
+        issue: str | None = "TUR-1", verified: bool = True,
+        capabilities: tuple[str, ...] = ("shaping",),
+        omit_revision: bool = False, purpose: str | None = None,
+        shaping: dict | None = None,
     ) -> None:
         from octo_lite.runtime import launch_revision
-        receipt = {
+        resolved = ["herdr-comms"] + (
+            ["octo-lite-issue-shaper", "grill-with-docs"] if "shaping" in capabilities else []
+        )
+        receipt: dict = {
             "schema_version": 1,
             "spawn_id": caller,
             "ready": True,
             "role": {"name": role},
-            "issue": {"identifier": issue},
-            "purpose": purpose,
+            "skills": {"resolved": resolved, "matched_capabilities": list(capabilities)},
             "bootstrap": {"verified": verified, "provider_session_id": caller},
         }
-        if not omit_shaping:
-            receipt["shaping"] = {"repo": repo, "pr": pr, "head": head}
+        if purpose is not None:
+            receipt["purpose"] = purpose
+        if issue is not None:
+            receipt["issue"] = {"identifier": issue}
+        if shaping is not None:
+            receipt["shaping"] = dict(shaping)
         revision = launch_revision(receipt)
-        lines = [
-            "schema_version = 1",
-            f'spawn_id = "{caller}"',
-            "ready = true",
-            f'purpose = "{purpose}"',
-        ]
+        lines = ["schema_version = 1", f'spawn_id = "{caller}"', "ready = true"]
+        if purpose is not None:
+            lines.append(f'purpose = "{purpose}"')
         if not omit_revision:
             lines.append(f'launch_revision = "{revision}"')
-        lines += ["", f'[role]\nname = "{role}"', "", f'[issue]\nidentifier = "{issue}"']
-        if not omit_shaping:
-            lines += ["", f'[shaping]\nrepo = "{repo}"\npr = {pr}\nhead = "{head}"']
+        lines += ["", "[role]", f'name = "{role}"']
         lines += [
-            "",
-            "[bootstrap]",
+            "", "[skills]",
+            f"resolved = {json.dumps(resolved)}",
+            f"matched_capabilities = {json.dumps(list(capabilities))}",
+        ]
+        if issue is not None:
+            lines += ["", "[issue]", f'identifier = "{issue}"']
+        if shaping is not None:
+            lines += [
+                "", "[shaping]", f'repo = "{shaping["repo"]}"',
+                f"pr = {shaping['pr']}", f'head = "{shaping["head"]}"',
+            ]
+        lines += [
+            "", "[bootstrap]",
             f"verified = {'true' if verified else 'false'}",
             f'provider_session_id = "{caller}"',
         ]
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(lines) + "\n")
 
-    def test_linear_transition_to_shaped_requires_verified_shaping_review_receipt_authority(self) -> None:
-        # Ideas or Todo -> Shaped must only ever move on receipt authority: a
-        # verified bootstrap, the exact orchestrator role, the exact bound
-        # issue and caller, purpose shaping-review, a valid launch_revision,
-        # and shaping repo/PR/head inputs. Stream authority (used for the
-        # existing delivery transitions) must never suffice for Shaped.
+    def _write_verdict_journal(
+        self, path: Path, *, head: str, issue: str = "TUR-1", repo: str = "org/repo",
+        pr: int = 7, verdict: str = "clear", provenance: bool = True,
+        ack_echo: bool = False,
+    ) -> None:
+        entry: dict = {
+            "schema_version": 1, "review_type": "shaping", "verdict": verdict,
+            "issue": issue, "repo": repo, "pr": pr, "head": head,
+        }
+        if provenance:
+            entry.update({
+                "codex_session_id": "codex-session-1",
+                "verdict_sha256": "a" * 64,
+                "provenance": "relay-verbatim-rollout",
+            })
+        if ack_echo:
+            entry.update({
+                "bound_inputs": [f"linear:{issue}:{'0' * 64}"],
+                "ack_echo": "verified",
+            })
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(entry))
+
+    def _install_shaped_fakes(self, fake_bin: Path) -> None:
+        fake_bin.mkdir(parents=True, exist_ok=True)
+        (fake_bin / "linear").write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ -n "$CALL_LOG" ]]; then printf \'linear %s\\n\' "$*" >>"$CALL_LOG"; fi\n'
+            'if [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]]; then\n'
+            '  if [[ "$1 $2" == "issue view" ]]; then\n'
+            '    state="$(cat "$STATE_FILE")"\n'
+            "    cat <<JSON\n"
+            '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "t1"}\n'
+            "JSON\n"
+            "    exit 0\n"
+            '  elif [[ "$1 $2" == "issue update" ]]; then\n'
+            '    echo -n "Shaped" >"$STATE_FILE"\n'
+            "    exit 0\n"
+            "  fi\n"
+            "fi\n"
+            "exit 99\n"
+        )
+        (fake_bin / "linear").chmod(0o755)
+        (fake_bin / "gh").write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ -n "$CALL_LOG" ]]; then printf \'gh %s\\n\' "$*" >>"$CALL_LOG"; fi\n'
+            'if [[ -n "$GH_RESPONSE_FILE" && -f "$GH_RESPONSE_FILE" ]]; then\n'
+            '  cat "$GH_RESPONSE_FILE"\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 99\n"
+        )
+        (fake_bin / "gh").chmod(0o755)
+        (fake_bin / "herdr-say").write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ -n "$CALL_LOG" ]]; then printf \'herdr-say %s\\n\' "$*" >>"$CALL_LOG"; fi\n'
+            "exit 0\n"
+        )
+        (fake_bin / "herdr-say").chmod(0o755)
+
+    def test_linear_transition_to_shaped_requires_persistent_orchestrator_authority(self) -> None:
+        # Ideas or Todo -> Shaped moves only on the migrated authority tuple:
+        # the verified generic persistent issue-orchestrator receipt (no pass
+        # purpose, exact caller session, valid launch revision, resolved
+        # shaping capability) at streams/<name>/receipt.toml claiming this
+        # exact issue in the live registry, the journalled clear shaping
+        # verdict with rollout-record provenance, and the Unit L
+        # operator-intent record stamping that same head. Every rejection
+        # happens before any Linear or GitHub call.
+        from octo_lite.runtime import exact_fingerprint, verdict_body
+
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            stream = base / "stream"
-            from octo_lite.runtime import initialize_stream, exact_fingerprint, verdict_body
-            initialize_stream(
-                stream, stream_id="TUR-1", parent_session="epic-opus", child_session="issue-opus",
-                child_role="orchestrator", caller="epic-opus", brief="Build it.\n",
-            )
+            repo = base / "repo"
+            _init_target_repo(repo)
+
+            def repo_head() -> str:
+                return subprocess.run(
+                    ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                    check=True, capture_output=True, text=True,
+                ).stdout.strip()
+
+            def produce_intent(directory: Path) -> str:
+                produced = subprocess.run(
+                    [
+                        str(CONTROL), "intent-record", "--stream-dir", str(directory),
+                        "--intent-ref", "ruling-15", "--repo", str(repo),
+                    ],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(0, produced.returncode, produced.stderr)
+                return (directory / "intent-record.toml").read_text()
+
+            stale_intent = produce_intent(base / "intent-stale")
+            (repo / "advance.md").write_text("advance\n")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "advance"], check=True)
+            head = repo_head()
+            fresh_intent = produce_intent(base / "intent-fresh")
+
             fake_bin = base / "bin"
-            fake_bin.mkdir()
-            # Only the valid_shaping_review_receipt row must ever reach Linear or
-            # GitHub: every other row is rejected by receipt authority first. These
-            # fakes stay realistically executable for that row (driven by env-selected
-            # state/response files) instead of always failing regardless of reason.
-            (fake_bin / "linear").write_text(
-                "#!/usr/bin/env bash\n"
-                'if [[ -n "$STATE_FILE" && -f "$STATE_FILE" ]]; then\n'
-                '  if [[ "$1 $2" == "issue view" ]]; then\n'
-                '    state="$(cat "$STATE_FILE")"\n'
-                "    cat <<JSON\n"
-                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "t1"}\n'
-                "JSON\n"
-                "    exit 0\n"
-                '  elif [[ "$1 $2" == "issue update" ]]; then\n'
-                '    echo -n "Shaped" >"$STATE_FILE"\n'
-                "    exit 0\n"
-                "  fi\n"
-                "fi\n"
-                "exit 99\n"
-            )
-            (fake_bin / "linear").chmod(0o755)
-            (fake_bin / "gh").write_text(
-                "#!/usr/bin/env bash\n"
-                'if [[ -n "$GH_RESPONSE_FILE" && -f "$GH_RESPONSE_FILE" ]]; then\n'
-                '  cat "$GH_RESPONSE_FILE"\n'
-                "  exit 0\n"
-                "fi\n"
-                "exit 99\n"
-            )
-            (fake_bin / "gh").chmod(0o755)
-            (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 0\n")
-            (fake_bin / "herdr-say").chmod(0o755)
+            self._install_shaped_fakes(fake_bin)
             base_env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+            caller = "issue-opus"
 
-            cases = [
-                ("valid_shaping_review_receipt", {}, True),
-                ("stream_authority_forbidden", {"use_stream": True}, False),
-                ("wrong_purpose", {"purpose": "delivery"}, False),
-                ("unverified_receipt", {"verified": False}, False),
-                ("foreign_issue", {"issue": "TUR-999"}, False),
-                ("foreign_caller", {"caller": "someone-else"}, False),
-                ("wrong_role", {"role": "implementer"}, False),
-                ("missing_launch_revision", {"omit_revision": True}, False),
-                ("missing_shaping_inputs", {"omit_shaping": True}, False),
-            ]
+            def prepare_case(
+                name: str, *, receipt_kwargs: dict | None = None,
+                verdict_kwargs: dict | None = None, write_verdict: bool = True,
+                intent_text: str | None = fresh_intent,
+                other_stream_issue: str | None = None,
+            ) -> tuple[Path, Path]:
+                case = base / "cases" / name
+                stream = case / "streams" / "TUR-1"
+                kwargs: dict = {"caller": caller}
+                kwargs.update(receipt_kwargs or {})
+                self._write_persistent_orchestrator_receipt(stream / "receipt.toml", **kwargs)
+                if other_stream_issue is not None:
+                    self._write_persistent_orchestrator_receipt(
+                        case / "streams" / other_stream_issue.lower() / "receipt.toml",
+                        caller=caller, issue=other_stream_issue,
+                    )
+                if write_verdict:
+                    values: dict = {"head": head}
+                    values.update(verdict_kwargs or {})
+                    self._write_verdict_journal(case / "verdict.json", **values)
+                if intent_text is not None:
+                    (stream / "intent-record.toml").write_text(intent_text)
+                return case, stream / "receipt.toml"
+
+            def transition(
+                case: Path, receipt: Path, *, expected_state: str = "Todo",
+                use_stream: Path | None = None, include_new_flags: bool = True,
+                env: dict | None = None,
+            ):
+                argv = [
+                    str(CONTROL), "linear-transition", "TUR-1",
+                    "--expected", expected_state, "--target", "Shaped",
+                    "--progress", str(case / "progress.toml"),
+                    "--status", str(case / "status.md"),
+                    "--parent", "epic-opus", "--outcome", "shaped", "--gate", "review",
+                    "--caller", caller,
+                ]
+                if use_stream is not None:
+                    argv += ["--stream", str(use_stream)]
+                else:
+                    argv += ["--receipt", str(receipt)]
+                if include_new_flags:
+                    argv += ["--verdict-journal", str(case / "verdict.json"), "--repo", str(repo)]
+                return subprocess.run(argv, env=env or base_env, capture_output=True, text=True)
+
+            # Accept path: the full authority tuple admits exactly one
+            # transition from each shaping entry state.
             for expected_state in ("Ideas", "Todo"):
-                for name, overrides, should_succeed in cases:
-                    with self.subTest(expected_state=expected_state, case=name):
-                        receipt = base / f"{expected_state}-{name}.toml"
-                        self._write_shaping_receipt(
-                            receipt, role=overrides.get("role", "orchestrator"), issue=overrides.get("issue", "TUR-1"),
-                            caller="issue-opus",
-                            verified=overrides.get("verified", True),
-                            purpose=overrides.get("purpose", "shaping-review"),
-                            omit_revision=overrides.get("omit_revision", False),
-                            omit_shaping=overrides.get("omit_shaping", False),
-                        )
-                        env = dict(base_env)
-                        if name == "valid_shaping_review_receipt":
-                            state_file = base / f"{expected_state}-{name}-state.txt"
-                            state_file.write_text(expected_state)
-                            normalized_issue = {
-                                "identifier": "TUR-1", "state": expected_state, "updatedAt": "t1",
-                            }
-                            binding = f"linear:TUR-1:{exact_fingerprint(normalized_issue)}"
-                            marker = verdict_body(
-                                "shaping", "clear", "deadbeef123", [binding], [],
-                                "reviewer-receipt-xyz",
-                                conversation_log_references=["session-log-1"],
-                                conversation_cutoff="2026-07-18T00:00:00Z",
-                            )
-                            response_file = base / f"{expected_state}-{name}-gh.json"
-                            response_file.write_text(json.dumps({
-                                "headRefOid": "deadbeef123",
-                                "comments": [{"id": 1, "body": marker}],
-                            }))
-                            env["STATE_FILE"] = str(state_file)
-                            env["GH_RESPONSE_FILE"] = str(response_file)
-                        command = [
-                            str(CONTROL), "linear-transition", "TUR-1",
-                            "--expected", expected_state, "--target", "Shaped",
-                            "--progress", str(base / f"{expected_state}-{name}-progress.toml"),
-                            "--status", str(base / f"{expected_state}-{name}-status.md"),
-                            "--parent", "epic-opus", "--outcome", "shaped", "--gate", "review",
-                            "--caller", overrides.get("caller", "issue-opus"),
-                        ]
-                        if overrides.get("use_stream"):
-                            command += ["--stream", str(stream)]
-                        else:
-                            command += ["--receipt", str(receipt)]
-                        result = subprocess.run(command, env=env, capture_output=True, text=True)
-                        if should_succeed:
-                            self.assertEqual(0, result.returncode, result.stderr)
-                        else:
-                            self.assertNotEqual(0, result.returncode)
+                with self.subTest(case=f"valid-{expected_state}"):
+                    case, receipt = prepare_case(f"valid-{expected_state}")
+                    state_file = case / "state.txt"
+                    state_file.write_text(expected_state)
+                    gh_response = case / "gh.json"
+                    gh_response.write_text(json.dumps({"headRefOid": head}))
+                    call_log = case / "calls.log"
+                    env = dict(
+                        base_env, STATE_FILE=str(state_file),
+                        GH_RESPONSE_FILE=str(gh_response), CALL_LOG=str(call_log),
+                    )
+                    result = transition(case, receipt, expected_state=expected_state, env=env)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual("Shaped", state_file.read_text())
 
-    def test_linear_transition_to_shaped_requires_one_exact_bound_shaping_marker(self) -> None:
-        # After the compare Linear read, Shaped must refetch the exact live PR
-        # head and comments and require exactly one shaping marker: parseable
-        # TOML, review_type shaping, verdict clear, exact head, and an exact
-        # linear:<issue>:<fingerprint of current normalized Linear read>
-        # binding. Every other case rejects before any mutation; only the
-        # exact-bound clear verdict permits one update, readback, status, and
-        # notify, in that order. Existing delivery transitions stay allowed
-        # and are not exercised here.
-        from octo_lite.runtime import verdict_body, exact_fingerprint
-
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            live_head = "deadbeef123"
-            raw_issue = {"identifier": "TUR-1", "state": {"name": "Todo"}, "updatedAt": "2026-07-19T00:00:00Z"}
-            normalized_issue = dict(raw_issue)
-            normalized_issue["state"] = "Todo"
-            fingerprint = exact_fingerprint(normalized_issue)
-            binding = f"linear:TUR-1:{fingerprint}"
-
-            def marker(*, verdict="clear", head=live_head, bound_inputs=(binding,)):
-                return verdict_body(
-                    "shaping", verdict, head, list(bound_inputs), [], "reviewer-receipt-xyz",
+            # Retired worker-receipt path: purpose shaping-review plus a
+            # [shaping] table is the retired shape and is rejected even when
+            # the old published-marker verdict it used to consume is live.
+            with self.subTest(case="retired_worker_receipt"):
+                case, receipt = prepare_case(
+                    "retired_worker_receipt",
+                    receipt_kwargs={
+                        "purpose": "shaping-review",
+                        "shaping": {"repo": "org/repo", "pr": 7, "head": head},
+                    },
+                    write_verdict=False,
+                )
+                normalized_issue = {"identifier": "TUR-1", "state": "Todo", "updatedAt": "t1"}
+                binding = f"linear:TUR-1:{exact_fingerprint(normalized_issue)}"
+                marker = verdict_body(
+                    "shaping", "clear", head, [binding], [], "reviewer-receipt-xyz",
                     conversation_log_references=["session-log-1"],
                     conversation_cutoff="2026-07-18T00:00:00Z",
                 )
-
-            unreadable_marker = "<!-- octo-lite-verdict:shaping -->\n```toml\nverdict = \n```"
-
-            def wrong_review_type_marker():
-                return (
-                    "<!-- octo-lite-verdict:shaping -->\n```toml\n"
-                    'schema_version = 1\n'
-                    'review_type = "code"\n'
-                    'verdict = "clear"\n'
-                    f'head = "{live_head}"\n'
-                    f'bound_inputs = ["{binding}"]\n'
-                    '```'
+                state_file = case / "state.txt"
+                state_file.write_text("Todo")
+                gh_response = case / "gh.json"
+                gh_response.write_text(json.dumps({
+                    "headRefOid": head, "comments": [{"id": 1, "body": marker}],
+                }))
+                call_log = case / "calls.log"
+                env = dict(
+                    base_env, STATE_FILE=str(state_file),
+                    GH_RESPONSE_FILE=str(gh_response), CALL_LOG=str(call_log),
                 )
+                result = transition(case, receipt, include_new_flags=False, env=env)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("retired", result.stderr)
+                self.assertEqual("Todo", state_file.read_text())
+                self.assertFalse(call_log.exists())
 
-            scenarios = {
-                "missing": [],
-                "duplicate": [marker(), marker()],
-                "unreadable": [unreadable_marker],
-                "blocking": [marker(verdict="blocking")],
-                "stale_head": [marker(head="stalehead000")],
-                "live_head_mismatch": [marker()],
-                "wrong_review_type": [wrong_review_type_marker()],
-                "anonymous_binding": [marker(bound_inputs=("spec/domains/operating-model.spec.html:abc123",))],
-                "foreign_binding": [marker(bound_inputs=(f"linear:TUR-999:{fingerprint}",))],
-                "wrong_fingerprint": [marker(bound_inputs=(f"linear:TUR-1:{'0' * 64}",))],
-                "valid": [marker()],
-            }
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            (fake_bin / "linear").write_text(
-                "#!/usr/bin/env bash\n"
-                "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-                'if [[ "$1 $2" == "issue view" ]]; then\n'
-                '  state="$(cat "$STATE_FILE")"\n'
-                "  cat <<JSON\n"
-                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "2026-07-19T00:00:00Z"}\n'
-                "JSON\n"
-                'elif [[ "$1 $2" == "issue update" ]]; then\n'
-                '  echo -n "Shaped" >"$STATE_FILE"\n'
-                "fi\n"
+            fabricated = (
+                'schema_version = 1\nintent_ref = "ruling-15"\n'
+                f'head = "{"f" * 40}"\nrecorded_at = "2026-07-21T00:00:00+00:00"\n'
             )
-            (fake_bin / "linear").chmod(0o755)
-            (fake_bin / "gh").write_text(
-                "#!/usr/bin/env bash\n"
-                "printf 'gh %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-                'cat "$GH_RESPONSE_FILE"\n'
-            )
-            (fake_bin / "gh").chmod(0o755)
-            (fake_bin / "herdr-say").write_text(
-                "#!/usr/bin/env bash\nprintf 'herdr-say %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-            )
-            (fake_bin / "herdr-say").chmod(0o755)
-
-            for name, comment_bodies in scenarios.items():
+            rejections = [
+                ("stream_authority_forbidden", {"use_stream": True}, "persistent receipt authority"),
+                ("unverified_receipt", {"receipt_kwargs": {"verified": False}}, "bootstrap not verified"),
+                ("wrong_role", {"receipt_kwargs": {"role": "implementer"}}, "issue-orchestrator role"),
+                ("foreign_caller", {"receipt_kwargs": {"caller": "someone-else"}}, "receipt-bound session"),
+                ("missing_launch_revision", {"receipt_kwargs": {"omit_revision": True}}, "launch revision"),
+                ("pass_purpose_receipt", {"receipt_kwargs": {"purpose": "delivery"}}, "pass purpose"),
+                ("orchestrator_without_shaping", {"receipt_kwargs": {"capabilities": ()}}, "lack shaping"),
+                ("epic_orchestrator", {"receipt_kwargs": {"issue": None}}, "epic orchestrator"),
+                ("other_issue_receipt", {"receipt_kwargs": {"issue": "TUR-999"}}, "another issue"),
+                ("registered_to_other_issue", {"other_stream_issue": "TUR-2"}, "live stream registry"),
+                ("missing_new_flags", {"include_new_flags": False}, "--verdict-journal"),
+                ("missing_verdict_journal", {"write_verdict": False}, "journalled shaping verdict missing"),
+                ("blocking_verdict", {"verdict_kwargs": {"verdict": "blocking"}}, "not clear"),
+                ("verdict_issue_mismatch", {"verdict_kwargs": {"issue": "TUR-999"}}, "verdict issue mismatch"),
+                (
+                    "interim_ack_echo_verdict",
+                    {"verdict_kwargs": {"provenance": False, "ack_echo": True}},
+                    "rollout-record provenance",
+                ),
+                ("missing_intent_record", {"intent_text": None}, "intent record missing"),
+                ("fabricated_intent_record", {"intent_text": fabricated}, "head unknown"),
+                ("wrong_head_intent_record", {"intent_text": stale_intent}, "head mismatch with journalled verdict"),
+            ]
+            for name, overrides, fragment in rejections:
                 with self.subTest(case=name):
-                    state_file = base / f"{name}-state.txt"
-                    state_file.write_text("Todo")
-                    call_log = base / f"{name}-calls.log"
-                    response_file = base / f"{name}-gh.json"
-                    actual_head = "livehead999" if name == "live_head_mismatch" else live_head
-                    response_file.write_text(json.dumps({
-                        "url": "https://github.com/org/repo/pull/7",
-                        "headRefOid": actual_head,
-                        "headRefName": "shaping/TUR-1",
-                        "baseRefName": "main",
-                        "state": "OPEN",
-                        "reviewDecision": "",
-                        "statusCheckRollup": [],
-                        "comments": [{"id": i, "body": body} for i, body in enumerate(comment_bodies)],
-                    }))
-                    receipt = base / f"{name}-receipt.toml"
-                    self._write_shaping_receipt(
-                        receipt, role="orchestrator", issue="TUR-1", caller="issue-opus",
-                        repo="org/repo", pr=7, head=live_head,
+                    overrides = dict(overrides)
+                    cmd_stream = overrides.pop("use_stream", False)
+                    include_flags = overrides.pop("include_new_flags", True)
+                    case, receipt = prepare_case(name, **overrides)
+                    call_log = case / "calls.log"
+                    env = dict(base_env, CALL_LOG=str(call_log))
+                    result = transition(
+                        case, receipt,
+                        use_stream=(case / "streams" / "TUR-1") if cmd_stream else None,
+                        include_new_flags=include_flags, env=env,
                     )
+                    self.assertNotEqual(0, result.returncode, name)
+                    self.assertIn(fragment, result.stderr, result.stderr)
+                    self.assertFalse(call_log.exists(), name)
+
+    def test_linear_transition_to_shaped_verifies_fresh_pr_head_then_mutates_reads_back_and_notifies(self) -> None:
+        # After the compare Linear read, Shaped refetches the exact live PR
+        # head and requires it to equal the journalled verdict head, so a
+        # stale journalled verdict rejects before any mutation; the exact
+        # fresh-head clear verdict permits one update, readback, status, and
+        # notify, in that order (compare, mutate, readback, notify preserved).
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            head = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            fake_bin = base / "bin"
+            self._install_shaped_fakes(fake_bin)
+
+            for name, live_head, expect_ok in (
+                ("valid", head, True),
+                ("stale_journalled_verdict", "1" * 40, False),
+            ):
+                with self.subTest(case=name):
+                    case = base / "cases" / name
+                    stream = case / "streams" / "TUR-1"
+                    receipt = stream / "receipt.toml"
+                    self._write_persistent_orchestrator_receipt(receipt, caller="issue-opus")
+                    self._write_verdict_journal(case / "verdict.json", head=head)
+                    produced = subprocess.run(
+                        [
+                            str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                            "--intent-ref", "ruling-15", "--repo", str(repo),
+                        ],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(0, produced.returncode, produced.stderr)
+                    state_file = case / "state.txt"
+                    state_file.write_text("Todo")
+                    call_log = case / "calls.log"
+                    gh_response = case / "gh.json"
+                    gh_response.write_text(json.dumps({"headRefOid": live_head}))
                     env = dict(
                         os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
-                        OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
                         STATE_FILE=str(state_file), CALL_LOG=str(call_log),
-                        GH_RESPONSE_FILE=str(response_file),
+                        GH_RESPONSE_FILE=str(gh_response),
                     )
                     result = subprocess.run(
                         [
                             str(CONTROL), "linear-transition", "TUR-1",
                             "--expected", "Todo", "--target", "Shaped",
-                            "--progress", str(base / f"{name}-progress.toml"),
-                            "--status", str(base / f"{name}-status.md"),
+                            "--progress", str(case / "progress.toml"),
+                            "--status", str(case / "status.md"),
                             "--parent", "epic-opus", "--outcome", "shaped", "--gate", "review",
                             "--caller", "issue-opus", "--receipt", str(receipt),
+                            "--verdict-journal", str(case / "verdict.json"), "--repo", str(repo),
                         ],
                         env=env, capture_output=True, text=True,
                     )
-                    if name == "valid":
+                    calls = call_log.read_text().splitlines() if call_log.exists() else []
+                    if expect_ok:
                         self.assertEqual(0, result.returncode, result.stderr)
                         self.assertEqual("Shaped", state_file.read_text())
-                        calls = call_log.read_text().splitlines()
                         self.assertEqual(5, len(calls), calls)
                         self.assertTrue(calls[0].startswith("linear issue view"), calls)
-                        self.assertTrue(calls[1].startswith("gh "), calls)
+                        self.assertTrue(calls[1].startswith("gh pr view 7"), calls)
+                        self.assertIn("headRefOid", calls[1])
                         self.assertTrue(calls[2].startswith("linear issue update"), calls)
                         self.assertTrue(calls[3].startswith("linear issue view"), calls)
                         self.assertTrue(calls[4].startswith("herdr-say "), calls)
                     else:
-                        self.assertNotEqual(0, result.returncode, name)
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertEqual("Todo", state_file.read_text())
+                        self.assertEqual(2, len(calls), calls)
+                        self.assertTrue(calls[0].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[1].startswith("gh pr view 7"), calls)
 
 
 if __name__ == "__main__":

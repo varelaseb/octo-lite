@@ -35,9 +35,6 @@ from octo_lite.runtime import (  # noqa: E402
     verdict_body,
 )
 
-SHAPING_VERDICT_MARKER = "<!-- octo-lite-verdict:shaping -->"
-
-
 def load_toml(path: Path) -> dict:
     with path.open("rb") as handle:
         return tomllib.load(handle)
@@ -103,62 +100,120 @@ def _verify_transition_authority(args) -> None:
         raise GateError("caller is not the exact receipt-bound session")
 
 
+# Unit J shaped-transition authority (role-runtime launch-shaping-authority,
+# launch-shaping-authority-issue, launch-receipt-persistent;
+# delivery-lifecycle shaping-operator-approval-order; operating-model
+# decision-109-binding): a Shaped transition binds to the verified generic
+# persistent issue-orchestrator receipt whose launcher-resolved skill set
+# includes shaping and whose stream dir claims this exact issue in the live
+# streams/ registry, the journalled clear shaping verdict carrying
+# relay-verbatim rollout-record provenance, and the Unit L operator-intent
+# record stamping that same exact head. The retired worker shaping-review
+# receipt and the interim published-verdict ack-echo path (tur-416 style)
+# carry no authority.
+
+
+def _read_shaping_verdict_journal(path: Path, issue: str) -> dict:
+    if not path.is_file():
+        raise GateError("journalled shaping verdict missing")
+    try:
+        entry = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateError("journalled shaping verdict unreadable") from error
+    if not isinstance(entry, dict) or entry.get("schema_version") != 1:
+        raise GateError("journalled shaping verdict schema mismatch")
+    if entry.get("review_type") != "shaping":
+        raise GateError("journalled shaping verdict wrong review type")
+    if entry.get("verdict") != "clear":
+        raise GateError("journalled shaping verdict not clear")
+    if entry.get("issue") != issue:
+        raise GateError("journalled shaping verdict issue mismatch")
+    if not isinstance(entry.get("repo"), str) or not entry["repo"].strip():
+        raise GateError("journalled shaping verdict repo missing")
+    if not isinstance(entry.get("pr"), int):
+        raise GateError("journalled shaping verdict pr missing")
+    if not isinstance(entry.get("head"), str) or not re.fullmatch(r"[0-9a-f]{40}", entry["head"]):
+        raise GateError("journalled shaping verdict head missing")
+    # Workflow-native reviewer provenance of rollout-record grade (Unit C):
+    # an unqualified verdict, including the interim published-verdict
+    # ack-echo binding without these fields, carries no shaping authority.
+    for key in ("codex_session_id", "verdict_sha256"):
+        if not isinstance(entry.get(key), str) or not entry[key].strip():
+            raise GateError(f"journalled shaping verdict lacks rollout-record provenance: {key} missing")
+    if entry.get("provenance") != "relay-verbatim-rollout":
+        raise GateError(
+            "journalled shaping verdict lacks rollout-record provenance: interim ack-echo authority retired"
+        )
+    return entry
+
+
 def _verify_shaped_transition_authority(args) -> dict:
     if args.stream or not args.receipt:
-        raise GateError("Shaped transition requires exact receipt authority")
-    receipt = load_toml(Path(args.receipt))
-    if receipt.get("bootstrap", {}).get("verified") is not True:
-        raise GateError("caller receipt bootstrap not verified")
+        raise GateError("Shaped transition requires exact persistent receipt authority")
+    receipt_path = Path(args.receipt).resolve()
+    receipt = load_toml(receipt_path)
+    # The retired worker shaping-review receipt shape carries no authority.
+    if receipt.get("purpose") == "shaping-review" and isinstance(receipt.get("shaping"), dict):
+        raise GateError("retired worker shaping-review receipt carries no Shaped authority")
+    if "purpose" in receipt:
+        raise GateError("caller receipt carries a pass purpose; generic persistent shape required")
     if receipt.get("role", {}).get("name") != "orchestrator":
         raise GateError("caller is not the exact issue-orchestrator role")
-    if receipt.get("issue", {}).get("identifier") != args.issue:
-        raise GateError("caller receipt issue mismatch")
+    if receipt.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("caller receipt bootstrap not verified")
     if receipt.get("bootstrap", {}).get("provider_session_id") != args.caller:
         raise GateError("caller is not the exact receipt-bound session")
-    if receipt.get("purpose") != "shaping-review":
-        raise GateError("caller receipt purpose is not shaping-review")
     if not isinstance(receipt.get("launch_revision"), str) or receipt["launch_revision"] != launch_revision(receipt):
         raise GateError("caller receipt launch revision mismatch")
-    shaping = receipt.get("shaping")
-    if not isinstance(shaping, dict) or not all(shaping.get(key) for key in ("repo", "pr", "head")):
-        raise GateError("caller receipt shaping binding missing")
-    return shaping
+    skills = receipt.get("skills")
+    matched = skills.get("matched_capabilities") if isinstance(skills, dict) else None
+    if not isinstance(matched, list) or "shaping" not in matched:
+        raise GateError("caller receipt resolved skills lack shaping")
+    # Exact-issue registry authority (launch-shaping-authority-issue): the
+    # caller session must be this issue's registered issue orchestrator in
+    # the live streams/ registry, so an epic orchestrator or an orchestrator
+    # owning any other issue is rejected even with shaping capability.
+    if receipt_path.name != "receipt.toml":
+        raise GateError("caller receipt is not a stream registry receipt.toml")
+    stream_dir = receipt_path.parent
+    issue_table = receipt.get("issue")
+    identity = issue_table.get("identifier") if isinstance(issue_table, dict) else None
+    if not identity:
+        raise GateError("epic orchestrator receipt binds no exact issue")
+    if identity != args.issue:
+        raise GateError("caller stream is registered to another issue")
+    registry = stream_dir.parent
+    for other_dir in sorted(path for path in registry.iterdir() if path.is_dir() and path != stream_dir):
+        other_path = other_dir / "receipt.toml"
+        if not other_path.is_file():
+            continue
+        try:
+            other = load_toml(other_path)
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise GateError(f"stream registry receipt unreadable: {other_path}") from error
+        if other.get("bootstrap", {}).get("provider_session_id") != args.caller:
+            continue
+        other_issue_table = other.get("issue")
+        other_identity = other_issue_table.get("identifier") if isinstance(other_issue_table, dict) else None
+        if other_identity != args.issue:
+            raise GateError("caller session is registered to another issue in the live stream registry")
+    if not args.verdict_journal or not args.repo:
+        raise GateError("Shaped transition requires --verdict-journal and --repo")
+    verdict = _read_shaping_verdict_journal(Path(args.verdict_journal), args.issue)
+    # The Unit L operator-intent record, validated via the intent-record
+    # --verify path, must stamp that same exact head.
+    record = _verify_intent_record(stream_dir / "intent-record.toml", args.repo)
+    if record["head"] != verdict["head"]:
+        raise GateError("operator-intent record head mismatch with journalled verdict")
+    return {"repo": verdict["repo"], "pr": verdict["pr"], "head": verdict["head"]}
 
 
-def _verify_exact_shaping_marker(repo: str, pr: object, expected_head: str, issue: str, fingerprint: str) -> None:
-    current = run_json(["gh", "pr", "view", str(pr), "--repo", repo, "--json", "headRefOid,comments"])
+def _verify_fresh_shaping_head(repo: str, pr: object, expected_head: str) -> None:
+    # A stale journalled verdict rejects here: the verdict head must equal
+    # the freshly refetched live PR head immediately before mutation.
+    current = run_json(["gh", "pr", "view", str(pr), "--repo", repo, "--json", "headRefOid"])
     if current.get("headRefOid") != expected_head:
         raise GateError("shaping PR head mismatch")
-    comments = current.get("comments")
-    if not isinstance(comments, list):
-        raise GateError("shaping verdict comments unreadable")
-    matches = [
-        item.get("body", "") for item in comments
-        if isinstance(item, dict) and SHAPING_VERDICT_MARKER in item.get("body", "")
-    ]
-    if not matches:
-        raise GateError("shaping verdict missing")
-    if len(matches) > 1:
-        raise GateError("shaping verdict duplicate")
-    block = re.search(r"```toml\s*(.*?)\s*```", matches[0], re.DOTALL)
-    if not block:
-        raise GateError("shaping verdict unreadable")
-    try:
-        parsed = tomllib.loads(block.group(1))
-    except tomllib.TOMLDecodeError as error:
-        raise GateError("shaping verdict unreadable") from error
-    if parsed.get("schema_version") != 1:
-        raise GateError("shaping verdict schema mismatch")
-    if parsed.get("review_type") != "shaping":
-        raise GateError("shaping verdict wrong review type")
-    if parsed.get("verdict") != "clear":
-        raise GateError("shaping verdict not clear")
-    if parsed.get("head") != expected_head:
-        raise GateError("shaping verdict head mismatch")
-    binding = f"linear:{issue}:{fingerprint}"
-    bound_inputs = parsed.get("bound_inputs")
-    if not isinstance(bound_inputs, list) or binding not in bound_inputs:
-        raise GateError("shaping verdict binding mismatch")
 
 
 def command_linear_transition(args) -> dict:
@@ -179,20 +234,12 @@ def command_linear_transition(args) -> dict:
         shaping = None
         _verify_transition_authority(args)
 
-    compare_cache: dict[str, dict] = {}
-
     def read():
-        issue = linear_read(args.issue)["issue"]
-        compare_cache["issue"] = issue
-        return issue
+        return linear_read(args.issue)["issue"]
 
     def mutate(target):
         if shaping is not None:
-            current_issue = compare_cache["issue"]
-            fingerprint = exact_fingerprint(current_issue)
-            _verify_exact_shaping_marker(
-                shaping["repo"], shaping["pr"], shaping["head"], args.issue, fingerprint
-            )
+            _verify_fresh_shaping_head(shaping["repo"], shaping["pr"], shaping["head"])
         subprocess.run(
             ["linear", "issue", "update", args.issue, "--state", target],
             check=True,
@@ -549,6 +596,8 @@ def parser() -> argparse.ArgumentParser:
     transition.add_argument("--caller", required=True)
     transition.add_argument("--stream")
     transition.add_argument("--receipt")
+    transition.add_argument("--verdict-journal")
+    transition.add_argument("--repo")
     transition.set_defaults(run=command_linear_transition)
 
     verdict = sub.add_parser("verdict-publish")
