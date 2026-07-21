@@ -530,25 +530,44 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
     }
 
 
-def _emit_operator_gate(gate_lines: list[str], root: Path, owner_file: Path, owner_route: str) -> None:
-    """Surface the loud operator-gate block on the noop path: print each line to
-    stdout and deliver the block to the operator route. Never silenced by the
-    unchanged-fingerprint class (sweep-operator-gate-unsuppressible)."""
+def _emit_operator_gate(gate_lines: list[str], root: Path, owner_file: Path, owner_route: str, state_dir: Path) -> None:
+    """Surface the loud operator-gate block: print every line to stdout every cycle
+    (the sweep delta ALWAYS shows current gates, unsuppressible), but push the loud
+    ping to the OPERATOR PANE only when the gate SET CHANGES (edge-triggered,
+    sweep-operator-gate-edge / ruling-58). A persistent gate (e.g. an issue parked
+    In Staging for hours) must not re-ping the operator every 2 minutes; the pane
+    ping fires once on a new/changed gate set and is re-armed when the set clears or
+    changes. The stdout/result.md surface is never suppressed."""
+    marker = state_dir / ".operator-gate-last"
     if not gate_lines:
+        # Gate set now empty: clear the marker so the next gate re-pings.
+        marker.unlink(missing_ok=True)
         return
     for line in gate_lines:
         print(line)
+    fingerprint = hashlib.sha256("\n".join(sorted(gate_lines)).encode("utf-8")).hexdigest()
+    try:
+        previous = marker.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        previous = ""
+    if previous == fingerprint:
+        return  # Unchanged gate set: already pinged the operator, do not re-flood.
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
     operator_say = os.environ.get("OCTO_OPERATOR_SAY") or str(root / "skills/herdr-comms/assets/operator-say")
     handle, temporary = tempfile.mkstemp(prefix=".operator-gate-", suffix=".md")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write("\n".join(gate_lines) + "\n")
-        subprocess.run(
+        result = subprocess.run(
             [operator_say, "--kind", "info", "--artifact", temporary, "Operator gate"],
             env=environment,
             check=False,
         )
+        # Persist the marker only when the operator will see it (delivered rc=0 or
+        # queued-at-modal rc=75); on a hard failure leave it unwritten so the next
+        # pass retries rather than silently dropping a NEW gate.
+        if result.returncode in (0, 75):
+            marker.write_text(fingerprint + "\n", encoding="utf-8")
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -638,7 +657,7 @@ def main() -> int:
         # Operator-gate output is exempt from the unchanged-fingerprint class
         # (sweep-operator-gate-unsuppressible): even on the noop path the loud
         # lines are surfaced to stdout and delivered to the operator.
-        _emit_operator_gate(gate_lines, root, owner_file, owner_route)
+        _emit_operator_gate(gate_lines, root, owner_file, owner_route, control)
         for note in degraded_notes:
             print(note)
         print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "liveness": liveness, "operator_gate": gate_lines, "degraded_reads": degraded_notes}))
@@ -727,7 +746,7 @@ def main() -> int:
         # (stdout AND operator-say) exactly like the noop/completed paths, print the
         # distinct deferred note, and do NOT persist sweep-state.toml so the next
         # 2-minute pass retries the reconcile against a stable HEAD. Exit 0 (clean).
-        _emit_operator_gate(gate_lines, root, owner_file, owner_route)
+        _emit_operator_gate(gate_lines, root, owner_file, owner_route, control)
         for note in degraded_notes:
             print(note)
         deferred_note = (
