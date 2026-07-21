@@ -1503,6 +1503,97 @@ class OperatorControlTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual("In Progress", state_file.read_text())
 
+    def test_linear_transition_allows_shaped_to_todo_loop_fire(self) -> None:
+        # delivery-lifecycle linear-loop-fire-transition and delivery-entry-gate,
+        # role-runtime launch-loop-fire-first-act: loop fire is the one mechanical
+        # Shaped -> Todo transition, admitted with the existing compare, mutate,
+        # readback, notify mechanics.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            receipt = base / "receipt.toml"
+            self._write_receipt(receipt, role="orchestrator", issue="TUR-1", provider_session_id="orch-session-1")
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            state_file = base / "linear-state.txt"
+            state_file.write_text("Shaped")
+            call_log = base / "calls.log"
+            (fake_bin / "linear").write_text(
+                "#!/usr/bin/env bash\n"
+                'printf \'linear %s\\n\' "$*" >>"$CALL_LOG"\n'
+                'if [[ "$1 $2" == "issue view" ]]; then\n'
+                '  state="$(cat "$STATE_FILE")"\n'
+                "  cat <<JSON\n"
+                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "t1"}\n'
+                "JSON\n"
+                'elif [[ "$1 $2" == "issue update" ]]; then\n'
+                '  echo -n "Todo" >"$STATE_FILE"\n'
+                "fi\n"
+            )
+            (fake_bin / "linear").chmod(0o755)
+            (fake_bin / "herdr-say").write_text(
+                '#!/usr/bin/env bash\nprintf \'herdr-say %s\\n\' "$*" >>"$CALL_LOG"\nexit 0\n'
+            )
+            (fake_bin / "herdr-say").chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", STATE_FILE=str(state_file), CALL_LOG=str(call_log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
+
+            result = subprocess.run(
+                [
+                    str(CONTROL), "linear-transition", "TUR-1",
+                    "--expected", "Shaped", "--target", "Todo",
+                    "--progress", str(base / "progress.toml"), "--status", str(base / "status.md"),
+                    "--parent", "epic-opus", "--outcome", "loop-fire", "--gate", "delivery-entry",
+                    "--caller", "orch-session-1", "--receipt", str(receipt),
+                ],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("Todo", state_file.read_text())
+            calls = call_log.read_text().splitlines()
+            # Compare read, mutation, readback, then notify, in that exact order.
+            self.assertEqual(
+                [
+                    "linear issue view TUR-1 --json --no-download",
+                    "linear issue update TUR-1 --state Todo",
+                    "linear issue view TUR-1 --json --no-download",
+                ],
+                [line for line in calls if line.startswith("linear ")],
+            )
+            self.assertTrue(calls[-1].startswith("herdr-say "))
+            self.assertIn("TUR-1 entered Todo", calls[-1])
+
+    def test_linear_transition_never_admits_shaped_to_in_progress(self) -> None:
+        # Companion to loop fire: Shaped never moves directly to In Progress
+        # (linear-loop-fire-transition, launch-loop-fire-first-act), and the
+        # rejection lands before any Linear call.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            receipt = base / "receipt.toml"
+            self._write_receipt(receipt, role="orchestrator", issue="TUR-1", provider_session_id="orch-session-1")
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            call_log = base / "calls.log"
+            (fake_bin / "linear").write_text(
+                f"#!/usr/bin/env bash\nprintf 'linear %s\\n' \"$*\" >>\"{call_log}\"\nexit 99\n"
+            )
+            (fake_bin / "linear").chmod(0o755)
+            (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 99\n")
+            (fake_bin / "herdr-say").chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+
+            result = subprocess.run(
+                [
+                    str(CONTROL), "linear-transition", "TUR-1",
+                    "--expected", "Shaped", "--target", "In Progress",
+                    "--progress", str(base / "progress.toml"), "--status", str(base / "status.md"),
+                    "--parent", "epic-opus", "--outcome", "x", "--gate", "y",
+                    "--caller", "orch-session-1", "--receipt", str(receipt),
+                ],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("not allowed", result.stderr.lower())
+            self.assertFalse(call_log.exists())
+
     def test_linear_transition_denies_every_non_orchestrator_role_and_stale_or_foreign_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

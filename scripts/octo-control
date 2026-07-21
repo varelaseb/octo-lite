@@ -162,6 +162,9 @@ def command_linear_transition(args) -> dict:
         ("In Progress", "Awaiting Accept"),
         ("Ideas", "Shaped"),
         ("Todo", "Shaped"),
+        # Loop fire: the one mechanical Shaped -> Todo delivery-entry transition
+        # (delivery-lifecycle linear-loop-fire-transition, delivery-entry-gate).
+        ("Shaped", "Todo"),
     }
     if (args.expected, args.target) not in allowed:
         raise GateError("stream orchestrator transition not allowed")
