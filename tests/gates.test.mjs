@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   acceptCodeReview,
+  acceptOpenaiReviewRelay,
+  assertReviewWorktreeImmutable,
   assertAdmission,
   acceptQaReview,
   acceptImplementation,
@@ -810,5 +812,148 @@ test('an OpenAI review-pass bootstrap must be read-only-first', () => {
   assert.throws(
     () => assertReadOnlyFirstBootstrap(['codex', 'exec', '--json', '-C', '/wt', '-m', 'gpt-5.4-codex', '-']),
     /must be read-only-first/,
+  )
+})
+
+// TUR-447 F2b Unit G. Spec: role-runtime role-openai-relay, role-openai-fail-closed,
+// launch-correctness-path, launch-review-sandbox-integrity, launch-resume-sandbox-config,
+// launch-role-purpose-capability (blob spec/domains/role-runtime.spec.html). The composite
+// OpenAI-reviewer relay gate ties the whole review pass into one deterministic acceptance:
+// resolved-from-roles.toml runtime, independent rollout provenance, sandbox law, worktree
+// immutability, and relay-verbatim verification. A verdict admitted through the generic
+// native agent() path (no relay), with relay-supplied rollout, or with a mutated worktree
+// is rejected.
+const RESOLVED_REVIEWER_RUNTIME = { provider: 'openai', model: 'gpt-5.6-sol', effort: 'high', service_tier: 'default' }
+const REVIEW_BOOTSTRAP = ['codex', 'exec', '--json', '-C', '/wt', '-m', 'gpt-5.6-sol', '-s', 'read-only', '-']
+const REVIEW_RESUME = [
+  'codex', 'exec', 'resume', '--json',
+  '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true', SESSION_ID, '-',
+]
+
+function reviewerRolloutRecord(overrides = {}) {
+  return { provider: 'openai', model: 'gpt-5.6-sol', effort: 'high', final_message: RELAY_MESSAGE, ...overrides }
+}
+
+function reviewerRelay(overrides = {}) {
+  return {
+    claimed_session_id: SESSION_ID,
+    payload: RELAY_MESSAGE,
+    bootstrap_argv: REVIEW_BOOTSTRAP,
+    resume_argv: REVIEW_RESUME,
+    needs_live_reads: true,
+    worktree_before: { head: 'abc123', status: '' },
+    worktree_after: { head: 'abc123', status: '' },
+    ...overrides,
+  }
+}
+
+function independentRollout(overrides = {}) {
+  return { source: 'independent-rollout-subagent', data: reviewerRolloutRecord(overrides.record), ...overrides }
+}
+
+test('review worktree immutability accepts an unchanged HEAD and empty status', () => {
+  assert.deepEqual(
+    assertReviewWorktreeImmutable({ head: 'abc123', status: '' }, { head: 'abc123', status: '' }),
+    { head: 'abc123', status: '' },
+  )
+})
+
+test('review worktree immutability rejects a changed HEAD or a dirty status', () => {
+  assert.throws(
+    () => assertReviewWorktreeImmutable({ head: 'abc123', status: '' }, { head: 'def456', status: '' }),
+    /worktree HEAD changed/,
+  )
+  assert.throws(
+    () => assertReviewWorktreeImmutable({ head: 'abc123', status: '' }, { head: 'abc123', status: ' M file' }),
+    /worktree status changed/,
+  )
+})
+
+test('OpenAI-reviewer relay gate accepts a fully verified code-reviewer relay pass', () => {
+  const accepted = acceptOpenaiReviewRelay(
+    'code-reviewer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(), independentRollout(),
+  )
+  assert.equal(accepted.verdict_payload, RELAY_MESSAGE)
+  assert.equal(accepted.session_id, SESSION_ID)
+})
+
+// Red: a reviewer pass that uses the generic native agent() path supplies no relay session,
+// no bootstrap/resume argv, and no rollout provenance, so it cannot pass the composite gate.
+test('OpenAI-reviewer relay gate rejects a generic native agent() reviewer pass (no relay)', () => {
+  assert.throws(
+    () => acceptOpenaiReviewRelay('code-reviewer', RESOLVED_REVIEWER_RUNTIME, { payload: RELAY_MESSAGE }, independentRollout()),
+    /relay claimed session id required/,
+  )
+})
+
+// Red: rollout data supplied by the relay itself (or stamped as coming from the relay) is
+// rejected before verification; only the independent read-only subagent may supply it.
+test('OpenAI-reviewer relay gate rejects rollout data supplied by the relay', () => {
+  assert.throws(
+    () => acceptOpenaiReviewRelay(
+      'code-reviewer', RESOLVED_REVIEWER_RUNTIME,
+      reviewerRelay({ rollout: reviewerRolloutRecord() }), independentRollout(),
+    ),
+    /relay must not supply the rollout record/,
+  )
+  assert.throws(
+    () => acceptOpenaiReviewRelay(
+      'code-reviewer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(),
+      { source: 'relay', data: reviewerRolloutRecord() },
+    ),
+    /not from the independent read-only subagent/,
+  )
+})
+
+// Red: relay payload differs from the independently fetched rollout final message.
+test('OpenAI-reviewer relay gate rejects a relay payload that edits the rollout final message', () => {
+  assert.throws(
+    () => acceptOpenaiReviewRelay(
+      'qa-reviewer', RESOLVED_REVIEWER_RUNTIME,
+      reviewerRelay({ payload: `${RELAY_MESSAGE} (softened)` }), independentRollout(),
+    ),
+    /payload mismatch with rollout record/,
+  )
+})
+
+// Red: a resume that uses the top-level -s flag instead of -c sandbox_mode config.
+test('OpenAI-reviewer relay gate rejects a resume using the top-level -s flag', () => {
+  assert.throws(
+    () => acceptOpenaiReviewRelay(
+      'code-reviewer', RESOLVED_REVIEWER_RUNTIME,
+      reviewerRelay({ resume_argv: ['codex', 'exec', 'resume', '--json', '-s', 'workspace-write', SESSION_ID, '-'] }),
+      independentRollout(),
+    ),
+    /top-level -s flag prohibited on resume/,
+  )
+})
+
+// Red: a mutated review worktree HEAD found after the resumed pass.
+test('OpenAI-reviewer relay gate rejects a review pass that mutated its worktree', () => {
+  assert.throws(
+    () => acceptOpenaiReviewRelay(
+      'code-reviewer', RESOLVED_REVIEWER_RUNTIME,
+      reviewerRelay({ worktree_after: { head: 'def456', status: '' } }), independentRollout(),
+    ),
+    /worktree HEAD changed/,
+  )
+})
+
+// Red: effective identity proven from the rollout must match the roles.toml-resolved runtime.
+test('OpenAI-reviewer relay gate rejects a rollout model that disagrees with resolved runtime', () => {
+  assert.throws(
+    () => acceptOpenaiReviewRelay(
+      'code-reviewer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(),
+      independentRollout({ record: { model: 'gpt-5.4' } }),
+    ),
+    /effective identity mismatch: model/,
+  )
+})
+
+// Red: a non-reviewer role must never enter the OpenAI relay acceptance gate.
+test('OpenAI-reviewer relay gate rejects a non-reviewer role', () => {
+  assert.throws(
+    () => acceptOpenaiReviewRelay('implementer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(), independentRollout()),
+    /not an OpenAI reviewer role/,
   )
 })

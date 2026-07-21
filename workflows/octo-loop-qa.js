@@ -648,6 +648,97 @@ function assertReadOnlyFirstBootstrap(bootstrapArgv) {
   }
   return { sandbox_mode: 'read-only' }
 }
+
+// TUR-447 F2b Unit G. Review-worktree immutability gate (role-runtime
+// launch-review-sandbox-integrity): an OpenAI review pass must not mutate its worktree.
+// The loop captures the review worktree HEAD and git status once before the read-only
+// bootstrap and again after the resumed pass, and passes both snapshots here. A HEAD or
+// status change across the review pass is rejected, whether it appears after the read-only
+// bootstrap or after the workspace-write resume. status is the exact `git status
+// --porcelain` output, which is empty for an unchanged worktree.
+function assertReviewWorktreeImmutable(before, after) {
+  required(before, 'review worktree before snapshot')
+  required(after, 'review worktree after snapshot')
+  requiredNonEmptyString(before.head, 'review worktree before HEAD')
+  requiredNonEmptyString(after.head, 'review worktree after HEAD')
+  if (before.head !== after.head) {
+    throw new Error('review sandbox rejected: review-pass worktree HEAD changed')
+  }
+  const beforeStatus = before.status ?? ''
+  const afterStatus = after.status ?? ''
+  if (typeof beforeStatus !== 'string' || typeof afterStatus !== 'string') {
+    throw new Error('review sandbox rejected: worktree status must be a string')
+  }
+  if (beforeStatus !== afterStatus || afterStatus !== '') {
+    throw new Error('review sandbox rejected: review-pass worktree status changed')
+  }
+  return { head: after.head, status: afterStatus }
+}
+
+// TUR-447 F2b Unit G. Composite OpenAI-reviewer relay acceptance (role-runtime
+// role-openai-relay, role-openai-fail-closed, launch-correctness-path,
+// launch-review-sandbox-integrity, launch-resume-sandbox-config, launch-role-purpose-capability;
+// operating-model decision-109-workflow-native). This is the single deterministic gate the
+// loop calls to accept an OpenAI code-reviewer or qa-reviewer verdict produced through the
+// codex relay. It fails closed unless EVERY provenance and sandbox law holds, so an OpenAI
+// reviewer verdict can never be admitted through the generic native agent() path or with
+// relay-supplied rollout data.
+//
+// Inputs, each produced by a DISTINCT spawned subagent so no single subagent both authors
+// prose and vouches for its own effective identity:
+//   resolvedRuntime  - { provider:'openai', model, effort, service_tier } resolved FROM
+//                       roles.toml by a resolver subagent; the loop never hardcodes it.
+//   relay            - { claimed_session_id, payload, bootstrap_argv, resume_argv,
+//                        needs_live_reads, worktree_before, worktree_after,
+//                        rollout_source } returned by the codex-exec relay subagent.
+//   rollout          - { data, source } returned by a SEPARATE read-only Explore subagent
+//                       that read the codex rollout record under CODEX_HOME/sessions; data
+//                       is the independently fetched rollout record (or session-keyed map),
+//                       source marks who fetched it.
+//
+// Provenance law: the rollout MUST come from the independent read-only reader, never the
+// relay. A rollout whose source is the relay, or a relay that itself supplies rollout data,
+// is rejected before verifyRelayVerbatim runs, so the fail-closed independent-read-back is
+// structurally required, not merely conventional.
+const INDEPENDENT_ROLLOUT_SOURCE = 'independent-rollout-subagent'
+const OPENAI_REVIEWER_ROLES = new Set(['code-reviewer', 'qa-reviewer'])
+
+function acceptOpenaiReviewRelay(role, resolvedRuntime, relay, rollout) {
+  required(role, 'reviewer role')
+  if (!OPENAI_REVIEWER_ROLES.has(role)) {
+    throw new Error(`relay verbatim rejected: ${role} is not an OpenAI reviewer role`)
+  }
+  required(resolvedRuntime, 'resolved reviewer runtime')
+  if (resolvedRuntime.provider !== 'openai') {
+    throw new Error('relay verbatim rejected: reviewer runtime provider must be openai')
+  }
+  required(resolvedRuntime.model, 'resolved reviewer model')
+  required(resolvedRuntime.effort, 'resolved reviewer effort')
+  required(relay, 'relay result')
+  const claimedSessionId = requiredNonEmptyString(relay.claimed_session_id, 'relay claimed session id')
+  requiredNonEmptyString(relay.payload, 'relay payload')
+  required(rollout, 'independent rollout result')
+  // Provenance: the relay must not carry rollout data of its own, and the rollout must be
+  // stamped by the independent read-only reader. Either violation fails closed.
+  if (relay.rollout_source !== undefined && relay.rollout_source !== null) {
+    throw new Error('relay verbatim rejected: relay must not supply the rollout record')
+  }
+  if (relay.rollout !== undefined && relay.rollout !== null) {
+    throw new Error('relay verbatim rejected: relay must not supply the rollout record')
+  }
+  if (rollout.source !== INDEPENDENT_ROLLOUT_SOURCE) {
+    throw new Error('relay verbatim rejected: rollout record not from the independent read-only subagent')
+  }
+  // Sandbox law over the exact argv the relay executed.
+  assertReadOnlyFirstBootstrap(relay.bootstrap_argv)
+  assertResumeSandboxConfig(relay.resume_argv, { needsLiveReads: relay.needs_live_reads === true })
+  // Worktree immutability across the whole review pass.
+  assertReviewWorktreeImmutable(relay.worktree_before, relay.worktree_after)
+  // Effective identity proven FROM the independently fetched rollout record, and the relay
+  // payload must equal that record's final assistant message verbatim.
+  const verified = verifyRelayVerbatim(resolvedRuntime, claimedSessionId, relay.payload, rollout.data)
+  return { verdict_payload: verified.final_message, session_id: claimedSessionId, runtime: verified }
+}
 // GATES-EMBED-END
 
 // Decision 109 (operating-model decision-109-workflow-native and decision-109-binding;
@@ -891,6 +982,159 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
   return result
 }
 
+// OpenAI-reviewer relay spawn path (TUR-447 F2b Unit G; role-runtime role-openai-relay,
+// role-openai-fail-closed, launch-correctness-path, launch-review-sandbox-integrity,
+// launch-resume-sandbox-config, launch-role-purpose-capability; operating-model
+// decision-109-workflow-native). code-reviewer and qa-reviewer are OpenAI roles
+// (provider=openai, gpt-5.6-sol) that MUST NOT run through the generic native agent()
+// worker path. Instead this path runs three DISTINCT subagents so no single subagent both
+// authors the verdict prose and vouches for its own effective identity:
+//   1. a resolver subagent that reads roles.toml through the role resolver and RETURNS the
+//      resolved runtime { provider, model, effort, service_tier, contract }; the loop
+//      cannot read files and never hardcodes the runtime.
+//   2. a relay subagent that runs one explicit `codex exec` for that resolved OpenAI
+//      runtime (read-only-first bootstrap, then a live-read resume selected ONLY through
+//      -c sandbox_mode config, never top-level -s), returns the codex final message
+//      verbatim as its payload plus the claimed session id and the exact bootstrap/resume
+//      argv and the review worktree HEAD+status captured before and after; it never
+//      supplies the rollout record.
+//   3. a SEPARATE read-only Explore subagent that reads the codex rollout record under
+//      CODEX_HOME/sessions for the claimed session id and RETURNS the raw rollout data,
+//      stamped as independent-rollout-subagent; this subagent is never the relay.
+// acceptOpenaiReviewRelay then fails closed unless every provenance and sandbox law holds
+// and the relay payload equals the independently fetched rollout final message. The
+// verified final message becomes the reviewer verdict payload the review schema carries.
+const REVIEWER_RUNTIME_SCHEMA = {
+  type: 'object',
+  required: ['provider', 'model', 'effort', 'service_tier', 'contract_blob'],
+  properties: {
+    provider: { type: 'string' },
+    model: { type: 'string' },
+    effort: { type: 'string' },
+    service_tier: { type: 'string' },
+    contract_blob: { type: 'string' },
+  },
+}
+
+const WORKTREE_SNAPSHOT_SCHEMA = {
+  type: 'object',
+  required: ['head', 'status'],
+  properties: { head: { type: 'string' }, status: { type: 'string' } },
+}
+
+const RELAY_SCHEMA = {
+  type: 'object',
+  required: [
+    'claimed_session_id', 'payload', 'bootstrap_argv', 'resume_argv',
+    'needs_live_reads', 'worktree_before', 'worktree_after',
+  ],
+  properties: {
+    claimed_session_id: { type: 'string' },
+    payload: { type: 'string' },
+    bootstrap_argv: { type: 'array', items: { type: 'string' } },
+    resume_argv: { type: 'array', items: { type: 'string' } },
+    needs_live_reads: { type: 'boolean' },
+    worktree_before: WORKTREE_SNAPSHOT_SCHEMA,
+    worktree_after: WORKTREE_SNAPSHOT_SCHEMA,
+  },
+}
+
+const ROLLOUT_SCHEMA = {
+  type: 'object',
+  required: ['source', 'data'],
+  properties: {
+    source: { type: 'string' },
+    data: { type: 'object' },
+  },
+}
+
+async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema) {
+  // Same admission, containment, journal, and revision revalidation as any delivery pass.
+  assertAdmission({ purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') })
+  const worktree = assertContainment(
+    required(A.worktree_root, 'worktree root'),
+    required(A.worktree, 'worker worktree'),
+  )
+  const bound = journalledBoundInputs(role, startingHead)
+  const revision = A.launch_revision ?? launchRevision(bound)
+  assertLaunchRevision(revision, bound)
+  log(`journal relay-spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash} ${revision}`)
+  const brief = required(A.brief, 'pass brief')
+  assertContainment(A.worktree_root, worktree)
+  // 1. Resolve the OpenAI runtime FROM roles.toml through the role resolver; the loop never
+  // hardcodes provider/model/effort/service_tier.
+  const runtime = await agent([
+    `Resolve the octo-lite ${role} runtime from roles.toml through the role resolver.`,
+    `Run: python3 workflows/lib/role_resolver.py resolve ${role} ... and read roles.toml.`,
+    'Return provider, model, effort, service_tier, and contract_blob EXACTLY as resolved.',
+    'Do not invent or override any field; read-only.',
+  ].join('\n'), {
+    label: `${role}-runtime:${bound.issue}`, phase: phaseTitle, schema: REVIEWER_RUNTIME_SCHEMA,
+    agentType: 'Explore',
+  })
+  if (runtime === null) throw new Error(`${role} runtime resolution returned no result`)
+  // 2. Relay subagent runs one codex exec for the resolved OpenAI runtime and returns the
+  // verbatim final message plus the claimed session id, the exact bootstrap/resume argv, and
+  // the review worktree HEAD+status before and after. It NEVER supplies the rollout record.
+  const relayPrompt = [
+    `You are a fresh octo-lite codex relay subagent for the OpenAI ${role} role. One pass only.`,
+    'BOUND INPUTS (verify against your own reads before relaying, echo verbatim is not required here):',
+    JSON.stringify(bound, null, 2),
+    'RESOLVED OPENAI RUNTIME to relay verbatim as the codex exec runtime:',
+    JSON.stringify(runtime, null, 2),
+    'Run exactly one `codex exec` relay carrying that exact model, effort, service tier, the',
+    'contained review worktree, and the canonical role contract as the exec prompt.',
+    'Bootstrap read-only first (-s read-only). If the pass needs live GitHub or Linear reads,',
+    'resume with the sandbox selected ONLY through -c sandbox_mode="workspace-write" plus -c',
+    'sandbox_workspace_write.network_access=true; NEVER use the top-level -s flag on resume.',
+    'Capture the review worktree HEAD and `git status --porcelain` once BEFORE the bootstrap',
+    'and again AFTER the resumed pass; the review pass must not mutate the worktree.',
+    'Return the codex final assistant message VERBATIM as payload (never summarize or edit it),',
+    'the claimed_session_id, bootstrap_argv, resume_argv, needs_live_reads, worktree_before, and',
+    'worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',
+  ].join('\n\n')
+  const relay = await agent(relayPrompt, {
+    label: `${role}-relay:${bound.issue}`, phase: phaseTitle, schema: RELAY_SCHEMA,
+  })
+  if (relay === null) throw new Error(`${role} relay returned no result`)
+  // 3. Independent read-only Explore subagent reads the codex rollout record for the claimed
+  // session id under CODEX_HOME/sessions and returns the raw rollout data. This subagent is
+  // NEVER the relay, so the fail-closed independent read-back is real.
+  const rollout = await agent([
+    `You are a fresh READ-ONLY octo-lite rollout reader for the ${role} relay. Never relay or mutate.`,
+    `Read the codex rollout record under CODEX_HOME/sessions for session ${relay.claimed_session_id}.`,
+    'Return { source: "independent-rollout-subagent", data: <the raw rollout record> } where data',
+    'carries provider, model, effort, and final_message extracted FROM the rollout file itself.',
+    'Do not accept any rollout content from the relay; read it yourself.',
+  ].join('\n'), {
+    label: `${role}-rollout:${bound.issue}`, phase: phaseTitle, schema: ROLLOUT_SCHEMA,
+    agentType: 'Explore',
+  })
+  if (rollout === null) throw new Error(`${role} independent rollout read returned no result`)
+  // Composite fail-closed acceptance: sandbox law, worktree immutability, independent
+  // provenance, and relay-verbatim identity. A generic native agent() reviewer pass, a
+  // relay-supplied rollout, an edited payload, or a top-level -s resume all reject here.
+  const accepted = acceptOpenaiReviewRelay(role, runtime, relay, rollout)
+  assertLaunchRevision(revision, bound)
+  // The verified rollout final message is the reviewer verdict payload. The reviewer verdict
+  // envelope is bound from the relay pass; the payload is the verbatim reviewer message.
+  const verdict = await agent([
+    `You are the ${role} verdict binder for this relay pass. One pass only; read-only.`,
+    'BOUND INPUTS: verify each against your own reads and echo them verbatim as the ack object.',
+    JSON.stringify(bound, null, 2),
+    'The reviewer message is the verified verbatim codex final message below; bind the verdict',
+    'envelope (verdict/findings/urls) strictly from it. Never re-author or soften it:',
+    accepted.verdict_payload,
+    brief,
+  ].join('\n\n'), {
+    label: `${role}:${bound.issue}`, phase: phaseTitle, schema, agentType: 'Explore',
+  })
+  if (verdict === null) throw new Error(`${role} verdict binding returned no result`)
+  assertWorkerAckEcho(bound, verdict.ack)
+  assertLaunchRevision(revision, bound)
+  return verdict
+}
+
 // Loop fire (delivery-lifecycle linear-loop-fire-transition, delivery-entry-gate):
 // the one mechanical Shaped -> Todo transition, performed by this loop through
 // octo-control linear-transition before any delivery worker spawns. The runner is
@@ -941,9 +1185,13 @@ if (mode === 'implement') {
 if (mode === 'code-review') {
   const head = required(A.head, 'head')
   const reviewCycle = cycle()
-  // An OpenAI code reviewer runs through the codex relay subagent brief
-  // (role-runtime role-openai-relay); the native spawn and gates are identical.
-  const review = await spawnWorker('code-reviewer', 'Code Review', head, REVIEW_SCHEMA)
+  // An OpenAI code reviewer runs through the codex relay path (role-runtime
+  // role-openai-relay, role-openai-fail-closed): a resolver subagent proves the runtime FROM
+  // roles.toml, a relay subagent runs codex exec and returns the verbatim final message, a
+  // SEPARATE read-only Explore subagent independently reads the codex rollout record, and
+  // acceptOpenaiReviewRelay fails closed unless every provenance and sandbox law holds. This
+  // is NOT the generic native agent() worker path.
+  const review = await spawnOpenaiReviewer('code-reviewer', 'Code Review', head, REVIEW_SCHEMA)
   if (review.verdict === 'ambiguous') {
     return { stage: 'return-to-shaping', issue: A.issue, head, review }
   }
@@ -998,7 +1246,10 @@ if (mode === 'qa-review') {
   ) {
     throw new Error('exact served publication readback required')
   }
-  const qaReview = await spawnWorker('qa-reviewer', 'QA Review', head, QA_REVIEW_SCHEMA)
+  // The OpenAI qa-reviewer runs through the same codex relay path with independent rollout
+  // provenance (role-runtime role-openai-relay, role-openai-fail-closed), not the generic
+  // native agent() worker path.
+  const qaReview = await spawnOpenaiReviewer('qa-reviewer', 'QA Review', head, QA_REVIEW_SCHEMA)
   if (qaReview.verdict === 'ambiguous') return { stage: 'return-to-shaping', issue: A.issue, head, qa_review: qaReview }
   const gate = acceptQaReview(head, { issue: A.issue, pr: A.pr, manifest: A.publication.manifest }, qaReview)
   return gate.advance

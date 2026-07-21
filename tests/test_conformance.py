@@ -184,6 +184,53 @@ class CutoverConformanceTests(unittest.TestCase):
         write_spawn = spawn[spawn.rindex("await agent("):]
         self.assertNotIn("agentType", write_spawn)
 
+    def test_openai_reviewer_roles_run_through_relay_with_independent_rollout_provenance(self) -> None:
+        # TUR-447 F2b Unit G (role-runtime role-openai-relay, role-openai-fail-closed,
+        # launch-correctness-path, launch-review-sandbox-integrity, launch-resume-sandbox-config):
+        # the OpenAI reviewer roles (code-reviewer, qa-reviewer) MUST run through the codex
+        # relay path with independent rollout provenance and the relay-verbatim gate, NOT the
+        # generic native agent() worker path (spawnWorker). This is equivalent-or-stronger than
+        # the prior text-substring reviewer checks: it requires the actual relay wiring.
+        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        code = strip_line_and_block_comments(text)
+        # A dedicated relay spawn path exists and both OpenAI reviewer roles use it.
+        self.assertIn("async function spawnOpenaiReviewer", code)
+        self.assertIn("spawnOpenaiReviewer('code-reviewer'", code)
+        self.assertIn("spawnOpenaiReviewer('qa-reviewer'", code)
+        # The OpenAI reviewer roles are NEVER spawned through the generic native worker path.
+        self.assertNotIn("spawnWorker('code-reviewer'", code)
+        self.assertNotIn("spawnWorker('qa-reviewer'", code)
+        # The Claude delivery roles keep the generic native worker path.
+        self.assertIn("spawnWorker('implementer'", code)
+        self.assertIn("spawnWorker('qa-capture'", code)
+        # The composite fail-closed relay gate is the acceptance point, and it is fed the
+        # independently-fetched rollout, never a relay-supplied record.
+        relay = code[code.index("async function spawnOpenaiReviewer"):code.index("async function loopFire")]
+        # Three distinct subagent spawns: runtime resolution, the codex relay, and a SEPARATE
+        # read-only rollout reader, in that order, before the composite gate.
+        self.assertIn("REVIEWER_RUNTIME_SCHEMA", relay)
+        self.assertIn("role_resolver.py resolve", relay)
+        resolve_at = relay.index("REVIEWER_RUNTIME_SCHEMA")
+        relay_at = relay.index("RELAY_SCHEMA")
+        rollout_at = relay.index("ROLLOUT_SCHEMA")
+        accept_at = relay.index("acceptOpenaiReviewRelay(")
+        self.assertLess(resolve_at, relay_at)
+        self.assertLess(relay_at, rollout_at)
+        self.assertLess(rollout_at, accept_at)
+        # The rollout reader is a read-only Explore subagent reading CODEX_HOME/sessions, and it
+        # is a DISTINCT spawn from the relay (independent provenance, per F2a verifier).
+        self.assertIn("CODEX_HOME/sessions", relay)
+        self.assertIn("independent-rollout-subagent", relay)
+        self.assertIn("claimed_session_id", relay)
+        # Sandbox law: read-only-first bootstrap, resume via -c sandbox_mode config never -s.
+        self.assertIn("read-only", relay)
+        self.assertIn('sandbox_mode="workspace-write"', relay)
+        # The composite gate and relay-verbatim verification are both reachable (the gate calls
+        # verifyRelayVerbatim internally over the independently-fetched rollout).
+        self.assertIn("acceptOpenaiReviewRelay(role, runtime, relay, rollout)", relay)
+        # The loop must not resume with a top-level -s flag anywhere in the relay brief.
+        self.assertNotIn("-s workspace-write", relay)
+
     def test_workflow_loop_passes_only_real_agent_opts_at_every_call_site(self) -> None:
         # TUR-447 F1 Unit B correction: the real Workflow agent() API accepts ONLY the
         # opt keys {label, phase, schema, model, effort, isolation, agentType}. An invented
