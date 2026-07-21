@@ -1,0 +1,402 @@
+// TUR-447 D1 cycle4 PRODUCTION-SEAM delivery-TDD fidelity proof (delivery-lifecycle
+// delivery-tdd-observer-inputs-host-sourced, delivery-tdd-observer-inputs-host-journal-record,
+// delivery-tdd-named-test-forgery-reject, delivery-tdd-no-forgeable-attestation,
+// delivery-tdd-independent-observer, delivery-tdd-final-head-verification,
+// delivery-tdd-final-head-test-identity, delivery-tdd-committed-red-commit; role-runtime
+// role-tdd-observer, role-tdd-observer-host-sourced-inputs, role-implementer-host-gated-push).
+//
+// The D1 cycle-3 codex gate flagged a TEST-FIDELITY defect: the delivery-TDD fail-closed proofs
+// exercised a standalone helper (deriveIndependentGitRead) and a test-reimplemented observer
+// (observeFromGit) over a real repo, but did NOT prove the REAL production SEAM fails closed. In
+// the deployed Workflow runtime the production reader/observer are SUBAGENTS whose returned outputs
+// are validated by the gates INSIDE deliverCommittedPass; deriveIndependentGitRead is never called
+// on that path. So a broken assertIndependentGitRead / assertWorkerClaimCrossCheck / observer
+// confirmation IN deliverCommittedPass could have shipped while the helper-driven tests stayed green.
+//
+// This suite drives the ACTUAL production function deliverCommittedPass (through the loop's implement
+// mode, exactly as the Workflow tool runs it) with the composed harness's mocked GLOBAL agent(),
+// returning chosen git-read / observer / push outputs per spawn label. It proves the production
+// wiring: (1) ACCEPTS a good/consistent set of agent outputs (reaches the host-gated push); (2)
+// REJECTS forged/bad agent outputs AT THE REAL GATES in deliverCommittedPass; and (3) is FAIL-CLOSED
+// at the SEAM: BREAKING the production wiring (removing assertIndependentGitRead,
+// assertWorkerClaimCrossCheck, or the observer confirmation from deliverCommittedPass in a SCRATCH
+// mutant of the loop source) makes the corresponding rejection flip to a non-rejection, proving each
+// gate is LOAD-BEARING on the production path, not a dead helper.
+
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { launchRevision } from '../workflows/lib/gates.mjs'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const ROOT = join(HERE, '..')
+const LOOP_SRC = readFileSync(join(ROOT, 'workflows/octo-loop-qa.js'), 'utf8')
+
+// The loop is not a module: it uses bare Workflow globals (agent, args, log) and top-level `return`
+// in mode branches. Strip `export ` and wrap the whole source in an async function whose params ARE
+// the injected globals, exactly as loop_composed.test.mjs does. `mutate` optionally rewrites the
+// source FIRST, to break one production-seam gate call in a scratch copy; the healthy build passes
+// mutate through unchanged, so both builds run the identical production mode logic.
+function loadLoop(mutate = (src) => src) {
+  const stripped = mutate(LOOP_SRC).replace(/^export /gm, '')
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(
+    'agent', 'args', 'log',
+    `return (async () => { ${stripped}\n })()`,
+  )
+  return factory
+}
+
+// A scratch mutant removes exactly ONE production-seam gate call from deliverCommittedPass (or the
+// independent-read gate the seam depends on). Each replacement target is a UNIQUE line in the loop
+// source; if a target ever stops matching, the assertion below fails loudly rather than silently
+// mutating nothing.
+function removeSeamGate(src, target, replacement) {
+  assert.ok(src.includes(target), `seam mutant target not found (loop source drifted): ${target}`)
+  return src.replace(target, replacement)
+}
+
+// Break the independent git-read gate: the reader's returned `read` object flows through UNVALIDATED
+// (assertIndependentGitRead removed), so a read that claims a red which never failed is no longer
+// rejected at the seam.
+const BREAK_INDEPENDENT_READ = (src) => removeSeamGate(
+  src,
+  'return assertIndependentGitRead(read, { branch, expectedStartingHead })',
+  'return { red_commit: read.red_commit, green_commit: read.green_commit, final_commit: read.final_commit, branch, boundTest: read.red_test }',
+)
+// Break the worker-claim cross-check: the worker's claimed shas are trusted without cross-checking
+// them against the independent read, so a forged/cherry-picked worker final sha is no longer rejected.
+const BREAK_CROSS_CHECK = (src) => removeSeamGate(
+  src,
+  'trustRoot = assertWorkerClaimCrossCheck(independentRead, acceptedCommits)',
+  'trustRoot = { redCommit: independentRead.red_commit, greenCommit: independentRead.green_commit, finalCommit: independentRead.final_commit }',
+)
+// Break the observer confirmation: the independent observation is never consumed, so an observation
+// whose red did not fail (or whose final HEAD is not green) is no longer rejected at the seam.
+const BREAK_OBSERVER = (src) => removeSeamGate(
+  src,
+  'assertObservedCommittedStates(observation, binding, boundTest)',
+  'void observation; void binding; void boundTest',
+)
+
+// --- Composed-harness fixtures (mirrors loop_composed.test.mjs) --------------------------------
+const REPO = '/root/octo-lite'
+const ISSUE = 'TUR-447'
+const PR = 'https://github.com/x/y/pull/6'
+const BRANCH = 'octo-lite/tur-443-operating-model'
+const HEAD = 'f00b13357cb1be87b5c5e6d7bd98fd9572915154'
+const SPEC_BLOBS = ['spec/domains/role-runtime.spec.html:anchor-1']
+const CONTRACT = 'c8b0440cacc5188b2926b626ee6f506ced5368ebbda67dc6b1ed0d542cddc34c'
+
+const FINGERPRINTS = { Shaped: 'fp-shaped-a1', Todo: 'fp-todo-b2', Backlog: 'fp-backlog-c3' }
+function fingerprintFor(state) {
+  const fp = FINGERPRINTS[state]
+  if (!fp) throw new Error(`seam harness: no fingerprint modelled for state ${state}`)
+  return fp
+}
+
+function boundInputs(role) {
+  return {
+    role, repo: REPO, issue: ISSUE, pr: PR, starting_head: HEAD,
+    spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
+  }
+}
+
+function ackFor(role, overrides = {}) {
+  const b = boundInputs(role)
+  return {
+    role: b.role, repo: b.repo, issue: b.issue, pr: b.pr,
+    starting_head: b.starting_head, spec_blobs: b.spec_blobs, contract_hash: b.contract_hash,
+    ...overrides,
+  }
+}
+
+function readyEnvelope(overrides = {}) {
+  const base = {
+    mode: 'implement',
+    repo: REPO, issue: ISSUE, pr: PR, branch: BRANCH,
+    shaping_head: HEAD, pr_head: HEAD, pr_base: 'main',
+    spec_revision: 'r1', linear_revision: 'lr1', topology_revision: 't1',
+    linear_fingerprint: fingerprintFor('Shaped'), linear_state: 'Shaped',
+    shaping_verdict: 'clear', shaping_verdict_head: HEAD,
+    shaping_reviewer_receipt: 'rcpt-1', conversation_cutoff: 'session.jsonl:1',
+    conversation_log_references: ['session.jsonl:1-1'],
+    spec_blobs: SPEC_BLOBS, adr_blobs: [], shaping_verdict_inputs: ['in-1'],
+    acceptance_criteria: ['works'],
+    contract_hash: CONTRACT,
+    brief: 'do the work',
+    worktree_root: '/root', worktree: 'octo-lite',
+    loop_fire_args: '--reason ship',
+    spawn_id: 'spawn-tur447-1', parent: 'orchestrator', reply_route: PR,
+    review_delivery: 'pr-comment', execution_location: 'local',
+    starting_head: HEAD,
+  }
+  const merged = { ...base, ...overrides }
+  merged.launch_revision = launchRevision(boundInputs('implementer'))
+  return merged
+}
+
+function freshReads(overrides = {}) {
+  return {
+    linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'),
+    pr_head: HEAD, branch: BRANCH, git_head: HEAD,
+    ...overrides,
+  }
+}
+
+function makeAgent(script) {
+  const calls = []
+  async function agent(prompt, opts = {}) {
+    const label = opts.label ?? ''
+    calls.push({ label, agentType: opts.agentType ?? null, phase: opts.phase, prompt, opts })
+    for (const [matcher, responder] of script) {
+      if (label.startsWith(matcher)) {
+        return typeof responder === 'function' ? responder({ prompt, opts, calls }) : responder
+      }
+    }
+    throw new Error(`seam harness: no scripted response for label ${label}`)
+  }
+  agent.calls = calls
+  return agent
+}
+
+const noop = () => {}
+
+const RESOLVED_WORKER_RUNTIME = {
+  provider: 'anthropic', model: 'claude-sonnet-5', effort: 'xhigh', service_tier: 'default',
+  contract_blob: 'wk-contract-blob', contract_text: '# Implementer\ncanonical contract text',
+  skills: ['tdd', 'commit'],
+}
+
+const SCENARIO = 'shaped-member-fires-todo'
+const RED_COMMIT = 'redc0mm1t0000000000000000000000000000001'
+const GREEN_COMMIT = 'greenc0mm1t000000000000000000000000000002'
+const FINAL_COMMIT = 'f1nalc0mm1t000000000000000000000000000003'
+const BOUND_TEST = { path: 'tests/loop_composed.test.mjs', digest: 'sha256:boundtestdigest' }
+const VALIDATION_COMMAND = 'node --test tests/'
+
+function gitReadFor(overrides = {}) {
+  return {
+    source: 'independent-git-read', read_by: 'git-reader-subagent-1', mutating_worker: 'implementer-subagent',
+    isolated_worktree: '/root/octo-lite-git-read-wt', branch: BRANCH, base_head: HEAD,
+    red_commit: RED_COMMIT, green_commit: GREEN_COMMIT, final_commit: FINAL_COMMIT,
+    ancestry: [RED_COMMIT, GREEN_COMMIT, FINAL_COMMIT],
+    red_diff_kind: 'test-only', red_named_test_exit: 1, red_test: { ...BOUND_TEST },
+    green_diff_kind: 'production-only', green_named_test_exit: 0, green_test: { ...BOUND_TEST },
+    final_named_test_exit: 0, final_test: { ...BOUND_TEST },
+    ...overrides,
+  }
+}
+
+function observationFor(overrides = {}) {
+  return {
+    source: 'independent-tdd-observer', observed_by: 'observer-subagent-1', mutating_worker: 'implementer-subagent',
+    isolated_worktree: '/root/octo-lite-tdd-observer-wt', command: VALIDATION_COMMAND,
+    red_commit: RED_COMMIT, red_exit: 1, red_output: 'AssertionError: expected reshaped delivery\n1 failing',
+    red_test: { ...BOUND_TEST },
+    green_commit: GREEN_COMMIT, green_exit: 0, green_output: 'ok\nall passing', green_test: { ...BOUND_TEST },
+    final_commit: FINAL_COMMIT, final_exit: 0, final_output: 'ok\nall passing', final_test: { ...BOUND_TEST },
+    ...overrides,
+  }
+}
+
+function implementScript({
+  fresh = freshReads(), red, green, mutationAck = ackFor('implementer'),
+  fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
+  mutationOverrides = {}, prePush, gitRead = gitReadFor(), observation = observationFor(), postPush,
+  liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
+} = {}) {
+  const goodRed = red ?? {
+    command: VALIDATION_COMMAND, exit_status: 1, outcome: 'FAIL: behavior wrong',
+    artifact: `${PR}#c1`, head: RED_COMMIT, scenario: SCENARIO,
+  }
+  const goodGreen = green ?? {
+    command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS: behavior right',
+    artifact: `${PR}#c2`, head: FINAL_COMMIT, scenario: SCENARIO,
+  }
+  const goodPrePush = prePush ?? freshReads({ git_head: FINAL_COMMIT })
+  return [
+    ['loop-fire:', {
+      command: 'octo-control linear-transition', exit_status: 0,
+      readback_state: fireState, readback_fingerprint: fireFingerprint,
+    }],
+    ['implementer-readback:', fresh],
+    ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
+    ['implementer-ack:', { ack: ackFor('implementer') }],
+    ['implementer:', {
+      ack: mutationAck, issue: ISSUE, pr_url: PR, branch: BRANCH, head: FINAL_COMMIT,
+      handoff_url: `${PR}#h`, red: goodRed, green: goodGreen, validation: 'suite', blocked: false,
+      committed: true, pushed: false,
+      red_commit: RED_COMMIT, green_commit: GREEN_COMMIT, final_commit: FINAL_COMMIT,
+      bound_test: { ...BOUND_TEST },
+      linear_state: liveness.linear_state, linear_fingerprint: liveness.linear_fingerprint,
+      ...mutationOverrides,
+    }],
+    ['implementer-git-read:', gitRead],
+    ['implementer-tdd-observer:', observation],
+    ['workspace-abandon:', { abandoned: true, pushed: false, dirty: false, head: FINAL_COMMIT, status: '' }],
+    ['workspace-cleanup:', { cleaned: true, head: HEAD, status: '' }],
+    ['implementer-prepush-readback:', goodPrePush],
+    ['host-push:', { pushed: true, head: FINAL_COMMIT }],
+    ['implementer-postpush-readback:', postPush ?? { remote_head: FINAL_COMMIT, remote_source: 'git-ls-remote' }],
+  ]
+}
+
+function committedEnvelope(overrides = {}) {
+  return readyEnvelope({ validation_command: VALIDATION_COMMAND, ...overrides })
+}
+
+// Drive the production seam once and return { result?, error?, calls }. The intact loop runs the
+// real deliverCommittedPass; a mutant runs it with one seam gate removed.
+async function driveSeam(mutate, scriptOpts = {}) {
+  const factory = loadLoop(mutate)
+  const agent = makeAgent(implementScript(scriptOpts))
+  const A = committedEnvelope()
+  try {
+    const result = await factory(agent, JSON.stringify(A), noop)
+    return { result, calls: agent.calls }
+  } catch (error) {
+    return { error, calls: agent.calls }
+  }
+}
+
+const IDENTITY = (src) => src // healthy build: no mutation
+
+// === (1) The production seam ACCEPTS a good/consistent set of agent outputs ======================
+test('seam-accept: deliverCommittedPass ACCEPTS a good/consistent set of mocked agent outputs and reaches the host-gated push', async () => {
+  const { result, error, calls } = await driveSeam(IDENTITY)
+  assert.equal(error, undefined, 'no rejection on the healthy consistent path')
+  assert.equal(result.stage, 'code-review-required')
+  assert.equal(result.head, FINAL_COMMIT)
+  // The healthy path reached the real host-gated push and the live-remote readback INSIDE the seam.
+  assert.ok(calls.some((c) => c.label.startsWith('host-push:')), 'reached the host-gated push')
+  assert.ok(calls.some((c) => c.label.startsWith('implementer-postpush-readback:')), 'reached the live-remote readback')
+  // It reached the real git-read and observer spawns of deliverCommittedPass, in order.
+  const gr = calls.findIndex((c) => c.label === `implementer-git-read:${ISSUE}`)
+  const obs = calls.findIndex((c) => c.label === `implementer-tdd-observer:${ISSUE}`)
+  const push = calls.findIndex((c) => c.label.startsWith('host-push:'))
+  assert.ok(gr >= 0 && obs > gr && push > obs, 'git-read -> observer -> push order at the seam')
+})
+
+// === (2) The production seam REJECTS forged/bad agent outputs AT THE REAL GATES ==================
+
+test('seam-reject: a git-read output claiming a RED that did not fail is REJECTED by assertIndependentGitRead in deliverCommittedPass', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, { gitRead: gitReadFor({ red_named_test_exit: 0 }) })
+  assert.match(error.message, /the red commit did not fail the named test/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed')
+})
+
+test('seam-reject: a worker-claimed sha differing from the independent reader is REJECTED by assertWorkerClaimCrossCheck', async () => {
+  const forgedFinal = 'forgedFinalWorkerClaim000000000000000009'
+  const { error, calls } = await driveSeam(IDENTITY, {
+    mutationOverrides: { final_commit: forgedFinal, head: forgedFinal },
+    green: {
+      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR}#c2`,
+      head: forgedFinal, scenario: SCENARIO,
+    },
+  })
+  assert.match(error.message, /claimed final commit differs from the independent git read/)
+  assert.ok(!calls.some((c) => c.label.startsWith('implementer-tdd-observer:')), 'observer never runs on a cross-check mismatch')
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed')
+})
+
+test('seam-reject: a relabelled/mis-digested worker bound test is REJECTED by assertWorkerBoundTestCrossCheck', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, {
+    mutationOverrides: { bound_test: { path: 'tests/impostor_test.mjs', digest: BOUND_TEST.digest } },
+  })
+  assert.match(error.message, /claimed test path differs from the independently discovered bound test/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed')
+})
+
+test('seam-reject: an observer output that did not confirm the red FAIL is REJECTED by assertObservedCommittedStates', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, { observation: observationFor({ red_exit: 0 }) })
+  assert.match(error.message, /the red commit did not fail the named test/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed')
+})
+
+test('seam-reject: an observer output whose FINAL HEAD is not green is REJECTED by assertObservedCommittedStates', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, { observation: observationFor({ final_exit: 1 }) })
+  assert.match(error.message, /the final pushed HEAD is not green/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed')
+})
+
+test('seam-reject: a bound test WEAKENED at the final HEAD (real digest differs) is REJECTED by the observer confirmation', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, {
+    observation: observationFor({ final_test: { path: BOUND_TEST.path, digest: 'sha256:weakened' } }),
+  })
+  assert.match(error.message, /bound test content digest differs at the final commit/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed')
+})
+
+test('seam-reject: a wrong branch base (not the expected starting HEAD) is REJECTED by assertIndependentGitRead', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, {
+    gitRead: gitReadFor({ base_head: 'someUnrelatedBase00000000000000000000009' }),
+  })
+  assert.match(error.message, /branch base is not the expected starting HEAD/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed')
+})
+
+// === (3) FAIL-CLOSED at the SEAM: breaking the production wiring flips a rejection ===============
+// Each of these takes a bad-output scenario the INTACT seam rejects, removes exactly the gate that
+// catches it from deliverCommittedPass (or the independent read it depends on) in a SCRATCH mutant
+// of the loop source, and proves the rejection DISAPPEARS. This proves the gate is LOAD-BEARING on
+// the production deliverCommittedPass path, not a dead helper: without the gate call, the forged
+// output flows through unchecked.
+
+test('seam-fail-closed: REMOVING assertIndependentGitRead from deliverCommittedPass lets a non-failing red flow through (rejection disappears)', async () => {
+  // First confirm the intact seam rejects.
+  const intact = await driveSeam(IDENTITY, { gitRead: gitReadFor({ red_named_test_exit: 0 }) })
+  assert.match(intact.error.message, /the red commit did not fail the named test/)
+  // Now break the wiring: with assertIndependentGitRead removed, the git-read claiming a non-failing
+  // red is no longer validated by the seam. The read still carries the (real) shas, so the pass
+  // proceeds through the (unbroken) observer and reaches the push: the rejection is gone.
+  const broken = await driveSeam(BREAK_INDEPENDENT_READ, { gitRead: gitReadFor({ red_named_test_exit: 0 }) })
+  assert.equal(broken.error, undefined, 'removing assertIndependentGitRead drops the red-did-not-fail rejection')
+  assert.ok(broken.calls.some((c) => c.label.startsWith('host-push:')), 'the broken seam reaches the push it should have gated')
+})
+
+test('seam-fail-closed: REMOVING assertWorkerClaimCrossCheck from deliverCommittedPass lets a forged worker final sha flow through (rejection disappears)', async () => {
+  const forgedFinal = 'forgedFinalWorkerClaim000000000000000009'
+  const scriptOpts = {
+    mutationOverrides: { final_commit: forgedFinal, head: forgedFinal },
+    green: {
+      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR}#c2`,
+      head: forgedFinal, scenario: SCENARIO,
+    },
+  }
+  const intact = await driveSeam(IDENTITY, scriptOpts)
+  assert.match(intact.error.message, /claimed final commit differs from the independent git read/)
+  const broken = await driveSeam(BREAK_CROSS_CHECK, scriptOpts)
+  assert.equal(broken.error, undefined, 'removing assertWorkerClaimCrossCheck drops the forged-sha rejection')
+  // The forged worker claim is dropped; the independent-read shas are used, so the push confirms the
+  // real final HEAD. The point is the SEAM no longer rejected the forged claim.
+  assert.ok(broken.calls.some((c) => c.label.startsWith('host-push:')), 'the broken seam reaches the push it should have gated')
+})
+
+test('seam-fail-closed: REMOVING the observer confirmation from deliverCommittedPass lets a non-failing-red observation flow through (rejection disappears)', async () => {
+  const intact = await driveSeam(IDENTITY, { observation: observationFor({ red_exit: 0 }) })
+  assert.match(intact.error.message, /the red commit did not fail the named test/)
+  const broken = await driveSeam(BREAK_OBSERVER, { observation: observationFor({ red_exit: 0 }) })
+  assert.equal(broken.error, undefined, 'removing assertObservedCommittedStates drops the observer rejection')
+  assert.ok(broken.calls.some((c) => c.label.startsWith('host-push:')), 'the broken seam reaches the push it should have gated')
+})
+
+test('seam-fail-closed: REMOVING the observer confirmation also drops the not-green FINAL-HEAD rejection', async () => {
+  const intact = await driveSeam(IDENTITY, { observation: observationFor({ final_exit: 1 }) })
+  assert.match(intact.error.message, /the final pushed HEAD is not green/)
+  const broken = await driveSeam(BREAK_OBSERVER, { observation: observationFor({ final_exit: 1 }) })
+  assert.equal(broken.error, undefined, 'removing assertObservedCommittedStates drops the not-green final-HEAD rejection')
+  assert.ok(broken.calls.some((c) => c.label.startsWith('host-push:')), 'the broken seam reaches the push it should have gated')
+})
+
+// === Provenance at the seam: the production reader output flows THROUGH assertIndependentGitRead ==
+// The production reader is an AGENT; its returned read is validated by assertIndependentGitRead in
+// deliverCommittedPass (via independentGitRead). A read NOT stamped by the independent reader (a
+// worker masquerading as the trust root) is rejected at that seam gate.
+test('seam-provenance: a git-read NOT stamped by the independent reader is REJECTED at the seam (production output flows through assertIndependentGitRead)', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, { gitRead: gitReadFor({ source: 'implementer-subagent' }) })
+  assert.match(error.message, /not from the independent git reader/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed on a forged trust root')
+})
