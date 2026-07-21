@@ -39,5 +39,3 @@ Missing source, inaccessible log, ambiguity, or material mismatch is blocking.
 ## Output
 
 One exact-revision clear or blocking PR verdict artifact.
-It MUST contain exactly one canonical machine-parseable line, on its own line, exact format `octo-verdict: <clear|blocking> issue=<ISSUE> pr=<N> head=<40hex>`, tying verdict, issue, PR, and the exact 40-hex readiness HEAD as one unit.
-Emit it once, verdict clear only for a genuine clear. Downstream Shaped-transition authority parses this single line as the sole binding; scattered issue, PR, or HEAD mentions in prose carry no binding authority.

@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import sys
 import tomllib
-import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -291,84 +290,56 @@ def _verify_shaped_transition_authority(args) -> dict:
     return {"repo_slug": cli_slug, "pr": verdict["pr"], "head": verdict["head"]}
 
 
-# D3 cycle3 (F5): the canonical machine-parseable verdict-binding line the
-# shaping-reviewer must emit in its verdict artifact. It ties verdict, issue, PR,
-# and the exact 40-hex HEAD as ONE UNIT on ONE line, so the four fields are read
-# together (not from scattered independent lexical matches). Format is stable:
-#   octo-verdict: <clear|blocking> issue=<ISSUE> pr=<N> head=<40hex>
-# HEAD is a delimited 40-hex field (line-terminated, not substring-in-text), so a
-# head embedded in a longer hex run does not match.
-_CANONICAL_VERDICT_LINE = re.compile(
-    r"^octo-verdict:\s+(?P<verdict>clear|blocking)\s+"
-    r"issue=(?P<issue>[A-Za-z0-9][A-Za-z0-9-]*)\s+"
-    r"pr=(?P<pr>[0-9]+)\s+"
-    r"head=(?P<head>[0-9a-f]{40})\s*$",
-    re.MULTILINE,
-)
-
-
-def _normalize_verdict_text(text: str) -> str:
-    # Unicode-normalize (NFKC) and map typographic apostrophes to ASCII so a
-    # curly-apostrophe `can't clear` (U+2019/U+02BC/U+2032/U+0060) is caught by
-    # the ASCII blocking scan exactly like the straight-apostrophe form.
-    normalized = unicodedata.normalize("NFKC", text)
-    for variant in ("’", "ʼ", "′", "`", "´", "‘"):
-        normalized = normalized.replace(variant, "'")
-    return normalized
-
-
 def _verify_rollout_message_binds_verdict(payload: str, *, issue: str, pr: int, head: str) -> None:
-    # D3 cycle3 (F5): the c2 anchored-but-INDEPENDENT lexical searches did NOT
-    # bind the verdict tuple as a UNIT. Three confirmed bypasses:
-    #   (a) TUPLE NOT BOUND: a clear for a DIFFERENT issue/PR passed because the
-    #       expected issue/PR/head tokens appeared elsewhere as prose context,
-    #       and each independent search matched an unrelated occurrence.
-    #   (b) HEAD substring: `head not in text` let a head embedded in a longer
-    #       hex run pass.
-    #   (c) blocking deny-list ASCII-only: a curly-apostrophe `can't clear`
-    #       bypassed the ASCII negation.
-    # Fix: require exactly ONE canonical verdict-binding line (see
-    # _CANONICAL_VERDICT_LINE), parse verdict/issue/pr/head from THAT ONE line,
-    # and require verdict==clear AND issue==expected AND pr==expected AND
-    # head==expected all from that one line. So a clear for a different tuple, or
-    # tokens scattered as context, cannot pass. The free-text blocking scan is a
-    # secondary Unicode-safe guard on top of the authoritative canonical line
-    # (delivery-lifecycle shaping-operator-approval-binding).
-    text = _normalize_verdict_text(payload if isinstance(payload, str) else "")
-    matches = _CANONICAL_VERDICT_LINE.findall(text)
-    if len(matches) != 1:
-        raise GateError(
-            "journalled verdict rollout message lacks exactly one canonical "
-            "octo-verdict binding line: found "
-            f"{len(matches)} (expected 1)"
-        )
-    verdict_token, issue_token, pr_token, head_token = matches[0]
+    # F5-r2 fix 3: the rollout final assistant message (proven verbatim equal to
+    # the verdict payload in the rollout readback) must itself COMMIT to this
+    # exact clear verdict on this exact issue, PR, and HEAD. Verbatim-payload
+    # equality alone is insufficient: without this, a real rollout that cleared a
+    # DIFFERENT issue, or blocked, or named a different PR/HEAD, could back an
+    # arbitrary clear Shaped transition for this issue and head. The reviewer
+    # rollout message must name the issue, the PR (`PR <n>` / `#<n>`), the exact
+    # 40-hex HEAD, and a clear-verdict marker; a mis-provisioned pipeline that
+    # pointed at an unrelated rollout is rejected fail-closed.
+    #
+    # D3 cycle2 (F5): the shaping-reviewer final message is PROSE (roles/
+    # shaping-reviewer.md: "one exact-revision clear or blocking PR verdict
+    # artifact"), not structured JSON, so this scans anchored lexically. But the
+    # binding must be EXACT, not merely lexical:
+    #   - issue: whole-token match, else `TUR-10` (or `TUR-4470`) backs `TUR-1`
+    #     (or `TUR-447`) via substring, and `PR 60` backs `PR 6`.
+    #   - verdict: a GENUINE clear assertion; a blocking message or negated clear
+    #     (`not clear`, `cannot clear`, `unclear`, `blocking`) is rejected, since
+    #     a bare `\bclear\b` matches "Not clear to proceed".
+    text = payload if isinstance(payload, str) else ""
     missing: list[str] = []
-    # Whole-token identifier read from the canonical line (case-sensitive exact),
-    # so TUR-1 does not match TUR-10 and TUR-447 does not match TUR-4470.
-    if issue_token != issue:
+    # Whole-token identifier: no alphanumeric or hyphen adjacent, so TUR-1 does
+    # not match TUR-10 and TUR-447 does not match TUR-4470.
+    if not re.search(
+        rf"(?<![A-Za-z0-9-]){re.escape(issue)}(?![A-Za-z0-9-])", text
+    ):
         missing.append("issue")
-    # Exact PR: numeric equality from the canonical line, so PR 6 does not match
-    # PR 60 or PR 16.
-    try:
-        if int(pr_token) != int(pr):
-            missing.append("pr")
-    except ValueError:
+    # Exact PR token: the `PR `/`#` prefix anchors the front and the trailing
+    # `(?![0-9])` anchors the back, so PR 6 does not match PR 60 or PR 16.
+    if not re.search(rf"(?:PR\s*|#)0*{pr}(?![0-9])", text):
         missing.append("pr")
-    # HEAD: the delimited 40-hex field from the canonical line, exact equality,
-    # never substring-in-arbitrary-text.
-    if head_token != head:
+    if head not in text:
         missing.append("head")
-    # Genuine clear verdict from the canonical line, AND no blocking/negated-clear
-    # marker in the (Unicode-normalized) free text as a secondary guard. A
-    # blocking canonical verdict, or prose that negates the clear, is rejected.
+    # Genuine clear verdict: an explicit clear assertion AND no blocking/negated
+    # -clear marker. A blocking message that merely contains the word clear (e.g.
+    # "Not clear to proceed") is rejected fail-closed.
     blocking = re.search(
         r"\b(?:blocking|blocked|unclear|not\s+clear|cannot\s+clear|can't\s+clear|"
         r"no[nt]-?\s*clear)\b",
         text,
         re.IGNORECASE,
     )
-    if verdict_token.lower() != "clear" or blocking is not None:
+    genuine_clear = re.search(
+        r"(?:^|(?<![A-Za-z]))(?:verdict\s*[:=]\s*clear|VERDICT\s+clear)"
+        r"(?![A-Za-z])",
+        text,
+        re.IGNORECASE,
+    )
+    if blocking is not None or genuine_clear is None:
         missing.append("clear-verdict")
     if missing:
         raise GateError(
