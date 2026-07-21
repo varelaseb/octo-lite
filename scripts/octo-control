@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -17,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from octo_lite.launch import provision_lane_worktree, verify_relay_verbatim  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
     GateError,
+    admit_workspace,
     append_trace,
     bind_pass_result,
     declare_successor_ready,
@@ -765,15 +767,47 @@ def _publish_intent_surface(repo: str, pr: object, body: str) -> dict:
 
 def command_workspace_admit(args) -> dict:
     # gh#8 host-provisioned isolated worktree (workspace-admission-provisions):
-    # admission that passes then PROVISIONS the exclusive per-lane worktree,
-    # never admit-a-path-only. stdout carries the frozen out-of-tree record.
+    # supplying all five provisioning flags (control-repo/lane/branch/
+    # starting-commit/repo-slug) admits then PROVISIONS the exclusive per-lane
+    # worktree; stdout then carries the frozen out-of-tree record. Omitting
+    # every provisioning flag preserves the prior admit-only behavior (disk/
+    # conflict/containment guard only, no worktree created), so an existing
+    # admit-only caller is never silently broken by this additive
+    # subcommand-family (code-review finding 9).
+    provisioning_flags = {
+        "control_repo": args.control_repo,
+        "lane": args.lane,
+        "branch": args.branch,
+        "starting_commit": args.starting_commit,
+        "repo_slug": args.repo_slug,
+    }
+    provided = {name: value for name, value in provisioning_flags.items() if value is not None}
+    if not provided:
+        root = Path(args.worktree_root)
+        target = Path(args.worktree)
+        admitted = admit_workspace(
+            target,
+            root,
+            disk_free_bytes=shutil.disk_usage(root).free,
+            minimum_free_bytes=args.minimum_free_bytes,
+            conflicts=args.conflict,
+            provider_overloaded=args.provider_overloaded,
+        )
+        return {"admitted": True, "worktree": str(admitted)}
+    if len(provided) != len(provisioning_flags):
+        missing = sorted(set(provisioning_flags) - set(provided))
+        flags = ", ".join(f"--{name.replace('_', '-')}" for name in missing)
+        raise GateError(
+            "workspace-admit provisioning requires --control-repo, --lane, --branch, "
+            f"--starting-commit, and --repo-slug together; missing: {flags}"
+        )
     provision = provision_lane_worktree(
         control_repo=Path(args.control_repo),
         worktree_root=Path(args.worktree_root),
         worktree=Path(args.worktree),
         lane=args.lane,
         branch=args.branch,
-        head=args.head,
+        head=args.starting_commit,
         repo_slug=args.repo_slug,
         minimum_free_bytes=args.minimum_free_bytes,
         conflicts=args.conflict,
@@ -783,6 +817,9 @@ def command_workspace_admit(args) -> dict:
         "admitted": True,
         "worktree": provision.record["worktree"],
         "record_path": str(provision.record_path),
+        # code-review finding 8: SURFACE the drift owner-routing signal rather
+        # than discarding it, so a genuine install drift is always routed.
+        "install_check_owner_route": provision.install_check_owner_route,
         "record": provision.record,
     }
 
@@ -953,11 +990,16 @@ def parser() -> argparse.ArgumentParser:
     admission = sub.add_parser("workspace-admit")
     admission.add_argument("--worktree", required=True)
     admission.add_argument("--worktree-root", required=True)
-    admission.add_argument("--control-repo", required=True)
-    admission.add_argument("--lane", required=True)
-    admission.add_argument("--branch", required=True)
-    admission.add_argument("--head", required=True)
-    admission.add_argument("--repo-slug", required=True)
+    # The five provisioning flags are OPTIONAL together (code-review finding 9,
+    # admit-only backward compat): omitting all five preserves the prior
+    # admit-only invocation shape; supplying all five provisions the exclusive
+    # per-lane worktree. --starting-commit is the frozen contract flag name
+    # (code-review finding 4; previously implemented as --head).
+    admission.add_argument("--control-repo")
+    admission.add_argument("--lane")
+    admission.add_argument("--branch")
+    admission.add_argument("--starting-commit")
+    admission.add_argument("--repo-slug")
     admission.add_argument("--minimum-free-bytes", type=int, required=True)
     admission.add_argument("--conflict", action="append", default=[])
     admission.add_argument("--provider-overloaded", action="store_true")

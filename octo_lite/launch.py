@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -559,10 +560,17 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
         raise GateError("provision record repo_slug must be an owner/repo slug")
     if record["install_check"] not in PROVISION_RECORD_INSTALL_CHECK_VALUES:
         raise GateError("provision record install_check must be clean or drifted")
+    if not re.fullmatch(r"[0-9a-f]{40}", record["starting_head"]):
+        raise GateError("provision record starting_head must be a resolved commit sha")
     try:
-        datetime.fromisoformat(record["provisioned_at"].replace("Z", "+00:00"))
+        provisioned_at = datetime.fromisoformat(record["provisioned_at"].replace("Z", "+00:00"))
     except ValueError as error:
         raise GateError("provision record provisioned_at must be an RFC3339 timestamp") from error
+    if provisioned_at.tzinfo is None:
+        # A date-only or timezone-less value parses successfully as a naive
+        # datetime; RFC3339 requires an explicit offset, so a naive result is
+        # rejected here.
+        raise GateError("provision record provisioned_at must be an RFC3339 timestamp")
 
 
 def default_install_check(control_repo: Path, *, prefix: Path | None = None) -> str:
@@ -580,7 +588,9 @@ def default_install_check(control_repo: Path, *, prefix: Path | None = None) -> 
 def _find_foreign_lane_record(records_dir: Path, worktree: Path, lane: str, *, exclude: Path) -> str | None:
     """launch-provision-exclusivity: a path already bound to a DIFFERENT lane is
     refused. Returns the foreign lane name, or None if the path is unclaimed or
-    claimed by this same lane."""
+    claimed by this same lane. A malformed or foreign (non-schema) record found
+    during the scan FAILS CLOSED rather than being silently skipped, so it can
+    never weaken record-backed exclusivity."""
     if not records_dir.is_dir():
         return None
     target = str(worktree.resolve())
@@ -589,8 +599,12 @@ def _find_foreign_lane_record(records_dir: Path, worktree: Path, lane: str, *, e
             continue
         try:
             record = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
+        except (OSError, json.JSONDecodeError) as error:
+            raise GateError(f"malformed provision record: {path}") from error
+        try:
+            validate_provision_record(record)
+        except GateError as error:
+            raise GateError(f"foreign provision record: {path}: {error}") from error
         if record.get("worktree") == target and record.get("lane") != lane:
             return str(record.get("lane"))
     return None
@@ -671,6 +685,12 @@ def provision_lane_worktree(
     worktree = Path(worktree).resolve()
     if not lane or not lane.strip():
         raise GateError("lane identity required")
+    # Sanitize the lane before it ever controls a filesystem path (code-review
+    # finding 1): a lane carrying a path separator, a bare "..", or an
+    # absolute-path shape could otherwise escape .octo-provisions/ when the
+    # record path is built from it below.
+    if "/" in lane or "\\" in lane or lane in {"..", "."} or os.path.isabs(lane):
+        raise GateError("lane identity invalid")
     if worktree == control_repo:
         raise GateError("provisioning refuses the control repository path itself")
     try:
@@ -679,6 +699,15 @@ def provision_lane_worktree(
         raise GateError("control repo must be a git root") from error
     if control_top != control_repo:
         raise GateError("control repo must be a git root")
+
+    # Resolve the starting commit ref to a full sha BEFORE any comparison or
+    # recording (code-review finding 4): a branch name or abbreviated sha must
+    # provision correctly rather than mismatch against the worktree's own
+    # resolved HEAD after worktree creation.
+    try:
+        head = _git(control_repo, "rev-parse", head)
+    except subprocess.CalledProcessError as error:
+        raise GateError(f"starting commit unresolvable: {head}") from error
 
     worktree_root.mkdir(parents=True, exist_ok=True)
     admit_workspace(
@@ -691,78 +720,87 @@ def provision_lane_worktree(
     )
 
     records_dir = worktree_root / ".octo-provisions"
-    lane_record_path = records_dir / f"{lane}.json"
-
-    foreign_lane = _find_foreign_lane_record(records_dir, worktree, lane, exclude=lane_record_path)
-    if foreign_lane is not None:
-        raise GateError(f"worktree already bound to a different lane: {foreign_lane}")
-
-    existing_lane_record: dict[str, Any] | None = None
-    if lane_record_path.is_file():
-        existing_lane_record = json.loads(lane_record_path.read_text())
-        validate_provision_record(existing_lane_record)
-
-    if worktree.exists():
-        if existing_lane_record is None:
-            raise GateError("worktree path exists but is not provisioned for this lane")
-        if existing_lane_record["worktree"] != str(worktree):
-            raise GateError("lane already provisioned at a different worktree path")
-        if existing_lane_record["branch"] != branch:
-            raise GateError("lane already provisioned on a different branch")
-        # Idempotent reuse: skip worktree creation and fall through to the same
-        # reality verification the fresh-create path runs.
-    else:
-        if existing_lane_record is not None:
-            raise GateError("lane record exists but its provisioned worktree is missing")
-        _prepare_worktree(
-            control_repo,
-            worktree_root,
-            worktree,
-            head,
-            branch,
-            read_only=False,
-            minimum_free_bytes=minimum_free_bytes,
-            conflicts=list(conflicts or []),
-            provider_overloaded=provider_overloaded,
-        )
-
-    verify_lane_worktree_reality(control_repo, worktree, head, branch, repo_slug)
-
-    resolver_root = load_registry(worktree).root
-    if resolver_root != worktree:
-        raise GateError("role resolver root must be the provisioned worktree")
-
-    check_state = install_check(control_repo)
-    if check_state not in PROVISION_RECORD_INSTALL_CHECK_VALUES:
-        raise GateError("install check must report clean or drifted")
-    owner_route = INSTALLED_SURFACE_OWNER if check_state == "drifted" else None
-
-    provisioned_at = now() if now is not None else datetime.now(timezone.utc).isoformat()
-    record = {
-        "schema_version": 1,
-        "source": PROVISION_RECORD_SOURCE,
-        "lane": lane,
-        "control_repo": str(control_repo),
-        "worktree": str(worktree),
-        "worktree_root": str(worktree_root),
-        "repo_slug": repo_slug,
-        "branch": branch,
-        "starting_head": head,
-        "resolver_root": str(resolver_root),
-        "install_check": check_state,
-        "provisioned_at": provisioned_at,
-    }
-    validate_provision_record(record)
-
     records_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_write(lane_record_path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+    lane_record_path = records_dir / f"{lane}.json"
+    lock_path = records_dir / f"{lane}.lock"
 
-    # launch-provision-record-out-of-tree: the record lives outside the worktree
-    # tree, so the verified-clean tree stays clean.
-    if _git(worktree, "status", "--porcelain"):
-        raise GateError("worktree unexpectedly dirty after provisioning")
+    # Lane reservation lock (code-review finding 3): reserve+create+record runs
+    # under an exclusive fcntl lock keyed to this lane, so concurrent same-lane
+    # requests for different paths/branches can never both create worktrees and
+    # last-write the single lane record; the second request blocks here until
+    # the first has fully finished.
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
 
-    return LaneProvision(record=record, record_path=lane_record_path, install_check_owner_route=owner_route)
+        foreign_lane = _find_foreign_lane_record(records_dir, worktree, lane, exclude=lane_record_path)
+        if foreign_lane is not None:
+            raise GateError(f"worktree already bound to a different lane: {foreign_lane}")
+
+        existing_lane_record: dict[str, Any] | None = None
+        if lane_record_path.is_file():
+            existing_lane_record = json.loads(lane_record_path.read_text())
+            validate_provision_record(existing_lane_record)
+
+        if worktree.exists():
+            if existing_lane_record is None:
+                raise GateError("worktree path exists but is not provisioned for this lane")
+            if existing_lane_record["worktree"] != str(worktree):
+                raise GateError("lane already provisioned at a different worktree path")
+            if existing_lane_record["branch"] != branch:
+                raise GateError("lane already provisioned on a different branch")
+            # Idempotent reuse: skip worktree creation and fall through to the same
+            # reality verification the fresh-create path runs.
+        else:
+            if existing_lane_record is not None:
+                raise GateError("lane record exists but its provisioned worktree is missing")
+            _prepare_worktree(
+                control_repo,
+                worktree_root,
+                worktree,
+                head,
+                branch,
+                read_only=False,
+                minimum_free_bytes=minimum_free_bytes,
+                conflicts=list(conflicts or []),
+                provider_overloaded=provider_overloaded,
+            )
+
+        verify_lane_worktree_reality(control_repo, worktree, head, branch, repo_slug)
+
+        resolver_root = load_registry(worktree).root
+        if resolver_root != worktree:
+            raise GateError("role resolver root must be the provisioned worktree")
+
+        check_state = install_check(control_repo)
+        if check_state not in PROVISION_RECORD_INSTALL_CHECK_VALUES:
+            raise GateError("install check must report clean or drifted")
+        owner_route = INSTALLED_SURFACE_OWNER if check_state == "drifted" else None
+
+        provisioned_at = now() if now is not None else datetime.now(timezone.utc).isoformat()
+        record = {
+            "schema_version": 1,
+            "source": PROVISION_RECORD_SOURCE,
+            "lane": lane,
+            "control_repo": str(control_repo),
+            "worktree": str(worktree),
+            "worktree_root": str(worktree_root),
+            "repo_slug": repo_slug,
+            "branch": branch,
+            "starting_head": head,
+            "resolver_root": str(resolver_root),
+            "install_check": check_state,
+            "provisioned_at": provisioned_at,
+        }
+        validate_provision_record(record)
+
+        _atomic_write(lane_record_path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+        # launch-provision-record-out-of-tree: the record lives outside the worktree
+        # tree, so the verified-clean tree stays clean.
+        if _git(worktree, "status", "--porcelain"):
+            raise GateError("worktree unexpectedly dirty after provisioning")
+
+        return LaneProvision(record=record, record_path=lane_record_path, install_check_owner_route=owner_route)
 
 
 def lane_invocation_env(provision: LaneProvision) -> tuple[Path, dict[str, str]]:

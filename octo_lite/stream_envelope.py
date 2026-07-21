@@ -11,8 +11,10 @@ requires.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Callable, Mapping
 
+from octo_lite.launch import LaneProvision, lane_invocation_env, run_lane_loop
 from octo_lite.runtime import GateError
 
 # launch-provision-env-seam: the frozen OCTO_* names the host sets on the loop's
@@ -112,4 +114,43 @@ def build_stream_envelope(
     for field in SHAPING_JOURNAL_FIELDS:
         envelope[field] = _require(shaping_journal, field, f"shaping_journal.{field}")
 
+    # Fail closed before the envelope is returned, mirroring the loop's own
+    # assertReadyEnvelope semantics (workflows/lib/gates.mjs) rather than
+    # relying on the downstream consumer to catch it: empty required arrays,
+    # a non-'clear' shaping verdict, and a shaping verdict head that disagrees
+    # with the shaping head are all rejected here.
+    for field in ("spec_blobs", "acceptance_criteria", "shaping_verdict_inputs", "conversation_log_references"):
+        if not isinstance(envelope[field], list) or not envelope[field]:
+            raise GateError(f"stream envelope requires a nonempty {field.replace('_', ' ')}")
+    if envelope["shaping_verdict"] != "clear":
+        raise GateError("stream envelope shaping verdict not clear")
+    if envelope["shaping_verdict_head"] != envelope["shaping_head"]:
+        raise GateError("stream envelope shaping verdict head mismatch")
+
     return envelope
+
+
+def launch_stream_lane(
+    stream_name: str,
+    *,
+    provision: LaneProvision,
+    stream: Mapping[str, Any],
+    live_reads: Mapping[str, Any],
+    contract_hash: str,
+    shaping_journal: Mapping[str, Any],
+    runner: Callable[[Path, Mapping[str, str], Mapping[str, Any]], Any],
+) -> Any:
+    """Production entrypoint (ruling-65 D6, TUR-488 fix, spec
+    launch-stream-envelope-builder): given a stream NAME as pure identity, build
+    the ready envelope from its real sources and start the loop through
+    run_lane_loop, so the injected runner always receives the PARSED JSON
+    envelope as a dict, never the stream name itself and never a raw
+    `--stream <name>` string handed to a JSON-parsing loop entry."""
+    if not isinstance(stream_name, str) or not stream_name.strip():
+        raise GateError("stream name required")
+    _, env = lane_invocation_env(provision)
+    envelope = build_stream_envelope(
+        env=env, stream=stream, live_reads=live_reads,
+        contract_hash=contract_hash, shaping_journal=shaping_journal,
+    )
+    return run_lane_loop(provision, envelope, runner=runner)
