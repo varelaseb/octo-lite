@@ -2243,7 +2243,7 @@ class SweepStreamLivenessTests(unittest.TestCase):
             (target_inbox / "20260720T000001-msg").write_text("id\n")
 
             live = module.stream_liveness(
-                stream, inbox_root, idle_seconds=3600, now=now, projects_root=projects
+                stream, inbox_root, base / "messages", idle_seconds=3600, now=now, projects_root=projects
             )
             # transcript mtime from the receipt-derived session transcript.
             self.assertEqual(int(now - 600), live["transcript_mtime"])
@@ -2262,7 +2262,7 @@ class SweepStreamLivenessTests(unittest.TestCase):
             # fresh transcript keeps the stream active.
             os.utime(transcript, (now - 60, now - 60))
             consumed = module.stream_liveness(
-                stream, inbox_root, idle_seconds=3600, now=now, projects_root=projects
+                stream, inbox_root, base / "messages", idle_seconds=3600, now=now, projects_root=projects
             )
             self.assertTrue(consumed["ask_consumed"])
             self.assertEqual("", consumed["wait_owner"])
@@ -2297,7 +2297,7 @@ class SweepStreamLivenessTests(unittest.TestCase):
             os.utime(active_transcript, (now - 120, now - 120))
 
             live = module.stream_liveness(
-                stream, inbox_root, idle_seconds=3600, now=now, projects_root=projects
+                stream, inbox_root, base / "messages", idle_seconds=3600, now=now, projects_root=projects
             )
             self.assertEqual(int(now - 120), live["transcript_mtime"])
             self.assertEqual("active", live["classification"])
@@ -2316,7 +2316,7 @@ class SweepStreamLivenessTests(unittest.TestCase):
             (stream / "status.md").write_text("# fresh status, no gate lines\n")
             os.utime(stream / "status.md", (now - 5, now - 5))
             live = module.stream_liveness(
-                stream, inbox_root, idle_seconds=3600, now=now, projects_root=projects
+                stream, inbox_root, base / "messages", idle_seconds=3600, now=now, projects_root=projects
             )
             self.assertEqual("suspected-stuck", live["classification"])
 
@@ -2330,7 +2330,7 @@ class SweepStreamLivenessTests(unittest.TestCase):
             (stuck / "status.md").write_text("# s\n")
             os.utime(stuck / "status.md", (now - 9000, now - 9000))
             live = module.stream_liveness(
-                stuck, base / "inbox", idle_seconds=3600, now=now, projects_root=base / "p"
+                stuck, base / "inbox", base / "messages", idle_seconds=3600, now=now, projects_root=base / "p"
             )
             self.assertEqual("suspected-stuck", live["classification"])
             self.assertIsNone(live["transcript_mtime"])
@@ -2344,12 +2344,66 @@ class SweepStreamLivenessTests(unittest.TestCase):
             stream.mkdir(parents=True)
             (stream / "status.md").write_text("# s\n")
             first = module.stream_liveness(
-                stream, base / "inbox", idle_seconds=3600, now=2_000_000.0, projects_root=base / "p"
+                stream, base / "inbox", base / "messages", idle_seconds=3600, now=2_000_000.0, projects_root=base / "p"
             )
             second = module.stream_liveness(
-                stream, base / "inbox", idle_seconds=3600, now=2_000_005.0, projects_root=base / "p"
+                stream, base / "inbox", base / "messages", idle_seconds=3600, now=2_000_005.0, projects_root=base / "p"
             )
             self.assertEqual(first, second)
+
+    def test_undelivered_queue_includes_pending_message_state_without_inbox_entry(self) -> None:
+        # v11 finding 2b red: a successful herdr-say leaves messages/<id>.toml
+        # with status pending and NO inbox entry; the undelivered queue must
+        # still report it for the stream target.
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            stream = base / "streams" / "tur-5"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("# s\n")
+            messages = base / "messages"
+            messages.mkdir()
+            (messages / "20260721T000001-1-1.toml").write_text(
+                'schema_version = 1\nmessage_id = "20260721T000001-1-1"\ntarget = "tur-5"\nkind = "command"\nstatus = "pending"\n'
+            )
+            (messages / "20260721T000002-1-1.toml").write_text(
+                'schema_version = 1\nmessage_id = "20260721T000002-1-1"\ntarget = "tur-5"\nkind = "command"\nstatus = "acknowledged"\n'
+            )
+            (messages / "20260721T000003-1-1.toml").write_text(
+                'schema_version = 1\nmessage_id = "20260721T000003-1-1"\ntarget = "other"\nkind = "command"\nstatus = "pending"\n'
+            )
+            live = module.stream_liveness(
+                stream, base / "inbox", messages, idle_seconds=3600, now=now, projects_root=base / "p"
+            )
+            self.assertEqual(["20260721T000001-1-1"], live["undelivered_queue"])
+
+    def test_digest_covers_stable_semantics_only_and_survives_mtime_churn(self) -> None:
+        # v12-scope evidence: volatile transcript mtimes in the digested
+        # snapshot make digests unverifiable while streams are active. The
+        # digest covers only stable semantic fields; mtimes split out as
+        # non-digested observations; the fingerprint is the sha256 of the
+        # exact snapshot bytes so the gateway digest check verifies.
+        module = _load_operator_sweep_module()
+        import hashlib as _h
+        live_a = {"tur-6": {"status_mtime": 90, "transcript_mtime": 100, "wait_owner": "operator",
+                             "open_ask": "ask", "ask_consumed": False, "inflight_workflows": [],
+                             "undelivered_queue": [], "classification": "waiting"}}
+        live_b = {"tur-6": dict(live_a["tur-6"], status_mtime=95, transcript_mtime=200)}
+        stable_a, obs_a = module.split_liveness(live_a)
+        stable_b, obs_b = module.split_liveness(live_b)
+        self.assertEqual(stable_a, stable_b)
+        self.assertEqual({"status_mtime": 90, "transcript_mtime": 100}, obs_a["tur-6"])
+        first = module.assemble_snapshot(["## s\ntext\n"], stable_a, '{"f":1}')
+        second = module.assemble_snapshot(["## s\ntext\n"], stable_b, '{"f":1}')
+        self.assertEqual(first["fingerprint"], second["fingerprint"])
+        self.assertEqual(_h.sha256(first["snapshot"].encode()).hexdigest(), first["fingerprint"])
+        self.assertNotIn("transcript_mtime", first["snapshot"])
+        self.assertIn("waiting", first["snapshot"])
+        # a genuine semantic change (classification flip) IS a digest change.
+        stable_c, _ = module.split_liveness({"tur-6": dict(live_a["tur-6"], classification="suspected-stuck", wait_owner="", open_ask="")})
+        third = module.assemble_snapshot(["## s\ntext\n"], stable_c, '{"f":1}')
+        self.assertNotEqual(first["fingerprint"], third["fingerprint"])
 
     def test_snapshot_includes_the_stream_liveness_section_and_no_phantom_sources(self) -> None:
         source = SWEEP.read_text()

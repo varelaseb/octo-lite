@@ -192,7 +192,7 @@ def _stream_transcript_paths(stream_dir: Path, projects_root: Path) -> list[Path
     return paths
 
 
-def stream_liveness(stream_dir: Path, inbox_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None) -> dict:
+def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None) -> dict:
     """Per-stream liveness per sweep-stream-liveness law (ruling-22 reality
     alignment): liveness derives ONLY from surfaces that exist in production:
     the receipt-derived session transcript mtime, status gate lines, and the
@@ -236,13 +236,23 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, *, idle_seconds: int, no
     # owning session already maintains.
     inflight = sorted(set(re.findall(r"\bwf_[a-z0-9]+-[a-z0-9]+\b", status_text)))
 
-    # Undelivered messages come from the real Herdr XDG inbox for this target.
+    # Undelivered messages come from the real Herdr XDG surfaces: queued inbox
+    # entries AND pending message state, because a successful herdr-say leaves
+    # messages/<id>.toml at status pending with no inbox entry until the
+    # recipient acknowledges (v11 finding).
     target_inbox = inbox_root / stream_dir.name
-    undelivered = (
-        sorted(path.name for path in target_inbox.iterdir() if path.is_file() and not path.name.endswith(".lock"))
-        if target_inbox.is_dir()
-        else []
-    )
+    undelivered_set = set(
+        path.name for path in target_inbox.iterdir() if path.is_file() and not path.name.endswith(".lock")
+    ) if target_inbox.is_dir() else set()
+    if messages_root.is_dir():
+        for state_path in messages_root.glob("*.toml"):
+            try:
+                state = load_toml(state_path)
+            except Exception:
+                continue
+            if str(state.get("target") or "") == stream_dir.name and str(state.get("status") or "") in {"pending", "queued"}:
+                undelivered_set.add(str(state.get("message_id") or state_path.stem))
+    undelivered = sorted(undelivered_set)
 
     # Activity is session-transcript activity ONLY; status or gate-line age
     # never counts (sweep-suspected-stuck law).
@@ -262,6 +272,37 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, *, idle_seconds: int, no
         "undelivered_queue": undelivered,
         "classification": classification,
     }
+
+
+LIVENESS_OBSERVATION_FIELDS = ("status_mtime", "transcript_mtime")
+
+
+def split_liveness(liveness: dict) -> tuple[dict, dict]:
+    """Digested liveness carries only stable semantic fields (classification,
+    wait owner, verbatim ask, in-flight ids, undelivered queue); volatile file
+    mtimes are non-digested observations, so active streams do not churn the
+    snapshot digest every sweep (sweep-stable-outputs)."""
+    stable: dict = {}
+    observations: dict = {}
+    for name, entry in liveness.items():
+        observations[name] = {key: entry.get(key) for key in LIVENESS_OBSERVATION_FIELDS}
+        stable[name] = {key: value for key, value in entry.items() if key not in LIVENESS_OBSERVATION_FIELDS}
+    return stable, observations
+
+
+def assemble_snapshot(parts: list, stable_liveness: dict, normalized_facts: str) -> dict:
+    """The digested snapshot contains only stable semantic content; the
+    fingerprint is the sha256 of the exact snapshot bytes so the reconcile
+    gateway's independent digest check always verifies."""
+    liveness_lines = "\n".join(
+        f"- {name}: {json.dumps(entry, sort_keys=True)}" for name, entry in sorted(stable_liveness.items())
+    )
+    snapshot = (
+        "# Stream snapshot\n\n" + "\n".join(parts)
+        + "\n## Stream liveness\n\n" + (liveness_lines + "\n" if liveness_lines else "")
+        + "\n## Declared facts\n\n" + normalized_facts + "\n"
+    )
+    return {"snapshot": snapshot, "fingerprint": hashlib.sha256(snapshot.encode()).hexdigest()}
 
 
 def main() -> int:
@@ -294,11 +335,14 @@ def main() -> int:
     spec_blobs, adr_blobs = canonical_blobs(repo, head)
 
     facts = {"owner_route": owner_route, "control_head": head, "canonical": {"spec_blobs": spec_blobs, "adr_blobs": adr_blobs}}
-    inbox_root = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "octo-lite" / "inbox"
-    liveness = {
-        stream_dir.name: stream_liveness(stream_dir, inbox_root, idle_seconds=3600)
+    xdg_state = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "octo-lite"
+    inbox_root = xdg_state / "inbox"
+    messages_root = xdg_state / "messages"
+    liveness_full = {
+        stream_dir.name: stream_liveness(stream_dir, inbox_root, messages_root, idle_seconds=3600)
         for stream_dir in stream_dirs
     }
+    liveness, liveness_observations = split_liveness(liveness_full)
     if liveness:
         facts["stream_liveness"] = liveness
     streams = []
@@ -315,19 +359,14 @@ def main() -> int:
             streams.append(entry)
     normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
 
-    liveness_lines = "\n".join(
-        f"- {name}: {json.dumps(entry, sort_keys=True)}" for name, entry in sorted(liveness.items())
-    )
-    snapshot = (
-        "# Stream snapshot\n\n" + "\n".join(parts)
-        + "\n## Stream liveness\n\n" + (liveness_lines + "\n" if liveness_lines else "")
-        + "\n## Declared facts\n\n" + normalized_facts + "\n"
-    )
-    fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()
+    assembled = assemble_snapshot(parts, liveness, normalized_facts)
+    snapshot = assembled["snapshot"]
+    fingerprint = assembled["fingerprint"]
     state_path = control / "sweep-state.toml"
     prior = load_toml(state_path) if state_path.exists() else {}
     if prior.get("fingerprint") == fingerprint:
-        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route}))
+        atomic_write(control / "liveness-observations.json", json.dumps(liveness_observations, sort_keys=True, indent=1) + "\n")
+        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "observations": liveness_observations}))
         return 0
 
     sweep_dir = control / "sweeps" / fingerprint
@@ -399,6 +438,7 @@ def main() -> int:
     if delivered.returncode not in {0, 75}:
         raise SystemExit(delivered.returncode)
 
+    atomic_write(control / "liveness-observations.json", json.dumps(liveness_observations, sort_keys=True, indent=1) + "\n")
     atomic_write(
         state_path,
         "schema_version = 1\n"
