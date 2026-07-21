@@ -601,13 +601,13 @@ class LaunchBoundaryTests(unittest.TestCase):
         subprocess.run(["git", "-C", str(role_repo), "config", "user.email", "t@example.com"], check=True)
         subprocess.run(["git", "-C", str(role_repo), "config", "user.name", "T"], check=True)
         (role_repo / "roles").mkdir()
-        contract = role_repo / "roles" / "implementer.md"
-        contract.write_text("# Implementer\nCommitted contract.\n")
+        contract = role_repo / "roles" / "orchestrator.md"
+        contract.write_text("# Orchestrator\nCommitted contract.\n")
         subprocess.run(["git", "-C", str(role_repo), "add", "."], check=True)
         subprocess.run(["git", "-C", str(role_repo), "commit", "-qm", "base"], check=True)
-        contract.write_text("# Implementer\nUncommitted edit.\n")
+        contract.write_text("# Orchestrator\nUncommitted edit.\n")
         blob = subprocess.run(
-            ["git", "-C", str(role_repo), "hash-object", "--no-filters", "roles/implementer.md"],
+            ["git", "-C", str(role_repo), "hash-object", "--no-filters", "roles/orchestrator.md"],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
         with self.assertRaises(subprocess.CalledProcessError):
@@ -624,9 +624,11 @@ class LaunchBoundaryTests(unittest.TestCase):
             "reply_route": "herdr:issue-orchestrator",
             "ready": True,
             "role": {
-                "name": "implementer",
+                # Unit K (launch-receipt-manifest-shapes): the generic persistent
+                # shape admits only meta-operator or orchestrator.
+                "name": "orchestrator",
                 "root": str(role_repo),
-                "contract_path": "roles/implementer.md",
+                "contract_path": "roles/orchestrator.md",
                 "contract_blob": blob,
                 "mapping_revision": "map-1",
             },
@@ -652,7 +654,7 @@ class LaunchBoundaryTests(unittest.TestCase):
 
         ack = {
             "schema_version": 1, "spawn_id": self.spawn_id, "provider_session_id": self.spawn_id,
-            "launch_revision": receipt["launch_revision"], "role": "implementer",
+            "launch_revision": receipt["launch_revision"], "role": "orchestrator",
             "worktree": str(self.repo), "starting_head": self.head, "ready": True, "blocker": "",
         }
 
@@ -928,6 +930,188 @@ class LaunchBoundaryTests(unittest.TestCase):
             run_bootstrap(prepared, runner=self._failing_provider_runner)
         self.assertTrue(self.worktree.exists())
         self.assertIn(str(self.worktree.resolve()), self.git("worktree", "list", "--porcelain"))
+
+
+class PersistentReceiptRevalidationTests(unittest.TestCase):
+    # Unit K (launch-entrypoint-revalidation, launch-receipt-manifest-shapes,
+    # launch-receipt-persistent): the retained persistent-session bootstrap
+    # revalidates the receipt's manifest shape (generic persistent, role
+    # meta-operator or orchestrator, no pass purpose, no retired shaping or
+    # reconcile table) and launch revision immediately after receipt readback
+    # and before any provider process starts, and again before any ready or
+    # bootstrap-verified mutation, so a stale, malformed, role-substituted, or
+    # purpose-injected persistent receipt starts no provider.
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.repo = base / "repo"
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        (self.repo / "AGENTS.md").write_text("# Target\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
+        self.head = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.role_repo = base / "role-src"
+        subprocess.run(["git", "init", "-q", str(self.role_repo)], check=True)
+        (self.role_repo / "roles").mkdir()
+        for role in ("meta-operator", "orchestrator", "implementer"):
+            (self.role_repo / "roles" / f"{role}.md").write_text(f"# {role}\nContract.\n")
+        self.receipt_path = base / "persistent.toml"
+        self.spawn_id = str(uuid.uuid4())
+
+    def _persistent_receipt(self, role: str = "orchestrator") -> dict:
+        contract_path = f"roles/{role}.md"
+        blob = subprocess.run(
+            ["git", "-C", str(self.role_repo), "hash-object", "--no-filters", contract_path],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        instructions_blob = subprocess.run(
+            ["git", "-C", str(self.repo), "hash-object", "AGENTS.md"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        receipt = {
+            "schema_version": 1,
+            "spawn_id": self.spawn_id,
+            "parent": "meta-operator",
+            "reply_route": "herdr:meta-operator",
+            "ready": True,
+            "role": {
+                "name": role,
+                "root": str(self.role_repo),
+                "contract_path": contract_path,
+                "contract_blob": blob,
+                "mapping_revision": "map-1",
+            },
+            "runtime": {
+                "provider": "anthropic", "model": "claude-sonnet-5", "effort": "xhigh",
+                "mode": "auto", "session": "persistent", "service_tier": "default",
+                "tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"],
+            },
+            "skills": {"resolved": [], "matched_capabilities": [], "paths": [], "blobs": []},
+            "workspace": {
+                "repo": str(self.repo), "worktree": str(self.repo),
+                "starting_head": self.head, "instructions_path": "AGENTS.md",
+                "instructions_blob": instructions_blob,
+            },
+            "access": {
+                "execution_location": "remote", "operator_loopback": False,
+                "review_delivery": "reachable_url_required",
+            },
+            "bootstrap": {"verified": False, "provider_session_id": ""},
+        }
+        receipt["launch_revision"] = launch_revision(receipt)
+        return receipt
+
+    def _write(self, receipt: dict) -> None:
+        self.receipt_path.write_text(render_receipt(receipt))
+
+    def _ack(self, receipt: dict) -> dict:
+        return {
+            "schema_version": 1,
+            "spawn_id": receipt["spawn_id"],
+            "provider_session_id": receipt["spawn_id"],
+            "launch_revision": receipt["launch_revision"],
+            "role": receipt["role"]["name"],
+            "worktree": receipt["workspace"]["worktree"],
+            "starting_head": receipt["workspace"]["starting_head"],
+            "ready": True,
+            "blocker": "",
+        }
+
+    def _recording_runner(self, receipt: dict):
+        ack = self._ack(receipt)
+        calls: list[list[str]] = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            output = {"session_id": receipt["spawn_id"], "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        return runner, calls
+
+    def test_purpose_injected_persistent_receipt_starts_no_provider(self) -> None:
+        # The injector recomputes launch_revision so only the manifest-shape
+        # check can catch the injected pass purpose.
+        receipt = self._persistent_receipt()
+        receipt["purpose"] = "delivery"
+        receipt["launch_revision"] = launch_revision(receipt)
+        self._write(receipt)
+        runner, calls = self._recording_runner(receipt)
+        with self.assertRaisesRegex(GateError, "no pass purpose"):
+            bootstrap_from_receipt(self.receipt_path, runner=runner)
+        self.assertEqual([], calls)
+        readback = tomllib.loads(self.receipt_path.read_text())
+        self.assertFalse(readback["bootstrap"]["verified"])
+
+    def test_retired_shaping_or_reconcile_table_on_persistent_receipt_starts_no_provider(self) -> None:
+        for table, values in (
+            ("shaping", {"repo": "org/repo", "pr": 6, "head": "a" * 40}),
+            ("reconcile", {"snapshot_path": "snapshot.json"}),
+        ):
+            with self.subTest(table=table):
+                receipt = self._persistent_receipt()
+                receipt[table] = values
+                receipt["launch_revision"] = launch_revision(receipt)
+                self._write(receipt)
+                runner, calls = self._recording_runner(receipt)
+                with self.assertRaisesRegex(GateError, f"retired {table} table"):
+                    bootstrap_from_receipt(self.receipt_path, runner=runner)
+                self.assertEqual([], calls)
+
+    def test_role_substituted_persistent_receipt_starts_no_provider(self) -> None:
+        receipt = self._persistent_receipt(role="implementer")
+        self._write(receipt)
+        runner, calls = self._recording_runner(receipt)
+        with self.assertRaisesRegex(GateError, "meta-operator or orchestrator"):
+            bootstrap_from_receipt(self.receipt_path, runner=runner)
+        self.assertEqual([], calls)
+
+    def test_stale_launch_revision_starts_no_provider(self) -> None:
+        receipt = self._persistent_receipt()
+        receipt["reply_route"] = "herdr:substituted-parent"
+        self._write(receipt)
+        runner, calls = self._recording_runner(receipt)
+        with self.assertRaisesRegex(GateError, "revision mismatch"):
+            bootstrap_from_receipt(self.receipt_path, runner=runner)
+        self.assertEqual([], calls)
+
+    def test_verify_bootstrap_rejects_invalid_persistent_receipt_before_ready_mutation(self) -> None:
+        purpose_injected = self._persistent_receipt()
+        purpose_injected["purpose"] = "delivery"
+        purpose_injected["launch_revision"] = launch_revision(purpose_injected)
+        role_substituted = self._persistent_receipt(role="implementer")
+        stale = self._persistent_receipt()
+        stale["reply_route"] = "herdr:substituted-parent"
+        for label, receipt in (
+            ("purpose-injected", purpose_injected),
+            ("role-substituted", role_substituted),
+            ("stale-revision", stale),
+        ):
+            with self.subTest(label=label):
+                self._write(receipt)
+                before = self.receipt_path.read_text()
+                with self.assertRaises(GateError):
+                    verify_bootstrap(self.receipt_path, self._ack(receipt))
+                self.assertEqual(before, self.receipt_path.read_text())
+
+    def test_valid_persistent_receipt_still_bootstraps(self) -> None:
+        for role in ("orchestrator", "meta-operator"):
+            with self.subTest(role=role):
+                receipt = self._persistent_receipt(role=role)
+                self._write(receipt)
+                runner, calls = self._recording_runner(receipt)
+                session = bootstrap_from_receipt(self.receipt_path, runner=runner)
+                self.assertEqual(receipt["spawn_id"], session)
+                self.assertEqual(1, len(calls))
+                readback = tomllib.loads(self.receipt_path.read_text())
+                self.assertTrue(readback["ready"])
+                self.assertTrue(readback["bootstrap"]["verified"])
 
 
 class ReconcileLaunchBoundaryTests(unittest.TestCase):

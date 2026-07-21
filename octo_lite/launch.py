@@ -664,6 +664,37 @@ def _launch_revision(receipt: Mapping[str, Any]) -> str:
     return _receipt_launch_revision(receipt)
 
 
+PERSISTENT_RECEIPT_ROLES = frozenset({"meta-operator", "orchestrator"})
+
+
+def revalidate_launch_receipt(receipt: Mapping[str, Any]) -> None:
+    """launch-entrypoint-revalidation: every persistent-session bootstrap
+    entrypoint revalidates its receipt against its manifest shape and launch
+    revision immediately after receipt readback and before the provider runner
+    is invoked, and again before marking the receipt ready or bootstrap-verified.
+    launch-receipt-manifest-shapes / launch-receipt-persistent: the only durable
+    receipt shape left is the generic persistent one, role meta-operator or
+    orchestrator, carrying no pass purpose and none of the retired shaping or
+    reconcile tables, so a stale, malformed, role-substituted, or
+    purpose-injected persistent receipt starts no provider."""
+    manifest_type = str(receipt.get("manifest_type") or "")
+    if manifest_type not in {"", "octo-lite-pass"}:
+        raise GateError(f"unknown launch receipt manifest type: {manifest_type}")
+    if not manifest_type:
+        role = receipt.get("role")
+        name = role.get("name") if isinstance(role, Mapping) else None
+        if name not in PERSISTENT_RECEIPT_ROLES:
+            raise GateError("persistent receipt requires role meta-operator or orchestrator")
+        if "purpose" in receipt or "pass" in receipt:
+            raise GateError("persistent receipt carries no pass purpose")
+        if "shaping" in receipt:
+            raise GateError("persistent receipt carries no retired shaping table")
+        if "reconcile" in receipt:
+            raise GateError("persistent receipt carries no retired reconcile table")
+    if receipt.get("launch_revision") != _launch_revision(receipt):
+        raise GateError("launch receipt revision mismatch")
+
+
 @dataclass(frozen=True)
 class PreparedLaunch:
     receipt_path: Path
@@ -1093,8 +1124,9 @@ def prepare_reconcile_launch(
 def verify_bootstrap(receipt_path: Path, acknowledgment: Mapping[str, Any]) -> dict[str, Any]:
     with receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
-    if receipt.get("launch_revision") != _launch_revision(receipt):
-        raise GateError("launch receipt revision mismatch")
+    # Pre-mutation boundary: revalidate again before any ready or
+    # bootstrap-verified mutation (launch-entrypoint-revalidation).
+    revalidate_launch_receipt(receipt)
     provider_session_id = acknowledgment.get("provider_session_id")
     if not isinstance(provider_session_id, str) or not provider_session_id:
         raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
@@ -1316,6 +1348,10 @@ def run_bootstrap(
     """Run the read-only bootstrap phase and verify BOOTSTRAP_ACK. Returns the verified provider session ID."""
     with prepared.receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
+    # Pre-provider boundary: revalidate manifest shape and launch revision
+    # immediately after receipt readback, before any provider process starts
+    # (launch-entrypoint-revalidation).
+    revalidate_launch_receipt(receipt)
     worktree = receipt["workspace"]["worktree"]
     try:
         bootstrap = runner(
@@ -1361,6 +1397,10 @@ def bootstrap_from_receipt(
     and checking it still matches the exact blob the receipt was built from (no prior commit required)."""
     with receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
+    # Pre-provider boundary: revalidate immediately after receipt readback so
+    # an invalid persistent receipt never reaches the contract-blob subprocess
+    # or the provider runner (launch-entrypoint-revalidation).
+    revalidate_launch_receipt(receipt)
     role_root = Path(receipt["role"]["root"])
     contract_path = role_root / receipt["role"]["contract_path"]
     actual_blob = _run("git", "hash-object", "--no-filters", str(contract_path), cwd=role_root)
