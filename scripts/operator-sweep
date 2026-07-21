@@ -342,7 +342,7 @@ def main() -> int:
 
     sweep_dir = control / "sweeps" / fingerprint
     snapshot_path = sweep_dir / "snapshot.md"
-    receipt_path = sweep_dir / "receipt.toml"
+    journal_path = sweep_dir / "journal.json"
     result_path = sweep_dir / "result.md"
 
     root = Path(__file__).resolve().parents[1]
@@ -354,8 +354,8 @@ def main() -> int:
     # gateway leaves no sweep artifact directory or state behind. A pending copy
     # outside that directory backs only the gateway's own independent digest
     # check and is removed on every failure. The gateway itself persists the
-    # verified bytes to snapshot_path and binds the receipt to that exact final
-    # location, so bootstrap always reads an existing, matching source.
+    # verified bytes to snapshot_path and binds the journal entry to that exact
+    # final location, so bootstrap always reads an existing, matching source.
     pending_snapshot_path = control / f".sweep-pending-{fingerprint}.md"
     # liveness.json is a plain operator report, current when the reconciler
     # reads it; the launch failure handler removes it with the pending snapshot.
@@ -363,11 +363,13 @@ def main() -> int:
     atomic_write(liveness_path, json.dumps(liveness, sort_keys=True, indent=1) + "\n")
     atomic_write(pending_snapshot_path, snapshot)
     try:
-        # Sole reconciler launch gateway: same worktree provisioning, containment,
-        # and receipt binding as scripts/octo-launch, narrowed to the reconciler's
-        # aggregate read-only shape. Fails closed before any provider call on
-        # stale or substituted Linear, PR, spec, ADR, or repo HEAD input,
-        # including a target HEAD that changed since head was captured above.
+        # Sole reconciler launch gateway: same worktree provisioning and
+        # containment as the worker launch path, narrowed to the reconciler's
+        # aggregate read-only shape and bound through the sweep's journal.json
+        # entry, never a reconcile receipt.toml (Unit I, decision-109-binding).
+        # Fails closed before any provider call on stale or substituted Linear,
+        # PR, spec, ADR, or repo HEAD input, including a target HEAD that
+        # changed since head was captured above.
         prepared = prepare_reconcile_launch(
             root=root,
             spawn_id=str(uuid.uuid4()),
@@ -376,7 +378,7 @@ def main() -> int:
             repo=repo,
             worktree_root=worktree_root,
             worktree=worktree,
-            receipt_path=receipt_path,
+            journal_path=journal_path,
             execution_location=os.environ.get("OCTO_EXECUTION_LOCATION", "remote"),
             operator_loopback=os.environ.get("OCTO_OPERATOR_LOOPBACK", "false") == "true",
             review_delivery=os.environ.get("OCTO_REVIEW_DELIVERY", "reachable_url_required"),
@@ -425,7 +427,7 @@ def main() -> int:
         f"fingerprint = {json.dumps(fingerprint)}\n"
         f"owner_route = {json.dumps(owner_route)}\n"
         f"snapshot = {json.dumps(str(snapshot_path))}\n"
-        f"receipt = {json.dumps(str(receipt_path))}\n"
+        f"journal = {json.dumps(str(journal_path))}\n"
         f"result = {json.dumps(str(result_path))}\n",
     )
     print(json.dumps({"changed": True, "fingerprint": fingerprint, "owner": owner_route, "result": str(result_path)}))

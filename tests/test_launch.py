@@ -931,6 +931,10 @@ class LaunchBoundaryTests(unittest.TestCase):
 
 
 class ReconcileLaunchBoundaryTests(unittest.TestCase):
+    # Unit I (role-worker-migration, decision-109-workflow-native,
+    # launch-receipt-manifest-shapes, role-reconciler-snapshot-receipt-binding,
+    # workspace-cleanup-reconcile): the reconcile gateway binds through a plain
+    # JSON journal entry under the sweep dir, never a reconcile receipt.toml.
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -980,14 +984,19 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
                 ),
             }
         ]
-        self.snapshot_path = base / "snapshot.md"
+        self.snapshot_path = base / "pending-snapshot.md"
         self.snapshot_path.write_text("# snapshot\n")
         self.snapshot_digest = hashlib.sha256(self.snapshot_path.read_bytes()).hexdigest()
+        self.sweep_dir = base / "sweeps" / "fp1"
+        self.journal_path = self.sweep_dir / "journal.json"
 
     def git(self, *args: str) -> str:
         return subprocess.run(
             ["git", "-C", str(self.repo), *args], check=True, capture_output=True, text=True,
         ).stdout.strip()
+
+    def read_journal(self) -> dict:
+        return json.loads(self.journal_path.read_text())
 
     def prepare(self, **overrides):
         values = {
@@ -998,7 +1007,7 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
             "repo": self.repo,
             "worktree_root": self.worktree_root,
             "worktree": self.worktree,
-            "receipt_path": Path(self.temp.name) / "reconcile.toml",
+            "journal_path": self.journal_path,
             "execution_location": "remote",
             "operator_loopback": False,
             "review_delivery": "reachable_url_required",
@@ -1017,9 +1026,9 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
 
     def test_prepare_reconcile_provisions_a_detached_worktree_never_the_control_checkout(self) -> None:
         prepared = self.prepare()
-        receipt = tomllib.loads(prepared.receipt_path.read_text())
-        self.assertNotEqual(str(self.repo), receipt["workspace"]["worktree"])
-        self.assertEqual(str(self.worktree), receipt["workspace"]["worktree"])
+        journal = json.loads(prepared.journal_path.read_text())
+        self.assertNotEqual(str(self.repo), journal["workspace"]["worktree"])
+        self.assertEqual(str(self.worktree), journal["workspace"]["worktree"])
         self.assertTrue(self.worktree.is_dir())
         branch = subprocess.run(
             ["git", "-C", str(self.worktree), "branch", "--show-current"],
@@ -1031,23 +1040,31 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
             check=True, capture_output=True, text=True,
         ).stdout.strip()
         self.assertEqual(str(self.worktree.resolve()), top)
-        self.assertTrue(receipt["workspace"]["child_containment_verified"])
+        self.assertTrue(journal["workspace"]["child_containment_verified"])
 
     def test_reconcile_worktree_escaping_allowed_root_fails_closed(self) -> None:
         outside = Path(self.temp.name) / "outside"
         with self.assertRaisesRegex(GateError, "escapes allowed root"):
             self.prepare(worktree=outside)
 
-    def test_receipt_binds_snapshot_digest_spec_and_adr_blobs_control_head_and_stream_facts(self) -> None:
+    def test_journal_binds_snapshot_digest_spec_and_adr_blobs_control_head_and_stream_facts(self) -> None:
+        # role-reconciler-snapshot-receipt-binding plus launch-receipt-manifest-shapes:
+        # the journal entry carries the exact bindings and no reconcile receipt.toml
+        # exists anywhere under the sweep dir.
         prepared = self.prepare()
-        receipt = tomllib.loads(prepared.receipt_path.read_text())
-        reconcile = receipt["reconcile"]
+        journal = self.read_journal()
+        self.assertEqual("worker-journal", journal["manifest_shape"])
+        self.assertEqual("reconcile", journal["purpose"])
+        self.assertIs(True, journal["read_restricted"])
+        self.assertEqual("reconciler", journal["role"]["name"])
+        reconcile = journal["reconcile"]
         self.assertEqual(self.snapshot_digest, reconcile["snapshot_digest"])
+        self.assertEqual(str(self.sweep_dir / "snapshot.md"), reconcile["snapshot_path"])
         self.assertEqual(self.head, reconcile["control_head"])
         self.assertEqual([f"spec/domains/operating-model.spec.html:{self.spec_blob}"], reconcile["spec_blobs"])
         self.assertEqual([], reconcile["adr_blobs"])
         self.assertEqual(["status.md"], reconcile["conversation_state_refs"])
-        streams = json.loads(reconcile["streams_json"])
+        streams = reconcile["streams"]
         self.assertEqual(1, len(streams))
         self.assertEqual("TUR-1", streams[0]["linear"]["identifier"])
         self.assertEqual(exact_fingerprint(self.linear), streams[0]["linear"]["fingerprint"])
@@ -1059,8 +1076,10 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
             [{"name": "conformance", "status": "COMPLETED", "outcome": "SUCCESS"}],
             streams[0]["pull_request"]["status_checks"],
         )
-        self.assertIn("launch_revision", receipt)
-        self.assertEqual(launch_revision(receipt), receipt["launch_revision"])
+        self.assertIn("launch_revision", journal)
+        self.assertFalse((self.sweep_dir / "receipt.toml").exists())
+        self.assertEqual([], list(self.sweep_dir.glob("*.toml")))
+        self.assertEqual(prepared.journal_path, self.journal_path.resolve())
 
     def test_stale_linear_input_fails_before_worktree_or_provider(self) -> None:
         changed_linear = dict(self.linear, state="In Progress")
@@ -1084,7 +1103,8 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "HEAD"):
             self.prepare(expected_head="f" * 40)
         self.assertFalse(self.worktree.exists())
-        self.assertFalse(Path(self.temp.name, "reconcile.toml").exists())
+        self.assertFalse(self.journal_path.exists())
+        self.assertFalse(self.sweep_dir.exists())
 
     def test_stale_spec_blob_fails_before_worktree_or_provider(self) -> None:
         with self.assertRaisesRegex(GateError, "spec blob mismatch"):
@@ -1092,9 +1112,8 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         self.assertFalse(self.worktree.exists())
 
     def test_empty_declared_blobs_are_allowed(self) -> None:
-        prepared = self.prepare(spec_blobs=[], adr_blobs=[])
-        receipt = tomllib.loads(prepared.receipt_path.read_text())
-        self.assertEqual([], receipt["reconcile"]["spec_blobs"])
+        self.prepare(spec_blobs=[], adr_blobs=[])
+        self.assertEqual([], self.read_journal()["reconcile"]["spec_blobs"])
 
     def test_missing_snapshot_source_fails_before_worktree_or_provider(self) -> None:
         missing = Path(self.temp.name) / "absent-snapshot.md"
@@ -1134,36 +1153,36 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
             self.prepare(snapshot_path=outside, snapshot_digest=digest)
         self.assertFalse(self.worktree.exists())
 
-    def test_receipt_persistence_failure_after_snapshot_persistence_leaves_no_final_artifact(self) -> None:
-        # The gateway persists snapshot.md before receipt.toml. A caught failure
-        # while persisting the receipt, injected here after the snapshot write
-        # already succeeded, must not leave the final snapshot, the receipt, or
-        # the now-empty sweep directory behind, and must not swallow the
-        # original exception. The caller-owned pending digest-verification
+    def test_journal_persistence_failure_after_snapshot_persistence_leaves_no_final_artifact(self) -> None:
+        # The gateway persists snapshot.md before journal.json. A caught failure
+        # while persisting the journal, injected here after the snapshot write
+        # already succeeded, must not leave the final snapshot, the journal, a
+        # receipt, or the now-empty sweep directory behind, and must not swallow
+        # the original exception. The caller-owned pending digest-verification
         # input (self.snapshot_path here) is never this gateway's to delete, so
         # it must be left exactly as the caller supplied it.
-        sweep_dir = (Path(self.temp.name) / "sweeps" / "fp1").resolve()
-        receipt_path = sweep_dir / "receipt.toml"
-        persisted_snapshot_path = sweep_dir / "snapshot.md"
+        journal_path = self.journal_path.resolve()
+        persisted_snapshot_path = journal_path.parent / "snapshot.md"
         real_atomic_write = launch_module._atomic_write
 
         def flaky_atomic_write(path: Path, content: str) -> None:
-            if path == receipt_path:
-                raise OSError("simulated receipt persistence failure")
+            if path == journal_path:
+                raise OSError("simulated journal persistence failure")
             real_atomic_write(path, content)
 
         with mock.patch.object(launch_module, "_atomic_write", side_effect=flaky_atomic_write):
-            with self.assertRaisesRegex(OSError, "simulated receipt persistence failure"):
-                self.prepare(receipt_path=receipt_path)
+            with self.assertRaisesRegex(OSError, "simulated journal persistence failure"):
+                self.prepare(journal_path=journal_path)
 
         self.assertFalse(persisted_snapshot_path.exists())
-        self.assertFalse(receipt_path.exists())
-        self.assertFalse(sweep_dir.exists())
+        self.assertFalse(journal_path.exists())
+        self.assertFalse((journal_path.parent / "receipt.toml").exists())
+        self.assertFalse(journal_path.parent.exists())
         self.assertTrue(self.snapshot_path.exists())
 
     def test_run_reconcile_launch_is_the_sole_bootstrap_and_mutation_entry_point(self) -> None:
         prepared = self.prepare()
-        spawn_id = tomllib.loads(prepared.receipt_path.read_text())["spawn_id"]
+        spawn_id = self.read_journal()["spawn_id"]
         ack = prepared.expected_ack(spawn_id)
         calls = []
 
@@ -1178,17 +1197,94 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         message = run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
         self.assertEqual("changed: TUR-1 PR head moved", message)
         self.assertEqual(2, len(calls))
-        readback = tomllib.loads(prepared.receipt_path.read_text())
+        readback = self.read_journal()
         self.assertTrue(readback["bootstrap"]["verified"])
         self.assertTrue(readback["result"]["bound"])
         self.assertFalse(self.worktree.exists())
+        self.assertFalse((self.sweep_dir / "receipt.toml").exists())
+
+    def test_bootstrap_ack_fails_closed_when_journal_bound_snapshot_digest_mismatches(self) -> None:
+        # role-reconciler-snapshot-receipt-binding: the acknowledgment echo carries
+        # the journal-bound snapshot path and digest; an honest reconciler that
+        # hashes corrupted persisted snapshot bytes echoes the actual digest and a
+        # non-ready blocker, and the host rejects the mismatch before any judgment
+        # call. The pre-ack failure removes the still-pristine worktree.
+        prepared = self.prepare()
+        journal = self.read_journal()
+        spawn_id = journal["spawn_id"]
+        persisted = Path(journal["reconcile"]["snapshot_path"])
+        persisted.write_text("# corrupted after journal persistence\n")
+        actual_digest = hashlib.sha256(persisted.read_bytes()).hexdigest()
+        ack = prepared.expected_ack(spawn_id)
+        ack["snapshot_digest"] = actual_digest
+        ack["ready"] = False
+        ack["blocker"] = "journal-bound snapshot digest mismatch"
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            output = {"session_id": spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        with self.assertRaisesRegex(GateError, "acknowledgment mismatch.*snapshot_digest"):
+            run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
+        self.assertEqual(1, len(calls))
+        self.assertNotIn("result", self.read_journal())
+        self.assertFalse(self.worktree.exists())
+
+    def test_presenting_a_retired_reconcile_receipt_shape_is_rejected(self) -> None:
+        # launch-receipt-manifest-shapes: the old octo-lite-reconcile receipt shape
+        # is rejected wherever presented, before any provider call.
+        prepared = self.prepare()
+        prepared.journal_path.write_text(
+            'schema_version = 1\nspawn_id = "spawn-1"\nready = false\n'
+            'manifest_type = "octo-lite-reconcile"\nlaunch_revision = "abc"\n\n'
+            '[role]\nname = "reconciler"\n\n'
+            f'[reconcile]\nsnapshot_path = "{self.sweep_dir / "snapshot.md"}"\n'
+            f'snapshot_digest = "{self.snapshot_digest}"\n'
+        )
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            raise AssertionError("no provider call may follow a retired receipt shape")
+
+        with self.assertRaisesRegex(GateError, "retired reconcile receipt shape rejected"):
+            run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
+        self.assertEqual(0, len(calls))
+        with self.assertRaisesRegex(GateError, "retired reconcile receipt shape rejected"):
+            launch_module.load_reconcile_journal(prepared.journal_path)
+
+    def test_reconcile_cleanup_keys_on_the_durably_persisted_journal_entry(self) -> None:
+        # workspace-cleanup-reconcile: the completed worktree is removed only after
+        # the journal entry with its bound result is durably persisted; a journal
+        # that vanished before result binding fails closed and preserves the
+        # worktree for inspection.
+        prepared = self.prepare()
+        spawn_id = self.read_journal()["spawn_id"]
+        ack = prepared.expected_ack(spawn_id)
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if len(calls) == 1:
+                output = {"session_id": spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+            prepared.journal_path.unlink()
+            output = {"session_id": spawn_id, "result": "changed"}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        with self.assertRaisesRegex(GateError, "reconcile journal missing"):
+            run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
+        self.assertEqual(2, len(calls))
+        self.assertTrue(self.worktree.exists())
 
     def test_run_reconcile_launch_fails_closed_and_preserves_a_worktree_dirtied_before_bootstrap(self) -> None:
         # A read-only reconcile worktree must stay exactly as admitted; a stray
         # mutation found before bootstrap completes now fails the whole pass
         # closed instead of letting a dirty worktree reach a bound result.
         prepared = self.prepare()
-        spawn_id = tomllib.loads(prepared.receipt_path.read_text())["spawn_id"]
+        spawn_id = self.read_journal()["spawn_id"]
         ack = prepared.expected_ack(spawn_id)
         calls = []
 
@@ -1201,14 +1297,13 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "review-pass worktree status mutated"):
             run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
         self.assertEqual(1, len(calls))
-        readback = tomllib.loads(prepared.receipt_path.read_text())
-        self.assertNotIn("result", readback)
+        self.assertNotIn("result", self.read_journal())
         self.assertTrue(self.worktree.exists())
         self.assertTrue((self.worktree / "stray.txt").is_file())
 
     def test_run_reconcile_launch_fails_closed_on_resumed_session_mismatch(self) -> None:
         prepared = self.prepare()
-        spawn_id = tomllib.loads(prepared.receipt_path.read_text())["spawn_id"]
+        spawn_id = self.read_journal()["spawn_id"]
         ack = prepared.expected_ack(spawn_id)
         calls = []
 
@@ -1222,8 +1317,7 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(GateError, "session mismatch"):
             run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
-        readback = tomllib.loads(prepared.receipt_path.read_text())
-        self.assertNotIn("result", readback)
+        self.assertNotIn("result", self.read_journal())
         self.assertTrue(self.worktree.exists())
 
 

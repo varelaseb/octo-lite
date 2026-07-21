@@ -825,6 +825,101 @@ def prepare_launch(
     return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
 
 
+def _assert_reconcile_admission(role: str, purpose: str, read_restricted: bool) -> None:
+    """Same admission semantics as the workflow gates (launch-purpose-reconcile,
+    launch-receipt-manifest-shapes): a reconcile purpose admits only role
+    reconciler spawned as a Read-restricted subagent; every other role, purpose,
+    or access shape is rejected before any spawn."""
+    if purpose != "reconcile":
+        raise GateError(f"purpose {purpose} not admitted for the reconcile gateway")
+    if role != "reconciler":
+        raise GateError(f"role {role} not admitted for reconcile purpose")
+    if read_restricted is not True:
+        raise GateError("reconcile admits reconciler only as a Read-restricted subagent")
+
+
+def _reconcile_journal_revision(journal: Mapping[str, Any]) -> str:
+    payload = {
+        key: value
+        for key, value in journal.items()
+        if key not in {"ready", "launch_revision", "bootstrap", "result"}
+    }
+    return exact_fingerprint(payload)
+
+
+def _write_reconcile_journal(journal_path: Path, journal: Mapping[str, Any]) -> None:
+    _atomic_write(journal_path, json.dumps(journal, sort_keys=True, indent=1) + "\n")
+
+
+def load_reconcile_journal(journal_path: Path) -> dict[str, Any]:
+    """Read and validate the reconcile journal entry (decision-109-binding,
+    launch-receipt-manifest-shapes): a plain JSON file binding role reconciler,
+    purpose reconcile with Read-restricted access, the final persisted snapshot
+    path plus digest, the expected control HEAD, spec and ADR blobs, and streams.
+    The retired octo-lite-reconcile receipt shape is rejected if presented."""
+    journal_path = Path(journal_path)
+    try:
+        text = journal_path.read_text()
+    except OSError as error:
+        raise GateError("reconcile journal missing") from error
+    try:
+        journal = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            legacy = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as error:
+            raise GateError("reconcile journal unreadable") from error
+        if legacy.get("manifest_type") == "octo-lite-reconcile" or "reconcile" in legacy:
+            raise GateError("retired reconcile receipt shape rejected")
+        raise GateError("reconcile journal unreadable")
+    if not isinstance(journal, dict):
+        raise GateError("reconcile journal unreadable")
+    if journal.get("manifest_type") == "octo-lite-reconcile":
+        raise GateError("retired reconcile receipt shape rejected")
+    if journal.get("manifest_shape") != "worker-journal":
+        raise GateError("reconcile journal shape invalid")
+    _assert_reconcile_admission(
+        str(journal.get("role", {}).get("name") or ""),
+        str(journal.get("purpose") or ""),
+        journal.get("read_restricted"),
+    )
+    reconcile = journal.get("reconcile")
+    if not isinstance(reconcile, dict) or any(
+        not reconcile.get(name) for name in ("snapshot_path", "snapshot_digest", "control_head")
+    ) or any(
+        not isinstance(reconcile.get(name), list)
+        for name in ("spec_blobs", "adr_blobs", "streams")
+    ):
+        raise GateError("reconcile journal bindings incomplete")
+    if journal.get("launch_revision") != _reconcile_journal_revision(journal):
+        raise GateError("reconcile journal revision mismatch")
+    return journal
+
+
+def _reconcile_expected_ack(journal: Mapping[str, Any], provider_session_id: str) -> dict[str, Any]:
+    """role-reconciler-snapshot-receipt-binding: the reconciler's acknowledgment
+    echo carries the journal-bound snapshot path and digest, verified against the
+    journal entry before any judgment call."""
+    expected = _expected_ack(journal, provider_session_id)
+    expected["snapshot_path"] = journal["reconcile"]["snapshot_path"]
+    expected["snapshot_digest"] = journal["reconcile"]["snapshot_digest"]
+    return expected
+
+
+@dataclass(frozen=True)
+class PreparedReconcile:
+    journal_path: Path
+    bootstrap_argv: list[str]
+    mutation_argv: list[str]
+    contract_text: str
+
+    def expected_ack(self, provider_session_id: str) -> dict[str, Any]:
+        return _reconcile_expected_ack(load_reconcile_journal(self.journal_path), provider_session_id)
+
+    def mutation_argv_for(self, provider_session_id: str) -> list[str]:
+        return [provider_session_id if item == "{provider_session_id}" else item for item in self.mutation_argv]
+
+
 def prepare_reconcile_launch(
     *,
     root: Path,
@@ -834,7 +929,7 @@ def prepare_reconcile_launch(
     repo: Path,
     worktree_root: Path,
     worktree: Path,
-    receipt_path: Path,
+    journal_path: Path,
     execution_location: str,
     operator_loopback: bool,
     review_delivery: str,
@@ -850,20 +945,23 @@ def prepare_reconcile_launch(
     provider_overloaded: bool = False,
     read_linear: ReadLinear = read_linear,
     read_pr: ReadPullRequest = read_pull_request,
-) -> PreparedLaunch:
+) -> PreparedReconcile:
     """The sole reconciler launch gateway: same worktree provisioning, containment,
-    and receipt machinery as prepare_launch, narrowed to the reconciler's aggregate
-    multi-stream read-only shape. Every declared stream's Linear and PR facts are
-    refetched and compared to the caller's declared bindings before any worktree or
-    provider call, so a stale or substituted snapshot input fails closed. The current
-    repo HEAD is also compared to the caller's expected_head before any of that
-    validation, so a target commit landing between snapshot capture and gateway
-    dispatch fails closed even when every declared blob is still unchanged."""
+    and gateway checks as prepare_launch, narrowed to the reconciler's aggregate
+    multi-stream read-only shape, binding through a journal entry instead of a
+    TOML receipt (role-worker-migration, decision-109-workflow-native,
+    launch-receipt-manifest-shapes). Every declared stream's Linear and PR facts
+    are refetched and compared to the caller's declared bindings before any
+    worktree or provider call, so a stale or substituted snapshot input fails
+    closed. The current repo HEAD is also compared to the caller's expected_head
+    before any of that validation, so a target commit landing between snapshot
+    capture and gateway dispatch fails closed even when every declared blob is
+    still unchanged."""
     root = root.resolve()
     repo = repo.resolve()
     worktree_root = worktree_root.resolve()
     worktree = worktree.resolve()
-    receipt_path = receipt_path.resolve()
+    journal_path = journal_path.resolve()
     snapshot_bytes = _verify_snapshot_source(snapshot_path, str(snapshot_digest), worktree_root.parent)
     normalize_launch_access(
         {
@@ -919,7 +1017,7 @@ def prepare_reconcile_launch(
     try:
         child_workspace = _child_workspace_check(repo, worktree_root, worktree, control_head, None)
 
-        receipt = build_launch_receipt(
+        base = build_launch_receipt(
             root,
             resolved,
             spawn_id=spawn_id,
@@ -931,34 +1029,54 @@ def prepare_reconcile_launch(
             operator_loopback=operator_loopback,
             review_delivery=review_delivery,
         )
-        receipt["ready"] = False
-        receipt["manifest_type"] = "octo-lite-reconcile"
-        receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
-        persisted_snapshot_path = receipt_path.parent / "snapshot.md"
+        read_restricted = resolved.role.subagent_access == "read-restricted"
+        _assert_reconcile_admission(resolved.role.name, "reconcile", read_restricted)
+        workspace = dict(base["workspace"])
+        workspace["child_containment_verified"] = child_workspace["contained"]
+        persisted_snapshot_path = journal_path.parent / "snapshot.md"
         try:
             _atomic_write(persisted_snapshot_path, snapshot_bytes.decode("utf-8"))
-            receipt["reconcile"] = {
-                "snapshot_path": str(persisted_snapshot_path),
-                "snapshot_digest": str(snapshot_digest),
-                "control_head": control_head,
-                "spec_blobs": list(spec_blobs),
-                "adr_blobs": list(adr_blobs),
-                "conversation_state_refs": list(conversation_state_refs or []),
-                "streams_json": json.dumps(verified_streams, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+            # The durable binding artifact is the journal entry, never a reconcile
+            # receipt.toml (launch-receipt-manifest-shapes, decision-109-binding).
+            # It binds the final persisted snapshot path and digest
+            # (role-reconciler-snapshot-receipt-binding), the expected control
+            # HEAD, the canonical spec and ADR blobs, and the verified streams.
+            journal = {
+                "schema_version": 1,
+                "manifest_shape": "worker-journal",
+                "purpose": "reconcile",
+                "read_restricted": read_restricted,
+                "spawn_id": base["spawn_id"],
+                "parent": base["parent"],
+                "reply_route": base["reply_route"],
+                "role": base["role"],
+                "runtime": base["runtime"],
+                "skills": base["skills"],
+                "workspace": workspace,
+                "reconcile": {
+                    "snapshot_path": str(persisted_snapshot_path),
+                    "snapshot_digest": str(snapshot_digest),
+                    "control_head": control_head,
+                    "spec_blobs": list(spec_blobs),
+                    "adr_blobs": list(adr_blobs),
+                    "conversation_state_refs": list(conversation_state_refs or []),
+                    "streams": verified_streams,
+                },
+                "bootstrap": {"verified": False, "provider_session_id": ""},
             }
-            receipt["launch_revision"] = _launch_revision(receipt)
-            _atomic_write(receipt_path, render_receipt(receipt))
-            bootstrap, mutation = _provider_argv(receipt)
+            journal["launch_revision"] = _reconcile_journal_revision(journal)
+            _write_reconcile_journal(journal_path, journal)
+            bootstrap, mutation = _provider_argv(journal)
         except BaseException:
             # A caught failure anywhere after the final snapshot is written, most
-            # notably a receipt persistence failure, must not leave the final
-            # snapshot, receipt, or sweep directory behind; rmdir only removes the
+            # notably a journal persistence failure, must not leave the final
+            # snapshot, journal, or sweep directory behind; rmdir only removes the
             # directory this call itself populated, since it no-ops on leftover
             # unrelated content instead of masking that state.
             persisted_snapshot_path.unlink(missing_ok=True)
-            receipt_path.unlink(missing_ok=True)
+            journal_path.unlink(missing_ok=True)
             try:
-                receipt_path.parent.rmdir()
+                journal_path.parent.rmdir()
             except OSError:
                 pass
             raise
@@ -969,7 +1087,7 @@ def prepare_reconcile_launch(
         # control head; a dirty or diverged worktree stays for inspection.
         cleanup_clean_abort(repo, worktree, control_head)
         raise
-    return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
+    return PreparedReconcile(journal_path, bootstrap, mutation, resolved.contract_text)
 
 
 def verify_bootstrap(receipt_path: Path, acknowledgment: Mapping[str, Any]) -> dict[str, Any]:
@@ -1302,13 +1420,19 @@ def run_launch(
     return result
 
 
-def _cleanup_reconcile_worktree(receipt: Mapping[str, Any]) -> None:
-    """Remove a completed, read-only reconcile worktree only after its result is
-    already bound and durably persisted. Same pristine-only removal law as
-    cleanup_clean_abort: a worktree that is not a genuine detached worktree of
-    the exact bound control repo, has moved off its starting HEAD, or is dirty
-    is preserved for inspection instead of being force-removed."""
-    workspace = receipt["workspace"]
+def _cleanup_reconcile_worktree(journal_path: Path) -> None:
+    """workspace-cleanup-reconcile: remove a completed, read-only reconcile
+    worktree only after its result is bound and the journal entry is durably
+    persisted, proven by re-reading the journal from disk; a missing,
+    retired-shape, or unbound journal fails closed and preserves the worktree.
+    Same pristine-only removal law as cleanup_clean_abort: a worktree that is
+    not a genuine detached worktree of the exact bound control repo, has moved
+    off its starting HEAD, or is dirty is preserved for inspection instead of
+    being force-removed."""
+    journal = load_reconcile_journal(journal_path)
+    if journal.get("result", {}).get("bound") is not True:
+        raise GateError("reconcile cleanup requires a journal-bound result")
+    workspace = journal["workspace"]
     cleanup_clean_abort(
         Path(workspace["repo"]),
         Path(workspace["worktree"]),
@@ -1316,19 +1440,88 @@ def _cleanup_reconcile_worktree(receipt: Mapping[str, Any]) -> None:
     )
 
 
+def _reconcile_bootstrap_prompt(prepared: PreparedReconcile) -> str:
+    return (
+        f"{prepared.contract_text.rstrip()}\n\n"
+        f"Bootstrap only. Read the reconcile journal entry {prepared.journal_path}. "
+        "Check every journal-bound source and workspace fact, including the bound "
+        "snapshot_path bytes against snapshot_digest. Do not mutate. Return "
+        "BOOTSTRAP_ACK as JSON with schema_version, spawn_id, launch_revision, role, "
+        "worktree, starting_head, snapshot_path, snapshot_digest, ready true, and "
+        "empty blocker. Include provider_session_id when visible."
+    )
+
+
 def run_reconcile_launch(
-    prepared: PreparedLaunch,
+    prepared: PreparedReconcile,
     prompt: str,
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> str:
-    """Sole entry point a reconcile caller uses: bootstrap-verify, then run one
-    read-only judgment pass with the exact resumed session, then bind the result.
-    No caller composes run_bootstrap and run_mutation directly."""
-    session = run_bootstrap(prepared, runner=runner)
-    with prepared.receipt_path.open("rb") as handle:
-        receipt = tomllib.load(handle)
-    _, message = run_mutation(prepared, session, prompt, runner=runner)
-    bind_pass_result(prepared.receipt_path, receipt["role"]["name"], {"message": message})
-    _cleanup_reconcile_worktree(receipt)
+    """Sole entry point a reconcile caller uses: bootstrap-verify the journal-bound
+    Read-restricted reconciler, verify its acknowledgment echo of the journal-bound
+    snapshot path and digest before any judgment, run one read-only judgment pass
+    with the exact resumed session, bind the result into the durably persisted
+    journal entry, then clean up keyed on that entry. No caller composes the
+    bootstrap and mutation phases directly."""
+    journal = load_reconcile_journal(prepared.journal_path)
+    worktree = journal["workspace"]["worktree"]
+    provider = journal["runtime"]["provider"]
+    try:
+        bootstrap = runner(
+            prepared.bootstrap_argv,
+            cwd=worktree,
+            input=_reconcile_bootstrap_prompt(prepared),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if bootstrap.returncode != 0:
+            raise GateError(f"bootstrap provider failed: {bootstrap.stderr.strip()}")
+        session, acknowledgment = parse_bootstrap_output(provider, bootstrap.stdout)
+        claimed_session = acknowledgment.get("provider_session_id")
+        if claimed_session not in {None, "", session}:
+            raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
+        acknowledgment["provider_session_id"] = session
+        expected = _reconcile_expected_ack(journal, session)
+        mismatches = [name for name, value in expected.items() if acknowledgment.get(name) != value]
+        if mismatches:
+            raise GateError(f"bootstrap acknowledgment mismatch: {', '.join(mismatches)}")
+        _verify_review_worktree_unmutated(journal, "bootstrap")
+        journal["bootstrap"] = {"verified": True, "provider_session_id": session}
+        _write_reconcile_journal(prepared.journal_path, journal)
+    except BaseException:
+        # workspace-cleanup-clean-abort: everything above runs before the
+        # acknowledgment echo is verified, so a failure here removes the
+        # worktree only when it is still pristine at the exact starting head
+        # and preserves a dirty or diverged one for inspection.
+        cleanup_clean_abort(
+            Path(journal["workspace"]["repo"]),
+            Path(worktree),
+            str(journal["workspace"]["starting_head"]),
+        )
+        raise
+    mutation = runner(
+        prepared.mutation_argv_for(session),
+        cwd=worktree,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if mutation.returncode != 0:
+        raise GateError(f"provider pass failed with exit {mutation.returncode}")
+    mutation_session, message = parse_provider_message(provider, mutation.stdout)
+    if mutation_session != session:
+        raise GateError("provider pass session mismatch")
+    _verify_review_worktree_unmutated(journal, "resumed pass")
+    # Bind the result into the durably persisted journal entry; a journal that
+    # vanished or was substituted since bootstrap fails closed here, preserving
+    # the worktree for inspection.
+    bound = load_reconcile_journal(prepared.journal_path)
+    if bound.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("reconcile journal bootstrap not verified")
+    bound["result"] = {"bound": True, "binding": exact_fingerprint({"message": message})}
+    _write_reconcile_journal(prepared.journal_path, bound)
+    _cleanup_reconcile_worktree(prepared.journal_path)
     return message

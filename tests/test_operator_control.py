@@ -27,16 +27,16 @@ def _load_operator_sweep_module():
     return module
 
 # Fakes the two-phase reconciler launch: a --session-id call actually opens
-# and hashes the receipt-bound reconcile.snapshot_path before answering a
-# BOOTSTRAP_ACK, refusing (ready false, non-empty blocker) when that file is
-# missing or its digest does not match reconcile.snapshot_digest, so a
-# regression that persists the final snapshot late, corrupts its bytes, or
-# leaves the pending digest-verification input behind is caught by every test
-# that reuses this fake rather than only by assertions made after the sweep
-# has already finished. A --resume call echoes the exact session it was
-# resumed with in its own read-only judgment message, proving the resumed
-# session is the exact bootstrap-verified one, never a self-attested or
-# spoofed identity.
+# and hashes the journal-bound reconcile.snapshot_path before answering a
+# BOOTSTRAP_ACK, echoing the actual observed digest and refusing (ready false,
+# non-empty blocker) when that file is missing or its digest does not match
+# reconcile.snapshot_digest, so a regression that persists the final snapshot
+# late, corrupts its bytes, or leaves the pending digest-verification input
+# behind is caught by every test that reuses this fake rather than only by
+# assertions made after the sweep has already finished. A --resume call echoes
+# the exact session it was resumed with in its own read-only judgment message,
+# proving the resumed session is the exact bootstrap-verified one, never a
+# self-attested or spoofed identity.
 FAKE_RECONCILER_CLAUDE = r"""#!/usr/bin/env bash
 printf 'claude %s\n' "$*" >>"$CALL_LOG"
 printf 'worktree-check %s|%s|%s\n' "$(pwd)" "$(git rev-parse --show-toplevel)" "$(git branch --show-current)" >>"$CALL_LOG"
@@ -51,7 +51,7 @@ if [[ "$*" == *"--resume"* ]]; then
   done
   python3 -c 'import json, sys; print(json.dumps({"session_id": sys.argv[1], "result": "changed"}))' "$session"
 else
-  receipt_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*receipt\.toml' | head -1)"
+  journal_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*journal\.json' | head -1)"
   args=("$@")
   session=""
   for i in "${!args[@]}"; do
@@ -59,18 +59,17 @@ else
       session="${args[$((i+1))]}"
     fi
   done
-  python3 - "$receipt_path" "$session" <<'PY'
+  python3 - "$journal_path" "$session" <<'PY'
 import hashlib
 import json
 import os
 import sys
-import tomllib
 from pathlib import Path
 
-receipt_path, session_id = sys.argv[1], sys.argv[2]
-with open(receipt_path, "rb") as handle:
-    receipt = tomllib.load(handle)
-reconcile = receipt.get("reconcile", {})
+journal_path, session_id = sys.argv[1], sys.argv[2]
+with open(journal_path) as handle:
+    journal = json.load(handle)
+reconcile = journal.get("reconcile", {})
 snapshot_path = Path(reconcile["snapshot_path"])
 expected_digest = reconcile["snapshot_digest"]
 
@@ -80,9 +79,9 @@ snapshot_bytes_match = snapshot_exists and actual_digest == expected_digest
 
 # The pending digest-verification input lives outside the final sweep
 # directory as .sweep-pending-<digest>.md directly under the control dir
-# (parents[2] of receipt.toml: sweeps/<digest>/receipt.toml), so bootstrap can
+# (parents[2] of journal.json: sweeps/<digest>/journal.json), so bootstrap can
 # independently observe whether the caller already removed it.
-control_dir = Path(receipt_path).resolve().parents[2]
+control_dir = Path(journal_path).resolve().parents[2]
 pending_files = sorted(str(path) for path in control_dir.glob(".sweep-pending-*.md"))
 
 observations_file = os.environ.get("BOOTSTRAP_OBSERVATIONS_FILE")
@@ -96,13 +95,15 @@ if observations_file:
 ready = snapshot_bytes_match
 blocker = "" if ready else "reconcile.snapshot_path missing or digest mismatch"
 ack = {
-    "schema_version": receipt["schema_version"],
-    "spawn_id": receipt["spawn_id"],
+    "schema_version": journal["schema_version"],
+    "spawn_id": journal["spawn_id"],
     "provider_session_id": session_id,
-    "launch_revision": receipt["launch_revision"],
-    "role": receipt["role"]["name"],
-    "worktree": receipt["workspace"]["worktree"],
-    "starting_head": receipt["workspace"]["starting_head"],
+    "launch_revision": journal["launch_revision"],
+    "role": journal["role"]["name"],
+    "worktree": journal["workspace"]["worktree"],
+    "starting_head": journal["workspace"]["starting_head"],
+    "snapshot_path": str(snapshot_path),
+    "snapshot_digest": actual_digest if snapshot_exists else expected_digest,
     "ready": ready,
     "blocker": blocker,
 }
@@ -115,7 +116,7 @@ fi
 # Same two-phase shape as FAKE_RECONCILER_CLAUDE, but the resumed judgment call
 # reports a fixed spoofed session_id instead of the exact session it was resumed
 # with. Proves the sweep never accepts a mutation response from an unverified
-# or mismatched session, matching octo-launch's own run_launch identity check.
+# or mismatched session, matching the reconcile gateway's own identity check.
 FAKE_RECONCILER_CLAUDE_SPOOFED_RESUME = r"""#!/usr/bin/env bash
 printf 'claude %s\n' "$*" >>"$CALL_LOG"
 prompt="$(cat)"
@@ -124,7 +125,7 @@ if [[ "$*" == *"--resume"* ]]; then
 {"session_id": "spoofed-session-not-the-resumed-one", "result": "changed"}
 JSON
 else
-  receipt_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*receipt\.toml' | head -1)"
+  journal_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*journal\.json' | head -1)"
   args=("$@")
   session=""
   for i in "${!args[@]}"; do
@@ -132,22 +133,24 @@ else
       session="${args[$((i+1))]}"
     fi
   done
-  python3 - "$receipt_path" "$session" <<'PY'
+  python3 - "$journal_path" "$session" <<'PY'
 import json
 import sys
-import tomllib
 
-receipt_path, session_id = sys.argv[1], sys.argv[2]
-with open(receipt_path, "rb") as handle:
-    receipt = tomllib.load(handle)
+journal_path, session_id = sys.argv[1], sys.argv[2]
+with open(journal_path) as handle:
+    journal = json.load(handle)
+reconcile = journal.get("reconcile", {})
 ack = {
-    "schema_version": receipt["schema_version"],
-    "spawn_id": receipt["spawn_id"],
+    "schema_version": journal["schema_version"],
+    "spawn_id": journal["spawn_id"],
     "provider_session_id": session_id,
-    "launch_revision": receipt["launch_revision"],
-    "role": receipt["role"]["name"],
-    "worktree": receipt["workspace"]["worktree"],
-    "starting_head": receipt["workspace"]["starting_head"],
+    "launch_revision": journal["launch_revision"],
+    "role": journal["role"]["name"],
+    "worktree": journal["workspace"]["worktree"],
+    "starting_head": journal["workspace"]["starting_head"],
+    "snapshot_path": reconcile["snapshot_path"],
+    "snapshot_digest": reconcile["snapshot_digest"],
     "ready": True,
     "blocker": "",
 }
@@ -300,10 +303,9 @@ class OperatorControlTests(unittest.TestCase):
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
             self.assertEqual("operator-1", state["owner_route"])
-            with open(state["receipt"], "rb") as handle:
-                receipt = tomllib.load(handle)
-            self.assertTrue(receipt["bootstrap"]["verified"])
-            self.assertTrue(receipt["result"]["bound"])
+            journal = json.loads(Path(state["journal"]).read_text())
+            self.assertTrue(journal["bootstrap"]["verified"])
+            self.assertTrue(journal["result"]["bound"])
 
     def test_sweep_fails_closed_when_resumed_judgment_reports_a_different_session(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -438,11 +440,10 @@ class OperatorControlTests(unittest.TestCase):
 
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
-            with open(state["receipt"], "rb") as handle:
-                receipt = tomllib.load(handle)
-            self.assertTrue(receipt["bootstrap"]["verified"])
-            self.assertEqual(receipt["spawn_id"], receipt["bootstrap"]["provider_session_id"])
-            self.assertTrue(receipt["result"]["bound"])
+            journal = json.loads(Path(state["journal"]).read_text())
+            self.assertTrue(journal["bootstrap"]["verified"])
+            self.assertEqual(journal["spawn_id"], journal["bootstrap"]["provider_session_id"])
+            self.assertTrue(journal["result"]["bound"])
 
             second = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
             self.assertFalse(json.loads(second.stdout)["changed"])
@@ -487,17 +488,16 @@ class OperatorControlTests(unittest.TestCase):
 
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
-            with open(state["receipt"], "rb") as handle:
-                receipt = tomllib.load(handle)
+            journal = json.loads(Path(state["journal"]).read_text())
 
             # The worktree is a genuine detached checkout in worktree_root, never the
             # control checkout, while the reconciler pass runs inside it; a successful
             # pass then removes it, so its live state is captured from the fake
             # reconciler's own worktree-check log line rather than probed afterward.
-            worktree = Path(receipt["workspace"]["worktree"])
-            self.assertNotEqual(str(repo), receipt["workspace"]["worktree"])
+            worktree = Path(journal["workspace"]["worktree"])
+            self.assertNotEqual(str(repo), journal["workspace"]["worktree"])
             self.assertEqual(str((control / "worktrees").resolve()), str(worktree.resolve().parent))
-            self.assertTrue(receipt["workspace"]["child_containment_verified"])
+            self.assertTrue(journal["workspace"]["child_containment_verified"])
             checks = [line for line in log.read_text().splitlines() if line.startswith("worktree-check ")]
             self.assertTrue(checks)
             for check in checks:
@@ -507,7 +507,12 @@ class OperatorControlTests(unittest.TestCase):
                 self.assertEqual("", branch)
             self.assertFalse(worktree.exists())
 
-    def test_sweep_receipt_binds_snapshot_digest_control_head_and_canonical_spec_adr_blobs(self) -> None:
+    def test_completed_changed_sweep_persists_a_journal_entry_with_exact_bindings_and_no_reconcile_receipt(self) -> None:
+        # Unit I (launch-receipt-manifest-shapes, role-reconciler-snapshot-receipt-binding,
+        # decision-109-binding): the reconcile binding artifact is <sweep>/journal.json
+        # carrying role reconciler, purpose reconcile with read-restricted access, the
+        # final persisted snapshot path plus digest, the expected control HEAD, spec and
+        # ADR blobs, and streams; no reconcile receipt.toml is written anywhere.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
@@ -552,19 +557,29 @@ class OperatorControlTests(unittest.TestCase):
             result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
             fingerprint = json.loads(result.stdout)["fingerprint"]
 
+            sweep_dir = control / "sweeps" / fingerprint
+            journal_path = sweep_dir / "journal.json"
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
-            with open(state["receipt"], "rb") as handle:
-                receipt = tomllib.load(handle)
-            reconcile = receipt["reconcile"]
+            self.assertEqual(str(journal_path), state["journal"])
+            journal = json.loads(journal_path.read_text())
+            self.assertEqual("worker-journal", journal["manifest_shape"])
+            self.assertEqual("reconcile", journal["purpose"])
+            self.assertIs(True, journal["read_restricted"])
+            self.assertEqual("reconciler", journal["role"]["name"])
+            reconcile = journal["reconcile"]
+            self.assertEqual(str(sweep_dir / "snapshot.md"), reconcile["snapshot_path"])
             self.assertEqual(fingerprint, reconcile["snapshot_digest"])
             self.assertEqual(head, reconcile["control_head"])
             self.assertEqual([f"spec/domains/operating-model.spec.html:{spec_blob}"], reconcile["spec_blobs"])
             self.assertEqual([f"spec/adr/0001-operating-model-boundaries.spec.html:{adr_blob}"], reconcile["adr_blobs"])
             self.assertIn("streams/TUR-1/status.md", reconcile["conversation_state_refs"])
+            self.assertFalse((sweep_dir / "receipt.toml").exists())
+            self.assertEqual([], list(sweep_dir.glob("*.toml")))
+            self.assertEqual([], list(control.rglob("receipt.toml")))
 
-    def test_sweep_receipt_snapshot_path_binds_the_final_persisted_snapshot_bootstrap_can_read(self) -> None:
-        # Bootstrap only checks bound sources it can actually read. If the receipt
+    def test_sweep_journal_snapshot_path_binds_the_final_persisted_snapshot_bootstrap_can_read(self) -> None:
+        # Bootstrap only checks bound sources it can actually read. If the journal
         # binds the temporary digest-verification input instead of the final
         # persisted snapshot, that path is already deleted by the time bootstrap
         # runs, so a real reconciler can neither verify nor honestly acknowledge it.
@@ -612,10 +627,9 @@ class OperatorControlTests(unittest.TestCase):
 
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
-            with open(state["receipt"], "rb") as handle:
-                receipt = tomllib.load(handle)
-            self.assertTrue(receipt["bootstrap"]["verified"])
-            reconcile = receipt["reconcile"]
+            journal = json.loads(Path(state["journal"]).read_text())
+            self.assertTrue(journal["bootstrap"]["verified"])
+            reconcile = journal["reconcile"]
 
             final_snapshot = control / "sweeps" / fingerprint / "snapshot.md"
             self.assertEqual(str(final_snapshot), reconcile["snapshot_path"])
@@ -774,9 +788,7 @@ class OperatorControlTests(unittest.TestCase):
 
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
-            with open(state["receipt"], "rb") as handle:
-                receipt = tomllib.load(handle)
-            reconcile = receipt["reconcile"]
+            reconcile = json.loads(Path(state["journal"]).read_text())["reconcile"]
             self.assertEqual(1, len(reconcile["spec_blobs"]))
             self.assertTrue(reconcile["spec_blobs"][0].startswith("docs/behavior.spec.html:"))
             self.assertEqual(1, len(reconcile["adr_blobs"]))
@@ -1057,10 +1069,9 @@ class OperatorControlTests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)["changed"])
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
-            with open(state["receipt"], "rb") as handle:
-                receipt = tomllib.load(handle)
-            self.assertEqual([], receipt["reconcile"]["adr_blobs"])
-            self.assertEqual(1, len(receipt["reconcile"]["spec_blobs"]))
+            reconcile = json.loads(Path(state["journal"]).read_text())["reconcile"]
+            self.assertEqual([], reconcile["adr_blobs"])
+            self.assertEqual(1, len(reconcile["spec_blobs"]))
 
     def test_sweep_fails_closed_on_a_sentinel_no_adr_value(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1214,10 +1225,9 @@ class OperatorControlTests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)["changed"])
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
-            with open(state["receipt"], "rb") as handle:
-                receipt = tomllib.load(handle)
-            self.assertEqual(1, len(receipt["reconcile"]["spec_blobs"]))
-            self.assertTrue(receipt["reconcile"]["spec_blobs"][0].startswith("spec/domains/operating-model.spec.html:"))
+            reconcile = json.loads(Path(state["journal"]).read_text())["reconcile"]
+            self.assertEqual(1, len(reconcile["spec_blobs"]))
+            self.assertTrue(reconcile["spec_blobs"][0].startswith("spec/domains/operating-model.spec.html:"))
 
     def test_sweep_leaves_no_sweep_directory_when_gateway_validation_fails_after_canonical_sources_are_valid(self) -> None:
         # Canonical sources on AGENTS.md are entirely valid so canonical_blobs()
@@ -1280,6 +1290,10 @@ class OperatorControlTests(unittest.TestCase):
             self.assertFalse((control / "sweep-state.toml").exists())
             self.assertFalse((control / "worktrees").exists())
             self.assertFalse((control / "sweeps").exists())
+            # A failed sweep leaves no journal entry, no reconcile receipt, and no
+            # sweep directory behind (workspace-cleanup-clean-abort plus Unit I).
+            self.assertEqual([], list(control.rglob("journal.json")))
+            self.assertEqual([], list(control.rglob("receipt.toml")))
             leftover = [path for path in control.glob("**/*") if path.is_file()]
             self.assertEqual(
                 {control / "streams/TUR-1/status.md", control / "streams/TUR-1/sources.toml"},
