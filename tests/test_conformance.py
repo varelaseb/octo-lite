@@ -492,6 +492,98 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertIn("ruling-15", text)
         self.assertIn("TUR-447", text)
 
+    def test_every_spawn_path_does_live_readback_before_its_spawn(self) -> None:
+        # TUR-447 F3 Unit H (role-runtime launch-readback, launch-entrypoint-revalidation,
+        # launch-gates-workflow-layer): the loop must obtain FRESH LIVE reads immediately
+        # before EVERY native spawn by spawning a read-only agentType:'Explore' subagent
+        # that performs the reads and RETURNS them, then feed them to assertLaunchReadback.
+        # The prior F3 defect ran readback ONLY in implement mode and TRUSTED a
+        # caller-supplied A.fresh_reads blob as if it were live; and spawnWorker /
+        # spawnOpenaiReviewer did no readback at all. These are structural assertions over
+        # the actual spawn paths.
+        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        code = strip_line_and_block_comments(text)
+
+        # A dedicated live-readback helper exists, spawns a read-only Explore subagent, and
+        # feeds the returned live reads to the pure readback gate. It never copies a
+        # caller-supplied fresh_reads blob.
+        self.assertIn("async function liveReadback", code)
+        readback = code[code.index("async function liveReadback"):code.index("function resolveLaunchRevision")]
+        self.assertIn("await agent(", readback)
+        self.assertIn("agentType: 'Explore'", readback)
+        self.assertLess(readback.index("await agent("), readback.index("assertLaunchReadback("))
+        # The live git HEAD is proven against the exact starting HEAD.
+        self.assertIn("git_head", readback)
+
+        # The loop must NOT trust a caller-supplied fresh_reads blob anywhere in live code:
+        # the only source of fresh reads is the spawned read-only reader.
+        self.assertNotIn("A.fresh_reads", code)
+        self.assertNotIn("required(A.fresh_reads", code)
+
+        # EVERY native spawn path calls liveReadback BEFORE its spawn. spawnWorker covers
+        # implementer (implement + fix) and qa-capture; spawnOpenaiReviewer covers
+        # code-reviewer and qa-reviewer. Each must readback before its first agent() spawn.
+        worker = code[code.index("async function spawnWorker"):code.index("async function spawnOpenaiReviewer")]
+        self.assertLess(worker.index("liveReadback("), worker.index("await agent("))
+        reviewer = code[code.index("async function spawnOpenaiReviewer"):code.index("async function loopFire")]
+        self.assertLess(reviewer.index("liveReadback("), reviewer.index("await agent("))
+
+    def test_every_delivery_mode_revalidates_launch_revision_from_required_not_stale(self) -> None:
+        # TUR-447 F3 Unit H (role-runtime launch-entrypoint-revalidation): launch_revision
+        # must be REQUIRED and revalidated against the bound inputs whose HEAD was proven
+        # live; it must never be recomputed from a possibly-stale caller fallback. The prior
+        # defect used `A.launch_revision ?? launchRevision(bound)`, which silently recomputed
+        # a revision from stale caller input and admitted it.
+        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        code = strip_line_and_block_comments(text)
+        # The stale-recompute fallback must be gone from every spawn path.
+        self.assertNotIn("A.launch_revision ?? launchRevision", code)
+        self.assertNotIn("A.launch_revision ??", code)
+        # The revision resolver requires the caller revision and revalidates it.
+        self.assertIn("function resolveLaunchRevision", code)
+        resolver = code[code.index("function resolveLaunchRevision"):code.index("async function spawnWorker")]
+        self.assertIn("required(A.launch_revision", resolver)
+        self.assertIn("assertLaunchRevision(revision, bound)", resolver)
+        # Both spawn paths resolve the revision through the required-revalidating resolver.
+        worker = code[code.index("async function spawnWorker"):code.index("async function spawnOpenaiReviewer")]
+        reviewer = code[code.index("async function spawnOpenaiReviewer"):code.index("async function loopFire")]
+        self.assertIn("resolveLaunchRevision(bound)", worker)
+        self.assertIn("resolveLaunchRevision(bound)", reviewer)
+
+    def test_every_delivery_mode_reaches_a_readback_revalidating_spawn_seam(self) -> None:
+        # TUR-447 F3 Unit H (role-runtime launch-gates-workflow-layer): readback plus
+        # launch-revision revalidation plus containment must run before the spawn in EVERY
+        # delivery mode, not just implement. implement and fix spawn the implementer through
+        # spawnWorker; qa-capture (evidence) spawns through spawnWorker; code-review and
+        # qa-review spawn through spawnOpenaiReviewer. Every one of those spawn functions
+        # runs liveReadback, resolveLaunchRevision, and assertContainment before its spawn.
+        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        code = strip_line_and_block_comments(text)
+        for func_name in ("async function spawnWorker", "async function spawnOpenaiReviewer"):
+            start = code.index(func_name)
+            # Bound the function body at the next top-level `async function`/`function` decl.
+            rest = code[start + len(func_name):]
+            nxt = re.search(r"\n(?:async )?function ", rest)
+            body = rest[:nxt.start()] if nxt else rest
+            first_spawn = body.index("await agent(")
+            for seam in ("assertAdmission(", "assertContainment(", "liveReadback(", "resolveLaunchRevision("):
+                self.assertIn(seam, body, f"{func_name} missing {seam}")
+                self.assertLess(
+                    body.index(seam), first_spawn,
+                    f"{func_name}: {seam} must run before the first spawn",
+                )
+        # Each delivery mode routes to one of those two seams; no mode spawns a worker
+        # without going through a readback-revalidating spawn function.
+        for mode_marker, spawn_call in (
+            ("if (mode === 'implement')", "spawnWorker('implementer'"),
+            ("if (mode === 'fix')", "spawnWorker('implementer'"),
+            ("if (mode === 'evidence')", "spawnWorker('qa-capture'"),
+            ("if (mode === 'code-review')", "spawnOpenaiReviewer('code-reviewer'"),
+            ("if (mode === 'qa-review')", "spawnOpenaiReviewer('qa-reviewer'"),
+        ):
+            block_start = code.index(mode_marker)
+            self.assertIn(spawn_call, code[block_start:block_start + 900])
+
     def test_loop_skill_directs_journal_based_gating_with_no_worker_receipt(self) -> None:
         # Deterministic wiring check only (prompt-tdd-deterministic): the installed
         # loop skill directs journal-plus-ack-echo gating and keeps the retired

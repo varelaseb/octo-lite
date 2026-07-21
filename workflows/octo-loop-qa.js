@@ -876,6 +876,22 @@ const FIRE_SCHEMA = {
   },
 }
 
+// Live-readback result shape (role-runtime launch-readback, launch-gates-workflow-layer).
+// The fresh reads are the exact fields assertLaunchReadback compares the caller envelope
+// against: the live Linear state and fingerprint, the live PR head, and the live branch.
+// The reader also returns the live git HEAD so the caller starting HEAD is proven live too.
+const FRESH_READS_SCHEMA = {
+  type: 'object',
+  required: ['linear_state', 'linear_fingerprint', 'pr_head', 'branch', 'git_head'],
+  properties: {
+    linear_state: { type: 'string' },
+    linear_fingerprint: { type: 'string' },
+    pr_head: { type: 'string' },
+    branch: { type: 'string' },
+    git_head: { type: 'string' },
+  },
+}
+
 // `required` is the embedded gates.mjs helper above (GATES-EMBED region), the
 // single source shared by the inline gates and this loop. A Workflow script is one
 // flat top-level scope, so re-declaring it here would be a duplicate top-level
@@ -905,6 +921,60 @@ function journalledBoundInputs(role, startingHead) {
   }
 }
 
+// Live readback immediately before EVERY native spawn (TUR-447 F3 Unit H; role-runtime
+// launch-readback, launch-gates-workflow-layer). The loop itself cannot read Linear, the
+// PR, or git (the Workflow sandbox has no filesystem or network), and it must NOT trust a
+// caller-supplied fresh_reads blob as if it were live: a stale caller could hand back an
+// internally-consistent blob that agrees with its own stale envelope. So the ONLY source
+// of fresh reads is a spawned read-only agentType:'Explore' subagent that performs the
+// live reads here and RETURNS them. assertLaunchReadback then compares the caller envelope
+// against those returned live reads and rejects a stale self-consistent envelope whose
+// Linear state, Linear fingerprint, PR head, or branch disagrees with the live read. The
+// live git HEAD is proven equal to the caller starting HEAD too, so a stale HEAD never
+// spawns. This runs before the ack/relay spawn in EVERY delivery mode (implement,
+// code-review, fix, qa-capture, qa-review), not just implement.
+async function liveReadback(role, phaseTitle, startingHead) {
+  const issue = required(A.issue, 'issue')
+  const pr = required(A.pr, 'pr')
+  const branch = required(A.branch, 'branch')
+  const fresh = await agent([
+    `You are a fresh READ-ONLY octo-lite readback subagent for the ${role} spawn. One pass;`,
+    'never mutate. Perform LIVE reads NOW, immediately before dispatch, and return them:',
+    `- linear_state and linear_fingerprint: the live Linear state and content fingerprint of ${issue}.`,
+    `- pr_head: the live PR head oid (gh pr view ${pr} --json headRefOid) of the PR.`,
+    `- branch: the live head branch of the PR (expected ${branch}).`,
+    '- git_head: the live git HEAD of the contained worktree (git rev-parse HEAD).',
+    'Read each one yourself from Linear, GitHub, and git; do NOT copy any value from this',
+    'prompt or from any caller-supplied blob. Return exactly the five fields.',
+  ].join('\n'), {
+    label: `${role}-readback:${issue}`, phase: phaseTitle, schema: FRESH_READS_SCHEMA,
+    agentType: 'Explore', effort: 'low',
+  })
+  if (fresh === null) throw new Error(`${role} live readback returned no result`)
+  // Pure readback gate: the caller envelope must agree with the live reads or no spawn.
+  assertLaunchReadback(A, fresh)
+  // The live git HEAD must equal the exact starting HEAD this pass binds; a stale HEAD
+  // recomputed from caller input never spawns.
+  required(startingHead, 'starting head')
+  if (fresh.git_head !== startingHead) {
+    throw new Error('stale envelope: git HEAD disagrees with fresh read')
+  }
+  return fresh
+}
+
+// Launch-revision resolution from the FRESH-read starting HEAD (TUR-447 F3 Unit H;
+// role-runtime launch-entrypoint-revalidation). launch_revision is REQUIRED; it is never
+// recomputed from a possibly-stale caller A.launch_revision fallback. The loop recomputes
+// the revision here from the bound inputs whose starting HEAD was just proven live by
+// liveReadback, then asserts the required caller revision equals it, so an omitted or
+// stale-derived revision is rejected and only a fresh-derived (or explicitly-required and
+// matching) revision admits.
+function resolveLaunchRevision(bound) {
+  const revision = required(A.launch_revision, 'launch revision')
+  assertLaunchRevision(revision, bound)
+  return revision
+}
+
 // Shared native spawn path for every worker pass (Unit B, TUR-447 F1): the admission
 // matrix plus Linear-state gate, worktree containment, and launch-revision revalidation
 // run before any subagent spawns, the journal records the exact bound inputs, and the
@@ -928,10 +998,15 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     required(A.worktree, 'worker worktree'),
   )
   const bound = journalledBoundInputs(role, startingHead)
-  // Launch-revision revalidation before spawn (launch-entrypoint-revalidation):
-  // a journalled revision that mismatches the exact bound inputs spawns nothing.
-  const revision = A.launch_revision ?? launchRevision(bound)
-  assertLaunchRevision(revision, bound)
+  // Live readback immediately before spawn (launch-readback, TUR-447 F3): a fresh
+  // read-only Explore subagent performs the live Linear/PR/branch/HEAD reads and the pure
+  // readback gate rejects a stale self-consistent caller envelope. No caller fresh_reads
+  // blob is trusted.
+  await liveReadback(role, phaseTitle, startingHead)
+  // Launch-revision revalidation before spawn (launch-entrypoint-revalidation): the
+  // revision is REQUIRED and revalidated against the bound inputs whose HEAD was just
+  // proven live; it is never recomputed from a stale caller fallback.
+  const revision = resolveLaunchRevision(bound)
   log(`journal spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash} ${revision}`)
   const brief = required(A.brief, 'pass brief')
   // Containment again at each child subagent spawn (launch-containment).
@@ -1056,8 +1131,12 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema) {
     required(A.worktree, 'worker worktree'),
   )
   const bound = journalledBoundInputs(role, startingHead)
-  const revision = A.launch_revision ?? launchRevision(bound)
-  assertLaunchRevision(revision, bound)
+  // Live readback immediately before the relay spawn (launch-readback, TUR-447 F3): the
+  // OpenAI reviewer relay path revalidates against fresh live reads exactly as the native
+  // worker path does, not just implement mode.
+  await liveReadback(role, phaseTitle, startingHead)
+  // Launch-revision REQUIRED and revalidated; never recomputed from a stale caller fallback.
+  const revision = resolveLaunchRevision(bound)
   log(`journal relay-spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash} ${revision}`)
   const brief = required(A.brief, 'pass brief')
   assertContainment(A.worktree_root, worktree)
@@ -1158,10 +1237,11 @@ async function loopFire() {
 
 if (mode === 'implement') {
   assertReadyEnvelope(A)
-  // Final exact Linear and PR readback before dispatch (launch-readback): fresh reads
-  // taken immediately before this invocation are explicit arguments, so a stale
-  // self-consistent envelope disagreeing with them never spawns.
-  assertLaunchReadback(A, required(A.fresh_reads, 'fresh reads'))
+  // Live readback runs inside spawnWorker immediately before every spawn (launch-readback,
+  // TUR-447 F3): the loop no longer trusts a caller-supplied fresh_reads blob. A fresh
+  // read-only Explore subagent performs the live reads and the readback gate rejects a
+  // stale self-consistent envelope with no spawn. This holds in EVERY delivery mode, not
+  // just implement.
   // Delivery entry: at Shaped this loop performs the Shaped -> Todo loop fire and
   // verifies the Todo readback before the implementer spawns; there is no path to a
   // delivery worker spawn at Shaped without that prior fire. The single ruling-15
