@@ -177,14 +177,76 @@ def _carried_issues(linear_decl) -> list[str]:
     return ordered
 
 
+_TUR_TOKEN = re.compile(r"\b([A-Za-z]+-\d+)\b")
+
+
+def _normalize_issue(token: str) -> str:
+    """Normalize a carried-issue token to canonical upper prefix (TUR-479)."""
+    return token.upper()
+
+
+def _envelope_carried_issues(stream_dir: Path) -> list[str]:
+    """Derive carried issues from every review/delivery envelope in the stream:
+    each *envelope*.toml with a top-level string `issue = "TUR-<n>"` (sweep-
+    carried-issues). Real production streams have no sources.toml; the shaping,
+    code, and delivery review envelopes carry the bound issue at top level."""
+    issues: list[str] = []
+    for path in sorted(stream_dir.glob("*envelope*.toml")):
+        try:
+            envelope = load_toml(path)
+        except Exception:
+            continue
+        value = envelope.get("issue")
+        if isinstance(value, str) and value.strip():
+            issues.append(_normalize_issue(value.strip()))
+    return issues
+
+
+def _status_line_carried_issues(stream_dir: Path) -> list[str]:
+    """Derive carried issues from the stream status.md ANCHORED `Issues:` line
+    only (sweep-carried-issues). Real tf-password-reset shape declares carried
+    issues on `Issues: TUR-454 (...) - TUR-479 (...)`. CRITICAL noise guard: only
+    the anchored `^Issues:` line is parsed; free prose TUR-ids elsewhere in the
+    roadmap status are never scanned or surfaced."""
+    status_path = stream_dir / "status.md"
+    if not status_path.is_file():
+        return []
+    try:
+        text = status_path.read_text()
+    except Exception:
+        return []
+    match = re.search(r"^Issues:\s*(.+)$", text, re.MULTILINE)
+    if not match:
+        return []
+    return [_normalize_issue(token) for token in _TUR_TOKEN.findall(match.group(1))]
+
+
+def _derive_carried_issues(stream_dir: Path, linear_decl) -> list[str]:
+    """Union of carried issues in priority order (sweep-carried-issues): explicit
+    sources.toml [linear] issue/issues, then every review/delivery envelope's
+    top-level issue, then the status.md anchored `Issues:` line. Deduped, case-
+    insensitive TUR match, normalized to upper. Only structured declarations are
+    read; free prose is never scanned."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for issue in (
+        *_carried_issues(linear_decl),
+        *_envelope_carried_issues(stream_dir),
+        *_status_line_carried_issues(stream_dir),
+    ):
+        key = issue.upper()
+        if key not in seen:
+            seen.add(key)
+            ordered.append(issue)
+    return ordered
+
+
 def declared_stream_facts(stream_dir: Path) -> dict:
     sources_path = stream_dir / "sources.toml"
-    if not sources_path.is_file():
-        return {}
-    declared = load_toml(sources_path)
+    declared = load_toml(sources_path) if sources_path.is_file() else {}
     linear_decl = declared.get("linear")
     pr_decl = declared.get("pull_request")
-    carried = _carried_issues(linear_decl)
+    carried = _derive_carried_issues(stream_dir, linear_decl)
     pr_repo = str(pr_decl["repo"]) if isinstance(pr_decl, dict) and pr_decl.get("repo") else None
     pr_number = int(pr_decl["number"]) if isinstance(pr_decl, dict) and pr_decl.get("number") else None
     facts: dict = {}

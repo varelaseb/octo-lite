@@ -3011,3 +3011,114 @@ class OperatorGateTests(unittest.TestCase):
             self.assertFalse((waits_dir / "scratch-ask.toml").is_file())
             after = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
             self.assertNotIn("OPERATOR ACTION NEEDED: scratch-ask asks:", after.stdout)
+
+    # TUR-489 real-stream shape: production streams have NO sources.toml and NO
+    # receipt [issue] table. Carried issues are DERIVED from the stream's other
+    # structured declarations (review/delivery envelopes and the status Issues
+    # line). These tests reproduce the exact tf-password-reset shape that the
+    # sources.toml-only Source A missed live.
+
+    def test_RT_status_line_derives_carried_issues_from_status_issues_line(self) -> None:
+        # Exact tf-password-reset shape: no sources.toml, no receipt [issue],
+        # only an anchored `Issues:` line carrying TUR-454 + TUR-479. TUR-479 is
+        # In Staging (operator-gated) and must surface loudly.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-password-reset"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text(
+                "# tf-password-reset\n\n"
+                "Outcome: shaping\n"
+                "Issues: TUR-454 (Todo, PARKED behind infra) - TUR-479 (Shaped -> In Staging)\n"
+            )
+            # A receipt exists but carries NO [issue] table (confirmed real shape).
+            (stream / "receipt.toml").write_text(
+                'schema_version = 1\n\n[bootstrap]\nprovider_session_id = "sess-x"\n'
+                '\n[workspace]\nworktree = "/nonexistent/wt"\n'
+            )
+            self.assertFalse((stream / "sources.toml").exists())
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-454": "Todo", "TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["HOME"] = str(base)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            calls = log.read_text().splitlines()
+            # BOTH carried issues are read from Linear.
+            self.assertTrue(any("TUR-454" in line and line.startswith("linear ") for line in calls))
+            self.assertTrue(any("TUR-479" in line and line.startswith("linear ") for line in calls))
+            # TUR-479 In Staging surfaces loudly.
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", log.read_text())
+
+    def test_RT_envelope_derives_carried_issue_from_review_envelope(self) -> None:
+        # A stream with a shaping-review-envelope.toml top-level issue and NO
+        # sources.toml: the envelope's issue is derived and read.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-envelope"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: shaping\n")
+            (stream / "shaping-review-envelope.toml").write_text(
+                'schema_version = 1\nissue = "TUR-456"\npurpose = "shaping-review"\n'
+            )
+            self.assertFalse((stream / "sources.toml").exists())
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-456": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["HOME"] = str(base)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            calls = log.read_text().splitlines()
+            self.assertTrue(any("TUR-456" in line and line.startswith("linear ") for line in calls))
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-456 In Staging", result.stdout)
+
+    def test_RT_noise_guard_prose_tur_ids_never_surface(self) -> None:
+        # A status.md that mentions many TUR-ids in PROSE (roadmap narrative),
+        # none on an anchored `Issues:` line: NONE of them are derived or read,
+        # so the stream contributes NO operator-gate line.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-roadmap"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text(
+                "# Roadmap status\n\n"
+                "This quarter touches TUR-101, TUR-107, and later TUR-222.\n"
+                "Prior work in TUR-303 and TUR-404 informs TUR-505 planning.\n"
+            )
+            self.assertFalse((stream / "sources.toml").exists())
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            # Even if these ids WERE gated, they must never be read.
+            state_map.write_text(json.dumps({
+                "TUR-101": "In Staging", "TUR-107": "In Staging",
+                "TUR-222": "In Staging", "TUR-303": "In Staging",
+                "TUR-404": "In Staging", "TUR-505": "In Staging",
+            }))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["HOME"] = str(base)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertNotIn("OPERATOR ACTION NEEDED", result.stdout)
+            gate = _sweep_stdout_json(result.stdout).get("operator_gate", [])
+            self.assertEqual([], gate)
+            # No prose TUR-id was ever read from Linear.
+            for pid in ("TUR-101", "TUR-107", "TUR-222", "TUR-303", "TUR-404", "TUR-505"):
+                self.assertFalse(
+                    any(pid in line and line.startswith("linear ") for line in log.read_text().splitlines()),
+                    f"{pid} must not be read from Linear",
+                )
