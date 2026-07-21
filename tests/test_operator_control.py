@@ -2201,11 +2201,11 @@ if __name__ == "__main__":
 
 
 class SweepStreamLivenessTests(unittest.TestCase):
-    # sweep-stream-liveness and sweep-suspected-stuck (ruling-19): the sweep
-    # reports per-stream status age, pane activity, wait owner with the verbatim
-    # open operator ask, in-flight workflow ids, and the undelivered queue, and
-    # classifies idle-without-wait-owner as suspected-stuck.
-    def test_stream_liveness_reports_wait_owner_verbatim_ask_and_suspected_stuck(self) -> None:
+    # sweep-stream-liveness and sweep-suspected-stuck (ruling-19, refined):
+    # liveness derives from session transcript mtime plus pane state, never
+    # status-file age alone; an ask older than subsequent session activity is
+    # presumed consumed; outputs are stable mtimes so unchanged stays no-op.
+    def test_stream_liveness_open_wait_consumed_ask_and_suspected_stuck(self) -> None:
         module = _load_operator_sweep_module()
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -2216,33 +2216,54 @@ class SweepStreamLivenessTests(unittest.TestCase):
             waiting = base / "streams" / "tur-1"
             waiting.mkdir(parents=True)
             (waiting / "status.md").write_text("# s\n")
-            os.utime(waiting / "status.md", (now - 7200, now - 7200))
+            os.utime(waiting / "status.md", (now - 9000, now - 9000))
+            (waiting / "transcript.jsonl").write_text("{}\n")
+            os.utime(waiting / "transcript.jsonl", (now - 600, now - 600))
             (waiting / "waiting.toml").write_text(
                 'owner = "operator"\nask = "Please approve the suite at the served pages."\n'
             )
+            os.utime(waiting / "waiting.toml", (now - 300, now - 300))
             (waiting / "inflight.toml").write_text('workflows = ["wf_abc123-def"]\n')
             (queue / "20260720T000001-tur-1.json").write_text("{}")
+
+            live = module.stream_liveness(waiting, queue, idle_seconds=3600, now=now)
+            # ask recorded AFTER the last session activity: open wait, verbatim ask.
+            self.assertEqual("waiting", live["classification"])
+            self.assertEqual("operator", live["wait_owner"])
+            self.assertEqual("Please approve the suite at the served pages.", live["open_ask"])
+            self.assertFalse(live["ask_consumed"])
+            self.assertEqual(["wf_abc123-def"], live["inflight_workflows"])
+            self.assertEqual(["20260720T000001-tur-1.json"], live["undelivered_queue"])
+            self.assertEqual(int(now - 600), live["transcript_mtime"])
+            self.assertIn("pane_activity", live)
+
+            # session activity AFTER the recorded ask: presumed consumed, no open wait,
+            # fresh transcript keeps the stream active despite an old status file.
+            os.utime(waiting / "transcript.jsonl", (now - 60, now - 60))
+            consumed = module.stream_liveness(waiting, queue, idle_seconds=3600, now=now)
+            self.assertTrue(consumed["ask_consumed"])
+            self.assertEqual("", consumed["wait_owner"])
+            self.assertEqual("active", consumed["classification"])
 
             stuck = base / "streams" / "tur-2"
             stuck.mkdir(parents=True)
             (stuck / "status.md").write_text("# s\n")
-            os.utime(stuck / "status.md", (now - 7200, now - 7200))
-
-            live_waiting = module.stream_liveness(waiting, queue, idle_seconds=3600, now=now)
-            self.assertEqual("waiting", live_waiting["classification"])
-            self.assertEqual("operator", live_waiting["wait_owner"])
-            self.assertEqual(
-                "Please approve the suite at the served pages.", live_waiting["open_ask"]
-            )
-            self.assertEqual(["wf_abc123-def"], live_waiting["inflight_workflows"])
-            self.assertEqual(["20260720T000001-tur-1.json"], live_waiting["undelivered_queue"])
-            self.assertEqual(7200, int(live_waiting["status_age_seconds"]))
-            self.assertIn("pane_activity", live_waiting)
-
+            os.utime(stuck / "status.md", (now - 9000, now - 9000))
             live_stuck = module.stream_liveness(stuck, queue, idle_seconds=3600, now=now)
             self.assertEqual("suspected-stuck", live_stuck["classification"])
-            self.assertEqual("", live_stuck["wait_owner"])
             self.assertEqual([], live_stuck["undelivered_queue"])
+
+    def test_liveness_outputs_are_stable_between_runs_for_an_unchanged_stream(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            queue = base / "herdr-queue"
+            stream = base / "streams" / "tur-3"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("# s\n")
+            first = module.stream_liveness(stream, queue, idle_seconds=3600, now=2_000_000.0)
+            second = module.stream_liveness(stream, queue, idle_seconds=3600, now=2_000_005.0)
+            self.assertEqual(first, second)
 
     def test_snapshot_includes_the_stream_liveness_section(self) -> None:
         source = SWEEP.read_text()

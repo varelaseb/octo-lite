@@ -168,21 +168,33 @@ def declared_stream_facts(stream_dir: Path) -> dict:
 
 def stream_liveness(stream_dir: Path, queue_dir: Path, *, idle_seconds: int, now: float | None = None) -> dict:
     """Per-stream liveness per sweep-stream-liveness and sweep-suspected-stuck
-    (ruling-19): status age, pane activity, wait owner with the verbatim open
-    operator ask, in-flight workflow ids, undelivered queue, classification."""
+    (ruling-19, refined): liveness derives from session transcript mtime plus
+    pane state, never status-file age alone; a recorded operator ask older than
+    subsequent session activity is presumed consumed and is not an open wait.
+    Outputs are stable file mtimes so an unchanged control dir stays a no-op."""
     current = time.time() if now is None else now
-    status = stream_dir / "status.md"
-    status_age = current - status.stat().st_mtime if status.is_file() else None
-    pane_file = stream_dir / "pane-activity.txt"
-    pane_activity = (
-        f"{int(current - pane_file.stat().st_mtime)}s" if pane_file.is_file() else "unknown"
-    )
-    wait_owner, open_ask = "", ""
+
+    def mtime(path: Path) -> int | None:
+        return int(path.stat().st_mtime) if path.is_file() else None
+
+    status_mtime = mtime(stream_dir / "status.md")
+    transcript_mtime = mtime(stream_dir / "transcript.jsonl")
+    pane_mtime = mtime(stream_dir / "pane-activity.txt")
+    activity_candidates = [value for value in (transcript_mtime, pane_mtime) if value is not None]
+    activity_mtime = max(activity_candidates) if activity_candidates else None
+
+    wait_owner, open_ask, ask_consumed = "", "", False
     waiting_path = stream_dir / "waiting.toml"
+    waiting_mtime = mtime(waiting_path)
     if waiting_path.is_file():
         waiting = load_toml(waiting_path)
-        wait_owner = str(waiting.get("owner") or "")
-        open_ask = str(waiting.get("ask") or "")
+        recorded_owner = str(waiting.get("owner") or "")
+        recorded_ask = str(waiting.get("ask") or "")
+        if activity_mtime is not None and waiting_mtime is not None and waiting_mtime < activity_mtime:
+            ask_consumed = True
+        elif recorded_owner:
+            wait_owner, open_ask = recorded_owner, recorded_ask
+
     inflight: list[str] = []
     inflight_path = stream_dir / "inflight.toml"
     if inflight_path.is_file():
@@ -193,18 +205,24 @@ def stream_liveness(stream_dir: Path, queue_dir: Path, *, idle_seconds: int, now
         if queue_dir.is_dir()
         else []
     )
-    idle = status_age is None or status_age > idle_seconds
+
+    newest = max(
+        [value for value in (activity_mtime, status_mtime, waiting_mtime) if value is not None],
+        default=None,
+    )
     if wait_owner:
         classification = "waiting"
-    elif idle:
+    elif newest is None or (current - newest) > idle_seconds:
         classification = "suspected-stuck"
     else:
         classification = "active"
     return {
-        "status_age_seconds": status_age,
-        "pane_activity": pane_activity,
+        "status_mtime": status_mtime,
+        "transcript_mtime": transcript_mtime,
+        "pane_activity": f"mtime:{pane_mtime}" if pane_mtime is not None else "unknown",
         "wait_owner": wait_owner,
         "open_ask": open_ask,
+        "ask_consumed": ask_consumed,
         "inflight_workflows": inflight,
         "undelivered_queue": undelivered,
         "classification": classification,
