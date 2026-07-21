@@ -390,6 +390,18 @@
           }
         },
         {
+          "name": "tdd-observer",
+          "x": 70,
+          "y": 950,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
           "name": "claude-fable-5 xhigh",
           "x": 600,
           "y": 70,
@@ -516,6 +528,14 @@
           }
         },
         {
+          "source": "tdd-observer",
+          "target": "claude-sonnet-5 high",
+          "value": "fresh",
+          "lineStyle": {
+            "curveness": 0.12
+          }
+        },
+        {
           "source": "shaping-reviewer",
           "target": "gpt-5.6-sol xhigh fast",
           "value": "fresh",
@@ -549,7 +569,7 @@
   ]
 }
 </script>
-<div data-render-target="chart" style="min-height: 760px"></div>
+<div data-render-target="chart" style="min-height: 860px"></div>
 </section>
 
 <section data-anchor="diagram-role-resolution" id="diagram-role-resolution">
@@ -1164,7 +1184,7 @@
 
 <section data-anchor="role-topology" id="role-topology">
 <h2>Role and model topology</h2>
-<p data-anchor="role-roster" id="role-roster">The complete LLM role roster is meta-operator, orchestrator, shaping-reviewer, implementer, code-reviewer, qa-capture, qa-reviewer, and reconciler.</p>
+<p data-anchor="role-roster" id="role-roster">The complete LLM role roster is meta-operator, orchestrator, shaping-reviewer, implementer, code-reviewer, qa-capture, qa-reviewer, reconciler, and the delivery <code>tdd-observer</code>.</p>
 <p data-anchor="role-shaping-mode" id="role-shaping-mode">The issue orchestrator performs shaping mode by resolving the issue-shaper skill in its own persistent session, never a second persistent role or tab.</p>
 <p data-anchor="role-fix-reuse" id="role-fix-reuse">Every fix uses a fresh implementer instance and every re-review uses a fresh code-reviewer instance rather than separate role contracts.</p>
 <p data-anchor="role-nested-reuse" id="role-nested-reuse">Every nested stream owner uses the same orchestrator contract.</p>
@@ -1174,7 +1194,7 @@
 <p data-anchor="role-nested-rules" id="role-nested-rules">A parent flattens relevant effective rules into the child brief; the child acknowledges them only at spawn or after a material brief revision.</p>
 <p data-anchor="role-helper-boundary" id="role-helper-boundary">Acceptance recording, merge, evidence publication, Linear transition, preproduction promotion, and live traffic shift are deterministic operator-authorized helpers rather than LLM roles.</p>
 <p data-anchor="role-control-view" id="role-control-view">The dashboard displays deterministic gates and helpers separately from LLM roles.</p>
-<p data-anchor="role-model-map-authority" id="role-model-map-authority">The exact model, effort, and service tier for every role are normative in the role and model map diagram above; the constraints below never restate that mapping.</p>
+<p data-anchor="role-model-map-authority" id="role-model-map-authority">The exact model, effort, and service tier for every role, including the delivery <code>tdd-observer</code>, are normative in the role and model map diagram above; the constraints below never restate that mapping.</p>
 <p data-anchor="role-fable" id="role-fable">The meta-operator runs in auto permission mode.</p>
 <p data-anchor="role-fable-context" id="role-fable-context">Fable 5 uses its default 1M context without a redundant <code>[1m]</code> suffix.</p>
 <p data-anchor="role-fable-no-fallback" id="role-fable-no-fallback">An unavailable Fable 5 fails visibly and is never silently replaced by Opus or another model.</p>

@@ -955,6 +955,8 @@ class CutoverConformanceTests(unittest.TestCase):
             "test_rejection_abandons_unpushed_branch",
             "test_final_head_independently_verified_green",
             "test_push_readback_uses_live_remote",
+            "test_observer_command_source_is_host_trusted",
+            "test_final_head_binds_test_identity",
         )
         for name in named_tests:
             self.assertIn(f"<code>{name}</code>", delivery, name)
@@ -1011,6 +1013,92 @@ class CutoverConformanceTests(unittest.TestCase):
             "the observer checks out only host-journalled commits",
             delivery,
         )
+
+    def test_shaping_tighten2_closes_three_residual_completeness_gaps(self) -> None:
+        # TUR-447 reshape tighten-2 (shaping-review #2 BLOCKING, gpt-5.6-sol):
+        # F1 the canonical tdd-observer role contract REQUIRES host-journal provenance
+        # for commits AND the AGENTS.md canonical command, rejecting worker-authored
+        # inputs; F2 the roster prose and the model-map diagram include tdd-observer;
+        # F3 the final-HEAD observation binds the test identity (path + digest), not
+        # merely a green execution.
+        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
+        role_runtime = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
+        observer_contract = (ROOT / "roles/tdd-observer.md").read_text()
+
+        # F1 host-journal provenance is REQUIRED by the sole canonical role contract
+        # (role-contract-source): commit ids from the host journal binding of the
+        # worker committed delivery branch AND the command is the AGENTS.md canonical
+        # validation command supplied by the host, rejecting worker-authored inputs.
+        self.assertIn("host journal binding of the worker committed delivery branch", observer_contract)
+        self.assertIn("canonical validation command from the target AGENTS.md supplied by the host", observer_contract)
+        self.assertIn("REQUIRED", observer_contract)
+        self.assertIn("REJECT any input not so sourced", observer_contract)
+        self.assertIn("never a worker-authored commit id, command", observer_contract)
+        self.assertIn("Check out exactly the host-journalled commits; never a worker-claimed commit", observer_contract)
+        # The command-provenance named test is enumerated in the delivery named-tests.
+        self.assertIn('data-anchor="delivery-tdd-named-test-command-source-host-trusted"', delivery)
+        self.assertIn("<code>test_observer_command_source_is_host_trusted</code>", delivery)
+        self.assertIn(
+            "the observer's test command is the canonical validation command from the target <code>AGENTS.md</code> supplied by the host",
+            delivery,
+        )
+        self.assertIn("a worker-authored command string is rejected rather than executed", delivery)
+
+        # F2 tdd-observer appears in the role-roster prose AND role-model-map-authority
+        # AND the model-map diagram semantic-island JSON (node + link).
+        self.assertIn(
+            "reconciler, and the delivery <code>tdd-observer</code>",
+            role_runtime,
+        )
+        self.assertIn(
+            "The exact model, effort, and service tier for every role, including the delivery <code>tdd-observer</code>",
+            role_runtime,
+        )
+        # The diagram semantic island (JSON script block) includes a tdd-observer node
+        # and a link to its resolved model, and parses as valid JSON.
+        import json, re
+        model_map = re.search(
+            r'data-anchor="diagram-role-model-map".*?<script type="application/spec\+json"[^>]*>(.*?)</script>',
+            role_runtime,
+            re.S,
+        )
+        self.assertIsNotNone(model_map, "diagram-role-model-map island not found")
+        island = json.loads(model_map.group(1))
+        node_names = {n["name"] for n in island["series"][0]["data"]}
+        self.assertIn("tdd-observer", node_names)
+        link_sources = {l["source"] for l in island["series"][0]["links"]}
+        self.assertIn("tdd-observer", link_sources)
+        observer_link = next(l for l in island["series"][0]["links"] if l["source"] == "tdd-observer")
+        self.assertEqual(observer_link["target"], "claude-sonnet-5 high")
+
+        # F3 the final-HEAD observation binds the bound test identity (path + content
+        # digest), not merely a green execution, in both spec anchors and the contract.
+        self.assertIn('data-anchor="delivery-tdd-final-head-test-identity"', delivery)
+        self.assertIn('id="delivery-tdd-final-head-test-identity"', delivery)
+        self.assertIn(
+            "the bound test is present unchanged at the final pushed HEAD by the same path and content digest",
+            delivery,
+        )
+        self.assertIn("not merely that tests pass", delivery)
+        self.assertIn(
+            "a final HEAD whose bound test a refactor weakened, edited, or removed",
+            delivery,
+        )
+        # The delivery-loop mirror also carries the final-HEAD test-identity confirmation.
+        self.assertIn(
+            "the same path and content digest as the red and green bound test under <code>delivery-tdd-final-head-test-identity</code>",
+            delivery,
+        )
+        # The canonical role contract confirms the final-HEAD test identity too.
+        self.assertIn("at the final pushed HEAD", observer_contract)
+        self.assertIn("removes, weakens, or edits the bound test is rejected even when tests pass", observer_contract)
+        # The final-HEAD test-identity named test is enumerated.
+        self.assertIn('data-anchor="delivery-tdd-named-test-final-head-test-identity"', delivery)
+        self.assertIn("<code>test_final_head_binds_test_identity</code>", delivery)
+
+        # No Markdown counterpart is generated for either spec-chat canonical document.
+        self.assertFalse((ROOT / "spec/domains/delivery-lifecycle.spec.md").exists())
+        self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
 
 
 if __name__ == "__main__":
