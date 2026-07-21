@@ -731,6 +731,47 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertIn("no generated Codex custom-agent", text)
         self.assertIn("codex exec", text)
 
+    def test_cutover_spec_documents_reconciler_execution_bifurcation_and_headless_timer_constraint(self) -> None:
+        # TUR-447 F4b-DOC (ruling-48): the canonical cutover spec must document the
+        # reconciler execution BIFURCATION (headless subprocess reconcile vs session
+        # Workflow reconcile) and the HEADLESS-TIMER CONSTRAINT that retains the
+        # subprocess provider-argv relay. ruling-47/48 voided the reconcile-relay removal,
+        # so the spec must state the relay is RETAINED, not a bypass, and MUST NOT be
+        # removed. These are structural assertions over stable data-anchors plus the
+        # load-bearing phrases in the canonical role-runtime.spec.html.
+        text = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
+        for anchor in (
+            "role-reconciler-execution-bifurcation",
+            "role-reconciler-headless-subprocess",
+            "role-reconciler-session-workflow",
+            "role-reconciler-headless-timer-constraint",
+            "role-reconciler-relay-retained",
+        ):
+            self.assertIn(f'data-anchor="{anchor}"', text, anchor)
+            self.assertIn(f'id="{anchor}"', text, anchor)
+        # The two modes are named with their exact drivers.
+        self.assertIn("prepare_reconcile_launch", text)
+        self.assertIn("run_reconcile_launch", text)
+        self.assertIn("bind_reconcile_workflow_journal", text)
+        self.assertIn("verify_reconcile_workflow_ack", text)
+        self.assertIn("bind_reconcile_workflow_result", text)
+        # The headless driver is the systemd --user timer subprocess with no
+        # Claude or Workflow runtime, driving the retained subprocess provider-argv relay.
+        self.assertIn("systemd --user timer", text)
+        self.assertIn("provider-argv relay", text)
+        # The constraint: a systemd --user timer cannot spawn a Workflow subagent, so the
+        # subprocess relay is RETAINED, not a bypass, and MUST NOT be removed; the
+        # Workflow-native reconciler is for session contexts only.
+        self.assertIn("cannot spawn a Workflow subagent", text)
+        self.assertIn("retained", text)
+        self.assertIn("must not be removed", text)
+        self.assertIn("not a bypass", text)
+        # ruling-47/48 voided the reconcile-relay removal, and this is why.
+        self.assertIn("ruling-47", text)
+        self.assertIn("ruling-48", text)
+        # No Markdown counterpart is generated for this spec-chat canonical document.
+        self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
+
     def test_generic_spec_does_not_define_target_deployment_state_mapping(self) -> None:
         text = (ROOT / "spec/domains/operating-model.spec.html").read_text()
         self.assertIn("linear-deployment-target-owned", text)
