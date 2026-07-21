@@ -526,6 +526,71 @@ exec {real_mv} "$@"
             self.assertEqual(0, acked.returncode, acked.stderr)
             self.assertFalse(stamp_path.is_file())
 
+    def test_errored_target_resolution_leaves_a_wait_the_operator_can_clear_by_ack(self):
+        # TUR-447 cycle1 pass5b: the empty-pane case above resolves cleanly to an
+        # empty pane_id (agent get exits 0). But when `herdr agent get` exits
+        # NON-ZERO (a hard error, not empty) the pane command substitution must not
+        # abort herdr-say under set -euo pipefail before the write_state pending
+        # guard. Both an empty AND an errored resolution must fall through to exit
+        # 66 with a clearable message-state file, so herdr-ack of that exact id can
+        # acknowledge and clear the orphan operator wait. At prior HEAD the command
+        # substitution killed herdr-say (rc != 66) and wrote no message state, so
+        # the stamped wait was orphaned and unacknowledgeable.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "herdr"
+            # agent get exits NON-ZERO: a hard error, distinct from the empty-pane
+            # case. herdr-say must still exit 66 after the wait stamp is written.
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -eu\n"
+                'if [[ "$1 $2" == "agent get" ]]; then\n'
+                "  echo 'hard error' >&2\n"
+                "  exit 3\n"
+                "else\n"
+                "  exit 0\n"
+                "fi\n"
+            )
+            fake.chmod(0o755)
+            env = dict(os.environ)
+            env.update(
+                PATH=f"{fake_bin}:{env['PATH']}",
+                XDG_STATE_HOME=str(root / "state"),
+                OCTO_STREAM="scratch-ask",
+            )
+            ask = "Approve promotion of TUR-447 to Live?"
+            said = subprocess.run(
+                ["bash", str(SAY), "--kind", "question", "operator-1", ask],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(66, said.returncode, said.stderr)
+
+            states = list((root / "state/octo-lite/messages").glob("*.toml"))
+            self.assertEqual(1, len(states), said.stderr)
+            with states[0].open("rb") as handle:
+                self.assertEqual("pending", tomllib.load(handle)["status"])
+
+            waits_dir = root / "state/octo-lite/operator-waits"
+            stamp_path = waits_dir / "scratch-ask.toml"
+            self.assertTrue(stamp_path.is_file(), said.stderr)
+            with stamp_path.open("rb") as handle:
+                stamp = tomllib.load(handle)
+            message_id = stamp["message_id"]
+            self.assertEqual(message_id, states[0].stem)
+
+            # The advertised clear path: herdr-ack of that exact message id must
+            # succeed and remove both the message state and the orphan wait stamp.
+            acked = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "operator-1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, acked.returncode, acked.stderr)
+            self.assertFalse(stamp_path.is_file())
+            with states[0].open("rb") as handle:
+                self.assertEqual("acknowledged", tomllib.load(handle)["status"])
+
     def test_info_kind_never_carries_an_ack_instruction_or_claims_acknowledged(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")

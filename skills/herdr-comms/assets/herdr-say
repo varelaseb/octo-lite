@@ -70,7 +70,16 @@ write_state() {
 
 case "$target" in
   *:p*) pane="$target" ;;
-  *) pane="$(herdr agent get "$target" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" ;;
+  *)
+    # TUR-447: a NON-ZERO `herdr agent get` (a hard error, not an empty pane)
+    # must not abort herdr-say under set -euo pipefail before the write_state
+    # pending guard below, or the pre-transport operator-wait stamp is orphaned.
+    # Capture resolution tolerantly so BOTH an empty AND an errored resolution
+    # fall through to the unresolved-target pending path.
+    pane=""
+    resolved="$(herdr agent get "$target" 2>/dev/null || true)"
+    pane="$(printf '%s' "$resolved" | jq -r '.result.agent.pane_id // empty' 2>/dev/null || true)"
+    ;;
 esac
 # TUR-447: a --kind question with OCTO_STREAM already wrote a pre-transport
 # operator-wait stamp keyed to this exact message id. If the target is now
