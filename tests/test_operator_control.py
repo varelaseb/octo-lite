@@ -2951,6 +2951,81 @@ class OperatorGateTests(unittest.TestCase):
             liveness = json.loads((control / "liveness.json").read_text())
             self.assertEqual("waiting-on-operator", liveness["tf-carrier"]["classification"])
 
+    def test_t4b_source_a_gate_wait_carries_operator_owner_and_gate_reason(self) -> None:
+        # RULING-46 / ruling-46 (TUR-489): a Source-A-ONLY gated stream (carried
+        # issue in an operator-gated Linear state, NO operator-waits stamp, NO
+        # status waiting-on line) must ALSO carry wait_owner=operator and an
+        # open_ask holding the gate reason, so every waiting-on-operator stream
+        # shares one taxonomy and the reconciler stops flagging empty wait_owner.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/src-a-only"
+            stream.mkdir(parents=True)
+            # No waiting-on line; the operator gate is derived purely from state.
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["HOME"] = str(base)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            entry = json.loads((control / "liveness.json").read_text())["src-a-only"]
+            self.assertEqual("waiting-on-operator", entry["classification"])
+            self.assertEqual("operator", entry["wait_owner"])
+            self.assertIn("TUR-479", entry["open_ask"])
+            self.assertIn("In Staging", entry["open_ask"])
+            self.assertFalse(entry["ask_consumed"])
+            # The loud operator-gate lines are unchanged by the taxonomy fix.
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
+
+    def test_t4c_source_b_ask_and_non_gated_stream_taxonomy_unchanged(self) -> None:
+        # Regression: a Source-B stamped stream keeps wait_owner=operator with its
+        # verbatim ask, and a non-gated active stream keeps wait_owner='' with its
+        # normal (non-operator) classification.
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            projects = base / "projects"
+            projects.mkdir()
+            inbox = base / "inbox"
+            messages = base / "messages"
+            messages.mkdir()
+
+            # Source-B stamped stream: verbatim status ask preserved, owner operator.
+            stream_b = control_stream = base / "streams" / "src-b"
+            stream_b.mkdir(parents=True)
+            (stream_b / "status.md").write_text("- waiting-on: operator: Approve promotion of TUR-479?\n")
+            os.utime(stream_b / "status.md", (now - 60, now - 60))
+            live_b = module.stream_liveness(
+                stream_b, inbox, messages, idle_seconds=3600, now=now,
+                projects_root=projects, operator_gated=True,
+                operator_gate_reason="TUR-479 In Staging - verify staging then promote or hold",
+            )
+            self.assertEqual("waiting-on-operator", live_b["classification"])
+            self.assertEqual("operator", live_b["wait_owner"])
+            # A real Source-B/status open ask is preferred over the gate reason.
+            self.assertEqual("Approve promotion of TUR-479?", live_b["open_ask"])
+
+            # Non-gated active stream: no operator owner, normal classification.
+            stream_c = base / "streams" / "src-c"
+            stream_c.mkdir(parents=True)
+            (stream_c / "status.md").write_text("Outcome: working\n")
+            os.utime(stream_c / "status.md", (now - 30, now - 30))
+            live_c = module.stream_liveness(
+                stream_c, inbox, messages, idle_seconds=3600, now=now,
+                projects_root=projects, operator_gated=False,
+            )
+            self.assertEqual("", live_c["wait_owner"])
+            self.assertEqual("", live_c["open_ask"])
+            self.assertIn(live_c["classification"], {"active", "suspected-stuck"})
+
     def test_t5_source_b_operator_ask_surfaces_then_clears_on_ack(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

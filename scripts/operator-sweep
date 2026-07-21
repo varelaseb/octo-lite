@@ -373,6 +373,23 @@ def operator_gate_lines(stream_dirs: list[Path], facts: dict, waits_root: Path) 
     return lines
 
 
+def _stream_gate_reason(stream_dir: Path, stream_facts, waits_root: Path) -> str:
+    """The per-stream operator-gate reason (sweep-operator-gate-classify / ruling-46):
+    the same gate content that drives classification, so every waiting-on-operator
+    stream carries a non-empty open_ask under wait_owner=operator and the taxonomy
+    stays unified with no empty-wait_owner third bucket. Source A is each carried
+    operator-gated issue as '<ID> <STATE> - <action>'; Source B is each open
+    operator ask. Multiple reasons join with '; '."""
+    reasons: list[str] = []
+    if isinstance(stream_facts, dict):
+        for identifier, state in _gated_carried_states(stream_facts):
+            action = OPERATOR_GATE_ACTION.get(state, "review and act")
+            reasons.append(f"{identifier} {state} - {action}")
+    for wait in operator_waits(waits_root, stream_dir.name):
+        reasons.append(wait["ask"])
+    return "; ".join(reasons)
+
+
 def degraded_read_notes(stream_dirs: list[Path], facts: dict) -> list[str]:
     """Distinct, clearly-labeled degraded-read notes (sweep-graceful-degradation):
     one per carried issue whose Linear read failed and was skipped. Deliberately NOT
@@ -417,7 +434,7 @@ def _stream_transcript_paths(stream_dir: Path, projects_root: Path) -> list[Path
     return paths
 
 
-def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None, operator_gated: bool = False) -> dict:
+def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None, operator_gated: bool = False, operator_gate_reason: str = "") -> dict:
     """Per-stream liveness report (sweep-stream-liveness): real surfaces only,
     session transcript mtime from the stream receipts, status gate lines, and
     the Herdr XDG inbox and message state. Classification is time-derived and
@@ -485,6 +502,15 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
     # suspected-stuck, and is never silenced by ask_consumed.
     if operator_gated:
         classification = "waiting-on-operator"
+        # Unify the waiting-on-operator taxonomy (ruling-46): a Source-A gate wait
+        # is derived from Linear state and writes no status waiting-on line, so it
+        # would otherwise carry an empty wait_owner the reconciler treats as a
+        # third, inconsistent bucket. Every operator-gated stream carries
+        # wait_owner=operator; the open ask prefers a real Source-B/status ask when
+        # present, else the gate reason. A Source-A operator wait is NEVER consumed.
+        wait_owner = "operator"
+        if not open_ask:
+            open_ask = operator_gate_reason
     elif wait_owner:
         classification = "waiting"
     elif transcript_mtime is None or (current - transcript_mtime) > idle_seconds:
@@ -586,8 +612,9 @@ def main() -> int:
             (isinstance(stream_facts, dict) and _gated_carried_states(stream_facts))
             or operator_waits(waits_root, stream_dir.name)
         )
+        gate_reason = _stream_gate_reason(stream_dir, stream_facts, waits_root) if gated else ""
         liveness[stream_dir.name] = stream_liveness(
-            stream_dir, inbox_root, messages_root, idle_seconds=3600, operator_gated=gated
+            stream_dir, inbox_root, messages_root, idle_seconds=3600, operator_gated=gated, operator_gate_reason=gate_reason
         )
 
     gate_lines = operator_gate_lines(stream_dirs, facts, waits_root)
