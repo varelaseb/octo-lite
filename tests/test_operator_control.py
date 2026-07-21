@@ -2201,11 +2201,9 @@ if __name__ == "__main__":
 
 
 class SweepStreamLivenessTests(unittest.TestCase):
-    # sweep-stream-liveness law after ruling-22 reality alignment: liveness
-    # derives ONLY from surfaces that exist in production: the receipt-derived
-    # session transcript mtime, status gate lines, and the XDG inbox; never
-    # status-file age alone; an ask older than subsequent session activity is
-    # presumed consumed; outputs are stable file facts.
+    # Simple liveness law: real surfaces only (receipt-derived transcript
+    # mtimes, status gate lines, XDG inbox and message state); classification
+    # is advisory and never enters the digested reconcile snapshot.
     def _stream_with_receipt(self, base: Path, name: str, projects: Path, now: float) -> tuple[Path, Path]:
         stream = base / "streams" / name
         stream.mkdir(parents=True)
@@ -2223,241 +2221,61 @@ class SweepStreamLivenessTests(unittest.TestCase):
         transcript.write_text("{}\n")
         return stream, transcript
 
-    def test_liveness_derives_from_transcript_status_gate_lines_and_inbox(self) -> None:
+    def test_liveness_reports_from_real_surfaces_only(self) -> None:
         module = _load_operator_sweep_module()
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             now = 1_000_000.0
             projects = base / "projects"
             inbox_root = base / "inbox"
+            messages = base / "messages"
+            messages.mkdir()
             stream, transcript = self._stream_with_receipt(base, "tur-1", projects, now)
             os.utime(transcript, (now - 600, now - 600))
             (stream / "status.md").write_text(
-                "# Stream status\n\n"
-                "- waiting-on: operator: Please approve the suite at the served pages.\n"
-                "- In flight: workflow wf_abc123-def (task x).\n"
+                "# s\n- waiting-on: operator: Please approve.\n- wf_abc123-def running.\n"
             )
             os.utime(stream / "status.md", (now - 300, now - 300))
-            target_inbox = inbox_root / "tur-1"
-            target_inbox.mkdir(parents=True)
-            (target_inbox / "20260720T000001-msg").write_text("id\n")
-
-            live = module.stream_liveness(
-                stream, inbox_root, base / "messages", idle_seconds=3600, now=now, projects_root=projects
+            (messages / "m1.toml").write_text(
+                'message_id = "m1"\ntarget = "tur-1"\nstatus = "pending"\n'
             )
-            # transcript mtime from the receipt-derived session transcript.
-            self.assertEqual(int(now - 600), live["transcript_mtime"])
-            # status gate line recorded AFTER the last session activity: open wait.
+            live = module.stream_liveness(
+                stream, inbox_root, messages, idle_seconds=3600, now=now, projects_root=projects
+            )
             self.assertEqual("waiting", live["classification"])
             self.assertEqual("operator", live["wait_owner"])
-            self.assertEqual(
-                "Please approve the suite at the served pages.", live["open_ask"]
-            )
-            self.assertFalse(live["ask_consumed"])
-            # in-flight ids parsed from status content, undelivered from the XDG inbox.
+            self.assertEqual("Please approve.", live["open_ask"])
             self.assertEqual(["wf_abc123-def"], live["inflight_workflows"])
-            self.assertEqual(["20260720T000001-msg"], live["undelivered_queue"])
-
-            # session activity AFTER the status-recorded ask: presumed consumed;
-            # fresh transcript keeps the stream active.
+            self.assertEqual(["m1"], live["undelivered_queue"])
+            # newest receipt wins; ask consumed once session activity postdates it
             os.utime(transcript, (now - 60, now - 60))
             consumed = module.stream_liveness(
-                stream, inbox_root, base / "messages", idle_seconds=3600, now=now, projects_root=projects
+                stream, inbox_root, messages, idle_seconds=3600, now=now, projects_root=projects
             )
             self.assertTrue(consumed["ask_consumed"])
-            self.assertEqual("", consumed["wait_owner"])
             self.assertEqual("active", consumed["classification"])
 
-    def test_liveness_uses_the_newest_receipt_session_across_all_stream_receipts(self) -> None:
-        # Residual defect evidence (tur-416): a stream carrying an original
-        # receipt.toml for a CLOSED session plus a receipt-shaping.toml for the
-        # ACTIVE session must derive liveness from the newest transcript across
-        # all receipts, not the stale original, or it reads false
-        # suspected-stuck.
+    def test_idle_stream_without_wait_owner_is_suspected_stuck_and_status_age_never_counts(self) -> None:
         module = _load_operator_sweep_module()
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             now = 1_000_000.0
             projects = base / "projects"
-            inbox_root = base / "inbox"
-            stream, old_transcript = self._stream_with_receipt(base, "tur-9", projects, now)
-            os.utime(old_transcript, (now - 90000, now - 90000))
-            (stream / "status.md").write_text("# s\n")
-            os.utime(stream / "status.md", (now - 90000, now - 90000))
-
-            active_worktree = base / "wt" / "tur-9-shaping"
-            active_worktree.mkdir(parents=True)
-            (stream / "receipt-shaping.toml").write_text(
-                f'[workspace]\nworktree = "{active_worktree}"\n[bootstrap]\nprovider_session_id = "sess-active"\n'
-            )
-            active_dir = projects / module.sanitize_project_dir(str(active_worktree))
-            active_dir.mkdir(parents=True)
-            active_transcript = active_dir / "sess-active.jsonl"
-            active_transcript.write_text("{}\n")
-            os.utime(active_transcript, (now - 120, now - 120))
-
-            live = module.stream_liveness(
-                stream, inbox_root, base / "messages", idle_seconds=3600, now=now, projects_root=projects
-            )
-            self.assertEqual(int(now - 120), live["transcript_mtime"])
-            self.assertEqual("active", live["classification"])
-
-    def test_recent_status_alone_never_counts_as_activity(self) -> None:
-        # Classifier defect red: a freshly rewritten status file with an idle
-        # (or absent) transcript must NOT classify the stream active.
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            projects = base / "projects"
-            inbox_root = base / "inbox"
             stream, transcript = self._stream_with_receipt(base, "tur-2", projects, now)
             os.utime(transcript, (now - 9000, now - 9000))
             (stream / "status.md").write_text("# fresh status, no gate lines\n")
             os.utime(stream / "status.md", (now - 5, now - 5))
             live = module.stream_liveness(
-                stream, inbox_root, base / "messages", idle_seconds=3600, now=now, projects_root=projects
+                stream, base / "inbox", base / "messages", idle_seconds=3600, now=now, projects_root=projects
             )
             self.assertEqual("suspected-stuck", live["classification"])
 
-    def test_stream_without_receipt_or_transcript_goes_suspected_stuck_when_idle(self) -> None:
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            stuck = base / "streams" / "tur-3"
-            stuck.mkdir(parents=True)
-            (stuck / "status.md").write_text("# s\n")
-            os.utime(stuck / "status.md", (now - 9000, now - 9000))
-            live = module.stream_liveness(
-                stuck, base / "inbox", base / "messages", idle_seconds=3600, now=now, projects_root=base / "p"
-            )
-            self.assertEqual("suspected-stuck", live["classification"])
-            self.assertIsNone(live["transcript_mtime"])
-            self.assertEqual([], live["undelivered_queue"])
-
-    def test_liveness_outputs_are_stable_between_runs_for_an_unchanged_stream(self) -> None:
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            stream = base / "streams" / "tur-4"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("# s\n")
-            first = module.stream_liveness(
-                stream, base / "inbox", base / "messages", idle_seconds=3600, now=2_000_000.0, projects_root=base / "p"
-            )
-            second = module.stream_liveness(
-                stream, base / "inbox", base / "messages", idle_seconds=3600, now=2_000_005.0, projects_root=base / "p"
-            )
-            self.assertEqual(first, second)
-
-    def test_undelivered_queue_includes_pending_message_state_without_inbox_entry(self) -> None:
-        # v11 finding 2b red: a successful herdr-say leaves messages/<id>.toml
-        # with status pending and NO inbox entry; the undelivered queue must
-        # still report it for the stream target.
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            stream = base / "streams" / "tur-5"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("# s\n")
-            messages = base / "messages"
-            messages.mkdir()
-            (messages / "20260721T000001-1-1.toml").write_text(
-                'schema_version = 1\nmessage_id = "20260721T000001-1-1"\ntarget = "tur-5"\nkind = "command"\nstatus = "pending"\n'
-            )
-            (messages / "20260721T000002-1-1.toml").write_text(
-                'schema_version = 1\nmessage_id = "20260721T000002-1-1"\ntarget = "tur-5"\nkind = "command"\nstatus = "acknowledged"\n'
-            )
-            (messages / "20260721T000003-1-1.toml").write_text(
-                'schema_version = 1\nmessage_id = "20260721T000003-1-1"\ntarget = "other"\nkind = "command"\nstatus = "pending"\n'
-            )
-            live = module.stream_liveness(
-                stream, base / "inbox", messages, idle_seconds=3600, now=now, projects_root=base / "p"
-            )
-            self.assertEqual(["20260721T000001-1-1"], live["undelivered_queue"])
-
-    def test_unchanged_stream_crossing_idle_boundary_keeps_identical_fingerprint(self) -> None:
-        # v12 finding 2 red: classification is time-derived and must therefore
-        # live OUTSIDE the digest with the mtimes; end to end, an unchanged
-        # stream whose wall-clock crosses idle_seconds produces an identical
-        # digested snapshot and fingerprint, while classification (observation)
-        # flips active -> suspected-stuck for the reconciler to judge.
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            projects = base / "projects"
-            stream, transcript = self._stream_with_receipt(base, "tur-7", projects, now)
-            os.utime(transcript, (now - 3599, now - 3599))
-            (stream / "status.md").write_text("# s\n")
-
-            def snapshot_at(current: float):
-                live = module.stream_liveness(
-                    stream, base / "inbox", base / "messages",
-                    idle_seconds=3600, now=current, projects_root=projects,
-                )
-                stable, observations = module.split_liveness({"tur-7": live})
-                assembled = module.assemble_snapshot(["## s\n"], stable, '{"f":1}')
-                return assembled, observations
-
-            before, obs_before = snapshot_at(now)
-            after, obs_after = snapshot_at(now + 7200)
-            self.assertEqual(before["fingerprint"], after["fingerprint"])
-            self.assertNotIn("classification", before["snapshot"])
-            self.assertEqual("active", obs_before["tur-7"]["classification"])
-            self.assertEqual("suspected-stuck", obs_after["tur-7"]["classification"])
-
-    def test_digest_covers_stable_semantics_only_and_survives_mtime_churn(self) -> None:
-        # v12-scope evidence: volatile transcript mtimes in the digested
-        # snapshot make digests unverifiable while streams are active. The
-        # digest covers only stable semantic fields; mtimes split out as
-        # non-digested observations; the fingerprint is the sha256 of the
-        # exact snapshot bytes so the gateway digest check verifies.
-        module = _load_operator_sweep_module()
-        import hashlib as _h
-        live_a = {"tur-6": {"status_mtime": 90, "transcript_mtime": 100, "wait_owner": "operator",
-                             "open_ask": "ask", "ask_consumed": False, "inflight_workflows": [],
-                             "undelivered_queue": [], "classification": "waiting"}}
-        live_b = {"tur-6": dict(live_a["tur-6"], status_mtime=95, transcript_mtime=200)}
-        stable_a, obs_a = module.split_liveness(live_a)
-        stable_b, obs_b = module.split_liveness(live_b)
-        self.assertEqual(stable_a, stable_b)
-        self.assertEqual(
-            {"status_mtime": 90, "transcript_mtime": 100, "classification": "waiting"},
-            obs_a["tur-6"],
-        )
-        first = module.assemble_snapshot(["## s\ntext\n"], stable_a, '{"f":1}')
-        second = module.assemble_snapshot(["## s\ntext\n"], stable_b, '{"f":1}')
-        self.assertEqual(first["fingerprint"], second["fingerprint"])
-        self.assertEqual(_h.sha256(first["snapshot"].encode()).hexdigest(), first["fingerprint"])
-        self.assertNotIn("transcript_mtime", first["snapshot"])
-        # classification is an observation now, never digested; the stable wait
-        # facts (owner + verbatim ask) are what the digest carries.
-        self.assertNotIn("classification", first["snapshot"])
-        self.assertIn('"wait_owner": "operator"', first["snapshot"])
-        # a genuine stable-fact change (wait cleared) IS a digest change;
-        # classification alone is not digested.
-        stable_c, _ = module.split_liveness({"tur-6": dict(live_a["tur-6"], wait_owner="", open_ask="")})
-        third = module.assemble_snapshot(["## s\ntext\n"], stable_c, '{"f":1}')
-        self.assertNotEqual(first["fingerprint"], third["fingerprint"])
-
-    def test_observations_reach_the_reconciler_and_vanish_on_gateway_failure(self) -> None:
-        # v13 finding 2 red: liveness observations (mtimes + classification)
-        # must be readable by the fresh reconciler at launch time and named in
-        # its judgment prompt; a failed gateway leaves no observation artifact.
+    def test_liveness_never_enters_the_digested_snapshot(self) -> None:
         source = SWEEP.read_text()
-        # the judgment prompt names the observations file alongside the snapshot
-        self.assertIn("observations", source.split("judgment_prompt")[1][:400])
-        # observations are written to a pending path BEFORE the gateway and
-        # cleaned on failure exactly like the pending snapshot
-        self.assertIn(".sweep-observations-", source)
-        before_gateway = source.split("prepare_reconcile_launch(")[0]
-        self.assertIn(".sweep-observations-", before_gateway)
-
-    def test_snapshot_includes_the_stream_liveness_section_and_no_phantom_sources(self) -> None:
-        source = SWEEP.read_text()
-        self.assertIn("## Stream liveness", source)
-        for phantom in ("waiting.toml", "inflight.toml", "pane-activity.txt", "herdr-queue"):
+        # the digested snapshot is parts + declared facts only; liveness goes to
+        # stdout and control/liveness.json, so digests verify and never churn.
+        self.assertIn('"# Stream snapshot\\n\\n" + "\\n".join(parts)', source.replace("\\n","\\n"))
+        self.assertNotIn("stream_liveness", source.split("normalized_facts = json.dumps")[1].split("fingerprint")[0])
+        self.assertIn('control / "liveness.json"', source)
+        for phantom in ("waiting.toml", "inflight.toml", "pane-activity.txt", "herdr-queue", "observations"):
             self.assertNotIn(phantom, source)

@@ -193,12 +193,12 @@ def _stream_transcript_paths(stream_dir: Path, projects_root: Path) -> list[Path
 
 
 def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None) -> dict:
-    """Per-stream liveness per sweep-stream-liveness law (ruling-22 reality
-    alignment): liveness derives ONLY from surfaces that exist in production:
-    the receipt-derived session transcript mtime, status gate lines, and the
-    XDG inbox; never status-file age alone. A status-recorded ask older than
-    subsequent session activity is presumed consumed. Outputs are stable file
-    facts so an unchanged control dir stays a no-op."""
+    """Per-stream liveness report (sweep-stream-liveness): real surfaces only,
+    session transcript mtime from the stream receipts, status gate lines, and
+    the Herdr XDG inbox and message state. Classification is time-derived and
+    advisory; the report never enters the digested reconcile snapshot.
+
+    """
     current = time.time() if now is None else now
 
     def mtime(path: Path) -> int | None:
@@ -274,39 +274,6 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
     }
 
 
-LIVENESS_OBSERVATION_FIELDS = ("status_mtime", "transcript_mtime", "classification")
-
-
-def split_liveness(liveness: dict) -> tuple[dict, dict]:
-    """Digested liveness carries only stable file-content facts (wait owner,
-    verbatim ask, in-flight ids, undelivered queue); classification is
-    time-derived and joins the mtimes as a non-digested observation the
-    reconciler judges (sweep-stable-outputs)."""
-    stable: dict = {}
-    observations: dict = {}
-    for name, entry in liveness.items():
-        observations[name] = {key: entry.get(key) for key in LIVENESS_OBSERVATION_FIELDS}
-        stable[name] = {key: value for key, value in entry.items() if key not in LIVENESS_OBSERVATION_FIELDS}
-    return stable, observations
-    # classification is time-derived (now vs transcript mtime), so it is an
-    # observation the reconciler judges, never digested content (v12 finding).
-
-
-def assemble_snapshot(parts: list, stable_liveness: dict, normalized_facts: str) -> dict:
-    """The digested snapshot contains only stable semantic content; the
-    fingerprint is the sha256 of the exact snapshot bytes so the reconcile
-    gateway's independent digest check always verifies."""
-    liveness_lines = "\n".join(
-        f"- {name}: {json.dumps(entry, sort_keys=True)}" for name, entry in sorted(stable_liveness.items())
-    )
-    snapshot = (
-        "# Stream snapshot\n\n" + "\n".join(parts)
-        + "\n## Stream liveness\n\n" + (liveness_lines + "\n" if liveness_lines else "")
-        + "\n## Declared facts\n\n" + normalized_facts + "\n"
-    )
-    return {"snapshot": snapshot, "fingerprint": hashlib.sha256(snapshot.encode()).hexdigest()}
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compact operator reconciliation sweep")
     parser.add_argument("--control-dir", type=Path, required=True)
@@ -340,13 +307,10 @@ def main() -> int:
     xdg_state = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "octo-lite"
     inbox_root = xdg_state / "inbox"
     messages_root = xdg_state / "messages"
-    liveness_full = {
+    liveness = {
         stream_dir.name: stream_liveness(stream_dir, inbox_root, messages_root, idle_seconds=3600)
         for stream_dir in stream_dirs
     }
-    liveness, liveness_observations = split_liveness(liveness_full)
-    if liveness:
-        facts["stream_liveness"] = liveness
     streams = []
     for stream_dir in stream_dirs:
         stream_facts = declared_stream_facts(stream_dir)
@@ -361,14 +325,19 @@ def main() -> int:
             streams.append(entry)
     normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
 
-    assembled = assemble_snapshot(parts, liveness, normalized_facts)
-    snapshot = assembled["snapshot"]
-    fingerprint = assembled["fingerprint"]
+    snapshot = (
+        "# Stream snapshot\n\n" + "\n".join(parts)
+        + "\n## Declared facts\n\n" + normalized_facts + "\n"
+    )
+    fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()
     state_path = control / "sweep-state.toml"
     prior = load_toml(state_path) if state_path.exists() else {}
     if prior.get("fingerprint") == fingerprint:
-        atomic_write(control / "liveness-observations.json", json.dumps(liveness_observations, sort_keys=True, indent=1) + "\n")
-        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "observations": liveness_observations}))
+        # Liveness is an operator report, not reconcile-gateway input: one
+        # control-level file plus stdout, written only on completed sweeps so a
+        # failed gateway leaves nothing behind.
+        atomic_write(control / "liveness.json", json.dumps(liveness, sort_keys=True, indent=1) + "\n")
+        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "liveness": liveness}))
         return 0
 
     sweep_dir = control / "sweeps" / fingerprint
@@ -388,13 +357,6 @@ def main() -> int:
     # verified bytes to snapshot_path and binds the receipt to that exact final
     # location, so bootstrap always reads an existing, matching source.
     pending_snapshot_path = control / f".sweep-pending-{fingerprint}.md"
-    # Observations (mtimes + time-derived classification) ride to the fresh
-    # reconciler outside the digest: pending before the gateway, cleaned on
-    # every failure exactly like the pending snapshot, persisted into the sweep
-    # dir on success (v13 finding: the reconciler must actually receive them).
-    observations_pending = control / f".sweep-observations-{fingerprint}.json"
-    observations_text = json.dumps(liveness_observations, sort_keys=True, indent=1) + "\n"
-    atomic_write(observations_pending, observations_text)
     atomic_write(pending_snapshot_path, snapshot)
     try:
         # Sole reconciler launch gateway: same worktree provisioning, containment,
@@ -424,20 +386,14 @@ def main() -> int:
         )
     except BaseException:
         pending_snapshot_path.unlink(missing_ok=True)
-        observations_pending.unlink(missing_ok=True)
         raise
     pending_snapshot_path.unlink(missing_ok=True)
-    observations_path = sweep_dir / "observations.json"
-    atomic_write(observations_path, observations_text)
-    observations_pending.unlink(missing_ok=True)
 
     judgment_prompt = (
-        f"Bootstrap verified. Read snapshot {snapshot_path} and the per-stream liveness "
-        f"observations at {observations_path}. "
-        "Classify facts as changed, missing, stale, contradictory, or needs_fable, and classify "
-        "stream liveness from the observations: transcript activity only, never status age; idle "
-        "without a recorded wait-owner is suspected-stuck; a recorded wait-owner with its verbatim "
-        "open ask is waiting; an ask older than later activity is consumed. "
+        f"Bootstrap verified. Read snapshot {snapshot_path}. The pinned per-stream liveness "
+        f"report is at {control / 'liveness.json'}: transcript activity only, never status age; "
+        "idle without a recorded wait-owner is suspected-stuck; an ask older than later activity "
+        "is consumed. Classify facts as changed, missing, stale, contradictory, or needs_fable. "
         "Read only. Never mutate. Return a compact delta for the operator as plain text."
     )
     message = run_reconcile_launch(prepared, judgment_prompt)
@@ -455,7 +411,7 @@ def main() -> int:
     if delivered.returncode not in {0, 75}:
         raise SystemExit(delivered.returncode)
 
-    atomic_write(control / "liveness-observations.json", json.dumps(liveness_observations, sort_keys=True, indent=1) + "\n")
+    atomic_write(control / "liveness.json", json.dumps(liveness, sort_keys=True, indent=1) + "\n")
     atomic_write(
         state_path,
         "schema_version = 1\n"
