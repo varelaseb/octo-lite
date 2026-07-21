@@ -314,18 +314,22 @@ test('test_observer_replays_committed_red_then_green: the observer replays the c
   const A = committedEnvelope()
   const result = await factory(agent, JSON.stringify(A), noop)
   assert.equal(result.stage, 'code-review-required')
-  // The observer spawn ran read-only (Explore), AFTER the mutation and BEFORE the host push.
-  const order = agent.calls.map((c) => `${c.label}|${c.agentType}`)
-  const mutIdx = order.findIndex((l) => l === `implementer:${ISSUE}|null`)
-  const obsIdx = order.findIndex((l) => l.startsWith(`implementer-tdd-observer:${ISSUE}|Explore`))
-  const pushIdx = order.findIndex((l) => l.startsWith('host-push:'))
+  // TUR-447 D1 cycle3: the observer spawn runs in an ISOLATED git worktree (opts.isolation: 'worktree')
+  // with a Bash-capable agent (NOT agentType 'Explore', which is read-only and cannot check out/run tests),
+  // AFTER the mutation and BEFORE the host push.
+  const labels = agent.calls.map((c) => c.label)
+  const mutIdx = agent.calls.findIndex((c) => c.label === `implementer:${ISSUE}` && c.agentType === null)
+  const obsIdx = agent.calls.findIndex((c) => c.label === `implementer-tdd-observer:${ISSUE}`)
+  const pushIdx = labels.findIndex((l) => l.startsWith('host-push:'))
   assert.ok(obsIdx > mutIdx, 'observer runs after the committed mutation')
   assert.ok(obsIdx >= 0 && obsIdx < pushIdx, 'observer runs before the host push')
+  const obs = agent.calls[obsIdx]
+  assert.equal(obs.opts.isolation, 'worktree', 'observer runs in an isolated git worktree')
+  assert.equal(obs.agentType, null, 'observer is Bash-capable, NOT read-only Explore (which cannot run tests)')
   // The observer replays each HOST-JOURNALLED commit in an ISOLATED worktree.
-  const obs = agent.calls.find((c) => c.label === `implementer-tdd-observer:${ISSUE}`)
   assert.ok(obs.prompt.includes(RED_COMMIT) && obs.prompt.includes(GREEN_COMMIT) && obs.prompt.includes(FINAL_COMMIT),
     'observer prompt carries the host-journalled red/green/final commit ids')
-  assert.ok(/ISOLATED worktree/.test(obs.prompt), 'observer checks out in an isolated worktree')
+  assert.ok(/isolated worktree/i.test(obs.prompt), 'observer checks out in an isolated worktree')
 })
 
 // test_observer_rejects_worker_supplied_observation
@@ -417,28 +421,37 @@ test('test_observer_commit_inputs_are_host_journalled: a worker-claimed commit i
 // --- TUR-447 D1 cycle2 independent git-read trust root + worker-claim cross-check ---------------------
 
 // test_independent_git_read_is_the_trust_root
-test('test_independent_git_read_is_the_trust_root: the host establishes the observer inputs from an INDEPENDENT git read (given only the branch + expected HEAD, never the worker shas), runs after the mutation and before the observer, and is a distinct read-only Explore subagent', async () => {
+test('test_independent_git_read_is_the_trust_root: the host establishes the observer inputs from an INDEPENDENT git read (given only the branch + expected HEAD, never the worker shas/path/digest), runs after the mutation and before the observer, and is a distinct Bash-capable subagent in an isolated worktree (NOT read-only Explore)', async () => {
   const factory = loadLoop()
   const agent = makeAgent(implementScript())
   const A = committedEnvelope()
   const result = await factory(agent, JSON.stringify(A), noop)
   assert.equal(result.stage, 'code-review-required')
-  const order = agent.calls.map((c) => `${c.label}|${c.agentType}`)
-  const mutIdx = order.findIndex((l) => l === `implementer:${ISSUE}|null`)
-  const readIdx = order.findIndex((l) => l.startsWith(`implementer-git-read:${ISSUE}|Explore`))
-  const obsIdx = order.findIndex((l) => l.startsWith(`implementer-tdd-observer:${ISSUE}|Explore`))
-  const pushIdx = order.findIndex((l) => l.startsWith('host-push:'))
+  const labels = agent.calls.map((c) => c.label)
+  const mutIdx = agent.calls.findIndex((c) => c.label === `implementer:${ISSUE}` && c.agentType === null)
+  const readIdx = agent.calls.findIndex((c) => c.label === `implementer-git-read:${ISSUE}`)
+  const obsIdx = agent.calls.findIndex((c) => c.label === `implementer-tdd-observer:${ISSUE}`)
+  const pushIdx = labels.findIndex((l) => l.startsWith('host-push:'))
   assert.ok(readIdx > mutIdx, 'independent git read runs after the committed mutation')
   assert.ok(readIdx < obsIdx, 'independent git read runs before the observer replay')
   assert.ok(obsIdx >= 0 && obsIdx < pushIdx, 'observer runs before the push')
-  // The git-read subagent is given ONLY the branch + expected starting HEAD, NEVER the worker's claimed shas.
-  const read = agent.calls.find((c) => c.label === `implementer-git-read:${ISSUE}`)
+  // TUR-447 D1 cycle3: the reader and observer run in ISOLATED git worktrees (opts.isolation: 'worktree')
+  // with a Bash-capable agent, NOT agentType 'Explore' (read-only, cannot check out or run a test).
+  const read = agent.calls[readIdx]
+  assert.equal(read.opts.isolation, 'worktree', 'git read runs in an isolated git worktree')
+  assert.equal(read.agentType, null, 'git reader is Bash-capable, NOT read-only Explore (which cannot run tests)')
+  assert.equal(agent.calls[obsIdx].opts.isolation, 'worktree', 'observer runs in an isolated git worktree')
+  assert.equal(agent.calls[obsIdx].agentType, null, 'observer is Bash-capable, NOT read-only Explore')
+  // The git-read subagent is given ONLY the branch + expected starting HEAD, NEVER the worker's claimed
+  // shas, and NEVER the worker's claimed bound-test path or digest (it DISCOVERS the bound test itself).
   assert.ok(read.prompt.includes(BRANCH), 'git-read prompt carries the committed branch name')
   assert.ok(read.prompt.includes(HEAD), 'git-read prompt carries the expected starting HEAD')
   assert.ok(!read.prompt.includes(RED_COMMIT), 'git-read prompt does NOT carry the worker-claimed red sha')
   assert.ok(!read.prompt.includes(GREEN_COMMIT), 'git-read prompt does NOT carry the worker-claimed green sha')
   assert.ok(!read.prompt.includes(FINAL_COMMIT), 'git-read prompt does NOT carry the worker-claimed final sha')
-  assert.ok(/read the commit shas YOURSELF|Read the commit shas YOURSELF/i.test(read.prompt), 'reader reads the shas itself')
+  assert.ok(!read.prompt.includes(BOUND_TEST.digest), 'git-read prompt does NOT carry the worker-claimed bound-test digest')
+  assert.ok(/DISCOVER the bound test/i.test(read.prompt), 'reader discovers the bound test from the red diff itself')
+  assert.ok(/YOURSELF from git/i.test(read.prompt), 'reader reads the shas/diffs/digests itself from git')
   // The observer then executes the INDEPENDENT-READ shas (which here equal the genuine committed shas).
   const obs = agent.calls.find((c) => c.label === `implementer-tdd-observer:${ISSUE}`)
   assert.ok(obs.prompt.includes(RED_COMMIT) && obs.prompt.includes(FINAL_COMMIT), 'observer executes the host-journalled (independent-read) commits')

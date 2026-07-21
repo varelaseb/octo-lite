@@ -496,12 +496,17 @@ export function assertBoundTest(boundTest) {
 // starting HEAD. It returns the ACTUAL commit shas and digests it read from git.
 //
 // assertIndependentGitRead binds THAT read as the sole trust root. `read` is the subagent's report;
-// `expected` is { branch, expectedStartingHead, boundTest } the host supplied (never worker shas). A read
-// not stamped by the independent reader, over the wrong branch, whose base is not the expected starting
-// HEAD, whose ancestry is not linear red->green->final, whose red diff is not test-only or does not fail,
-// whose green diff is not production-only or does not pass, whose final does not pass, or whose bound test
-// is absent/changed by path or digest at any of the three commits, is rejected. The returned shas are what
-// the host journals and cross-checks the worker claim against.
+// `expected` is { branch, expectedStartingHead } the host supplied (never worker shas OR a worker path or
+// digest). The bound-test identity is NOT a host/worker input: it is DISCOVERED by the reader from the RED
+// COMMIT'S diff (the single test file the red commit added or changed IS the bound test) and its digest is
+// computed from the ACTUAL git blob content the reader read at each commit. The gate takes the reader's
+// red_test as the discovered bound-test identity and requires it present unchanged by that same path AND
+// digest at the green and final commits. A read not stamped by the independent reader, over the wrong
+// branch, whose base is not the expected starting HEAD, whose ancestry is not linear red->green->final,
+// whose red diff is not test-only or does not fail, whose green diff is not production-only or does not
+// pass, whose final does not pass, or whose discovered bound test is absent/changed by path or digest at
+// the green or final commit, is rejected. The returned shas and the discovered bound test are what the host
+// journals and cross-checks the worker claim against; no worker path/digest string is ever an input here.
 export const INDEPENDENT_GIT_READ_SOURCE = 'independent-git-read'
 
 function assertReadStateDigest(observedTest, boundTest, label) {
@@ -519,7 +524,9 @@ export function assertIndependentGitRead(read, expected) {
   required(expected, 'independent git read expectation')
   const branch = requiredNonEmptyString(expected.branch, 'expected delivery branch')
   const expectedStartingHead = requiredNonEmptyString(expected.expectedStartingHead, 'expected starting HEAD')
-  const boundTest = assertBoundTest(expected.boundTest)
+  // The bound-test identity is DISCOVERED by the reader from the red commit's diff, not supplied. The gate
+  // takes the reader's own red_test as that discovered identity; a worker path/digest is never an input.
+  const boundTest = assertBoundTest(read.red_test)
   // Provenance: the read is stamped by the independent git reader, never the mutating worker, and its
   // reader identity is not the worker.
   if (read.source !== INDEPENDENT_GIT_READ_SOURCE) {
@@ -588,11 +595,12 @@ export function assertIndependentGitRead(read, expected) {
   if (read.final_named_test_exit !== 0) {
     throw new Error('independent git read rejected: the final HEAD did not pass the named test')
   }
-  // Bound test present unchanged by path AND digest at red, green, and final.
+  // The discovered bound test (the reader's red_test) is a valid, non-empty {path, digest} the reader read
+  // from the red commit's diff, and it is present unchanged by that same path AND digest at green and final.
   assertReadStateDigest(read.red_test, boundTest, 'red')
   assertReadStateDigest(read.green_test, boundTest, 'green')
   assertReadStateDigest(read.final_test, boundTest, 'final')
-  return { red_commit: red, green_commit: green, final_commit: final, branch }
+  return { red_commit: red, green_commit: green, final_commit: final, branch, boundTest }
 }
 
 // TUR-447 D1 cycle2 worker-claim cross-check (delivery-lifecycle delivery-tdd-observer-inputs-host-journal-record,
@@ -623,6 +631,130 @@ export function assertWorkerClaimCrossCheck(independentRead, workerClaim) {
     greenCommit: independentRead.green_commit,
     finalCommit: independentRead.final_commit,
   }
+}
+
+// TUR-447 D1 cycle3 independent bound-test cross-check (delivery-lifecycle delivery-tdd-test-identity-binding,
+// delivery-tdd-observer-inputs-host-journal-record; role-runtime role-tdd-observer-host-sourced-inputs). The
+// worker's CLAIMED bound-test {path, digest} is used ONLY here, as a post-hoc cross-check against the bound
+// test the INDEPENDENT reader DISCOVERED from the red commit's diff and hashed from git blob content. It is
+// never an input to the reader. A worker claim that names a different test path or a different digest than
+// the independently-discovered one is rejected, so a worker cannot relabel or mis-digest the bound test.
+// independentRead is the trust root assertIndependentGitRead returned (it carries boundTest); workerBoundTest
+// is the worker-reported { path, digest } from assertCommittedImplementation.
+export function assertWorkerBoundTestCrossCheck(independentRead, workerBoundTest) {
+  required(independentRead, 'independent git read trust root')
+  const discovered = assertBoundTest(independentRead.boundTest)
+  const claimed = assertBoundTest(workerBoundTest)
+  if (claimed.path !== discovered.path) {
+    throw new Error('worker bound-test cross-check rejected: claimed test path differs from the independently discovered bound test')
+  }
+  if (claimed.digest !== discovered.digest) {
+    throw new Error('worker bound-test cross-check rejected: claimed test digest differs from the independently discovered bound test')
+  }
+  return discovered
+}
+
+// TUR-447 D1 cycle3 production git-read orchestrator (delivery-lifecycle delivery-tdd-observer-inputs-host-sourced,
+// delivery-tdd-committed-red-commit, delivery-tdd-committed-green, delivery-tdd-test-identity-binding,
+// delivery-tdd-final-head-verification, delivery-tdd-final-head-test-identity; role-runtime
+// role-tdd-observer, role-tdd-observer-host-sourced-inputs). This is the ACTUAL git-read logic the
+// host-controlled Read-restricted reader runs in its isolated worktree: it is a pure orchestrator over an
+// injected `io` of side-effecting git primitives, so the SAME production code path runs under the loop's
+// Bash-capable subagent AND under the tests (which inject a REAL node child_process + node:crypto io over a
+// real temporary git repository). It is given ONLY the branch, the expected starting HEAD, and the
+// host-sourced canonical validation command; it is NEVER given a worker sha, path, or digest. It:
+//   - derives the ordered red -> ... -> final ancestry from `expectedStartingHead..branch` by git rev-list;
+//   - for each commit checks it out, runs the command for a real exit, and reads each commit's diff kind;
+//   - DISCOVERS the bound test from the RED commit's diff: the single test-only file the red commit changed
+//     IS the bound test, whose digest is hashed from the actual checked-out bytes at red, green, and final.
+// It returns the `read` object shape assertIndependentGitRead consumes, with the discovered bound test as
+// red_test/green_test/final_test. It records genuine exits and digests; it never fabricates one.
+//
+// `io` must provide:
+//   git(...args) -> trimmed stdout of `git <args>` in the reader's isolated worktree;
+//   runCommand() -> the integer exit status of running the host-sourced command at the current checkout;
+//   readTestBytes(path) -> the raw bytes of the checked-out file at `path` (used to hash the bound test);
+//   sha256(bytes) -> the hex sha256 of those bytes.
+// `identity` is { source, read_by, mutating_worker, isolated_worktree } stamped onto the read (provenance
+// the caller controls; the reader identity, never the worker).
+export function deriveIndependentGitRead(io, { branch, expectedStartingHead, command, identity } = {}) {
+  required(io, 'git read io')
+  requiredNonEmptyString(branch, 'delivery branch')
+  requiredNonEmptyString(expectedStartingHead, 'expected starting HEAD')
+  requiredNonEmptyString(command, 'host-sourced validation command')
+  required(identity, 'reader identity')
+  const git = (...args) => io.git(...args)
+  // The branch base and the ordered ancestry from the expected starting HEAD to the branch HEAD, read from
+  // real git, never from a worker claim.
+  const base = git('rev-parse', `${expectedStartingHead}^{commit}`)
+  const ancestry = git('rev-list', '--reverse', `${expectedStartingHead}..${branch}`).split('\n').filter(Boolean)
+  if (ancestry.length < 2) {
+    throw new Error('independent git read rejected: branch has no distinct red and green commits off the expected starting HEAD')
+  }
+  const redCommit = ancestry[0]
+  const greenCommit = ancestry[1]
+  const finalCommit = ancestry[ancestry.length - 1]
+  // Diff kind of a commit relative to its parent, and the ordered list of files it changed, from real git.
+  const changedFiles = (sha) => git('diff', '--name-only', `${sha}~1`, sha).split('\n').filter(Boolean)
+  // DISCOVER the bound test from the RED commit's diff: the red commit must change exactly one file, a
+  // test file, and no production file (test-only). That single file IS the bound test path; the worker
+  // never names it.
+  const redFiles = changedFiles(redCommit)
+  const redTestFiles = redFiles.filter(isTestPath)
+  const redProdFiles = redFiles.filter((f) => !isTestPath(f))
+  const redDiffKind = redTestFiles.length > 0 && redProdFiles.length === 0 ? 'test-only'
+    : redProdFiles.length > 0 && redTestFiles.length === 0 ? 'production-only' : 'mixed'
+  if (redDiffKind !== 'test-only' || redTestFiles.length !== 1) {
+    throw new Error('independent git read rejected: red commit does not add or change exactly one test file (test-only)')
+  }
+  const boundTestPath = redTestFiles[0]
+  const greenFiles = changedFiles(greenCommit)
+  const greenTouchesTest = greenFiles.some(isTestPath)
+  const greenTouchesProd = greenFiles.some((f) => !isTestPath(f))
+  const greenDiffKind = greenTouchesProd && !greenTouchesTest ? 'production-only'
+    : greenTouchesTest && !greenTouchesProd ? 'test-only' : 'mixed'
+  // Read the bound test identity {path, digest} at a checked-out commit from actual git blob content.
+  const boundTestAt = () => ({ path: boundTestPath, digest: `sha256:${io.sha256(io.readTestBytes(boundTestPath))}` })
+  const stateAt = (sha) => {
+    git('checkout', '-q', sha)
+    const exit = io.runCommand()
+    const test = boundTestAt()
+    return { exit, test }
+  }
+  const red = stateAt(redCommit)
+  const green = stateAt(greenCommit)
+  const final = stateAt(finalCommit)
+  // Restore the isolated worktree to the branch tip so a later observer replay starts from a known state.
+  git('checkout', '-q', branch)
+  return {
+    source: INDEPENDENT_GIT_READ_SOURCE,
+    read_by: requiredNonEmptyString(identity.read_by, 'reader identity read_by'),
+    mutating_worker: identity.mutating_worker,
+    isolated_worktree: requiredNonEmptyString(identity.isolated_worktree, 'reader isolated worktree'),
+    branch,
+    base_head: base,
+    red_commit: redCommit,
+    green_commit: greenCommit,
+    final_commit: finalCommit,
+    ancestry,
+    red_diff_kind: redDiffKind,
+    red_named_test_exit: red.exit,
+    red_test: red.test,
+    green_diff_kind: greenDiffKind,
+    green_named_test_exit: green.exit,
+    green_test: green.test,
+    final_named_test_exit: final.exit,
+    final_test: final.test,
+  }
+}
+
+// A path is a test file if its basename matches the conventional test-file patterns (a `test_*`/`*_test`
+// prefix or suffix, or a `*.test.*`/`*.spec.*` segment). Used only to DISCOVER the bound test from the red
+// commit's diff; it never consumes a worker-supplied path.
+function isTestPath(path) {
+  const base = String(path).split('/').pop() ?? ''
+  return /(^test_|_test\.|^test\.|\.test\.|\.spec\.|_test$|(^|\/)tests?\/)/.test(base) ||
+    /(^|\/)tests?\//.test(String(path))
 }
 
 // TUR-447 D1 host-journalled commit binding (delivery-lifecycle delivery-tdd-observer-inputs-host-sourced,

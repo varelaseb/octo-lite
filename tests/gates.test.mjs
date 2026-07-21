@@ -12,6 +12,7 @@ import {
   assertBoundTest,
   assertIndependentGitRead,
   assertWorkerClaimCrossCheck,
+  assertWorkerBoundTestCrossCheck,
   INDEPENDENT_GIT_READ_SOURCE,
   assertHostJournalledCommits,
   assertObservedCommittedStates,
@@ -258,10 +259,12 @@ function gitReadFixture(overrides = {}) {
 
 test('assertIndependentGitRead establishes the trust root shas from the independent git read, not any worker claim', () => {
   const branch = 'octo-lite/tur-443-operating-model'
-  const expected = { branch, expectedStartingHead: START, boundTest: BTEST }
+  // TUR-447 D1 cycle3: the bound-test identity is DISCOVERED by the reader (its red_test), not supplied. The
+  // expectation carries only { branch, expectedStartingHead }; the gate returns the discovered boundTest.
+  const expected = { branch, expectedStartingHead: START }
   assert.deepEqual(
     assertIndependentGitRead(gitReadFixture(), expected),
-    { red_commit: RED, green_commit: GREEN, final_commit: FINAL, branch },
+    { red_commit: RED, green_commit: GREEN, final_commit: FINAL, branch, boundTest: BTEST },
   )
   // Provenance: a read NOT stamped by the independent git reader is rejected (a worker cannot masquerade).
   assert.throws(() => assertIndependentGitRead(gitReadFixture({ source: 'implementer-1' }), expected), /not from the independent git reader/)
@@ -286,10 +289,14 @@ test('assertIndependentGitRead establishes the trust root shas from the independ
   assert.throws(() => assertIndependentGitRead(gitReadFixture({ green_diff_kind: 'test-only' }), expected), /green commit diff is not production-only/)
   assert.throws(() => assertIndependentGitRead(gitReadFixture({ green_named_test_exit: 1 }), expected), /the green commit did not pass the named test/)
   assert.throws(() => assertIndependentGitRead(gitReadFixture({ final_named_test_exit: 1 }), expected), /the final HEAD did not pass the named test/)
-  // Bound-test identity unchanged by path AND digest at red, green, and final.
-  assert.throws(() => assertIndependentGitRead(gitReadFixture({ red_test: { path: 'other', digest: BTEST.digest } }), expected), /path absent or changed at the red commit/)
+  // Bound-test identity is DISCOVERED from the red commit's diff (the reader's red_test) and must be present
+  // unchanged by path AND digest at green and final. A red_test that names a different file than green/final
+  // surfaces at the green commit (the discovered identity diverges from what green carries).
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ red_test: { path: 'other', digest: BTEST.digest } }), expected), /path absent or changed at the green commit/)
   assert.throws(() => assertIndependentGitRead(gitReadFixture({ green_test: { path: BTEST.path, digest: 'weak' } }), expected), /content digest differs at the green commit/)
   assert.throws(() => assertIndependentGitRead(gitReadFixture({ final_test: { path: 'other', digest: BTEST.digest } }), expected), /path absent or changed at the final commit/)
+  // A missing/empty discovered bound test (no test file found in the red diff) is rejected.
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ red_test: { path: '', digest: BTEST.digest } }), expected), /bound test path/)
 })
 
 test('assertWorkerClaimCrossCheck rejects a worker claim that differs from the independent git read', () => {
@@ -302,6 +309,17 @@ test('assertWorkerClaimCrossCheck rejects a worker claim that differs from the i
   assert.throws(() => assertWorkerClaimCrossCheck(trust, { redCommit: 'forged', greenCommit: GREEN, finalCommit: FINAL }), /claimed red commit differs from the independent git read/)
   assert.throws(() => assertWorkerClaimCrossCheck(trust, { redCommit: RED, greenCommit: 'forged', finalCommit: FINAL }), /claimed green commit differs from the independent git read/)
   assert.throws(() => assertWorkerClaimCrossCheck(trust, { redCommit: RED, greenCommit: GREEN, finalCommit: 'forged' }), /claimed final commit differs from the independent git read/)
+})
+
+test('assertWorkerBoundTestCrossCheck rejects a worker bound-test claim that differs from the independently discovered one', () => {
+  // The trust root carries the INDEPENDENTLY DISCOVERED bound test (the reader's red_test); the worker's
+  // CLAIMED path/digest is used ONLY here, post-hoc, never as a reader input.
+  const trust = { red_commit: RED, green_commit: GREEN, final_commit: FINAL, branch: 'b', boundTest: { ...BTEST } }
+  assert.deepEqual(assertWorkerBoundTestCrossCheck(trust, { ...BTEST }), BTEST)
+  // A worker that RELABELS the bound test path is rejected.
+  assert.throws(() => assertWorkerBoundTestCrossCheck(trust, { path: 'tests/impostor.py', digest: BTEST.digest }), /claimed test path differs from the independently discovered bound test/)
+  // A worker that MIS-DIGESTS the bound test is rejected.
+  assert.throws(() => assertWorkerBoundTestCrossCheck(trust, { path: BTEST.path, digest: 'sha256:forged' }), /claimed test digest differs from the independently discovered bound test/)
 })
 
 test('assertHostJournalledCommits binds the host journal to the accepted committed ids and host-sourced command', () => {
