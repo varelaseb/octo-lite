@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -15,11 +14,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from octo_lite.launch import verify_relay_verbatim  # noqa: E402
+from octo_lite.launch import provision_lane_worktree, verify_relay_verbatim  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
     GateError,
     append_trace,
-    admit_workspace,
     bind_pass_result,
     declare_successor_ready,
     exact_fingerprint,
@@ -766,17 +764,27 @@ def _publish_intent_surface(repo: str, pr: object, body: str) -> dict:
 
 
 def command_workspace_admit(args) -> dict:
-    root = Path(args.worktree_root)
-    target = Path(args.worktree)
-    admitted = admit_workspace(
-        target,
-        root,
-        disk_free_bytes=shutil.disk_usage(root).free,
+    # gh#8 host-provisioned isolated worktree (workspace-admission-provisions):
+    # admission that passes then PROVISIONS the exclusive per-lane worktree,
+    # never admit-a-path-only. stdout carries the frozen out-of-tree record.
+    provision = provision_lane_worktree(
+        control_repo=Path(args.control_repo),
+        worktree_root=Path(args.worktree_root),
+        worktree=Path(args.worktree),
+        lane=args.lane,
+        branch=args.branch,
+        head=args.head,
+        repo_slug=args.repo_slug,
         minimum_free_bytes=args.minimum_free_bytes,
         conflicts=args.conflict,
         provider_overloaded=args.provider_overloaded,
     )
-    return {"admitted": True, "worktree": str(admitted)}
+    return {
+        "admitted": True,
+        "worktree": provision.record["worktree"],
+        "record_path": str(provision.record_path),
+        "record": provision.record,
+    }
 
 
 def command_workspace_cleanup(args) -> dict:
@@ -945,6 +953,11 @@ def parser() -> argparse.ArgumentParser:
     admission = sub.add_parser("workspace-admit")
     admission.add_argument("--worktree", required=True)
     admission.add_argument("--worktree-root", required=True)
+    admission.add_argument("--control-repo", required=True)
+    admission.add_argument("--lane", required=True)
+    admission.add_argument("--branch", required=True)
+    admission.add_argument("--head", required=True)
+    admission.add_argument("--repo-slug", required=True)
     admission.add_argument("--minimum-free-bytes", type=int, required=True)
     admission.add_argument("--conflict", action="append", default=[])
     admission.add_argument("--provider-overloaded", action="store_true")
