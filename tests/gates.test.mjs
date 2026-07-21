@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   acceptCodeReview,
+  assertAdmission,
   acceptQaReview,
   acceptImplementation,
   acceptPublication,
@@ -13,6 +14,73 @@ import {
   evidenceMode,
   exactFingerprint,
 } from '../workflows/lib/gates.mjs'
+
+// Spec: role-runtime launch-role-purpose-capability, launch-purpose-shaping-roles,
+// launch-purpose-delivery-roles, launch-purpose-reconcile, launch-gates-workflow-layer
+// (blob spec/domains/role-runtime.spec.html:e1265b3c5d0a464ed416de283e11069e4796b01a).
+test('shaping-review admits only shaping-reviewer or orchestrator with resolved shaping capability', () => {
+  assert.deepEqual(
+    assertAdmission({ purpose: 'shaping-review', role: 'shaping-reviewer' }),
+    { purpose: 'shaping-review', role: 'shaping-reviewer' },
+  )
+  assert.deepEqual(
+    assertAdmission({ purpose: 'shaping-review', role: 'orchestrator', capabilities: ['shaping', 'grill'] }),
+    { purpose: 'shaping-review', role: 'orchestrator' },
+  )
+  assert.throws(
+    () => assertAdmission({ purpose: 'shaping-review', role: 'orchestrator', capabilities: ['grill'] }),
+    /shaping-review/,
+  )
+  assert.throws(
+    () => assertAdmission({ purpose: 'shaping-review', role: 'orchestrator' }),
+    /shaping-review/,
+  )
+  for (const role of ['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer', 'reconciler', 'meta-operator']) {
+    assert.throws(
+      () => assertAdmission({ purpose: 'shaping-review', role, capabilities: ['shaping'] }),
+      /shaping-review/,
+    )
+  }
+})
+
+test('delivery admits only implementer, code-reviewer, qa-capture, and qa-reviewer', () => {
+  for (const role of ['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer']) {
+    assert.deepEqual(assertAdmission({ purpose: 'delivery', role }), { purpose: 'delivery', role })
+  }
+  for (const role of ['shaping-reviewer', 'orchestrator', 'reconciler', 'meta-operator']) {
+    assert.throws(
+      () => assertAdmission({ purpose: 'delivery', role, capabilities: ['shaping'] }),
+      /delivery/,
+    )
+  }
+})
+
+test('reconcile admits only reconciler as a Read-restricted subagent', () => {
+  assert.deepEqual(
+    assertAdmission({ purpose: 'reconcile', role: 'reconciler', readRestricted: true }),
+    { purpose: 'reconcile', role: 'reconciler' },
+  )
+  assert.throws(
+    () => assertAdmission({ purpose: 'reconcile', role: 'reconciler', readRestricted: false }),
+    /Read-restricted/,
+  )
+  assert.throws(
+    () => assertAdmission({ purpose: 'reconcile', role: 'reconciler' }),
+    /Read-restricted/,
+  )
+  for (const role of ['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer', 'shaping-reviewer', 'orchestrator', 'meta-operator']) {
+    assert.throws(
+      () => assertAdmission({ purpose: 'reconcile', role, readRestricted: true }),
+      /reconcile/,
+    )
+  }
+})
+
+test('admission fails closed on any purpose outside the matrix and on missing identity', () => {
+  assert.throws(() => assertAdmission({ purpose: 'merge', role: 'implementer' }), /purpose/)
+  assert.throws(() => assertAdmission({ purpose: '', role: 'implementer' }), /purpose/)
+  assert.throws(() => assertAdmission({ purpose: 'delivery', role: '' }), /role/)
+})
 
 const ready = {
   issue: 'TUR-1',

@@ -115,6 +115,33 @@ export function assertSchema(schema, value, label) {
   return value
 }
 
+const DELIVERY_ROLES = new Set(['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer'])
+
+// Workflow-layer admission matrix (role-runtime launch-role-purpose-capability,
+// launch-purpose-shaping-roles, launch-purpose-delivery-roles, launch-purpose-reconcile,
+// launch-gates-workflow-layer). Called before each subagent spawn; an invalid
+// combination fails closed with no spawn.
+export function assertAdmission({ purpose, role, capabilities = [], readRestricted = false } = {}) {
+  required(purpose, 'admission purpose')
+  required(role, 'admission role')
+  if (purpose === 'shaping-review') {
+    const orchestratorWithShaping = role === 'orchestrator' && capabilities.includes('shaping')
+    if (role !== 'shaping-reviewer' && !orchestratorWithShaping) {
+      throw new Error(`role ${role} not admitted for shaping-review purpose`)
+    }
+  } else if (purpose === 'delivery') {
+    if (!DELIVERY_ROLES.has(role)) throw new Error(`role ${role} not admitted for delivery purpose`)
+  } else if (purpose === 'reconcile') {
+    if (role !== 'reconciler') throw new Error(`role ${role} not admitted for reconcile purpose`)
+    if (readRestricted !== true) {
+      throw new Error('reconcile admits reconciler only as a Read-restricted subagent')
+    }
+  } else {
+    throw new Error(`unknown admission purpose ${purpose}`)
+  }
+  return { purpose, role }
+}
+
 export function assertReadyEnvelope(envelope) {
   for (const field of [
     'issue',
