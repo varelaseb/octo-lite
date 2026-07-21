@@ -87,9 +87,11 @@ Do not create extra workflow labels unless the operator explicitly asks.
 
 ## Merge And Linear Sync
 
-- Merge to the main branch is an operator carve-out gated on explicit human
-  acceptance and instruction. The operator agent executes the merge. No worker
-  merges, no agent decides acceptance, and no agent merges unaccepted work.
+- Merge to the main branch is not a separate carve-out; it is the operator
+  agent's mechanical execution of an accepted PR, bound to the human acceptance
+  instruction. The operator or meta-operator agent executes the merge on that
+  acceptance instruction. No worker merges, no agent decides acceptance, and no
+  agent merges unaccepted work.
   Once a merge lands, its tracked issue owes the `In Staging` transition: the
   merge is not complete until Linear reflects that the merge-sha is genuinely
   an ancestor of the deployed main branch.
