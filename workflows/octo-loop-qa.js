@@ -1,18 +1,3 @@
-import {
-  acceptCodeReview,
-  acceptImplementation,
-  acceptPublication,
-  acceptQaReview,
-  assertAdmission,
-  assertContainment,
-  assertLaunchReadback,
-  assertLaunchRevision,
-  assertReadyEnvelope,
-  assertWorkerAckEcho,
-  evidenceMode,
-  launchRevision,
-} from './lib/gates.mjs'
-
 export const meta = {
   name: 'octo-loop-qa',
   description: 'Native workflow-subagent delivery loop: gate, spawn, and bind one fresh exact-head worker pass per invocation',
@@ -26,6 +11,27 @@ export const meta = {
     { title: 'Publication Readback' },
   ],
 }
+
+// TUR-488 (role-runtime launch-gates-workflow-layer): the Workflow tool requires
+// `export const meta` to be the first statement and runs this script in a sandbox
+// with no Node.js API. The gate helpers are therefore obtained by a lazy dynamic
+// import AFTER meta rather than a top-level static import, and gates.mjs itself
+// carries no load-time node builtin dependency, so the loop loads and its top-level
+// code runs without touching any node builtin. Gate semantics are unchanged.
+const {
+  acceptCodeReview,
+  acceptImplementation,
+  acceptPublication,
+  acceptQaReview,
+  assertAdmission,
+  assertContainment,
+  assertLaunchReadback,
+  assertLaunchRevision,
+  assertReadyEnvelope,
+  assertWorkerAckEcho,
+  evidenceMode,
+  launchRevision,
+} = await import('./lib/gates.mjs')
 
 // Decision 109 (operating-model decision-109-workflow-native and decision-109-binding;
 // role-runtime launch-correctness-path and role-worker-migration): this Workflow spawns

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +9,56 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ACTIVE_TEXT = (ROOT / "profile", ROOT / "roles", ROOT / "skills", ROOT / "workflows")
+
+# Node builtin modules a Workflow sandbox cannot resolve at load time
+# (role-runtime launch-gates-workflow-layer: the Workflow tool runs scripts in a
+# sandbox with no Node.js API). A load-time static dependency on any of these makes
+# the Workflow script non-loadable.
+NODE_ONLY_SPECIFIERS = ("node:crypto", "node:path", "node:fs")
+
+
+def strip_line_and_block_comments(text: str) -> str:
+    # Remove /* ... */ block comments and // ... line comments so top-level
+    # statement scanning sees real code only. Good enough for our own sources,
+    # which never embed comment openers inside string literals at module scope.
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"(?m)//.*$", "", text)
+    return text
+
+
+def first_top_level_statement(text: str) -> str:
+    # Return the first non-blank, non-comment line of module source.
+    for raw in strip_line_and_block_comments(text).splitlines():
+        line = raw.strip()
+        if line:
+            return line
+    return ""
+
+
+def top_level_static_imports(text: str) -> list[tuple[int, str]]:
+    # Column-zero `import ` / `import{` statements are top-level static imports.
+    # A dynamic `await import(...)` is indented inside a function body and never
+    # starts at column zero, so it is not matched.
+    hits: list[tuple[int, str]] = []
+    for index, raw in enumerate(strip_line_and_block_comments(text).splitlines()):
+        if re.match(r"^import[\s{]", raw):
+            hits.append((index, raw.strip()))
+    return hits
+
+
+def static_import_specifiers(text: str) -> list[str]:
+    specifiers: list[str] = []
+    stripped = strip_line_and_block_comments(text)
+    # A top-level static import begins with `import` at column zero and may span
+    # several lines through a braced binding list before its `from 'specifier'`.
+    # Match column-zero `import` non-greedily up to the first quoted specifier so
+    # both single-line and multi-line static imports (and bare `import 'x'`) are
+    # captured. A dynamic `await import(...)` is indented and never matched.
+    for match in re.finditer(
+        r"(?m)^import\b.*?['\"]([^'\"]+)['\"]", stripped, flags=re.DOTALL
+    ):
+        specifiers.append(match.group(1))
+    return specifiers
 
 
 class CutoverConformanceTests(unittest.TestCase):
@@ -66,6 +117,65 @@ class CutoverConformanceTests(unittest.TestCase):
         spawn = text[text.index("async function spawnWorker"):text.index("if (mode ===")]
         self.assertLess(spawn.index("assertAdmission("), spawn.index("await agent("))
         self.assertLess(spawn.index("await agent("), spawn.index("assertWorkerAckEcho("))
+
+    def test_loop_is_genuinely_loadable_as_a_workflow_script(self) -> None:
+        # TUR-488 (role-runtime launch-gates-workflow-layer): the Workflow tool
+        # requires `export const meta = {...}` to be the FIRST statement of the
+        # script and runs the script in a sandbox with no Node.js API. A top-level
+        # static import before meta, or any load-time static dependency on a
+        # node-only builtin (directly or transitively through the loop's gate
+        # module), makes the script non-loadable. These are parsed structural
+        # assertions, not substring guesses.
+        loop_path = ROOT / "workflows/octo-loop-qa.js"
+        loop = loop_path.read_text()
+
+        # (a) `export const meta` is the first non-comment, non-blank statement.
+        first = first_top_level_statement(loop)
+        self.assertTrue(
+            re.match(r"^export\s+const\s+meta\b", first),
+            f"first statement must be `export const meta`, got: {first!r}",
+        )
+
+        # (b) No top-level static import appears before `export const meta`.
+        meta_line = None
+        for index, raw in enumerate(strip_line_and_block_comments(loop).splitlines()):
+            if re.match(r"^export\s+const\s+meta\b", raw):
+                meta_line = index
+                break
+        self.assertIsNotNone(meta_line, "no top-level `export const meta` found")
+        imports_before_meta = [
+            line for line, _ in top_level_static_imports(loop) if line < meta_line
+        ]
+        self.assertEqual(
+            [], imports_before_meta,
+            f"top-level static import(s) before meta at lines {imports_before_meta}",
+        )
+
+        # (c) The loop must not statically depend on a node-only builtin at
+        # Workflow load time, directly or transitively through the gate module it
+        # loads. Every module reachable by static import from the loop is walked.
+        seen: set[Path] = set()
+
+        def node_only_static_deps(path: Path) -> list[tuple[str, str]]:
+            resolved = path.resolve()
+            if resolved in seen or not resolved.exists():
+                return []
+            seen.add(resolved)
+            module_text = resolved.read_text()
+            found: list[tuple[str, str]] = []
+            for spec in static_import_specifiers(module_text):
+                if spec in NODE_ONLY_SPECIFIERS:
+                    found.append((str(resolved), spec))
+                elif spec.startswith("."):
+                    found.extend(node_only_static_deps((resolved.parent / spec)))
+            return found
+
+        offenders = node_only_static_deps(loop_path)
+        self.assertEqual(
+            [], offenders,
+            "load-time static node-only dependency reachable from the loop: "
+            f"{offenders}",
+        )
 
     def test_workflow_loop_fires_shaped_to_todo_before_any_delivery_spawn(self) -> None:
         # delivery-lifecycle delivery-entry-gate and linear-loop-fire-transition: at
