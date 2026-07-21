@@ -388,17 +388,29 @@ function assertWorkerAckEcho(journalled, ack) {
 // Observable read-only acknowledgment phase then capability upgrade (role-runtime
 // launch-identity, launch-receipt, launch-gates-workflow-layer; operating-model
 // decision-109-binding). A worker first runs in a read-only acknowledgment spawn with
-// write tools withheld that produces ONLY the schema-forced ack echo of the exact
-// journalled bound inputs. The owning host verifies that echo against the journalled
-// bound inputs and ONLY THEN authorizes the write-capable mutation phase. A worker that
-// would mutate before verification cannot, rather than being rejected after a prohibited
-// mutation: no write-capable phase exists until the read-only echo verifies. A role,
-// repo, issue, or PR substitution blocks the mutation phase exactly as a HEAD mismatch
-// does, because the same echo gate decides both.
+// write tools genuinely withheld that produces ONLY the schema-forced ack echo of the
+// exact journalled bound inputs. The owning host verifies that echo against the
+// journalled bound inputs and ONLY THEN authorizes the write-capable mutation phase. A
+// worker that would mutate before verification cannot, rather than being rejected after
+// a prohibited mutation: no write-capable phase exists until the read-only echo
+// verifies. A role, repo, issue, or PR substitution blocks the mutation phase exactly as
+// a HEAD mismatch does, because the same echo gate decides both.
+//
+// TUR-447 F1 Unit B correction: write tools are withheld ONLY by spawning the ack phase
+// under a real Workflow read-only subagent type (opts.agentType). The prior
+// writeCapable/readOnly flags were not real agent() opts, so the runtime ignored them
+// and the ack phase silently retained write tools; the old gate only re-checked that
+// hardcoded ignored flag, proving nothing. The gate now asserts the ack phase declares a
+// recognized READ-ONLY agentType and REJECTS a default, absent, or write-capable
+// agentType, which is the only value that genuinely withholds write tools at spawn.
+const READ_ONLY_AGENT_TYPES = new Set(['Explore'])
+
 function assertReadOnlyAckPhase(phase) {
   required(phase, 'ack phase')
-  if (phase.writeCapable !== false) {
-    throw new Error('ack phase must run read-only: write tools withheld until the echo verifies')
+  if (!READ_ONLY_AGENT_TYPES.has(phase.agentType)) {
+    throw new Error(
+      'ack phase must run read-only: spawn under a read-only agentType (write tools withheld) until the echo verifies',
+    )
   }
   return phase
 }
@@ -680,12 +692,16 @@ function journalledBoundInputs(role, startingHead) {
 // run before any subagent spawns, the journal records the exact bound inputs, and the
 // worker binding is proven through an OBSERVABLE read-only acknowledgment phase before
 // any mutation-capable spawn exists. The worker first runs in a read-only acknowledgment
-// spawn (write tools withheld, writeCapable: false) that produces ONLY the schema-forced
-// ack echo. The host verifies that echo against the journalled bound inputs through
-// verifyAckThenUpgrade, and ONLY THEN spawns the write-capable mutation phase. A worker
-// that would mutate before verification cannot, because no write-capable spawn is issued
-// until the read-only echo verifies. Every pass is a fresh subagent; a worker session is
-// never resumed.
+// spawn under the real Workflow read-only subagent type (agentType: 'Explore'), which
+// genuinely withholds Edit, Write, and mutating Bash at the runtime, and produces ONLY
+// the schema-forced ack echo. The host verifies that echo against the journalled bound
+// inputs through verifyAckThenUpgrade, and ONLY THEN spawns the write-capable mutation
+// phase (the default agentType, which retains write tools). A worker that would mutate
+// before verification cannot, because no write-capable spawn is issued until the
+// read-only echo verifies. Every pass is a fresh subagent; a worker session is never
+// resumed. Only the real agent() opts ({label, phase, schema, model, effort, isolation,
+// agentType}) are passed; invented opts are silently ignored at runtime and enforce
+// nothing, so they are never used.
 async function spawnWorker(role, phaseTitle, startingHead, schema) {
   assertAdmission({ purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') })
   // Containment at admission (launch-containment).
@@ -702,9 +718,12 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
   const brief = required(A.brief, 'pass brief')
   // Containment again at each child subagent spawn (launch-containment).
   assertContainment(A.worktree_root, worktree)
-  // Phase 1: read-only acknowledgment spawn. Write tools are withheld, so the worker
-  // physically cannot mutate; it returns ONLY the schema-forced ack echo of the exact
-  // bound inputs. This is the observable pre-mutation boundary.
+  // Phase 1: read-only acknowledgment spawn under the real read-only subagent type
+  // (agentType: 'Explore'), which genuinely withholds Edit, Write, and mutating Bash at
+  // the runtime, so the worker physically cannot mutate; it returns ONLY the
+  // schema-forced ack echo of the exact bound inputs. This is the observable pre-mutation
+  // boundary.
+  const ackAgentType = 'Explore'
   const ackPrompt = [
     `You are a fresh octo-lite ${role} in the read-only acknowledgment phase. Write tools`,
     'are withheld: you cannot mutate anything now. One pass only; never reuse a session.',
@@ -714,16 +733,19 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
   ].join('\n\n')
   const acknowledged = await agent(ackPrompt, {
     label: `${role}-ack:${bound.issue}`, phase: phaseTitle, schema: ACK_ONLY_SCHEMA,
-    writeCapable: false, readOnly: true,
+    agentType: ackAgentType,
   })
   if (acknowledged === null) throw new Error(`${role} read-only ack phase returned no result`)
   // Host verifies the read-only echo against the journalled bound inputs and only then
-  // authorizes the write-capable phase. A role, repo, issue, or PR substitution blocks
-  // here exactly as a HEAD mismatch does.
-  verifyAckThenUpgrade(bound, { writeCapable: false, ack: acknowledged.ack })
+  // authorizes the write-capable phase. The gate rejects any non-read-only ack agentType,
+  // so the phase must have genuinely withheld write tools. A role, repo, issue, or PR
+  // substitution blocks here exactly as a HEAD mismatch does.
+  verifyAckThenUpgrade(bound, { agentType: ackAgentType, ack: acknowledged.ack })
   // Launch-revision revalidation again before the mutation-phase advance.
   assertLaunchRevision(revision, bound)
-  // Phase 2: write-capable mutation spawn, reached ONLY after the echo verified.
+  // Phase 2: write-capable mutation spawn, reached ONLY after the echo verified. It uses
+  // the default subagent type (no agentType), which retains write tools; a read-only
+  // agentType is NOT passed here.
   assertContainment(A.worktree_root, worktree)
   const prompt = [
     `You are a fresh octo-lite ${role}. One pass only. Never reuse a worker session.`,
@@ -733,7 +755,7 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     brief,
   ].join('\n\n')
   const result = await agent(prompt, {
-    label: `${role}:${bound.issue}`, phase: phaseTitle, schema, writeCapable: true,
+    label: `${role}:${bound.issue}`, phase: phaseTitle, schema,
   })
   if (result === null) throw new Error(`${role} pass returned no result`)
   assertWorkerAckEcho(bound, result.ack)

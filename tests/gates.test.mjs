@@ -384,30 +384,43 @@ test('a missing bound input in the worker ack echo is rejected before any mutati
 // phase is unreachable until that echo verifies. A worker that would mutate before
 // verification cannot, rather than being rejected after a prohibited mutation.
 
-test('the read-only ack phase must run with write tools withheld', () => {
-  const journalled = journalledBoundInputs()
+// TUR-447 F1 Unit B correction: write tools are withheld ONLY by a real read-only
+// subagent type (agentType: 'Explore'). The gate now asserts the ack phase declares a
+// recognized read-only agentType and rejects a default, absent, or write-capable
+// agentType. The prior writeCapable:false flag was an invented agent() opt the runtime
+// ignored, so it withheld nothing; asserting on it proved nothing.
+test('the read-only ack phase must declare a real read-only agentType that withholds write tools', () => {
   const ack = journalledBoundInputs()
   assert.deepEqual(
-    assertReadOnlyAckPhase({ writeCapable: false, ack }),
-    { writeCapable: false, ack },
+    assertReadOnlyAckPhase({ agentType: 'Explore', ack }),
+    { agentType: 'Explore', ack },
   )
-  // A write-capable ack phase is rejected: mutation could precede verification.
-  assert.throws(() => assertReadOnlyAckPhase({ writeCapable: true, ack }), /read-only/)
+  // A default/absent agentType is rejected: the runtime would retain write tools.
   assert.throws(() => assertReadOnlyAckPhase({ ack }), /read-only/)
+  // An unrecognized or write-capable agentType is rejected.
+  assert.throws(() => assertReadOnlyAckPhase({ agentType: 'Task', ack }), /read-only/)
+  assert.throws(() => assertReadOnlyAckPhase({ agentType: 'general', ack }), /read-only/)
+  // The retired invented flag no longer satisfies the gate: it withholds nothing.
+  assert.throws(() => assertReadOnlyAckPhase({ writeCapable: false, ack }), /read-only/)
   assert.throws(() => assertReadOnlyAckPhase(undefined), /ack phase required/)
 })
 
 test('the write-capable mutation phase is unreachable until the ack echo verifies', () => {
   const journalled = journalledBoundInputs()
   const ack = journalledBoundInputs()
-  // The read-only ack phase echo verifies, so and only so the write phase is authorized.
+  // A read-only-agentType ack phase whose echo verifies authorizes the write phase.
   assert.deepEqual(
-    verifyAckThenUpgrade(journalled, { writeCapable: false, ack }),
+    verifyAckThenUpgrade(journalled, { agentType: 'Explore', ack }),
     { upgrade: 'write-capable' },
   )
-  // A write-capable ack phase never reaches the upgrade: it cannot mutate before verify.
+  // A non-read-only ack agentType never reaches the upgrade: it could mutate before verify.
   assert.throws(
-    () => verifyAckThenUpgrade(journalled, { writeCapable: true, ack }),
+    () => verifyAckThenUpgrade(journalled, { agentType: 'Task', ack }),
+    /read-only/,
+  )
+  // The retired invented flag is no longer accepted here either.
+  assert.throws(
+    () => verifyAckThenUpgrade(journalled, { writeCapable: false, ack }),
     /read-only/,
   )
 })
@@ -417,7 +430,7 @@ test('a substituted bound input blocks the mutation phase exactly as a HEAD mism
   const headError = (() => {
     try {
       verifyAckThenUpgrade(journalled, {
-        writeCapable: false,
+        agentType: 'Explore',
         ack: { ...journalledBoundInputs(), starting_head: 'other' },
       })
     } catch (error) {
@@ -439,7 +452,7 @@ test('a substituted bound input blocks the mutation phase exactly as a HEAD mism
     const error = (() => {
       try {
         verifyAckThenUpgrade(journalled, {
-          writeCapable: false,
+          agentType: 'Explore',
           ack: { ...journalledBoundInputs(), [field]: substituted },
         })
       } catch (caught) {
@@ -454,7 +467,7 @@ test('a substituted bound input blocks the mutation phase exactly as a HEAD mism
   for (const field of ['role', 'repo', 'issue', 'pr', 'starting_head', 'contract_hash']) {
     const ack = journalledBoundInputs()
     delete ack[field]
-    assert.throws(() => verifyAckThenUpgrade(journalled, { writeCapable: false, ack }), /required|mismatch/)
+    assert.throws(() => verifyAckThenUpgrade(journalled, { agentType: 'Explore', ack }), /required|mismatch/)
   }
 })
 

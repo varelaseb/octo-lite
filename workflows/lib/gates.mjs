@@ -361,17 +361,29 @@ export function assertWorkerAckEcho(journalled, ack) {
 // Observable read-only acknowledgment phase then capability upgrade (role-runtime
 // launch-identity, launch-receipt, launch-gates-workflow-layer; operating-model
 // decision-109-binding). A worker first runs in a read-only acknowledgment spawn with
-// write tools withheld that produces ONLY the schema-forced ack echo of the exact
-// journalled bound inputs. The owning host verifies that echo against the journalled
-// bound inputs and ONLY THEN authorizes the write-capable mutation phase. A worker that
-// would mutate before verification cannot, rather than being rejected after a prohibited
-// mutation: no write-capable phase exists until the read-only echo verifies. A role,
-// repo, issue, or PR substitution blocks the mutation phase exactly as a HEAD mismatch
-// does, because the same echo gate decides both.
+// write tools genuinely withheld that produces ONLY the schema-forced ack echo of the
+// exact journalled bound inputs. The owning host verifies that echo against the
+// journalled bound inputs and ONLY THEN authorizes the write-capable mutation phase. A
+// worker that would mutate before verification cannot, rather than being rejected after
+// a prohibited mutation: no write-capable phase exists until the read-only echo
+// verifies. A role, repo, issue, or PR substitution blocks the mutation phase exactly as
+// a HEAD mismatch does, because the same echo gate decides both.
+//
+// TUR-447 F1 Unit B correction: write tools are withheld ONLY by spawning the ack phase
+// under a real Workflow read-only subagent type (opts.agentType). The prior
+// writeCapable/readOnly flags were not real agent() opts, so the runtime ignored them
+// and the ack phase silently retained write tools; the old gate only re-checked that
+// hardcoded ignored flag, proving nothing. The gate now asserts the ack phase declares a
+// recognized READ-ONLY agentType and REJECTS a default, absent, or write-capable
+// agentType, which is the only value that genuinely withholds write tools at spawn.
+const READ_ONLY_AGENT_TYPES = new Set(['Explore'])
+
 export function assertReadOnlyAckPhase(phase) {
   required(phase, 'ack phase')
-  if (phase.writeCapable !== false) {
-    throw new Error('ack phase must run read-only: write tools withheld until the echo verifies')
+  if (!READ_ONLY_AGENT_TYPES.has(phase.agentType)) {
+    throw new Error(
+      'ack phase must run read-only: spawn under a read-only agentType (write tools withheld) until the echo verifies',
+    )
   }
   return phase
 }

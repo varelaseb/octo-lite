@@ -161,19 +161,127 @@ class CutoverConformanceTests(unittest.TestCase):
         spawn = text[text.index("async function spawnWorker"):text.index("if (mode ===")]
         # Admission runs before any spawn.
         self.assertLess(spawn.index("assertAdmission("), spawn.index("await agent("))
-        # The FIRST agent() spawn is the read-only ack phase: it withholds write tools.
+        # The FIRST agent() spawn is the read-only ack phase: it withholds write tools by
+        # spawning under the real read-only subagent type (agentType: 'Explore'), the only
+        # value that genuinely withholds Edit/Write/mutating Bash at the runtime. The prior
+        # writeCapable/readOnly flags were not real agent() opts and withheld nothing.
         first_spawn = spawn.index("await agent(")
-        self.assertIn("writeCapable: false", spawn)
-        self.assertLess(spawn.index("writeCapable: false"), spawn.index("verifyAckThenUpgrade("))
+        self.assertIn("agentType: ackAgentType", spawn)
+        self.assertIn("'Explore'", spawn)
+        self.assertLess(spawn.index("agentType: ackAgentType"), spawn.index("verifyAckThenUpgrade("))
         # The echo is verified through the read-only-ack-then-upgrade gate before the
         # write-capable spawn is reached.
         self.assertLess(spawn.index("verifyAckThenUpgrade("), spawn.rindex("await agent("))
         # The read-only ack spawn precedes the write-capable spawn (two distinct spawns).
         self.assertLess(first_spawn, spawn.rindex("await agent("))
         self.assertNotEqual(first_spawn, spawn.rindex("await agent("))
-        # The write-capable spawn declares itself write-capable, and only it does so.
-        self.assertIn("writeCapable: true", spawn)
-        self.assertLess(spawn.index("verifyAckThenUpgrade("), spawn.index("writeCapable: true"))
+        # verifyAckThenUpgrade receives the same read-only agentType, so the gate rejects a
+        # non-read-only ack phase rather than trusting an ignored flag.
+        self.assertIn("verifyAckThenUpgrade(bound, { agentType: ackAgentType", spawn)
+        # The write-capable mutation spawn is the LAST agent() and passes NO agentType, so
+        # it runs as the default write-capable subagent; the read-only agentType appears
+        # only in the earlier ack spawn.
+        write_spawn = spawn[spawn.rindex("await agent("):]
+        self.assertNotIn("agentType", write_spawn)
+
+    def test_workflow_loop_passes_only_real_agent_opts_at_every_call_site(self) -> None:
+        # TUR-447 F1 Unit B correction: the real Workflow agent() API accepts ONLY the
+        # opt keys {label, phase, schema, model, effort, isolation, agentType}. An invented
+        # key (writeCapable, readOnly, tools, ...) is silently ignored at runtime and
+        # enforces nothing, which is exactly the F1 defect: the ack phase relied on an
+        # ignored writeCapable:false and retained write tools. This parses every agent()
+        # opts object in the loop and fails if any top-level opt key is not real, so an
+        # invented opt can never pass again.
+        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        real_opts = {"label", "phase", "schema", "model", "effort", "isolation", "agentType"}
+        code = strip_line_and_block_comments(text)
+        offenders: list[str] = []
+        # Find each `agent(<...>, { <opts> })` call and extract the trailing opts object.
+        for match in re.finditer(r"\bagent\(", code):
+            # Walk from the opening paren to its matching close, tracking brace depth to
+            # capture the final `{ ... }` opts object argument.
+            i = match.end()
+            depth = 1
+            last_obj = None
+            obj_start = None
+            obj_depth = None
+            while i < len(code) and depth > 0:
+                ch = code[i]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                elif ch == "{" and depth == 1:
+                    if obj_start is None:
+                        obj_start = i
+                        obj_depth = 1
+                    else:
+                        obj_depth += 1
+                elif ch == "}" and depth == 1 and obj_start is not None:
+                    obj_depth -= 1
+                    if obj_depth == 0:
+                        last_obj = code[obj_start + 1:i]
+                        obj_start = None
+                i += 1
+            if last_obj is None:
+                continue
+            # Blank out string and template-literal spans so a colon inside a value (for
+            # example the `-ack:` in a `label: `...-ack:...`` template) is never mistaken
+            # for an opt key. Backtick, single-quote, and double-quote spans are replaced
+            # with spaces of equal length, preserving offsets.
+            blanked = list(last_obj)
+            quote = None
+            j = 0
+            while j < len(last_obj):
+                ch = last_obj[j]
+                if quote is None:
+                    if ch in "`'\"":
+                        quote = ch
+                        blanked[j] = " "
+                elif ch == "\\":
+                    blanked[j] = " "
+                    if j + 1 < len(last_obj):
+                        blanked[j + 1] = " "
+                    j += 2
+                    continue
+                elif ch == quote:
+                    quote = None
+                    blanked[j] = " "
+                else:
+                    blanked[j] = " "
+                j += 1
+            scan = "".join(blanked)
+            # Top-level keys are `identifier:` at brace/bracket depth 0 within the opts.
+            key_depth = 0
+            for key_match in re.finditer(r"([A-Za-z_$][\w$]*)\s*:|[{}\[\]]", scan):
+                token = key_match.group(0)
+                if token in "{[":
+                    key_depth += 1
+                    continue
+                if token in "}]":
+                    key_depth -= 1
+                    continue
+                if key_depth == 0:
+                    name = key_match.group(1)
+                    if name not in real_opts:
+                        offenders.append(name)
+        self.assertEqual(
+            [], offenders,
+            f"invented agent() opt key(s) passed to the Workflow agent() API: {offenders}",
+        )
+
+    def test_no_invented_agent_opts_appear_anywhere_in_the_loop(self) -> None:
+        # Belt-and-suspenders over the parsed check: the specific invented opts from the
+        # F1 defect (writeCapable, readOnly) and a raw tools: opt must not appear as live
+        # code anywhere in the loop. They may only survive in comments documenting the
+        # retired defect.
+        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        code = strip_line_and_block_comments(text)
+        for invented in ("writeCapable", "readOnly", "tools:"):
+            self.assertNotIn(
+                invented, code,
+                f"invented agent() opt {invented!r} still present as live code in the loop",
+            )
 
     def test_loop_is_genuinely_loadable_as_a_workflow_script(self) -> None:
         # TUR-488 (role-runtime launch-gates-workflow-layer): the Workflow tool
