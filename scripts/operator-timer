@@ -42,6 +42,7 @@ operator_sweep="$root/scripts/operator-sweep"
 # timer works without a manual service start.
 systemd-run --user --quiet --collect --unit "$unit" --on-active "$interval" --on-unit-active "$interval" \
   --setenv="OCTO_OPERATOR_OWNER=$owner" \
+  --setenv="PATH=$PATH" \
   --property Type=oneshot \
   "$operator_sweep" --control-dir "$control" --owner-file "$owner" --repo "$repo"
 temporary="$state.$$.tmp"

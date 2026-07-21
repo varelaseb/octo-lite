@@ -229,7 +229,7 @@ class OperatorControlTests(unittest.TestCase):
             runner = fake_bin / "systemd-run"
             runner.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >"$CALL_LOG"\n')
             runner.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(call_log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(call_log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             subprocess.run(
                 [
@@ -248,6 +248,10 @@ class OperatorControlTests(unittest.TestCase):
             self.assertIn(f"--repo {repo}", call)
             self.assertIn("--on-active", call)
             self.assertIn("--on-unit-active", call)
+            # systemd user services get a bare PATH lacking ~/.local/bin (live
+            # FileNotFoundError evidence 02:28); the installer passes the
+            # installing shell PATH into the unit.
+            self.assertIn("--setenv=PATH=", call)
             self.assertNotIn("operator-say --kind info sweep", call)
 
     def test_changed_sweep_is_fresh_and_unchanged_sweep_is_noop(self) -> None:
@@ -275,7 +279,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -326,7 +330,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -419,6 +423,7 @@ class OperatorControlTests(unittest.TestCase):
                 (fake_bin / name).chmod(0o755)
             env = dict(
                 os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
                 LINEAR_STATE_FILE=str(linear_state_file),
             )
 
@@ -472,7 +477,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -538,7 +543,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -594,6 +599,7 @@ class OperatorControlTests(unittest.TestCase):
                 path.chmod(0o755)
             env = dict(
                 os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
                 BOOTSTRAP_OBSERVATIONS_FILE=str(observations_file),
             )
 
@@ -656,7 +662,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -714,7 +720,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -757,7 +763,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -819,7 +825,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -874,7 +880,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -929,7 +935,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -986,7 +992,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -1017,7 +1023,12 @@ class OperatorControlTests(unittest.TestCase):
             path = fake_bin / name
             path.write_text(body)
             path.chmod(0o755)
-        env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+        env = dict(
+            os.environ,
+            PATH=f"{fake_bin}:{os.environ['PATH']}",
+            CALL_LOG=str(log),
+            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+        )
         command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
         return env, command, log
 
@@ -1256,6 +1267,7 @@ class OperatorControlTests(unittest.TestCase):
                 (fake_bin / name).chmod(0o755)
             env = dict(
                 os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
                 CALL_COUNT_FILE=str(call_count_file),
             )
 
@@ -1302,7 +1314,7 @@ class OperatorControlTests(unittest.TestCase):
                 path = fake_bin / name
                 path.write_text(body)
                 path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -1372,6 +1384,7 @@ class OperatorControlTests(unittest.TestCase):
                 (fake_bin / name).chmod(0o755)
             env = dict(
                 os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
                 CALL_COUNT_FILE=str(call_count_file),
             )
 
@@ -1475,7 +1488,7 @@ class OperatorControlTests(unittest.TestCase):
             (fake_bin / "linear").chmod(0o755)
             (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 0\n")
             (fake_bin / "herdr-say").chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", STATE_FILE=str(state_file))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", STATE_FILE=str(state_file), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             result = subprocess.run(
                 [
@@ -1673,7 +1686,7 @@ class OperatorControlTests(unittest.TestCase):
             (fake_bin / "linear").chmod(0o755)
             (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 0\n")
             (fake_bin / "herdr-say").chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", STATE_FILE=str(state_file))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", STATE_FILE=str(state_file), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             result = subprocess.run(
                 [
@@ -1718,7 +1731,7 @@ class OperatorControlTests(unittest.TestCase):
             # binary would exit nonzero if invoked, proving no fallback to herdr-say.
             (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 99\n")
             (fake_bin / "herdr-say").chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", STATE_FILE=str(state_file), CALL_LOG=str(call_log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", STATE_FILE=str(state_file), CALL_LOG=str(call_log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             result = subprocess.run(
                 [
@@ -1751,7 +1764,7 @@ class OperatorControlTests(unittest.TestCase):
             (fake_bin / "operator-say").chmod(0o755)
             (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 99\n")
             (fake_bin / "herdr-say").chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(call_log))
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(call_log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
 
             result = subprocess.run(
                 [
@@ -2179,6 +2192,7 @@ class OperatorControlTests(unittest.TestCase):
                     )
                     env = dict(
                         os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+                        OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
                         STATE_FILE=str(state_file), CALL_LOG=str(call_log),
                         GH_RESPONSE_FILE=str(response_file),
                     )
@@ -2313,6 +2327,7 @@ class SweepStreamLivenessTests(unittest.TestCase):
                 PATH=f"{fake_bin}:{os.environ['PATH']}",
                 CALL_LOG=str(log),
                 LIVENESS_PROBE=str(control / "liveness.json"),
+                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
             )
             result = subprocess.run(
                 [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)],
@@ -2323,6 +2338,16 @@ class SweepStreamLivenessTests(unittest.TestCase):
             self.assertNotIn("liveness-missing", calls)
             self.assertIn('"wait_owner": "operator"', calls)
             self.assertIn("Approve please.", calls)
+
+    def test_sweep_invokes_operator_say_by_absolute_path(self) -> None:
+        # Live defect: timer-run sweep crashed with FileNotFoundError because
+        # operator-say was invoked by bare name under systemd's bare PATH. The
+        # sweep resolves the helper from its own root, overridable for tests
+        # via OCTO_OPERATOR_SAY.
+        source = SWEEP.read_text()
+        self.assertNotIn('"operator-say", "--kind"', source)
+        self.assertIn("OCTO_OPERATOR_SAY", source)
+        self.assertIn('skills/herdr-comms/assets/operator-say', source)
 
     def test_liveness_never_enters_the_digested_snapshot(self) -> None:
         source = SWEEP.read_text()

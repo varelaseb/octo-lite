@@ -406,9 +406,12 @@ def main() -> int:
     atomic_write(result_path, message)
 
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
+    # systemd user services run with a bare PATH (live FileNotFoundError
+    # evidence); helpers resolve from this repo's own root, test-overridable.
+    operator_say = os.environ.get("OCTO_OPERATOR_SAY") or str(root / "skills/herdr-comms/assets/operator-say")
     delivered = subprocess.run(
         [
-            "operator-say", "--kind", "info", "--artifact", str(result_path),
+            operator_say, "--kind", "info", "--artifact", str(result_path),
             f"Sweep delta ready: {result_path}",
         ],
         env=environment,
