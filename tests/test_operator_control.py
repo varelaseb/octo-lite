@@ -2268,6 +2268,40 @@ class SweepStreamLivenessTests(unittest.TestCase):
             self.assertEqual("", consumed["wait_owner"])
             self.assertEqual("active", consumed["classification"])
 
+    def test_liveness_uses_the_newest_receipt_session_across_all_stream_receipts(self) -> None:
+        # Residual defect evidence (tur-416): a stream carrying an original
+        # receipt.toml for a CLOSED session plus a receipt-shaping.toml for the
+        # ACTIVE session must derive liveness from the newest transcript across
+        # all receipts, not the stale original, or it reads false
+        # suspected-stuck.
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            projects = base / "projects"
+            inbox_root = base / "inbox"
+            stream, old_transcript = self._stream_with_receipt(base, "tur-9", projects, now)
+            os.utime(old_transcript, (now - 90000, now - 90000))
+            (stream / "status.md").write_text("# s\n")
+            os.utime(stream / "status.md", (now - 90000, now - 90000))
+
+            active_worktree = base / "wt" / "tur-9-shaping"
+            active_worktree.mkdir(parents=True)
+            (stream / "receipt-shaping.toml").write_text(
+                f'[workspace]\nworktree = "{active_worktree}"\n[bootstrap]\nprovider_session_id = "sess-active"\n'
+            )
+            active_dir = projects / module.sanitize_project_dir(str(active_worktree))
+            active_dir.mkdir(parents=True)
+            active_transcript = active_dir / "sess-active.jsonl"
+            active_transcript.write_text("{}\n")
+            os.utime(active_transcript, (now - 120, now - 120))
+
+            live = module.stream_liveness(
+                stream, inbox_root, idle_seconds=3600, now=now, projects_root=projects
+            )
+            self.assertEqual(int(now - 120), live["transcript_mtime"])
+            self.assertEqual("active", live["classification"])
+
     def test_recent_status_alone_never_counts_as_activity(self) -> None:
         # Classifier defect red: a freshly rewritten status file with an idle
         # (or absent) transcript must NOT classify the stream active.

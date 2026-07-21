@@ -173,22 +173,23 @@ def sanitize_project_dir(cwd: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", cwd)
 
 
-def _stream_transcript_path(stream_dir: Path, projects_root: Path) -> Path | None:
-    """Resolve the stream's real session transcript from its receipt: the
-    session id plus the workspace cwd derive
-    <projects_root>/<sanitized-cwd>/<session_id>.jsonl (ruling-19 repair)."""
-    receipt_path = stream_dir / "receipt.toml"
-    if not receipt_path.is_file():
-        return None
-    try:
-        receipt = load_toml(receipt_path)
-    except Exception:
-        return None
-    session_id = str(receipt.get("bootstrap", {}).get("provider_session_id") or "")
-    worktree = str(receipt.get("workspace", {}).get("worktree") or "")
-    if not session_id or not worktree:
-        return None
-    return projects_root / sanitize_project_dir(worktree) / f"{session_id}.jsonl"
+def _stream_transcript_paths(stream_dir: Path, projects_root: Path) -> list[Path]:
+    """Resolve every session transcript a stream's receipts point at: each
+    receipt*.toml's session id plus workspace cwd derives
+    <projects_root>/<sanitized-cwd>/<session_id>.jsonl. A stream may carry an
+    original receipt for a closed session plus a newer receipt for the active
+    one (tur-416 evidence); liveness must consider them all."""
+    paths: list[Path] = []
+    for receipt_path in sorted(stream_dir.glob("receipt*.toml")):
+        try:
+            receipt = load_toml(receipt_path)
+        except Exception:
+            continue
+        session_id = str(receipt.get("bootstrap", {}).get("provider_session_id") or "")
+        worktree = str(receipt.get("workspace", {}).get("worktree") or "")
+        if session_id and worktree:
+            paths.append(projects_root / sanitize_project_dir(worktree) / f"{session_id}.jsonl")
+    return paths
 
 
 def stream_liveness(stream_dir: Path, inbox_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None) -> dict:
@@ -208,8 +209,12 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, *, idle_seconds: int, no
     status_text = status_path.read_text() if status_path.is_file() else ""
 
     projects = projects_root if projects_root is not None else Path.home() / ".claude" / "projects"
-    transcript_path = _stream_transcript_path(stream_dir, projects)
-    transcript_mtime = mtime(transcript_path) if transcript_path is not None else None
+    transcript_mtimes = [
+        value
+        for value in (mtime(path) for path in _stream_transcript_paths(stream_dir, projects))
+        if value is not None
+    ]
+    transcript_mtime = max(transcript_mtimes) if transcript_mtimes else None
 
     # Status gate lines are the real, child-written wait surface: the first
     # waiting-on line names the owner and carries the verbatim open ask.
