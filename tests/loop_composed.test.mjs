@@ -79,6 +79,30 @@ function boundInputs(role) {
   }
 }
 
+// TUR-447 ruling-59 host-trusted identity anchors. The receipt is the HOST-PROVISIONED workspace
+// binding a genuine host receipt reader returns from the OCTO_RECEIPT location (never a child path);
+// the live read is the receipt-pinned worktree reality a genuine host git reader returns. A healthy
+// world: receipt + live agree with the envelope's repo_slug/worktree/starting_head/branch.
+function receiptFor(overrides = {}) {
+  return {
+    source: 'host-provisioned-receipt', repo: REPO, repo_slug: REPO_SLUG,
+    worktree: WORKTREE_ABS, starting_head: HEAD, ...overrides,
+  }
+}
+function worktreeRealityFor(overrides = {}) {
+  return {
+    source: 'host-receipt-pinned-worktree-read', read_worktree: WORKTREE_ABS,
+    head: HEAD, branch: BRANCH, repo_slug: REPO_SLUG, ...overrides,
+  }
+}
+// The two anchor spawn responders keyed for a given role label prefix.
+function identityAnchorEntries(role, { receipt = receiptFor(), reality = worktreeRealityFor() } = {}) {
+  return [
+    [`${role}-receipt:`, receipt],
+    [`${role}-worktree-reality:`, reality],
+  ]
+}
+
 function ackFor(role, overrides = {}) {
   const b = boundInputs(role)
   return {
@@ -221,6 +245,7 @@ function implementScript({
   fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
   mutationOverrides = {}, prePush, gitRead = gitReadFor(), observation = observationFor(), postPush,
   liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
+  receipt = receiptFor(), reality = worktreeRealityFor(),
 } = {}) {
   // Committed model: red is the committed failing test (a real nonzero test exit), green the committed
   // production-only pass; both name the same scenario. The observer replay, not these strings, is proof.
@@ -235,6 +260,9 @@ function implementScript({
   // Pre-push readback default: git_head is the committed FINAL HEAD (the worker committed on the branch).
   const goodPrePush = prePush ?? freshReads({ git_head: FINAL_COMMIT })
   return [
+    // TUR-447 ruling-59 host-trusted identity anchors: read BEFORE the Shaped -> Todo fire and again
+    // before the spawn. A healthy receipt + receipt-pinned live worktree read agree with the envelope.
+    ...identityAnchorEntries('implementer', { receipt, reality }),
     ['loop-fire:', {
       command: 'octo-control linear-transition', exit_status: 0,
       readback_state: fireState, readback_fingerprint: fireFingerprint,
@@ -288,6 +316,125 @@ test('P0: a genuine Shaped member fires Todo, the bound fingerprint is RECONCILE
   const mutIdx = labels.findIndex((l) => l === `implementer:${ISSUE}|null`)
   assert.ok(ackIdx >= 0, 'read-only ack (Explore) phase ran')
   assert.ok(mutIdx > ackIdx, 'write-capable mutation phase reached after ack')
+})
+
+// === TUR-447 ruling-59 host-trusted identity anchors driven through the REAL loop gate ===========
+// These drive the production identity gate (hostTrustedIdentity -> assertHostTrustedIdentity) on the
+// REAL foreign path: a foreign-but-well-formed envelope, and the tur-456 shape (matching worktree
+// PATH on a FOREIGN branch / different remote). A mismatch must drive NO Shaped -> Todo transition
+// and NO spawn; a genuine matching triple is ACCEPTED. Removing the gate fails these (fail-closed).
+
+test('identity-anchor: the host receipt read and the receipt-pinned live worktree read run BEFORE the Shaped -> Todo fire and before any spawn', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  const A = committedEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'code-review-required')
+  const order = agent.calls.map((c) => c.label)
+  const receiptIdx = order.findIndex((l) => l.startsWith('implementer-receipt:'))
+  const realityIdx = order.findIndex((l) => l.startsWith('implementer-worktree-reality:'))
+  const fireIdx = order.findIndex((l) => l.startsWith('loop-fire:'))
+  const ackIdx = order.findIndex((l) => l.startsWith('implementer-ack:'))
+  assert.ok(receiptIdx >= 0 && realityIdx >= 0, 'both host-trusted anchors were read')
+  assert.ok(receiptIdx < fireIdx && realityIdx < fireIdx, 'both anchors read before the Shaped -> Todo fire')
+  assert.ok(fireIdx < ackIdx, 'the fire precedes the spawn (sanity)')
+  // The receipt reader is read-only and reads the HOST env location, never a child-envelope path.
+  const receiptCall = agent.calls.find((c) => c.label.startsWith('implementer-receipt:'))
+  assert.equal(receiptCall.agentType, 'Explore', 'receipt reader is read-only')
+  assert.ok(receiptCall.prompt.includes('OCTO_RECEIPT'), 'receipt read from the host OCTO_RECEIPT location')
+  // The live worktree reader is pinned to the RECEIPT worktree (git -C the receipt path).
+  const realityCall = agent.calls.find((c) => c.label.startsWith('implementer-worktree-reality:'))
+  assert.ok(/git -C .+ rev-parse HEAD/.test(realityCall.prompt), 'live read pinned to the receipt worktree')
+})
+
+test('identity-anchor: a FOREIGN-but-well-formed envelope (repo_slug differs from the host receipt) drives NO fire and NO spawn', async () => {
+  const factory = loadLoop()
+  // The receipt is the host truth (canonical slug); the ENVELOPE claims a foreign slug. Self-consistent
+  // envelope validation alone would miss this; the receipt anchor catches it before any transition.
+  const agent = makeAgent(implementScript())
+  const A = committedEnvelope({ repo_slug: 'attacker/other' })
+  // The launch revision must still be internally consistent for the foreign envelope, so the ONLY thing
+  // that can reject is the host-trusted anchor, not a revision mismatch.
+  A.launch_revision = launchRevision({
+    role: 'implementer', repo: REPO, repo_slug: 'attacker/other', worktree: WORKTREE_ABS,
+    issue: ISSUE, pr: PR, starting_head: HEAD, spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
+  })
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /receipt binding rejected: envelope canonical repo slug does not match/,
+  )
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no Shaped -> Todo fire on a foreign envelope')
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('implementer-ack:')), 'no spawn on a foreign envelope')
+})
+
+test('identity-anchor (tur-456): a receipt-pinned worktree on a FOREIGN BRANCH (matching path) drives NO fire and NO spawn', async () => {
+  const factory = loadLoop()
+  // Receipt and envelope agree (matching path + branch), but the LIVE read of the receipt-pinned
+  // worktree reveals it is checked out on a FOREIGN branch: the exact tur-456 bug. Anchor A alone
+  // (receipt vs envelope) passes; only the live read rejects.
+  const agent = makeAgent(implementScript({ reality: worktreeRealityFor({ branch: 'someone-elses/lane' }) }))
+  const A = committedEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /live worktree read rejected: receipt-pinned worktree is on a foreign branch/,
+  )
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no fire when the receipt-pinned worktree is on a foreign branch')
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('implementer-ack:')), 'no spawn when the receipt-pinned worktree is on a foreign branch')
+})
+
+test('identity-anchor (tur-456): a receipt-pinned worktree whose origin is a DIFFERENT REMOTE (matching path) drives NO fire and NO spawn', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ reality: worktreeRealityFor({ repo_slug: 'attacker/other' }) }))
+  const A = committedEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /receipt-pinned worktree origin is a foreign remote/,
+  )
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no fire on a foreign remote')
+})
+
+test('identity-anchor: a receipt NOT stamped host-provisioned (a forged receipt) drives NO fire and NO spawn', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ receipt: receiptFor({ source: 'child-supplied' }) }))
+  const A = committedEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /receipt not from the host-provisioned launch location/,
+  )
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no fire on a forged receipt')
+})
+
+test('identity-anchor: a live read that did NOT read the receipt-pinned worktree is REJECTED (no fire, no spawn)', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ reality: worktreeRealityFor({ read_worktree: '/root/foreign-lane-wt' }) }))
+  const A = committedEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /reader did not read the receipt-pinned worktree/,
+  )
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('implementer-ack:')), 'no spawn when the reader read the wrong worktree')
+})
+
+test('identity-anchor: a genuine matching envelope+receipt+live triple is ACCEPTED and delivers', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  const A = committedEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'code-review-required')
+  assert.equal(result.head, FINAL_COMMIT)
+})
+
+test('identity-anchor: the code-review relay path also gates identity (foreign branch on the receipt-pinned worktree rejects before the relay)', async () => {
+  const factory = loadLoop()
+  const script = reviewerScript().map(([m, r]) =>
+    m === 'code-reviewer-worktree-reality:' ? [m, worktreeRealityFor({ branch: 'foreign/lane' })] : [m, r])
+  const agent = makeAgent(script)
+  const A = reviewEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /on a foreign branch/,
+  )
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('code-reviewer-relay:')), 'no relay spawn on a foreign-branch worktree')
 })
 
 test('P0-fingerprint: reusing the STALE Shaped fingerprint after the fire self-rejects (proves reconciliation is real, not a constant)', async () => {
@@ -851,6 +998,8 @@ function reviewerScript({
   const PAYLOAD = 'REVIEWER FINAL MESSAGE VERBATIM'
   const ack = ackFor(role)
   return [
+    // TUR-447 ruling-59 host-trusted identity anchors before the reviewer relay spawn.
+    ...identityAnchorEntries(role),
     [`${role}-readback:`, freshReads({ linear_state: linearState, linear_fingerprint: fingerprintFor(linearState) })],
     [`${role}-runtime:`, runtime],
     [`${role}-relay:`, {

@@ -120,6 +120,21 @@ function ackFor(role, overrides = {}) {
   }
 }
 
+// TUR-447 ruling-59 host-trusted identity anchors (host-provisioned receipt + receipt-pinned live
+// worktree read) the loop reads BEFORE the fire and before the spawn.
+function receiptFor(overrides = {}) {
+  return {
+    source: 'host-provisioned-receipt', repo: REPO, repo_slug: REPO_SLUG,
+    worktree: WORKTREE_ABS, starting_head: HEAD, ...overrides,
+  }
+}
+function worktreeRealityFor(overrides = {}) {
+  return {
+    source: 'host-receipt-pinned-worktree-read', read_worktree: WORKTREE_ABS,
+    head: HEAD, branch: BRANCH, repo_slug: REPO_SLUG, ...overrides,
+  }
+}
+
 function readyEnvelope(overrides = {}) {
   const base = {
     mode: 'implement',
@@ -214,6 +229,7 @@ function implementScript({
   fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
   mutationOverrides = {}, prePush, gitRead = gitReadFor(), observation = observationFor(), postPush,
   liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
+  receipt = receiptFor(), reality = worktreeRealityFor(),
 } = {}) {
   const goodRed = red ?? {
     command: VALIDATION_COMMAND, exit_status: 1, outcome: 'FAIL: behavior wrong',
@@ -225,6 +241,9 @@ function implementScript({
   }
   const goodPrePush = prePush ?? freshReads({ git_head: FINAL_COMMIT })
   return [
+    // TUR-447 ruling-59 host-trusted identity anchors, read before the fire and before the spawn.
+    ['implementer-receipt:', receipt],
+    ['implementer-worktree-reality:', reality],
     ['loop-fire:', {
       command: 'octo-control linear-transition', exit_status: 0,
       readback_state: fireState, readback_fingerprint: fireFingerprint,

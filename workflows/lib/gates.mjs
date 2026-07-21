@@ -279,6 +279,108 @@ export function assertContainment(worktreeRoot, worktreePath) {
   return resolved
 }
 
+// TUR-447 ruling-59 receipt+live-read identity trust anchor (loop-correctness single-writer;
+// delivery-lifecycle launch-readback, delivery-entry-gate; role-runtime launch-identity,
+// launch-entrypoint-revalidation, launch-containment, launch-receipt). ROOT FIX for the
+// self-referential identity hole: every prior readiness/ack/launch-revision check validated the
+// envelope's repo_slug/worktree/starting_head OVER the same (forgeable) child envelope, so a
+// foreign-but-well-formed envelope self-consistently passed. The two anchors below are the
+// trusted identity roots the worker/child CANNOT forge, validated BEFORE any Shaped -> Todo fire
+// or spawn. NEITHER anchor derives from the child envelope.
+//
+// Anchor A - host-provisioned RECEIPT workspace binding. The launcher wrote a receipt at spawn
+// carrying [workspace] repo, worktree, starting_head; it is host-authored, read from a
+// HOST-TRUSTED location (an env var / launch-context path the child cannot influence, NEVER a
+// path supplied by the child envelope). assertReceiptWorkspaceBinding rejects unless the envelope
+// repo_slug/worktree/starting_head EXACTLY match the receipt, catching a forged envelope claiming
+// a different repo/worktree/head than the host provisioned. The receipt fields are validated with
+// the same slug/containment shape as readiness so a malformed receipt fails closed too.
+const HOST_RECEIPT_SOURCE = 'host-provisioned-receipt'
+const HOST_WORKTREE_READ_SOURCE = 'host-receipt-pinned-worktree-read'
+const RECEIPT_BINDING_FIELDS = [
+  ['repo_slug', 'repo_slug', 'canonical repo slug'],
+  ['worktree', 'worktree', 'host issue worktree'],
+  ['starting_head', 'starting_head', 'starting HEAD'],
+]
+
+export function assertReceiptWorkspaceBinding(envelope, receipt) {
+  required(envelope, 'launch envelope')
+  required(receipt, 'host-provisioned receipt')
+  // Provenance: the receipt must be stamped by the host launcher, never the child envelope. A
+  // receipt whose source is the child/worker/envelope, or an unstamped receipt, fails closed so
+  // the anchor cannot be satisfied by a value the child controls.
+  if (receipt.source !== HOST_RECEIPT_SOURCE) {
+    throw new Error('receipt binding rejected: receipt not from the host-provisioned launch location')
+  }
+  // The receipt fields are themselves shape-validated (a canonical slug, a real head, a worktree)
+  // so a malformed host receipt fails closed rather than matching a malformed envelope.
+  assertRepoSlug(receipt.repo_slug, 'receipt repo_slug')
+  requiredNonEmptyString(receipt.worktree, 'receipt worktree')
+  requiredNonEmptyString(receipt.starting_head, 'receipt starting HEAD')
+  for (const [envField, rcField, label] of RECEIPT_BINDING_FIELDS) {
+    requiredNonEmptyString(envelope[envField], `envelope ${label}`)
+    if (envelope[envField] !== receipt[rcField]) {
+      throw new Error(`receipt binding rejected: envelope ${label} does not match the host-provisioned receipt`)
+    }
+  }
+  return { repo_slug: receipt.repo_slug, worktree: receipt.worktree, starting_head: receipt.starting_head }
+}
+
+// Anchor B - LIVE git read of the RECEIPT-pinned worktree (non-forgeable reality). A host-controlled
+// subagent runs git -C <receipt.worktree> rev-parse HEAD, rev-parse --abbrev-ref HEAD, and remote
+// get-url origin over the RECEIPT worktree (never an envelope path). assertLiveWorktreeIdentity
+// rejects unless the live HEAD equals the receipt/envelope starting_head, the live branch equals the
+// envelope branch, and the live origin remote resolves to the envelope repo_slug. This catches the
+// ACTUAL tur-456 bug that Anchor A alone MISSES: the worktree PATH matches the receipt but the shared
+// dir is on a FOREIGN branch / different remote; the live read reveals the foreign branch/repo and
+// REJECTS. The receipt is the pinned reality source, so the live read is proven over the host-pinned
+// path, never a path the child could redirect.
+export function assertLiveWorktreeIdentity(receipt, envelope, live) {
+  required(receipt, 'host-provisioned receipt')
+  required(envelope, 'launch envelope')
+  required(live, 'live worktree read')
+  // Provenance: the live read must be stamped by the host-controlled reader and must have been
+  // pinned (git -C) to the RECEIPT worktree, not any envelope-supplied path.
+  if (live.source !== HOST_WORKTREE_READ_SOURCE) {
+    throw new Error('live worktree read rejected: not from the host-controlled receipt-pinned reader')
+  }
+  requiredNonEmptyString(receipt.worktree, 'receipt worktree')
+  if (live.read_worktree !== receipt.worktree) {
+    throw new Error('live worktree read rejected: reader did not read the receipt-pinned worktree')
+  }
+  const liveHead = requiredNonEmptyString(live.head, 'live worktree HEAD')
+  const liveBranch = requiredNonEmptyString(live.branch, 'live worktree branch')
+  const liveSlug = requiredNonEmptyString(live.repo_slug, 'live worktree origin repo slug')
+  // The live HEAD is the non-forgeable reality: it must equal the receipt AND envelope starting HEAD.
+  if (liveHead !== receipt.starting_head) {
+    throw new Error('live worktree read rejected: live HEAD is not the receipt-pinned starting HEAD')
+  }
+  if (liveHead !== envelope.starting_head) {
+    throw new Error('live worktree read rejected: live HEAD disagrees with the envelope starting HEAD')
+  }
+  // The live branch reveals a FOREIGN branch on a matching path (the tur-456 shape).
+  requiredNonEmptyString(envelope.branch, 'envelope branch')
+  if (liveBranch !== envelope.branch) {
+    throw new Error('live worktree read rejected: receipt-pinned worktree is on a foreign branch')
+  }
+  // The live origin remote (normalized to owner/repo) reveals a different remote on a matching path.
+  assertRepoSlug(liveSlug, 'live origin repo slug')
+  if (liveSlug !== envelope.repo_slug) {
+    throw new Error('live worktree read rejected: receipt-pinned worktree origin is a foreign remote')
+  }
+  return { head: liveHead, branch: liveBranch, repo_slug: liveSlug }
+}
+
+// The single host-trusted identity gate. Validates the envelope against BOTH anchors before any
+// spawn or the Shaped -> Todo fire; a mismatch on either rejects with no transition and no spawn.
+// receipt is Anchor A's host-provisioned binding; live is Anchor B's receipt-pinned live git read.
+// Neither is derived from the envelope.
+export function assertHostTrustedIdentity(envelope, receipt, live) {
+  const binding = assertReceiptWorkspaceBinding(envelope, receipt)
+  const reality = assertLiveWorktreeIdentity(receipt, envelope, live)
+  return { binding, reality }
+}
+
 export function assertReadyEnvelope(envelope) {
   for (const field of [
     'issue',
@@ -925,7 +1027,12 @@ export function acceptQaReview(expectedHead, expected, review) {
   if (review.head !== expectedHead) throw new Error('QA review HEAD mismatch')
   required(review.packet_url, 'served packet')
   if (review.issue !== expected.issue) throw new Error('QA review issue mismatch')
-  if (review.pr !== expected.pr) throw new Error('QA review PR mismatch')
+  // TUR-447 ruling-59 item 5: the PR is the canonical PR NUMBER, compared number-safe (6 and '6'
+  // are the same PR). QA_REVIEW_SCHEMA previously forced review.pr to a string while this compared
+  // strictly against the numeric envelope A.pr, so a numeric PR 6 could never pass; normalize both.
+  if (requiredPrNumber(review.pr, 'QA review PR') !== requiredPrNumber(expected.pr, 'expected QA review PR')) {
+    throw new Error('QA review PR mismatch')
+  }
   if (review.manifest !== expected.manifest) throw new Error('QA review manifest mismatch')
   if (review.verdict === 'ambiguous') throw new Error('QA review ambiguous')
   const criteria = assertCriteria(review.criteria)

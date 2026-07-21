@@ -411,19 +411,23 @@ test('blocking review never advances', () => {
 })
 
 const MANIFEST = 'https://evidence.test/manifest-1'
+// TUR-447 ruling-59 item 5 numeric-PR QA fix: acceptQaReview now compares pr number-safe, so the QA
+// fixtures bind the canonical PR NUMBER (integer), not the code-review comment-URL constant. PR 6 (the
+// TUR-447 PR) is the anti-regression: a numeric PR must pass QA review.
+const QA_PR = 6
 
 function criterion(overrides = {}) {
   return { criterion: 'loads', status: 'pass', observation: 'renders as expected', ...overrides }
 }
 
 function qaExpected(overrides = {}) {
-  return { issue: 'TUR-1', pr: PR, manifest: MANIFEST, ...overrides }
+  return { issue: 'TUR-1', pr: QA_PR, manifest: MANIFEST, ...overrides }
 }
 
 function qaFixture(overrides = {}) {
   return {
     head: 'abc', verdict: 'satisfied', packet_url: 'https://evidence.test/1',
-    issue: 'TUR-1', pr: PR, manifest: MANIFEST, criteria: [criterion()],
+    issue: 'TUR-1', pr: QA_PR, manifest: MANIFEST, criteria: [criterion()],
     ...overrides,
   }
 }
@@ -434,6 +438,20 @@ test('backend work still requires fresh qa review', () => {
     acceptQaReview('abc', qaExpected(), qaFixture()),
     { advance: true, packet_url: 'https://evidence.test/1' },
   )
+})
+
+// TUR-447 ruling-59 item 5 numeric-PR QA regression: a numeric PR 6 (the TUR-447 PR) must PASS QA
+// review, and a numeric/string PR compare equal, while a genuinely different PR still REJECTS.
+test('qa review: a numeric PR (6) passes and a numeric/string PR compare equal, a different PR rejects', () => {
+  assert.deepEqual(
+    acceptQaReview('abc', qaExpected({ pr: 6 }), qaFixture({ pr: 6 })),
+    { advance: true, packet_url: 'https://evidence.test/1' },
+  )
+  // Number 6 and string '6' are the same PR.
+  assert.doesNotThrow(() => acceptQaReview('abc', qaExpected({ pr: 6 }), qaFixture({ pr: '6' })))
+  assert.doesNotThrow(() => acceptQaReview('abc', qaExpected({ pr: '6' }), qaFixture({ pr: 6 })))
+  // A genuinely different PR still rejects.
+  assert.throws(() => acceptQaReview('abc', qaExpected({ pr: 6 }), qaFixture({ pr: 7 })), /PR mismatch/)
 })
 
 test('qa review rejects wrong head, missing served packet, and identity mismatch', () => {
