@@ -10,6 +10,9 @@ import {
   acceptQaReview,
   assertCommittedImplementation,
   assertBoundTest,
+  assertIndependentGitRead,
+  assertWorkerClaimCrossCheck,
+  INDEPENDENT_GIT_READ_SOURCE,
   assertHostJournalledCommits,
   assertObservedCommittedStates,
   assertLiveRemotePushReadback,
@@ -236,6 +239,69 @@ test('assertBoundTest binds the failing test by path AND content digest', () => 
   assert.deepEqual(assertBoundTest(BTEST), { path: BTEST.path, digest: BTEST.digest })
   assert.throws(() => assertBoundTest({ path: 'p' }), /content digest/)
   assert.throws(() => assertBoundTest({ digest: 'd' }), /path/)
+})
+
+// TUR-447 D1 cycle2 independent git-read trust root. The host-controlled Read-restricted git reader is
+// given ONLY the branch + expected starting HEAD and reads the ACTUAL red/green/final shas from git.
+function gitReadFixture(overrides = {}) {
+  return {
+    source: INDEPENDENT_GIT_READ_SOURCE, read_by: 'git-reader-1', mutating_worker: 'implementer-1',
+    isolated_worktree: '/root/octo-lite-git-read-wt', branch: 'octo-lite/tur-443-operating-model', base_head: START,
+    red_commit: RED, green_commit: GREEN, final_commit: FINAL,
+    ancestry: [RED, GREEN, FINAL],
+    red_diff_kind: 'test-only', red_named_test_exit: 1, red_test: { ...BTEST },
+    green_diff_kind: 'production-only', green_named_test_exit: 0, green_test: { ...BTEST },
+    final_named_test_exit: 0, final_test: { ...BTEST },
+    ...overrides,
+  }
+}
+
+test('assertIndependentGitRead establishes the trust root shas from the independent git read, not any worker claim', () => {
+  const branch = 'octo-lite/tur-443-operating-model'
+  const expected = { branch, expectedStartingHead: START, boundTest: BTEST }
+  assert.deepEqual(
+    assertIndependentGitRead(gitReadFixture(), expected),
+    { red_commit: RED, green_commit: GREEN, final_commit: FINAL, branch },
+  )
+  // Provenance: a read NOT stamped by the independent git reader is rejected (a worker cannot masquerade).
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ source: 'implementer-1' }), expected), /not from the independent git reader/)
+  // The reader cannot be the mutating worker.
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ read_by: 'implementer-1' }), expected), /the reader cannot be the mutating worker/)
+  // The read must run in an isolated worktree over the exact committed branch.
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ isolated_worktree: '' }), expected), /isolated worktree/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ branch: 'other' }), expected), /a branch other than the committed delivery branch/)
+  // The branch base must be the expected starting HEAD.
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ base_head: 'wrong' }), expected), /branch base is not the expected starting HEAD/)
+  // Red and green cannot collapse; red must move off the base.
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ green_commit: RED, ancestry: [RED, FINAL] }), expected), /red and green collapse to one commit/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ red_commit: START }), expected), /red commit does not move off the expected starting HEAD/)
+  // Linear ancestry red -> green -> final.
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ ancestry: [GREEN, RED, FINAL] }), expected), /ancestry does not start at the red commit/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ ancestry: [RED, GREEN] }), expected), /ancestry does not end at the final HEAD/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ ancestry: [RED, FINAL] }), expected), /green commit not on the ancestry chain/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ ancestry: [GREEN, RED, FINAL], green_commit: GREEN }), expected), /ancestry does not start at the red commit/)
+  // Red test-only + fails; green production-only + passes; final passes.
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ red_diff_kind: 'production-only' }), expected), /red commit diff is not test-only/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ red_named_test_exit: 0 }), expected), /the red commit did not fail the named test/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ green_diff_kind: 'test-only' }), expected), /green commit diff is not production-only/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ green_named_test_exit: 1 }), expected), /the green commit did not pass the named test/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ final_named_test_exit: 1 }), expected), /the final HEAD did not pass the named test/)
+  // Bound-test identity unchanged by path AND digest at red, green, and final.
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ red_test: { path: 'other', digest: BTEST.digest } }), expected), /path absent or changed at the red commit/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ green_test: { path: BTEST.path, digest: 'weak' } }), expected), /content digest differs at the green commit/)
+  assert.throws(() => assertIndependentGitRead(gitReadFixture({ final_test: { path: 'other', digest: BTEST.digest } }), expected), /path absent or changed at the final commit/)
+})
+
+test('assertWorkerClaimCrossCheck rejects a worker claim that differs from the independent git read', () => {
+  const trust = { red_commit: RED, green_commit: GREEN, final_commit: FINAL, branch: 'b' }
+  assert.deepEqual(
+    assertWorkerClaimCrossCheck(trust, { redCommit: RED, greenCommit: GREEN, finalCommit: FINAL }),
+    { redCommit: RED, greenCommit: GREEN, finalCommit: FINAL },
+  )
+  // A forged/cherry-picked worker sha is rejected: the observer never sees a worker-pointed commit.
+  assert.throws(() => assertWorkerClaimCrossCheck(trust, { redCommit: 'forged', greenCommit: GREEN, finalCommit: FINAL }), /claimed red commit differs from the independent git read/)
+  assert.throws(() => assertWorkerClaimCrossCheck(trust, { redCommit: RED, greenCommit: 'forged', finalCommit: FINAL }), /claimed green commit differs from the independent git read/)
+  assert.throws(() => assertWorkerClaimCrossCheck(trust, { redCommit: RED, greenCommit: GREEN, finalCommit: 'forged' }), /claimed final commit differs from the independent git read/)
 })
 
 test('assertHostJournalledCommits binds the host journal to the accepted committed ids and host-sourced command', () => {

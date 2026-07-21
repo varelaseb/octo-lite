@@ -508,16 +508,161 @@ function assertBoundTest(boundTest) {
   return { path: boundTest.path, digest: boundTest.digest }
 }
 
+// TUR-447 D1 cycle2 independent git-read trust root (delivery-lifecycle
+// delivery-tdd-observer-inputs-host-sourced, delivery-tdd-observer-inputs-host-journal-record,
+// delivery-tdd-committed-red-commit, delivery-tdd-committed-green, delivery-tdd-test-identity-binding,
+// delivery-tdd-final-head-verification, delivery-tdd-final-head-test-identity; role-runtime
+// role-tdd-observer-host-sourced-inputs). The prior host journal COPIED the worker-claimed red/green/final
+// commit ids straight into the journal, so a worker-authored commit id became the observer's input,
+// masquerading as host-journalled. The real trust root is an INDEPENDENT git read the host does NOT get
+// from the worker: a host-controlled Read-restricted subagent is given ONLY the worker's committed BRANCH
+// name plus the exact bound expected STARTING HEAD (never the worker's claimed shas), independently reads
+// git on that branch in an isolated worktree, and establishes and verifies the red commit (its diff is
+// TEST-ONLY and its named test FAILS), the green commit (its diff is PRODUCTION-ONLY and the named test
+// PASSES), the final HEAD (named test PASSES, bound test present unchanged by path AND content digest at
+// red, green, and final), and a LINEAR red -> green -> ... -> final ancestry rooted at the expected
+// starting HEAD. It returns the ACTUAL commit shas and digests it read from git.
+//
+// assertIndependentGitRead binds THAT read as the sole trust root. `read` is the subagent's report;
+// `expected` is { branch, expectedStartingHead, boundTest } the host supplied (never worker shas). A read
+// not stamped by the independent reader, over the wrong branch, whose base is not the expected starting
+// HEAD, whose ancestry is not linear red->green->final, whose red diff is not test-only or does not fail,
+// whose green diff is not production-only or does not pass, whose final does not pass, or whose bound test
+// is absent/changed by path or digest at any of the three commits, is rejected. The returned shas are what
+// the host journals and cross-checks the worker claim against.
+const INDEPENDENT_GIT_READ_SOURCE = 'independent-git-read'
+
+function assertReadStateDigest(observedTest, boundTest, label) {
+  required(observedTest, `independent read ${label} bound test`)
+  if (observedTest.path !== boundTest.path) {
+    throw new Error(`independent git read rejected: bound test path absent or changed at the ${label} commit`)
+  }
+  if (observedTest.digest !== boundTest.digest) {
+    throw new Error(`independent git read rejected: bound test content digest differs at the ${label} commit`)
+  }
+}
+
+function assertIndependentGitRead(read, expected) {
+  required(read, 'independent git read')
+  required(expected, 'independent git read expectation')
+  const branch = requiredNonEmptyString(expected.branch, 'expected delivery branch')
+  const expectedStartingHead = requiredNonEmptyString(expected.expectedStartingHead, 'expected starting HEAD')
+  const boundTest = assertBoundTest(expected.boundTest)
+  // Provenance: the read is stamped by the independent git reader, never the mutating worker, and its
+  // reader identity is not the worker.
+  if (read.source !== INDEPENDENT_GIT_READ_SOURCE) {
+    throw new Error('independent git read rejected: not from the independent git reader')
+  }
+  requiredNonEmptyString(read.read_by, 'independent git reader identity')
+  if (read.mutating_worker !== undefined && read.read_by === read.mutating_worker) {
+    throw new Error('independent git read rejected: the reader cannot be the mutating worker')
+  }
+  // The read ran in an isolated worktree over the exact committed branch.
+  requiredNonEmptyString(read.isolated_worktree, 'independent git read isolated worktree')
+  if (read.branch !== branch) {
+    throw new Error('independent git read rejected: read a branch other than the committed delivery branch')
+  }
+  // The branch base is exactly the bound expected starting HEAD (the red roots off the unchanged HEAD).
+  if (read.base_head !== expectedStartingHead) {
+    throw new Error('independent git read rejected: branch base is not the expected starting HEAD')
+  }
+  // The actual shas the reader read from git.
+  const red = requiredNonEmptyString(read.red_commit, 'independent read red commit')
+  const green = requiredNonEmptyString(read.green_commit, 'independent read green commit')
+  const final = requiredNonEmptyString(read.final_commit, 'independent read final commit')
+  if (red === green) throw new Error('independent git read rejected: red and green collapse to one commit')
+  if (red === expectedStartingHead) {
+    throw new Error('independent git read rejected: red commit does not move off the expected starting HEAD')
+  }
+  // Linear red -> green -> ... -> final ancestry rooted at the expected starting HEAD. ancestry is the
+  // ordered commit chain from the base HEAD's child (red) to final inclusive.
+  const ancestry = requiredNonEmptyArray(read.ancestry, 'independent read ancestry chain')
+  if (ancestry[0] !== red) throw new Error('independent git read rejected: ancestry does not start at the red commit')
+  if (ancestry[ancestry.length - 1] !== final) {
+    throw new Error('independent git read rejected: ancestry does not end at the final HEAD')
+  }
+  if (!ancestry.includes(green)) throw new Error('independent git read rejected: green commit not on the ancestry chain')
+  if (ancestry.indexOf(green) <= ancestry.indexOf(red)) {
+    throw new Error('independent git read rejected: green does not descend from the red commit')
+  }
+  if (ancestry.indexOf(final) < ancestry.indexOf(green)) {
+    throw new Error('independent git read rejected: final HEAD does not descend from the green commit')
+  }
+  // Red diff is test-only and its named test genuinely FAILS (a missing file/module is not a valid red:
+  // the reader records a genuine nonzero exit).
+  if (read.red_diff_kind !== 'test-only') {
+    throw new Error('independent git read rejected: red commit diff is not test-only')
+  }
+  if (!Number.isInteger(read.red_named_test_exit)) {
+    throw new Error('independent git read rejected: red named-test exit status required')
+  }
+  if (read.red_named_test_exit === 0) {
+    throw new Error('independent git read rejected: the red commit did not fail the named test')
+  }
+  // Green diff is production-only and its named test PASSES.
+  if (read.green_diff_kind !== 'production-only') {
+    throw new Error('independent git read rejected: green commit diff is not production-only')
+  }
+  if (!Number.isInteger(read.green_named_test_exit)) {
+    throw new Error('independent git read rejected: green named-test exit status required')
+  }
+  if (read.green_named_test_exit !== 0) {
+    throw new Error('independent git read rejected: the green commit did not pass the named test')
+  }
+  // Final HEAD named test PASSES.
+  if (!Number.isInteger(read.final_named_test_exit)) {
+    throw new Error('independent git read rejected: final named-test exit status required')
+  }
+  if (read.final_named_test_exit !== 0) {
+    throw new Error('independent git read rejected: the final HEAD did not pass the named test')
+  }
+  // Bound test present unchanged by path AND digest at red, green, and final.
+  assertReadStateDigest(read.red_test, boundTest, 'red')
+  assertReadStateDigest(read.green_test, boundTest, 'green')
+  assertReadStateDigest(read.final_test, boundTest, 'final')
+  return { red_commit: red, green_commit: green, final_commit: final, branch }
+}
+
+// TUR-447 D1 cycle2 worker-claim cross-check (delivery-lifecycle delivery-tdd-observer-inputs-host-journal-record,
+// delivery-tdd-named-test-commit-inputs-host-journalled; role-runtime role-tdd-observer-host-sourced-inputs).
+// The worker's claimed red/green/final commit ids are cross-checked against the shas the INDEPENDENT git
+// read actually read from the branch. Any mismatch is rejected, so a worker cannot point the observer at a
+// forged or cherry-picked commit: the observer's inputs are the independent-read shas, and the worker claim
+// must agree with them or the pass is rejected before any journal binding. independentRead is the trust
+// root assertIndependentGitRead returned; workerClaim is { redCommit, greenCommit, finalCommit } from
+// assertCommittedImplementation.
+function assertWorkerClaimCrossCheck(independentRead, workerClaim) {
+  required(independentRead, 'independent git read trust root')
+  required(workerClaim, 'worker committed-commit claim')
+  requiredNonEmptyString(workerClaim.redCommit, 'worker claimed red commit')
+  requiredNonEmptyString(workerClaim.greenCommit, 'worker claimed green commit')
+  requiredNonEmptyString(workerClaim.finalCommit, 'worker claimed final commit')
+  if (workerClaim.redCommit !== independentRead.red_commit) {
+    throw new Error('worker claim cross-check rejected: claimed red commit differs from the independent git read')
+  }
+  if (workerClaim.greenCommit !== independentRead.green_commit) {
+    throw new Error('worker claim cross-check rejected: claimed green commit differs from the independent git read')
+  }
+  if (workerClaim.finalCommit !== independentRead.final_commit) {
+    throw new Error('worker claim cross-check rejected: claimed final commit differs from the independent git read')
+  }
+  return {
+    redCommit: independentRead.red_commit,
+    greenCommit: independentRead.green_commit,
+    finalCommit: independentRead.final_commit,
+  }
+}
+
 // TUR-447 D1 host-journalled commit binding (delivery-lifecycle delivery-tdd-observer-inputs-host-sourced,
 // delivery-tdd-observer-inputs-host-journal-record; role-runtime role-tdd-observer-host-sourced-inputs).
-// The HOST records the worker's committed delivery branch, its red, green, and final commit ids, and the
-// canonical validation command from the target AGENTS.md in the journal binding. That binding is the
-// trust root: the observer checks out exactly these host-journalled commits and runs exactly this
-// host-sourced command, never a worker-authored commit id or command string. A worker-claimed commit id
-// that differs from the accepted (host-journalled) commits, or a worker-authored command, is rejected.
-// acceptedCommits is the { redCommit, greenCommit, finalCommit } assertCommittedImplementation returned
-// from the worker's committed result; command is the host's canonical validation command (never worker
-// authored); branch is the worker's committed delivery branch.
+// The HOST records the committed delivery branch, its red, green, and final commit ids, and the canonical
+// validation command from the target AGENTS.md in the journal binding. That binding is the trust root: the
+// observer checks out exactly these host-journalled commits and runs exactly this host-sourced command,
+// never a worker-authored commit id or command string. The commit ids bound here are the INDEPENDENT
+// git-read shas (cross-checked against the worker claim), never a raw worker claim; a divergent commit id
+// or a worker-authored command is rejected. acceptedCommits is the { redCommit, greenCommit, finalCommit }
+// trust root (the independent read cross-checked against the worker claim); command is the host's canonical
+// validation command (never worker authored); branch is the committed delivery branch.
 function assertHostJournalledCommits(binding, acceptedCommits, command, branch) {
   required(binding, 'host journal commit binding')
   requiredNonEmptyString(command, 'host-sourced validation command')
@@ -1150,6 +1295,45 @@ const OBSERVED_TEST_SCHEMA = {
   type: 'object',
   required: ['path', 'digest'],
   properties: { path: { type: 'string' }, digest: { type: 'string' } },
+}
+
+// TUR-447 D1 cycle2 independent git-read trust root (delivery-lifecycle
+// delivery-tdd-observer-inputs-host-sourced, delivery-tdd-observer-inputs-host-journal-record). The
+// host-controlled Read-restricted git reader is given ONLY the committed branch name and the expected
+// starting HEAD (never the worker's claimed shas). It independently reads git on that branch in an
+// isolated worktree and reports the ACTUAL red/green/final shas, the branch base, the linear ancestry
+// chain, each commit's diff kind (red test-only, green production-only), each named-test exit (red FAIL,
+// green PASS, final PASS), and the bound-test identity (path + digest) it read at each commit.
+// assertIndependentGitRead consumes THIS; hostJournalCommits binds its shas, never a worker claim.
+const INDEPENDENT_GIT_READ_SCHEMA = {
+  type: 'object',
+  required: [
+    'source', 'read_by', 'isolated_worktree', 'branch', 'base_head',
+    'red_commit', 'green_commit', 'final_commit', 'ancestry',
+    'red_diff_kind', 'red_named_test_exit', 'red_test',
+    'green_diff_kind', 'green_named_test_exit', 'green_test',
+    'final_named_test_exit', 'final_test',
+  ],
+  properties: {
+    source: { type: 'string' },
+    read_by: { type: 'string' },
+    mutating_worker: { type: 'string' },
+    isolated_worktree: { type: 'string' },
+    branch: { type: 'string' },
+    base_head: { type: 'string' },
+    red_commit: { type: 'string' },
+    green_commit: { type: 'string' },
+    final_commit: { type: 'string' },
+    ancestry: { type: 'array', items: { type: 'string' } },
+    red_diff_kind: { type: 'string' },
+    red_named_test_exit: { type: 'integer' },
+    red_test: OBSERVED_TEST_SCHEMA,
+    green_diff_kind: { type: 'string' },
+    green_named_test_exit: { type: 'integer' },
+    green_test: OBSERVED_TEST_SCHEMA,
+    final_named_test_exit: { type: 'integer' },
+    final_test: OBSERVED_TEST_SCHEMA,
+  },
 }
 
 const OBSERVATION_SCHEMA = {
@@ -1827,27 +2011,77 @@ async function resetWorktreeOrThrow(reason, phaseTitle, bound, worktree) {
   }
 }
 
-// TUR-447 D1 host journal binding of the worker's committed delivery branch (delivery-lifecycle
+// TUR-447 D1 cycle2 independent git read of the committed delivery branch (delivery-lifecycle
+// delivery-tdd-observer-inputs-host-sourced, delivery-tdd-observer-inputs-host-journal-record;
+// role-runtime role-tdd-observer-host-sourced-inputs). Spawn a HOST-CONTROLLED, Read-restricted Explore
+// subagent, DISTINCT from the mutating worker, given ONLY the committed BRANCH name and the exact bound
+// EXPECTED STARTING HEAD. It is NEVER told the worker's claimed red/green/final shas: it must read them
+// itself from git. It independently reads git on that branch in an isolated worktree and reports the ACTUAL
+// red/green/final shas, the branch base, the linear ancestry chain, each commit's diff kind (red test-only,
+// green production-only), each named-test exit (red FAIL, green PASS, final PASS), and the bound-test
+// identity it read at each commit. assertIndependentGitRead verifies all of that; the returned shas are the
+// TRUST ROOT the host journals and cross-checks the worker claim against. No worker sha is interpolated
+// into this prompt, so the trust root cannot be pointed at a forged commit.
+async function independentGitRead(role, phaseTitle, bound, branch, expectedStartingHead, boundTest) {
+  const command = required(A.validation_command, 'canonical validation command from target AGENTS.md')
+  const read = await agent([
+    `You are a fresh HOST-CONTROLLED READ-ONLY octo-lite git reader for the ${role} pass. You are a`,
+    'DISTINCT subagent from the mutating worker, you are Read-restricted, and you NEVER mutate, push, or',
+    'reset. One pass only. You are the INDEPENDENT trust root: you are given ONLY the committed branch name',
+    'and the expected starting HEAD below, NOT any worker-claimed commit sha. Read the commit shas YOURSELF',
+    'from git; never accept a sha from any worker claim.',
+    `COMMITTED delivery BRANCH to read: ${branch}`,
+    `EXPECTED starting HEAD the branch must be rooted at: ${expectedStartingHead}`,
+    `HOST-SOURCED canonical validation command (run EXACTLY this per commit, from the target AGENTS.md): ${command}`,
+    `BOUND TEST identity to confirm present unchanged at each commit: path ${boundTest.path}, digest ${boundTest.digest}.`,
+    'In an ISOLATED worktree that never disturbs the worker branch, main, or the live repository working',
+    'directory, read the branch and establish, by independent git reads only:',
+    '- base_head: the branch base (must be the expected starting HEAD above).',
+    '- red_commit: the first commit off the base; its diff must be TEST-ONLY (a new or changed test plus',
+    '  UNCHANGED production). Check it out, run the command, and record red_named_test_exit; it must be a',
+    '  genuine NONZERO (the named test FAILS). A missing file/module/export/script is NOT a valid red.',
+    '- green_commit: the next commit; its diff must be PRODUCTION-ONLY (it never edits the bound test). Check',
+    '  it out, run the command; green_named_test_exit must be 0 (the same named test PASSES).',
+    '- final_commit: the branch HEAD after any refactor. Check it out, run the command; final_named_test_exit',
+    '  must be 0.',
+    '- ancestry: the ordered commit chain from red to final inclusive (red first, final last), proving a',
+    '  LINEAR red -> green -> ... -> final history rooted at base_head.',
+    '- red_test/green_test/final_test: the bound test file identity {path, digest} you read at each of the',
+    '  red, green, and final commits; it must be present unchanged by the same path and content digest.',
+    'Set red_diff_kind "test-only" and green_diff_kind "production-only" only if the diffs are genuinely so.',
+    `Return source "${INDEPENDENT_GIT_READ_SOURCE}", read_by (your own subagent identity), the isolated_worktree`,
+    'path, the branch, base_head, red_commit/green_commit/final_commit, ancestry, the diff kinds, the three',
+    'named-test exits, and the three bound-test identities, all as you actually read them. Report honestly;',
+    'never fabricate a sha, a diff kind, a passing or failing status, or a digest.',
+  ].join('\n'), {
+    label: `${role}-git-read:${bound.issue}`, phase: phaseTitle, schema: INDEPENDENT_GIT_READ_SCHEMA,
+    agentType: 'Explore',
+  })
+  if (read === null) throw new Error(`${role} independent git read returned no result`)
+  return assertIndependentGitRead(read, { branch, expectedStartingHead, boundTest })
+}
+
+// TUR-447 D1 cycle2 host journal binding from the INDEPENDENT git read (delivery-lifecycle
 // delivery-tdd-observer-inputs-host-journal-record; role-runtime role-tdd-observer-host-sourced-inputs).
-// After assertCommittedImplementation accepts the worker's committed red/green/final commit ids, the HOST
-// records the committed branch, those exact commit ids, and the canonical validation command from the
-// target AGENTS.md in the journal binding. assertHostJournalledCommits binds that record as the trust
-// root: the commit ids are exactly the accepted worker-committed ids (a divergent worker-claimed id never
-// enters the binding) and the command is the host-sourced canonical command, never worker-authored. The
-// resulting binding is the SOLE source of the observer's execution inputs.
-function hostJournalCommits(acceptedCommits, command) {
+// The HOST records the committed branch, the red/green/final commit ids the INDEPENDENT git reader read
+// from git (never a raw worker claim), and the canonical validation command from the target AGENTS.md in
+// the journal binding. assertHostJournalledCommits binds that record as the trust root: the commit ids are
+// exactly the independent-read shas (already cross-checked against the worker claim) and the command is the
+// host-sourced canonical command, never worker-authored. The resulting binding is the SOLE source of the
+// observer's execution inputs.
+function hostJournalCommits(trustRoot, command) {
   const branch = required(A.branch, 'branch')
   const binding = assertHostJournalledCommits(
     {
       branch,
-      red_commit: acceptedCommits.redCommit,
-      green_commit: acceptedCommits.greenCommit,
-      final_commit: acceptedCommits.finalCommit,
+      red_commit: trustRoot.redCommit,
+      green_commit: trustRoot.greenCommit,
+      final_commit: trustRoot.finalCommit,
       command,
     },
-    acceptedCommits, command, branch,
+    trustRoot, command, branch,
   )
-  log(`journal committed-branch ${branch} red ${binding.red_commit} green ${binding.green_commit} final ${binding.final_commit}`)
+  log(`journal committed-branch ${branch} red ${binding.red_commit} green ${binding.green_commit} final ${binding.final_commit} (independent git read)`)
   return binding
 }
 
@@ -2003,24 +2237,37 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
   return finalCommit
 }
 
-// TUR-447 D1 committed delivery pass orchestration (delivery-lifecycle delivery-tdd-committed-red,
-// delivery-tdd-committed-green, delivery-tdd-independent-observer, delivery-tdd-observer-inputs-host-journal-record,
-// delivery-tdd-final-head-verification, delivery-tdd-host-gated-push, delivery-tdd-host-gated-push-reject;
-// role-runtime role-implementer-host-gated-push, role-tdd-observer, launch-identity-delivery-branch). The
-// single reshaped delivery flow shared by implement and fix modes. In order: (1) accept the worker's
-// COMMITTED red/green/final commit ids and bound-test identity (assertCommittedImplementation), rejecting a
-// worker that did not commit, pushed, or collapsed the red and green; (2) the HOST journals the committed
-// branch, those exact commit ids, and the canonical validation command from the target AGENTS.md
-// (hostJournalCommits), the trust root the observer executes from; (3) spawn the independent Read-restricted
-// tdd-observer to replay each host-journalled committed state and the final HEAD in an isolated worktree with
-// host-sourced inputs only (observeCommittedStates); (4) consume the observer replay, not any worker string
-// (assertObservedCommittedStates): red fail, green pass, final-HEAD green, bound-test identity present unchanged
-// at each; (5) the host pushes the verified committed branch and confirms the pushed HEAD by a LIVE REMOTE read
-// (hostGatedPushCommittedBranch). On ANY rejection the isolated branch is ABANDONED UNPUSHED with no destructive
-// reset; a dirty or diverged worktree stops for inspection. The canonical validation command is a REQUIRED
-// host-sourced input, never worker-authored.
+// TUR-447 D1 cycle2 committed delivery pass orchestration (delivery-lifecycle delivery-tdd-committed-red,
+// delivery-tdd-committed-green, delivery-tdd-independent-observer, delivery-tdd-observer-inputs-host-sourced,
+// delivery-tdd-observer-inputs-host-journal-record, delivery-tdd-final-head-verification,
+// delivery-tdd-host-gated-push, delivery-tdd-host-gated-push-reject; role-runtime role-implementer-host-gated-push,
+// role-tdd-observer, role-tdd-observer-host-sourced-inputs, launch-identity-delivery-branch). The single
+// reshaped delivery flow shared by implement and fix modes. In order:
+//   (1) accept the worker's COMMITTED red/green/final commit ids and bound-test identity
+//       (assertCommittedImplementation), rejecting a worker that did not commit, pushed, or collapsed the
+//       red and green;
+//   (2) establish the TRUST ROOT by an INDEPENDENT git read (independentGitRead): a host-controlled
+//       Read-restricted subagent, given ONLY the branch name and the expected starting HEAD (never the
+//       worker's claimed shas), reads the ACTUAL red/green/final shas from git and verifies test-only red
+//       (fails), production-only green (passes), passing final HEAD, bound-test identity unchanged at each,
+//       and a linear red->green->final ancestry;
+//   (3) CROSS-CHECK the worker's claimed shas against the independent-read shas (assertWorkerClaimCrossCheck):
+//       any mismatch is rejected, so the worker cannot point the observer at a forged or cherry-picked commit;
+//   (4) the HOST journals the branch, the INDEPENDENT-READ commit ids, and the canonical validation command
+//       from the target AGENTS.md (hostJournalCommits), the trust root the observer executes from;
+//   (5) spawn the independent Read-restricted tdd-observer to RE-RUN each host-journalled committed state and
+//       the final HEAD in an isolated worktree with the host-journalled commits + host-sourced command only
+//       (observeCommittedStates);
+//   (6) consume the observer replay, not any worker string (assertObservedCommittedStates): red fail, green
+//       pass, final-HEAD green, bound-test identity present unchanged at each;
+//   (7) the host pushes the verified committed branch and confirms the pushed HEAD by a LIVE REMOTE read
+//       (hostGatedPushCommittedBranch).
+// On ANY rejection the isolated branch is ABANDONED UNPUSHED with no destructive reset; a dirty or diverged
+// worktree stops for inspection. The canonical validation command is a REQUIRED host-sourced input, never
+// worker-authored.
 async function deliverCommittedPass(role, phaseTitle, startingHead, bound, implementation, worktree) {
   const command = required(A.validation_command, 'canonical validation command from target AGENTS.md')
+  const branch = required(A.branch, 'branch')
   // (1) Accept the committed worker result (no worker-authored observation is trusted here).
   let acceptedCommits
   try {
@@ -2030,18 +2277,29 @@ async function deliverCommittedPass(role, phaseTitle, startingHead, bound, imple
     throw error
   }
   const boundTest = acceptedCommits.boundTest
-  // (2) Host journals the committed branch + commit ids + host-sourced validation command.
-  const binding = hostJournalCommits(acceptedCommits, command)
-  // (3) Independent observer replays the host-journalled committed states in an isolated worktree.
+  // (2) INDEPENDENT git read establishes the trust root shas from git itself (never a worker claim), and
+  //     (3) cross-check the worker claim against it. A forged/cherry-picked worker sha is rejected here
+  //     before any journal binding.
+  let trustRoot
+  try {
+    const independentRead = await independentGitRead(role, phaseTitle, bound, branch, startingHead, boundTest)
+    trustRoot = assertWorkerClaimCrossCheck(independentRead, acceptedCommits)
+  } catch (error) {
+    await abandonUnpushedBranchOrStop(`${role} independent git read / cross-check rejection`, phaseTitle, bound, implementation, worktree)
+    throw error
+  }
+  // (4) Host journals the branch + the INDEPENDENT-READ commit ids + host-sourced validation command.
+  const binding = hostJournalCommits(trustRoot, command)
+  // (5) Independent observer RE-RUNS the host-journalled committed states in an isolated worktree.
   const observation = await observeCommittedStates(role, phaseTitle, bound, binding, boundTest)
-  // (4) Consume the observer replay, not any worker string. On rejection, abandon the unpushed branch.
+  // (6) Consume the observer replay, not any worker string. On rejection, abandon the unpushed branch.
   try {
     assertObservedCommittedStates(observation, binding, boundTest)
   } catch (error) {
     await abandonUnpushedBranchOrStop(`${role} observer replay rejection`, phaseTitle, bound, implementation, worktree)
     throw error
   }
-  // (5) Host-gated push of the verified committed branch + live-remote readback.
+  // (7) Host-gated push of the verified committed branch + live-remote readback.
   return hostGatedPushCommittedBranch(role, phaseTitle, A, bound, implementation, binding, worktree)
 }
 

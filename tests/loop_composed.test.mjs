@@ -168,6 +168,25 @@ const FINAL_COMMIT = 'f1nalc0mm1t000000000000000000000000000003'
 const BOUND_TEST = { path: 'tests/loop_composed.test.mjs', digest: 'sha256:boundtestdigest' }
 const VALIDATION_COMMAND = 'node --test tests/'
 
+// TUR-447 D1 cycle2: the INDEPENDENT git read a genuine host-controlled git-reader subagent returns. It is
+// a DISTINCT Read-restricted subagent from the mutating worker, given ONLY the branch name and expected
+// starting HEAD (never the worker's claimed shas). It read the ACTUAL red/green/final shas from git and
+// verified the test-only red (fails), production-only green (passes), passing final HEAD, bound-test
+// identity unchanged at each, and a linear red->green->final ancestry rooted at the starting HEAD. The host
+// journals THESE shas and cross-checks the worker claim against them.
+function gitReadFor(overrides = {}) {
+  return {
+    source: 'independent-git-read', read_by: 'git-reader-subagent-1', mutating_worker: 'implementer-subagent',
+    isolated_worktree: '/root/octo-lite-git-read-wt', branch: BRANCH, base_head: HEAD,
+    red_commit: RED_COMMIT, green_commit: GREEN_COMMIT, final_commit: FINAL_COMMIT,
+    ancestry: [RED_COMMIT, GREEN_COMMIT, FINAL_COMMIT],
+    red_diff_kind: 'test-only', red_named_test_exit: 1, red_test: { ...BOUND_TEST },
+    green_diff_kind: 'production-only', green_named_test_exit: 0, green_test: { ...BOUND_TEST },
+    final_named_test_exit: 0, final_test: { ...BOUND_TEST },
+    ...overrides,
+  }
+}
+
 // TUR-447 D1: the INDEPENDENT tdd-observer's replay a genuine observer subagent returns. It is a DISTINCT
 // Read-restricted subagent from the mutating worker: it checked out EACH host-journalled committed state
 // and the final HEAD in an ISOLATED worktree and ran the HOST-SOURCED command, seeing red FAIL, green PASS,
@@ -189,7 +208,7 @@ function observationFor(overrides = {}) {
 function implementScript({
   fresh = freshReads(), red, green, mutationAck = ackFor('implementer'),
   fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
-  mutationOverrides = {}, prePush, observation = observationFor(), postPush,
+  mutationOverrides = {}, prePush, gitRead = gitReadFor(), observation = observationFor(), postPush,
   liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
 } = {}) {
   // Committed model: red is the committed failing test (a real nonzero test exit), green the committed
@@ -222,6 +241,9 @@ function implementScript({
       linear_state: liveness.linear_state, linear_fingerprint: liveness.linear_fingerprint,
       ...mutationOverrides,
     }],
+    // Independent git read: a host-controlled Read-restricted subagent reads the ACTUAL red/green/final
+    // shas from git (given only the branch + expected starting HEAD, never the worker's claimed shas).
+    ['implementer-git-read:', gitRead],
     // Independent tdd-observer: a SEPARATE Read-restricted subagent replays the host-journalled commits.
     ['implementer-tdd-observer:', observation],
     // Host-non-push abort (only reached on a rejection): the isolated branch is abandoned unpushed.
@@ -389,6 +411,92 @@ test('test_observer_commit_inputs_are_host_journalled: a worker-claimed commit i
   await assert.rejects(
     () => factory(agent, JSON.stringify(A), noop),
     /red and green must be distinct commits/,
+  )
+})
+
+// --- TUR-447 D1 cycle2 independent git-read trust root + worker-claim cross-check ---------------------
+
+// test_independent_git_read_is_the_trust_root
+test('test_independent_git_read_is_the_trust_root: the host establishes the observer inputs from an INDEPENDENT git read (given only the branch + expected HEAD, never the worker shas), runs after the mutation and before the observer, and is a distinct read-only Explore subagent', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  const A = committedEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'code-review-required')
+  const order = agent.calls.map((c) => `${c.label}|${c.agentType}`)
+  const mutIdx = order.findIndex((l) => l === `implementer:${ISSUE}|null`)
+  const readIdx = order.findIndex((l) => l.startsWith(`implementer-git-read:${ISSUE}|Explore`))
+  const obsIdx = order.findIndex((l) => l.startsWith(`implementer-tdd-observer:${ISSUE}|Explore`))
+  const pushIdx = order.findIndex((l) => l.startsWith('host-push:'))
+  assert.ok(readIdx > mutIdx, 'independent git read runs after the committed mutation')
+  assert.ok(readIdx < obsIdx, 'independent git read runs before the observer replay')
+  assert.ok(obsIdx >= 0 && obsIdx < pushIdx, 'observer runs before the push')
+  // The git-read subagent is given ONLY the branch + expected starting HEAD, NEVER the worker's claimed shas.
+  const read = agent.calls.find((c) => c.label === `implementer-git-read:${ISSUE}`)
+  assert.ok(read.prompt.includes(BRANCH), 'git-read prompt carries the committed branch name')
+  assert.ok(read.prompt.includes(HEAD), 'git-read prompt carries the expected starting HEAD')
+  assert.ok(!read.prompt.includes(RED_COMMIT), 'git-read prompt does NOT carry the worker-claimed red sha')
+  assert.ok(!read.prompt.includes(GREEN_COMMIT), 'git-read prompt does NOT carry the worker-claimed green sha')
+  assert.ok(!read.prompt.includes(FINAL_COMMIT), 'git-read prompt does NOT carry the worker-claimed final sha')
+  assert.ok(/read the commit shas YOURSELF|Read the commit shas YOURSELF/i.test(read.prompt), 'reader reads the shas itself')
+  // The observer then executes the INDEPENDENT-READ shas (which here equal the genuine committed shas).
+  const obs = agent.calls.find((c) => c.label === `implementer-tdd-observer:${ISSUE}`)
+  assert.ok(obs.prompt.includes(RED_COMMIT) && obs.prompt.includes(FINAL_COMMIT), 'observer executes the host-journalled (independent-read) commits')
+})
+
+// test_worker_claim_cross_checked_against_independent_read
+test('test_worker_claim_cross_checked_against_independent_read: a worker whose claimed final commit is NOT what the independent git read read is REJECTED (a forged/cherry-picked worker sha never reaches the observer)', async () => {
+  const factory = loadLoop()
+  // The independent git read genuinely reads FINAL_COMMIT off the branch, but the worker CLAIMED a
+  // different final_commit. The cross-check rejects it; nothing is journalled, observed, or pushed.
+  const forgedFinal = 'forgedFinalWorkerClaim000000000000000009'
+  const agent = makeAgent(implementScript({
+    mutationOverrides: { final_commit: forgedFinal, head: forgedFinal },
+    green: {
+      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR}#c2`,
+      head: forgedFinal, scenario: SCENARIO,
+    },
+  }))
+  const A = committedEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /claimed final commit differs from the independent git read/,
+  )
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('implementer-tdd-observer:')), 'observer never runs on a cross-check mismatch')
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed on a cross-check mismatch')
+  assert.ok(agent.calls.some((c) => c.label.startsWith('workspace-abandon:')), 'the branch is abandoned unpushed on a cross-check mismatch')
+})
+
+// test_forged_independent_read_rejected
+test('test_forged_independent_read_rejected: a git read NOT stamped by the independent reader (a worker masquerading as the trust root) is REJECTED', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ gitRead: gitReadFor({ source: 'implementer-subagent' }) }))
+  const A = committedEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /not from the independent git reader/,
+  )
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed on a forged trust root')
+})
+
+// test_independent_read_rejects_nonlinear_or_wrong_base
+test('test_independent_read_rejects_nonlinear_or_wrong_base: an independent read whose branch base is not the expected starting HEAD is REJECTED', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ gitRead: gitReadFor({ base_head: 'someUnrelatedBase00000000000000000000009' }) }))
+  const A = committedEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /branch base is not the expected starting HEAD/,
+  )
+})
+
+test('test_independent_read_rejects_nonlinear_or_wrong_base: an independent read whose red commit is only a missing file (never genuinely failed) is REJECTED', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ gitRead: gitReadFor({ red_named_test_exit: 0 }) }))
+  const A = committedEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /the red commit did not fail the named test/,
   )
 })
 
