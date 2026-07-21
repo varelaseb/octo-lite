@@ -9,6 +9,7 @@ export const meta = {
     { title: 'QA Capture' },
     { title: 'QA Review' },
     { title: 'Publication Readback' },
+    { title: 'Reconcile' },
   ],
 }
 
@@ -892,6 +893,48 @@ const FRESH_READS_SCHEMA = {
   },
 }
 
+// TUR-447 F4b-A Unit I (role-runtime role-worker-migration, role-claude-native,
+// role-reconciler-bootstrap-snapshot-proof; operating-model decision-109-workflow-native).
+// The reconciler subagent's read-only acknowledgment echo carries the journal-bound
+// snapshot path and digest it proved by opening the exact bound snapshot file and hashing
+// its bytes, plus the bound identity fields. The owning host verifies this echo against the
+// durable journal binding (octo_lite.launch verify_reconcile_workflow_ack) before any
+// classification is bound; a missing or digest-mismatched snapshot fails closed.
+const RECONCILE_ACK_SCHEMA = {
+  type: 'object',
+  required: [
+    'schema_version', 'spawn_id', 'launch_revision', 'role', 'worktree',
+    'starting_head', 'snapshot_path', 'snapshot_digest', 'ready', 'blocker',
+  ],
+  properties: {
+    schema_version: { type: 'integer' },
+    spawn_id: { type: 'string' },
+    launch_revision: { type: 'string' },
+    role: { type: 'string' },
+    worktree: { type: 'string' },
+    starting_head: { type: 'string' },
+    snapshot_path: { type: 'string' },
+    snapshot_digest: { type: 'string' },
+    ready: { type: 'boolean' },
+    blocker: { type: 'string' },
+  },
+}
+
+// The reconciler's read-only classification result (role-runtime role-reconciler-input,
+// role-reconciler-authority, role-reconciler-escalation). Sonnet classifies deltas as
+// changed, missing, stale, contradictory, or needs_fable and never mutates a source;
+// missing, unparseable, or ambiguous input escalates with needs_fable so Fable judges.
+const RECONCILE_RESULT_SCHEMA = {
+  type: 'object',
+  required: ['ack', 'classification', 'needs_fable', 'deltas'],
+  properties: {
+    ack: RECONCILE_ACK_SCHEMA,
+    classification: { enum: ['changed', 'missing', 'stale', 'contradictory', 'needs_fable', 'unchanged'] },
+    needs_fable: { type: 'boolean' },
+    deltas: { type: 'array', items: { type: 'string' } },
+  },
+}
+
 // `required` is the embedded gates.mjs helper above (GATES-EMBED region), the
 // single source shared by the inline gates and this loop. A Workflow script is one
 // flat top-level scope, so re-declaring it here would be a duplicate top-level
@@ -973,6 +1016,111 @@ function resolveLaunchRevision(bound) {
   const revision = required(A.launch_revision, 'launch revision')
   assertLaunchRevision(revision, bound)
   return revision
+}
+
+// TUR-447 F4b-A Unit I: the reconciler-as-Workflow-subagent spawn path (role-runtime
+// role-worker-migration, role-claude-native, role-reconciler-input, role-reconciler-authority,
+// role-reconciler-escalation, role-reconciler-bootstrap-snapshot-proof, workspace-cleanup-reconcile;
+// operating-model decision-109-workflow-native, decision-109-binding). This is ADDITIVE to the
+// live provider-argv sweep gateway (octo_lite.launch prepare_reconcile_launch / run_reconcile_launch),
+// which stays alive until sweep-operator-gate migrates operator-sweep to this path.
+//
+// Unlike a delivery worker, the reconciler is Read-restricted: BOTH the acknowledgment phase and the
+// classification phase run under the real read-only subagent type (agentType: 'Explore'), which
+// genuinely withholds Edit, Write, and mutating Bash at the runtime, because the reconciler never
+// mutates a source. The durable binding is the reconcile journal entry the owning host bound BEFORE
+// this spawn through octo_lite.launch bind_reconcile_workflow_journal, which persisted the final
+// snapshot.md, bound its path+bytes+digest, wrote NO reconcile TOML receipt, and rejected the retired
+// octo-lite-reconcile receipt shape. The host resolves the reconciler runtime and journal facts, spawns
+// the ack phase, verifies the snapshot-proof echo against the journal, spawns the classification phase,
+// then binds the classification and cleans up the read-only worktree KEYED ON the durable journal entry.
+// The loop cannot read files or the network, so each Python-side step (journal bind, ack verify, result
+// bind + cleanup) runs inside a spawned subagent that invokes octo_lite.launch and returns its result.
+// Only the real agent() opts ({label, phase, schema, model, effort, isolation, agentType}) are passed.
+async function spawnReconciler(phaseTitle) {
+  const issue = required(A.issue, 'issue')
+  const journalPath = required(A.journal_path, 'reconcile journal path')
+  const worktreeRoot = required(A.worktree_root, 'worktree root')
+  const worktree = assertContainment(worktreeRoot, required(A.worktree, 'reconcile worktree'))
+  // Admission: a reconcile purpose admits ONLY role reconciler as a Read-restricted subagent; the
+  // Linear-state gate does not apply to a whole-operation reconcile sweep (no single delivery issue).
+  assertAdmission({ purpose: 'reconcile', role: 'reconciler', readRestricted: true })
+  // Manifest-shape admission over the journal binding the host bound before this spawn.
+  assertManifestShape({ shape: 'worker-journal', role: 'reconciler', purpose: 'reconcile', readRestricted: true })
+  // Phase 1: read-only acknowledgment spawn. Write tools are withheld (agentType: 'Explore'). The
+  // reconciler opens the journal-bound snapshot file, hashes its bytes, and echoes the bound identity
+  // plus snapshot path and digest; it returns ONLY the ack.
+  assertContainment(worktreeRoot, worktree)
+  const ackPrompt = [
+    'You are a fresh READ-ONLY octo-lite reconciler in the acknowledgment phase. Write tools are',
+    'withheld: you cannot mutate anything, and you must never mutate any source. One pass only.',
+    `Read the durable reconcile journal entry at ${journalPath} yourself.`,
+    'Open the exact file at the journal-bound reconcile.snapshot_path, hash its bytes, and echo the',
+    'bound snapshot_path and the ACTUAL snapshot_digest you computed, plus schema_version, spawn_id,',
+    'launch_revision, role "reconciler", worktree, and starting_head from the journal. Set ready true',
+    'and empty blocker only when the file exists and its digest matches the journal-bound digest;',
+    'otherwise set ready false and a blocker. Return ONLY the ack object.',
+  ].join('\n')
+  const acknowledged = await agent(ackPrompt, {
+    label: `reconciler-ack:${issue}`, phase: phaseTitle, schema: RECONCILE_ACK_SCHEMA, agentType: 'Explore',
+  })
+  if (acknowledged === null) throw new Error('reconciler read-only ack phase returned no result')
+  // Host verifies the snapshot-proof echo against the durable journal binding through the launcher;
+  // a missing or digest-mismatched snapshot, or the retired receipt shape, fails closed here.
+  const verified = await agent([
+    'You are a fresh READ-ONLY octo-lite reconcile ack verifier. One pass; never mutate.',
+    'Invoke octo_lite.launch verify_reconcile_workflow_ack with the journal path and the ack below;',
+    `journal path: ${journalPath}`,
+    'ack:', JSON.stringify(acknowledged.ack ?? acknowledged, null, 2),
+    'Return { verified: true } only if it succeeds; a GateError means fail closed, do not swallow it.',
+  ].join('\n'), {
+    label: `reconciler-ack-verify:${issue}`, phase: phaseTitle,
+    schema: { type: 'object', required: ['verified'], properties: { verified: { type: 'boolean' } } },
+    agentType: 'Explore',
+  })
+  if (verified === null || verified.verified !== true) throw new Error('reconciler ack verification failed')
+  // Phase 2: read-only classification spawn (Sonnet classifies deltas; needs_fable escalates). Still
+  // Read-restricted: the reconciler never mutates a source, so this phase also runs under agentType
+  // 'Explore'. It returns the classification and re-echoes the ack.
+  assertContainment(worktreeRoot, worktree)
+  const brief = required(A.brief, 'reconcile brief')
+  const classified = await agent([
+    'You are a fresh READ-ONLY octo-lite reconciler in the classification phase. Never mutate a source,',
+    'never override a deterministic mismatch, never investigate open-endedly, never silently resolve',
+    'ambiguity. One pass only. Classify the journal-bound normalized snapshot deltas as one of changed,',
+    'missing, stale, contradictory, unchanged, or needs_fable. Missing or unparseable input and semantic',
+    'ambiguity return needs_fable so Fable judges the case. Re-echo the verified ack object and return the',
+    `classification, needs_fable, and the concrete deltas.\n\n${brief}`,
+  ].join('\n'), {
+    label: `reconciler:${issue}`, phase: phaseTitle, schema: RECONCILE_RESULT_SCHEMA, agentType: 'Explore',
+  })
+  if (classified === null) throw new Error('reconciler classification phase returned no result')
+  // Host binds the classification into the durable journal and cleans up the read-only worktree KEYED ON
+  // that journal entry (workspace-cleanup-reconcile), through the launcher. A vanished or substituted
+  // journal, or the retired receipt shape, fails closed and preserves the worktree.
+  const bound = await agent([
+    'You are a fresh octo-lite reconcile result binder. One pass only.',
+    'Invoke octo_lite.launch bind_reconcile_workflow_result with the journal path and the classification',
+    'below; it binds the result into the durable journal entry and cleans up the read-only worktree keyed',
+    'on that journal entry. Never write a TOML receipt.',
+    `journal path: ${journalPath}`,
+    'classification:', JSON.stringify(
+      { classification: classified.classification, needs_fable: classified.needs_fable, deltas: classified.deltas },
+      null, 2,
+    ),
+    'Return the bound result it returns.',
+  ].join('\n'), {
+    label: `reconciler-bind:${issue}`, phase: phaseTitle,
+    schema: {
+      type: 'object', required: ['bound', 'classification', 'needs_fable'],
+      properties: {
+        bound: { type: 'boolean' }, classification: { type: 'string' },
+        needs_fable: { type: 'boolean' }, deltas: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  })
+  if (bound === null || bound.bound !== true) throw new Error('reconcile result binding failed')
+  return { classification: bound.classification, needs_fable: bound.needs_fable, deltas: bound.deltas ?? [] }
 }
 
 // Shared native spawn path for every worker pass (Unit B, TUR-447 F1): the admission
@@ -1352,6 +1500,26 @@ if (mode === 'publication-readback') {
     stage: 'awaiting-operator-acceptance', issue: A.issue, head: A.head,
     packet_url: accepted.packet_url,
     next: 'Operator may accept or reject. No agent may infer acceptance.',
+  }
+}
+
+if (mode === 'reconcile') {
+  // TUR-447 F4b-A Unit I: the reconciler-as-Workflow-subagent entry point (role-runtime
+  // role-worker-migration, role-claude-native; operating-model decision-109-workflow-native).
+  // The owning session bound the reconcile journal BEFORE this invocation through
+  // octo_lite.launch bind_reconcile_workflow_journal, which persisted the final snapshot.md,
+  // bound its path+bytes+digest, wrote NO reconcile TOML receipt, and rejected the retired
+  // octo-lite-reconcile receipt shape. This mode spawns the Read-restricted reconciler, verifies
+  // the snapshot-proof echo against that journal, classifies the deltas with needs_fable
+  // escalation, and cleans up the read-only worktree keyed on the durable journal entry.
+  const reconciled = await spawnReconciler('Reconcile')
+  return {
+    stage: reconciled.needs_fable ? 'reconcile-needs-fable' : 'reconcile-classified',
+    issue: A.issue, classification: reconciled.classification,
+    needs_fable: reconciled.needs_fable, deltas: reconciled.deltas,
+    next: reconciled.needs_fable
+      ? 'Fable judges the escalated reconcile case; no agent resolves ambiguity.'
+      : 'Reconcile classification bound to the durable journal; worktree cleaned keyed on the journal.',
   }
 }
 

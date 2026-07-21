@@ -1392,3 +1392,108 @@ def run_reconcile_launch(
     _write_reconcile_journal(prepared.journal_path, bound)
     _cleanup_reconcile_worktree(prepared.journal_path)
     return message
+
+
+# TUR-447 F4b-A Unit I: the reconciler-as-Workflow-subagent entry point
+# (role-worker-migration, role-claude-native, decision-109-workflow-native). The
+# reconciler migrates to a Read-restricted Claude Workflow subagent that the owning
+# session spawns through the loop's agent() mechanism, not the provider-argv subprocess
+# path (prepare_reconcile_launch / run_reconcile_launch, which the live 2-minute systemd
+# sweep still drives). This entry point is ADDITIVE: those provider-argv functions stay
+# alive, importable, and behavior-unchanged; sweep-operator-gate migrates operator-sweep
+# to this path in a separate step.
+#
+# The durable binding artifact remains the reconcile journal entry, never a reconcile
+# receipt.toml (launch-receipt-manifest-shapes, decision-109-binding). This entry point
+# reuses the exact validated journal binding that prepare_reconcile_launch produces, so it
+# inherits every prior behavior proof verbatim: snapshot integrity (a missing, substituted,
+# corrupt, or digest-mismatched snapshot fails before any journal or worktree,
+# role-reconciler-snapshot-integrity), PR-fact fingerprinting (normalized PR head, base,
+# state, review, and status-check rollup bind into the journal streams,
+# role-reconciler-pr-facts), the HEAD race check, and the canonical spec/ADR sweep. It
+# writes NO reconcile TOML receipt, and its reconcile worktree cleanup keys on the durable
+# journal entry (workspace-cleanup-reconcile). The retired octo-lite-reconcile receipt
+# shape is rejected wherever presented (via load_reconcile_journal).
+@dataclass(frozen=True)
+class PreparedReconcileWorkflow:
+    """The Workflow-native reconciler binding for a loop agent() spawn. It carries the
+    durable journal path and the resolved contract text; it carries NO provider argv,
+    because the loop's agent() mechanism spawns the Read-restricted subagent, not a
+    subprocess relay."""
+
+    journal_path: Path
+    contract_text: str
+
+    def expected_ack(self, provider_session_id: str) -> dict[str, Any]:
+        return _reconcile_expected_ack(load_reconcile_journal(self.journal_path), provider_session_id)
+
+
+def bind_reconcile_workflow_journal(**kwargs: Any) -> PreparedReconcileWorkflow:
+    """Bind the reconcile journal entry BEFORE the Workflow subagent spawns, keyed to the
+    final persisted snapshot.md with matching bytes and digest
+    (role-reconciler-snapshot-receipt-binding). Same aggregate multi-stream validation and
+    journal shape as the provider-argv gateway, reused verbatim so every behavior proof
+    holds, but returned as the Workflow-native prepared shape for a loop agent() spawn. No
+    reconcile TOML receipt is written; the retired octo-lite-reconcile receipt shape is
+    rejected. Accepts the same keyword inputs as prepare_reconcile_launch."""
+    prepared = prepare_reconcile_launch(**kwargs)
+    return PreparedReconcileWorkflow(prepared.journal_path, prepared.contract_text)
+
+
+def verify_reconcile_workflow_ack(journal_path: Path, acknowledgment: Mapping[str, Any]) -> dict[str, Any]:
+    """Verify the Read-restricted reconciler subagent's read-only acknowledgment echo
+    against the durable journal binding before any judgment is bound
+    (role-reconciler-bootstrap-snapshot-proof, launch-gates-workflow-layer). The echo must
+    carry the journal-bound snapshot path and digest; the subagent opened the exact
+    journal-bound snapshot file, hashed its bytes, and echoes the actual digest, so a
+    missing or digest-mismatched snapshot fails closed here. The retired octo-lite-reconcile
+    receipt shape is rejected on readback. Marks the journal bootstrap verified so the
+    downstream result binding proves the same journal survived unchanged."""
+    journal = load_reconcile_journal(journal_path)
+    # A native Claude Workflow subagent has no provider session id; its identity echo is
+    # the journalled spawn_id, exactly as every delivery-worker ack echoes bound inputs
+    # rather than a provider session (decision-109-binding). A caller that does echo a
+    # provider_session_id must echo the journalled spawn_id.
+    claimed = acknowledgment.get("provider_session_id")
+    session = journal["spawn_id"]
+    if isinstance(claimed, str) and claimed and claimed != session:
+        raise GateError("reconcile ack mismatch: provider_session_id")
+    echo = dict(acknowledgment)
+    echo["provider_session_id"] = session
+    expected = _reconcile_expected_ack(journal, session)
+    mismatches = [name for name, value in expected.items() if echo.get(name) != value]
+    if mismatches:
+        raise GateError(f"reconcile ack mismatch: {', '.join(mismatches)}")
+    journal["bootstrap"] = {"verified": True, "provider_session_id": session}
+    _write_reconcile_journal(journal_path, journal)
+    return echo
+
+
+def bind_reconcile_workflow_result(journal_path: Path, classification: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind the reconciler subagent's read-only classification into the durably persisted
+    journal entry, then clean up keyed on that entry (workspace-cleanup-reconcile). The
+    reconciler classifies deltas as changed, missing, stale, contradictory, or needs_fable
+    and never mutates a source (role-reconciler-input, role-reconciler-authority); missing,
+    unparseable, or semantically ambiguous input escalates with needs_fable so Fable judges
+    the case (role-reconciler-escalation). A journal that vanished or was substituted since
+    bootstrap, or that presents the retired receipt shape, fails closed and preserves the
+    worktree for inspection."""
+    bound = load_reconcile_journal(journal_path)
+    if bound.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("reconcile journal bootstrap not verified")
+    needs_fable = bool(classification.get("needs_fable"))
+    label = str(classification.get("classification") or ("needs_fable" if needs_fable else ""))
+    if not label:
+        raise GateError("reconcile classification required")
+    deltas = list(classification.get("deltas") or [])
+    result = {
+        "bound": True,
+        "classification": label,
+        "needs_fable": needs_fable,
+        "deltas": deltas,
+        "binding": exact_fingerprint({"classification": label, "needs_fable": needs_fable, "deltas": deltas}),
+    }
+    bound["result"] = result
+    _write_reconcile_journal(journal_path, bound)
+    _cleanup_reconcile_worktree(journal_path)
+    return result

@@ -15,6 +15,8 @@ from unittest import mock
 from octo_lite import launch as launch_module
 from octo_lite.launch import (
     GateError,
+    bind_reconcile_workflow_journal,
+    bind_reconcile_workflow_result,
     bootstrap_from_receipt,
     fetch_stream_binding,
     prepare_reconcile_launch,
@@ -22,6 +24,7 @@ from octo_lite.launch import (
     render_receipt,
     run_reconcile_launch,
     verify_bootstrap,
+    verify_reconcile_workflow_ack,
     verify_relay_verbatim,
 )
 from octo_lite.runtime import exact_fingerprint, launch_revision, verdict_body
@@ -784,6 +787,251 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(GateError, "session mismatch"):
             run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
+        self.assertNotIn("result", self.read_journal())
+        self.assertTrue(self.worktree.exists())
+
+
+class ReconcileWorkflowSubagentTests(unittest.TestCase):
+    """TUR-447 F4b-A Unit I: the NEW reconciler-as-Workflow-subagent entry point
+    (role-worker-migration, role-claude-native, decision-109-workflow-native).
+
+    The reconciler migrates to a Read-restricted Claude Workflow subagent spawned
+    through the loop's agent() mechanism, not the provider-argv subprocess path. Its
+    durable journal entry binds the final persisted snapshot path, bytes, and digest
+    BEFORE the spawn (role-reconciler-snapshot-receipt-binding), it writes NO reconcile
+    TOML receipt (launch-receipt-manifest-shapes), and the reconcile worktree cleanup
+    keys on the durable journal entry (workspace-cleanup-reconcile). The retired
+    octo-lite-reconcile receipt shape is rejected. The prior behavior proofs are
+    preserved: snapshot integrity, PR-fact fingerprinting, and needs_fable escalation
+    (role-reconciler-escalation)."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.repo = base / "repo"
+        self.worktree_root = base / "worktrees"
+        self.worktree = self.worktree_root / "sweep-1"
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        (self.repo / "AGENTS.md").write_text("# Target\n")
+        spec = self.repo / "spec" / "domains" / "operating-model.spec.html"
+        spec.parent.mkdir(parents=True)
+        spec.write_text('<p data-anchor="x">Works.</p>\n')
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
+        self.head = self.git("rev-parse", "HEAD")
+        self.spec_blob = self.git("hash-object", "spec/domains/operating-model.spec.html")
+        self.linear = {"identifier": "TUR-1", "state": "Todo", "updatedAt": "2026-07-19T00:00:00Z"}
+        self.pull = {
+            "url": "https://github.com/org/repo/pull/6",
+            "headRefOid": "a" * 40,
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "state": "OPEN",
+            "reviewDecision": "",
+            "statusCheckRollup": [
+                {
+                    "__typename": "CheckRun",
+                    "name": "conformance",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-07-19T00:00:00Z",
+                    "completedAt": "2026-07-19T00:01:00Z",
+                    "detailsUrl": "https://github.com/org/repo/actions/runs/1",
+                }
+            ],
+        }
+        self.streams = [
+            {
+                "stream": "TUR-1",
+                **fetch_stream_binding(
+                    linear_issue="TUR-1", pr_repo="org/repo", pr_number=6,
+                    read_linear=lambda _issue: self.linear,
+                    read_pr=lambda _repo, _number: self.pull,
+                ),
+            }
+        ]
+        self.snapshot_path = base / "pending-snapshot.md"
+        self.snapshot_path.write_text("# snapshot\n")
+        self.snapshot_digest = hashlib.sha256(self.snapshot_path.read_bytes()).hexdigest()
+        self.sweep_dir = base / "sweeps" / "fp1"
+        self.journal_path = self.sweep_dir / "journal.json"
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args], check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def read_journal(self) -> dict:
+        return json.loads(self.journal_path.read_text())
+
+    def bind(self, **overrides):
+        values = {
+            "root": ROOT,
+            "spawn_id": str(uuid.uuid4()),
+            "parent": "operator-1",
+            "reply_route": "operator-say",
+            "repo": self.repo,
+            "worktree_root": self.worktree_root,
+            "worktree": self.worktree,
+            "journal_path": self.journal_path,
+            "execution_location": "remote",
+            "operator_loopback": False,
+            "review_delivery": "reachable_url_required",
+            "expected_head": self.head,
+            "snapshot_path": self.snapshot_path,
+            "snapshot_digest": self.snapshot_digest,
+            "streams": self.streams,
+            "spec_blobs": [f"spec/domains/operating-model.spec.html:{self.spec_blob}"],
+            "adr_blobs": [],
+            "conversation_state_refs": ["status.md"],
+            "read_linear": lambda _issue: self.linear,
+            "read_pr": lambda _repo, _number: self.pull,
+        }
+        values.update(overrides)
+        return bind_reconcile_workflow_journal(**values)
+
+    def workflow_ack(self, prepared) -> dict:
+        journal = self.read_journal()
+        return {
+            "schema_version": journal["schema_version"],
+            "spawn_id": journal["spawn_id"],
+            "launch_revision": journal["launch_revision"],
+            "role": "reconciler",
+            "worktree": journal["workspace"]["worktree"],
+            "starting_head": journal["workspace"]["starting_head"],
+            "snapshot_path": journal["reconcile"]["snapshot_path"],
+            "snapshot_digest": journal["reconcile"]["snapshot_digest"],
+            "ready": True,
+            "blocker": "",
+        }
+
+    # RED 1: the new entry point binds the snapshot path+bytes+digest in the journal
+    # BEFORE spawn, keyed to the final persisted snapshot.md, not a provider-argv path.
+    def test_workflow_journal_binds_snapshot_path_bytes_and_digest_before_spawn(self) -> None:
+        prepared = self.bind()
+        journal = self.read_journal()
+        self.assertEqual("worker-journal", journal["manifest_shape"])
+        self.assertEqual("reconcile", journal["purpose"])
+        self.assertIs(True, journal["read_restricted"])
+        self.assertEqual("reconciler", journal["role"]["name"])
+        reconcile = journal["reconcile"]
+        persisted = Path(reconcile["snapshot_path"])
+        self.assertEqual(str(self.sweep_dir / "snapshot.md"), reconcile["snapshot_path"])
+        self.assertTrue(persisted.is_file())
+        self.assertEqual("# snapshot\n", persisted.read_text())
+        self.assertEqual(self.snapshot_digest, hashlib.sha256(persisted.read_bytes()).hexdigest())
+        self.assertEqual(self.snapshot_digest, reconcile["snapshot_digest"])
+        self.assertEqual(self.head, reconcile["control_head"])
+        # The Workflow-native prepared shape carries the journal binding for the loop's
+        # agent() spawn; it carries no provider-argv, because agent() spawns the subagent.
+        self.assertEqual(self.journal_path.resolve(), prepared.journal_path)
+        self.assertFalse(hasattr(prepared, "bootstrap_argv"))
+
+    # RED 2: the new entry point writes NO reconcile TOML receipt.
+    def test_workflow_entry_point_writes_no_reconcile_toml_receipt(self) -> None:
+        self.bind()
+        self.assertFalse((self.sweep_dir / "receipt.toml").exists())
+        self.assertEqual([], list(self.sweep_dir.glob("*.toml")))
+        self.assertTrue(self.journal_path.exists())
+
+    # RED 3: reconcile worktree cleanup keys on the durable journal entry; a journal
+    # that vanished before result binding fails closed and preserves the worktree.
+    def test_workflow_cleanup_keys_on_the_durable_journal_entry(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        self.assertTrue(self.worktree.exists())
+        # Result binding + cleanup requires the durable journal entry, not a receipt.
+        bind_reconcile_workflow_result(
+            prepared.journal_path, {"classification": "changed", "needs_fable": False, "deltas": ["TUR-1 PR head moved"]},
+        )
+        bound = self.read_journal()
+        self.assertTrue(bound["result"]["bound"])
+        self.assertEqual("changed", bound["result"]["classification"])
+        self.assertFalse(self.worktree.exists())
+
+    def test_workflow_cleanup_fails_closed_when_journal_vanished(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        prepared.journal_path.unlink()
+        with self.assertRaisesRegex(GateError, "reconcile journal missing"):
+            bind_reconcile_workflow_result(
+                prepared.journal_path, {"classification": "changed", "needs_fable": False, "deltas": []},
+            )
+        self.assertTrue(self.worktree.exists())
+
+    # RED 4: the new path rejects the retired octo-lite-reconcile receipt shape.
+    def test_workflow_path_rejects_the_retired_reconcile_receipt_shape(self) -> None:
+        prepared = self.bind()
+        ack = self.workflow_ack(prepared)
+        prepared.journal_path.write_text(
+            'schema_version = 1\nspawn_id = "spawn-1"\nready = false\n'
+            'manifest_type = "octo-lite-reconcile"\nlaunch_revision = "abc"\n\n'
+            '[role]\nname = "reconciler"\n\n'
+            f'[reconcile]\nsnapshot_path = "{self.sweep_dir / "snapshot.md"}"\n'
+            f'snapshot_digest = "{self.snapshot_digest}"\n'
+        )
+        with self.assertRaisesRegex(GateError, "retired reconcile receipt shape rejected"):
+            verify_reconcile_workflow_ack(prepared.journal_path, ack)
+        with self.assertRaisesRegex(GateError, "retired reconcile receipt shape rejected"):
+            bind_reconcile_workflow_result(
+                prepared.journal_path, {"classification": "changed", "needs_fable": False, "deltas": []},
+            )
+
+    # RED 5a (behavior proof: snapshot integrity): a digest-mismatched snapshot fails
+    # closed before any journal, worktree, or subagent spawn under the new path too.
+    def test_workflow_preserves_snapshot_integrity_proof(self) -> None:
+        with self.assertRaisesRegex(GateError, "snapshot digest mismatch"):
+            self.bind(snapshot_digest="0" * 64)
+        self.assertFalse(self.worktree.exists())
+        self.assertFalse(self.journal_path.exists())
+
+    # RED 5b (behavior proof: PR-fact fingerprinting): a stale declared PR fact fails
+    # closed before any spawn; the bound streams carry the normalized PR facts so a
+    # change in any of them would change the snapshot fingerprint.
+    def test_workflow_preserves_pr_fact_fingerprinting_proof(self) -> None:
+        changed_pull = dict(self.pull, headRefOid="b" * 40)
+        with self.assertRaisesRegex(GateError, "stale PR input"):
+            self.bind(read_pr=lambda _repo, _number: changed_pull)
+        self.assertFalse(self.worktree.exists())
+        prepared = self.bind()
+        pr = self.read_journal()["reconcile"]["streams"][0]["pull_request"]
+        self.assertEqual("a" * 40, pr["head"])
+        self.assertEqual("main", pr["base"])
+        self.assertEqual("OPEN", pr["state"])
+        self.assertEqual(
+            [{"name": "conformance", "status": "COMPLETED", "outcome": "SUCCESS"}], pr["status_checks"],
+        )
+        del prepared
+
+    # RED 5c (behavior proof: needs_fable escalation): the reconciler's classification
+    # can escalate to Fable on missing, unparseable, or ambiguous input, and that
+    # escalation binds durably into the journal result (role-reconciler-escalation).
+    def test_workflow_binds_needs_fable_escalation(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        bind_reconcile_workflow_result(
+            prepared.journal_path,
+            {"classification": "needs_fable", "needs_fable": True, "deltas": ["ambiguous: TUR-1 contradictory state"]},
+        )
+        bound = self.read_journal()
+        self.assertTrue(bound["result"]["bound"])
+        self.assertTrue(bound["result"]["needs_fable"])
+        self.assertEqual("needs_fable", bound["result"]["classification"])
+        # An escalated pass is a completed, journal-bound read-only sweep, so its worktree
+        # is still cleaned up keyed on the durable journal entry.
+        self.assertFalse(self.worktree.exists())
+
+    # The subagent snapshot-proof echo (role-reconciler-bootstrap-snapshot-proof): a
+    # mismatched journal-bound snapshot digest in the ack fails closed before any result.
+    def test_workflow_ack_fails_closed_on_snapshot_digest_mismatch(self) -> None:
+        prepared = self.bind()
+        ack = self.workflow_ack(prepared)
+        ack["snapshot_digest"] = "0" * 64
+        with self.assertRaisesRegex(GateError, "snapshot_digest"):
+            verify_reconcile_workflow_ack(prepared.journal_path, ack)
         self.assertNotIn("result", self.read_journal())
         self.assertTrue(self.worktree.exists())
 
