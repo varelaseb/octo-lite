@@ -46,6 +46,25 @@ def top_level_static_imports(text: str) -> list[tuple[int, str]]:
     return hits
 
 
+def module_load_tokens(text: str) -> list[tuple[int, str]]:
+    # Any module load, static or dynamic, is forbidden in a Workflow script: the
+    # sandbox has no module loader. This scans real code (comments stripped) for a
+    # top-level or nested static `import ...`, a dynamic `import(...)` /
+    # `await import(...)`, or a `require(...)`. The earlier prior attempt used
+    # `await import('./lib/gates.mjs')`, which the real Workflow tool rejected with
+    # "import() is not available in workflow scripts"; this catches exactly that.
+    hits: list[tuple[int, str]] = []
+    for index, raw in enumerate(strip_line_and_block_comments(text).splitlines()):
+        stripped = raw.strip()
+        if re.match(r"^import[\s{'\"]", stripped):
+            hits.append((index, stripped))
+        elif re.search(r"\bimport\s*\(", raw):
+            hits.append((index, stripped))
+        elif re.search(r"\brequire\s*\(", raw):
+            hits.append((index, stripped))
+    return hits
+
+
 def static_import_specifiers(text: str) -> list[str]:
     specifiers: list[str] = []
     stripped = strip_line_and_block_comments(text)
@@ -176,6 +195,49 @@ class CutoverConformanceTests(unittest.TestCase):
             "load-time static node-only dependency reachable from the loop: "
             f"{offenders}",
         )
+
+        # (d) The loop must contain NO module load at all: not a static import
+        # anywhere, not a dynamic `import(...)` / `await import(...)`, not a
+        # `require(...)`. The prior TUR-488 attempt moved gate loading into a nested
+        # `await import('./lib/gates.mjs')`; the real Workflow tool rejected it with
+        # "import() is not available in workflow scripts". The loop must be fully
+        # self-contained.
+        loads = module_load_tokens(loop)
+        self.assertEqual(
+            [], loads,
+            f"module load token(s) in the Workflow loop at lines {loads}",
+        )
+
+    def test_loop_inline_gates_are_drift_guarded_against_gates_module(self) -> None:
+        # TUR-488 drift guard (role-runtime launch-gates-workflow-layer): the loop
+        # embeds the gate helpers inline so it stays a self-contained Workflow
+        # script, but gates.mjs remains the canonical, node-tested source
+        # (tests/gates.test.mjs). This asserts the inline embedded region is
+        # byte-identical to gates.mjs with only the `export ` keyword stripped, so
+        # the runtime inline gates can never silently diverge from the tested
+        # canonical. Any edit to one that is not mirrored in the other fails here.
+        loop = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        gates = (ROOT / "workflows/lib/gates.mjs").read_text()
+
+        begin = "// GATES-EMBED-BEGIN\n"
+        end = "// GATES-EMBED-END\n"
+        self.assertIn(begin, loop, "missing GATES-EMBED-BEGIN marker")
+        self.assertIn(end, loop, "missing GATES-EMBED-END marker")
+        region = loop[loop.index(begin) + len(begin):loop.index(end)]
+
+        canonical_inline = re.sub(r"(?m)^export ", "", gates)
+        self.assertEqual(
+            canonical_inline, region,
+            "inline gates region drifted from workflows/lib/gates.mjs "
+            "(re-embed the export-stripped gates.mjs between the markers)",
+        )
+
+        # The embedded region must itself carry no export keyword: an embedded
+        # `export` would be a syntax error inside the non-module Workflow script.
+        self.assertNotIn("\nexport ", region)
+        # gates.mjs is the canonical module and must keep its exports for the
+        # node --test suite that imports it.
+        self.assertIn("export function assertAdmission", gates)
 
     def test_workflow_loop_fires_shaped_to_todo_before_any_delivery_spawn(self) -> None:
         # delivery-lifecycle delivery-entry-gate and linear-loop-fire-transition: at
