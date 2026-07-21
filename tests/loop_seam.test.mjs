@@ -400,3 +400,62 @@ test('seam-provenance: a git-read NOT stamped by the independent reader is REJEC
   assert.match(error.message, /not from the independent git reader/)
   assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed on a forged trust root')
 })
+
+// === TUR-447 ruling-55: canonical Linear fingerprint source pinned at all FOUR readback/liveness
+// prompts (delivery-lifecycle launch-readback; loop-correctness single-writer). The bound-inputs
+// envelope fingerprint and the octo-control linear-transition both derive from octo-control
+// linear-read exact_fingerprint. Before this fix the readback/liveness subagents IMPROVISED (self-
+// hashed) their own fingerprint, so assertLaunchReadback compared an improvised readback fingerprint
+// against the canonical envelope fingerprint, they never matched, and a genuine unchanged Todo-entry
+// launch was FALSE-REJECTED. The fix pins scripts/octo-control linear-read as the single canonical
+// fingerprint source at all four prompts so readback and envelope are like-with-like. This is a
+// SOURCE assertion over the real production loop text, not a mocked path: each of the four prompt
+// regions must cite octo-control linear-read for the fingerprint and must NOT tell the subagent to
+// improvise/recompute/self-hash it. It STRENGTHENS fail-closed: a real Linear content change still
+// changes exact_fingerprint, so assertLaunchReadback still rejects a stale envelope.
+const FINGERPRINT_SITES = [
+  { name: 'liveReadback', anchor: 'You are a fresh READ-ONLY octo-lite readback subagent' },
+  { name: 'worker-liveness-echo', anchor: 'LIVENESS ECHO: read the live Linear state' },
+  { name: 'pre-push readback', anchor: 'You are a fresh READ-ONLY octo-lite pre-push readback' },
+  { name: 'loopFire', anchor: 'readback_fingerprint (the post-fire Linear content fingerprint' },
+]
+
+function promptRegion(anchor) {
+  const start = LOOP_SRC.indexOf(anchor)
+  assert.ok(start >= 0, `fingerprint-source anchor missing from loop source: ${anchor}`)
+  // The prompt array joins into a single agent() call; 1000 chars covers the fingerprint instruction.
+  return LOOP_SRC.slice(start, start + 1000)
+}
+
+test('fingerprint-source: all four readback/liveness prompts cite octo-control linear-read as the single canonical fingerprint source', () => {
+  for (const site of FINGERPRINT_SITES) {
+    const region = promptRegion(site.anchor)
+    assert.match(
+      region, /octo-control linear-read/,
+      `${site.name} must cite scripts/octo-control linear-read as the fingerprint source`,
+    )
+    assert.match(
+      region, /returned\s+fingerprint field verbatim|fingerprint field verbatim/,
+      `${site.name} must use the octo-control linear-read returned fingerprint field verbatim`,
+    )
+  }
+})
+
+test('fingerprint-source: no readback/liveness prompt tells the subagent to improvise or self-hash the Linear fingerprint', () => {
+  for (const site of FINGERPRINT_SITES) {
+    const region = promptRegion(site.anchor)
+    // The instruction line must explicitly forbid an improvised/self-hashed fingerprint. All four
+    // sites word it slightly differently, but every one names both improvise and self-hash.
+    assert.match(
+      region, /do NOT improvise[^.]*self-hash/i,
+      `${site.name} must forbid an improvised/self-hashed fingerprint`,
+    )
+    // The pre-fix self-read phrasing paired linear_state AND linear_fingerprint on one line and told
+    // the subagent to read the "live Linear state and content fingerprint" itself; that improvised
+    // instruction must be gone (the fingerprint now comes only from octo-control linear-read).
+    assert.doesNotMatch(
+      region, /live Linear state and (content )?fingerprint/i,
+      `${site.name} must not tell the subagent to self-read the content fingerprint`,
+    )
+  }
+})

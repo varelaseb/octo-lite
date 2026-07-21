@@ -1643,12 +1643,19 @@ async function liveReadback(role, phaseTitle, startingHead) {
   const fresh = await agent([
     `You are a fresh READ-ONLY octo-lite readback subagent for the ${role} spawn. One pass;`,
     'never mutate. Perform LIVE reads NOW, immediately before dispatch, and return them:',
-    `- linear_state and linear_fingerprint: the live Linear state and content fingerprint of ${issue}.`,
+    `- linear_state: the live Linear state of ${issue}.`,
+    // TUR-447 ruling-55 canonical fingerprint source (delivery-lifecycle launch-readback; the
+    // envelope fingerprint the loop compares against is octo-control linear-read exact_fingerprint).
+    // linear_fingerprint MUST be that same canonical read, NEVER an improvised or self-hashed
+    // fingerprint, so the readback and the envelope are like-with-like and a genuine unchanged
+    // Todo-entry passes while a real content change still diverges the exact_fingerprint.
+    `- linear_fingerprint: run scripts/octo-control linear-read ${issue} and use ITS returned`,
+    '  fingerprint field verbatim. Do NOT improvise, recompute, or self-hash the fingerprint.',
     `- pr_head: the live PR head oid (gh pr view ${pr} --json headRefOid) of the PR.`,
     `- branch: the live head branch of the PR (expected ${branch}).`,
     '- git_head: the live git HEAD of the contained worktree (git rev-parse HEAD).',
-    'Read each one yourself from Linear, GitHub, and git; do NOT copy any value from this',
-    'prompt or from any caller-supplied blob. Return exactly the five fields.',
+    'Read state, pr_head, branch, and git_head yourself from Linear, GitHub, and git; do NOT copy',
+    'any value from this prompt or from any caller-supplied blob. Return exactly the five fields.',
   ].join('\n'), {
     label: `${role}-readback:${issue}`, phase: phaseTitle, schema: FRESH_READS_SCHEMA,
     agentType: 'Explore', effort: 'low',
@@ -1918,8 +1925,13 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     'unchanged; on ANY rejection the host abandons your unpushed branch and does NOT reset your commits.',
     // TUR-447 cycle2 pass1 stale-read race: echo the liveness fields you read so the host can
     // detect a live change during the intervening passes before it pushes.
-    'LIVENESS ECHO: read the live Linear state and content fingerprint of the issue and the live PR',
-    'branch yourself, and echo them as linear_state, linear_fingerprint, and branch in your result.',
+    // TUR-447 ruling-55 canonical fingerprint source: the echoed linear_fingerprint MUST come from
+    // scripts/octo-control linear-read (its returned fingerprint field verbatim), NEVER improvised or
+    // self-hashed, so the host reconciles the echo against the octo-control linear-read-sourced envelope.
+    'LIVENESS ECHO: read the live Linear state of the issue and the live PR branch yourself, and obtain',
+    `the live Linear content fingerprint by running scripts/octo-control linear-read ${bound.issue} and`,
+    'using ITS returned fingerprint field verbatim (do NOT improvise or self-hash it). Echo them as',
+    'linear_state, linear_fingerprint, and branch in your result.',
     brief,
   ].join('\n\n')
   // The mutation spawn runs under the resolved model and effort from roles.toml; only the real
@@ -2196,12 +2208,16 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     `You are a fresh READ-ONLY octo-lite pre-push readback subagent for the ${role} pass. One pass;`,
     'never mutate. Perform LIVE reads NOW, immediately before the host pushes the committed branch, and',
     'return them so the host can reject a live change since bind:',
-    `- linear_state and linear_fingerprint: the live Linear state and content fingerprint of ${issue}.`,
+    `- linear_state: the live Linear state of ${issue}.`,
+    // TUR-447 ruling-55 canonical fingerprint source: linear_fingerprint MUST be the octo-control
+    // linear-read exact_fingerprint (the same source as the envelope), NEVER improvised or self-hashed.
+    `- linear_fingerprint: run scripts/octo-control linear-read ${issue} and use ITS returned`,
+    '  fingerprint field verbatim. Do NOT improvise, recompute, or self-hash the fingerprint.',
     `- pr_head: the live PR head oid (gh pr view ${pr} --json headRefOid).`,
     `- branch: the live head branch of the PR (expected ${branch}).`,
     `- git_head: the live git HEAD of the contained worktree (git rev-parse HEAD) at ${worktree}`,
     `  (expected the committed final HEAD ${finalCommit}).`,
-    'Read each one yourself; do NOT copy any value from this prompt or a caller blob.',
+    'Read state, pr_head, branch, and git_head yourself; do NOT copy any value from this prompt or a caller blob.',
   ].join('\n'), {
     label: `${role}-prepush-readback:${issue}`, phase: phaseTitle, schema: FRESH_READS_SCHEMA,
     agentType: 'Explore', effort: 'low',
@@ -2566,8 +2582,13 @@ async function loopFire() {
     'Run exactly this command from the owning orchestrator context, then report it:',
     `octo-control linear-transition ${issue} --expected Shaped --target Todo ${controlArgs}`,
     'Return command, exit_status, readback_state (the Linear state read back), and',
-    'readback_fingerprint (the live Linear content fingerprint of the issue read back AFTER',
-    'the transition). Read the post-fire fingerprint yourself; do not copy a pre-fire value.',
+    'readback_fingerprint (the post-fire Linear content fingerprint of the issue).',
+    // TUR-447 ruling-55 canonical fingerprint source: the post-fire readback_fingerprint MUST come from
+    // scripts/octo-control linear-read (its returned fingerprint field verbatim), the SAME canonical
+    // source as the envelope, NEVER improvised or self-hashed, so the reconciled envelope stays
+    // like-with-like with the later liveReadback and assertLaunchReadback does not false-reject.
+    `After the transition, run scripts/octo-control linear-read ${issue} and set readback_fingerprint to`,
+    'ITS returned fingerprint field verbatim. Do NOT improvise, recompute, self-hash, or copy a pre-fire value.',
     'Never substitute a different transition, target, or issue.',
   ].join('\n'), { label: `loop-fire:${issue}`, phase: 'Implement', schema: FIRE_SCHEMA, effort: 'low' })
   if (fire === null || fire.exit_status !== 0) {
