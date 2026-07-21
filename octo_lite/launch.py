@@ -493,6 +493,17 @@ def cleanup_clean_abort(repo: Path, worktree: Path, expected_head: str) -> None:
 
 PROVISION_RECORD_SOURCE = "host-provisioned-worktree"
 
+# launch-provision-record-schema: the RFC3339 date-time profile (structural
+# shape only; value-range and tz-aware confirmation stay with
+# datetime.fromisoformat below). `datetime.fromisoformat` alone is NOT
+# sufficient (re-review finding 2): it also accepts non-RFC3339 forms such as
+# ISO week dates ("2026-W30-2...") and compact/basic timestamps
+# ("20260721T000000+0000"), which this pattern rejects while still accepting
+# the Z form and the numeric-offset form.
+_RFC3339_DATE_TIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$"
+)
+
 # launch-provision-record-schema: exactly these keys, no more, no fewer.
 PROVISION_RECORD_KEYS = frozenset(
     {
@@ -562,8 +573,11 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
         raise GateError("provision record install_check must be clean or drifted")
     if not re.fullmatch(r"[0-9a-f]{40}", record["starting_head"]):
         raise GateError("provision record starting_head must be a resolved commit sha")
+    raw_provisioned_at = record["provisioned_at"]
+    if not _RFC3339_DATE_TIME_RE.fullmatch(raw_provisioned_at):
+        raise GateError("provision record provisioned_at must be an RFC3339 timestamp")
     try:
-        provisioned_at = datetime.fromisoformat(record["provisioned_at"].replace("Z", "+00:00"))
+        provisioned_at = datetime.fromisoformat(raw_provisioned_at.replace("Z", "+00:00").replace("z", "+00:00"))
     except ValueError as error:
         raise GateError("provision record provisioned_at must be an RFC3339 timestamp") from error
     if provisioned_at.tzinfo is None:
@@ -700,12 +714,15 @@ def provision_lane_worktree(
     if control_top != control_repo:
         raise GateError("control repo must be a git root")
 
-    # Resolve the starting commit ref to a full sha BEFORE any comparison or
-    # recording (code-review finding 4): a branch name or abbreviated sha must
-    # provision correctly rather than mismatch against the worktree's own
-    # resolved HEAD after worktree creation.
+    # Resolve the starting commit ref to a full PEELED COMMIT sha BEFORE any
+    # comparison or recording (code-review finding 4; re-review finding 1): a
+    # branch name or abbreviated sha must provision correctly rather than
+    # mismatch against the worktree's own resolved HEAD after worktree
+    # creation, and an ANNOTATED TAG must be peeled to the commit it points
+    # at (plain `rev-parse <ref>` returns the tag OBJECT sha, but
+    # `git worktree add` checks out the peeled commit).
     try:
-        head = _git(control_repo, "rev-parse", head)
+        head = _git(control_repo, "rev-parse", "--verify", f"{head}^{{commit}}")
     except subprocess.CalledProcessError as error:
         raise GateError(f"starting commit unresolvable: {head}") from error
 
