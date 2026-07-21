@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -2150,16 +2151,10 @@ class OperatorControlTests(unittest.TestCase):
             "exit 99\n"
         )
         (fake_bin / "linear").chmod(0o755)
-        (fake_bin / "gh").write_text(
-            "#!/usr/bin/env bash\n"
-            'if [[ -n "$CALL_LOG" ]]; then printf \'gh %s\\n\' "$*" >>"$CALL_LOG"; fi\n'
-            'if [[ -n "$GH_RESPONSE_FILE" && -f "$GH_RESPONSE_FILE" ]]; then\n'
-            '  cat "$GH_RESPONSE_FILE"\n'
-            "  exit 0\n"
-            "fi\n"
-            "exit 99\n"
-        )
-        (fake_bin / "gh").chmod(0o755)
+        # The stateful gh intent fake answers pr view (from GH_HEAD) and the
+        # issue-comment lifecycle (from GH_COMMENTS), so the command-published
+        # operator-intent surface actually exists for Unit J to re-read.
+        _install_gh_intent_fake(fake_bin)
         (fake_bin / "herdr-say").write_text(
             "#!/usr/bin/env bash\n"
             'if [[ -n "$CALL_LOG" ]]; then printf \'herdr-say %s\\n\' "$*" >>"$CALL_LOG"; fi\n'
@@ -2189,37 +2184,44 @@ class OperatorControlTests(unittest.TestCase):
                     check=True, capture_output=True, text=True,
                 ).stdout.strip()
 
-            def produce_intent(directory: Path) -> str:
-                produced = subprocess.run(
-                    [
-                        str(CONTROL), "intent-record", "--stream-dir", str(directory),
-                        "--intent-ref", "ruling-15", "--repo", str(repo),
-                    ],
-                    capture_output=True, text=True,
-                )
-                self.assertEqual(0, produced.returncode, produced.stderr)
-                return (directory / "intent-record.toml").read_text()
-
-            stale_intent = produce_intent(base / "intent-stale")
-            (repo / "advance.md").write_text("advance\n")
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "advance"], check=True)
-            head = repo_head()
-            fresh_intent = produce_intent(base / "intent-fresh")
-
             fake_bin = base / "bin"
             self._install_shaped_fakes(fake_bin)
             base_env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
             caller = "issue-opus"
 
+            def produce_intent(directory: Path, *, at_head: str, store: Path) -> str:
+                # Publish the operator-intent surface to the shared PR store so
+                # a command-produced record has a matching live comment; the
+                # returned local TOML is command-authored, not forged.
+                env = dict(base_env, GH_HEAD=at_head, GH_COMMENTS=str(store))
+                produced = subprocess.run(
+                    [
+                        str(CONTROL), "intent-record", "--stream-dir", str(directory),
+                        "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                    ],
+                    capture_output=True, text=True, env=env,
+                )
+                self.assertEqual(0, produced.returncode, produced.stderr)
+                return (directory / "intent-record.toml").read_text()
+
+            stale_head = repo_head()
+            stale_store = base / "stale-comments.json"
+            stale_intent = produce_intent(base / "intent-stale", at_head=stale_head, store=stale_store)
+            (repo / "advance.md").write_text("advance\n")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "advance"], check=True)
+            head = repo_head()
+
             def prepare_case(
                 name: str, *, receipt_kwargs: dict | None = None,
                 verdict_kwargs: dict | None = None, write_verdict: bool = True,
-                intent_text: str | None = fresh_intent,
+                produce_fresh: bool = True, intent_text: str | None = None,
+                intent_store_from: Path | None = None,
                 other_stream_issue: str | None = None,
-            ) -> tuple[Path, Path]:
+            ) -> tuple[Path, Path, Path]:
                 case = base / "cases" / name
                 stream = case / "streams" / "TUR-1"
+                store = case / "comments.json"
                 kwargs: dict = {"caller": caller}
                 kwargs.update(receipt_kwargs or {})
                 self._write_persistent_orchestrator_receipt(stream / "receipt.toml", **kwargs)
@@ -2229,12 +2231,17 @@ class OperatorControlTests(unittest.TestCase):
                         caller=caller, issue=other_stream_issue,
                     )
                 if write_verdict:
-                    values: dict = {"head": head}
+                    values: dict = {"head": head, "repo": str(repo)}
                     values.update(verdict_kwargs or {})
                     self._write_verdict_journal(case / "verdict.json", **values)
+                if produce_fresh:
+                    # Command-published fresh surface into this case's own store.
+                    produce_intent(stream, at_head=head, store=store)
+                elif intent_store_from is not None:
+                    shutil.copyfile(intent_store_from, store)
                 if intent_text is not None:
                     (stream / "intent-record.toml").write_text(intent_text)
-                return case, stream / "receipt.toml"
+                return case, stream / "receipt.toml", store
 
             def transition(
                 case: Path, receipt: Path, *, expected_state: str = "Todo",
@@ -2261,15 +2268,13 @@ class OperatorControlTests(unittest.TestCase):
             # transition from each shaping entry state.
             for expected_state in ("Ideas", "Todo"):
                 with self.subTest(case=f"valid-{expected_state}"):
-                    case, receipt = prepare_case(f"valid-{expected_state}")
+                    case, receipt, store = prepare_case(f"valid-{expected_state}")
                     state_file = case / "state.txt"
                     state_file.write_text(expected_state)
-                    gh_response = case / "gh.json"
-                    gh_response.write_text(json.dumps({"headRefOid": head}))
                     call_log = case / "calls.log"
                     env = dict(
                         base_env, STATE_FILE=str(state_file),
-                        GH_RESPONSE_FILE=str(gh_response), CALL_LOG=str(call_log),
+                        GH_HEAD=head, GH_COMMENTS=str(store), CALL_LOG=str(call_log),
                     )
                     result = transition(case, receipt, expected_state=expected_state, env=env)
                     self.assertEqual(0, result.returncode, result.stderr)
@@ -2279,13 +2284,13 @@ class OperatorControlTests(unittest.TestCase):
             # [shaping] table is the retired shape and is rejected even when
             # the old published-marker verdict it used to consume is live.
             with self.subTest(case="retired_worker_receipt"):
-                case, receipt = prepare_case(
+                case, receipt, store = prepare_case(
                     "retired_worker_receipt",
                     receipt_kwargs={
                         "purpose": "shaping-review",
                         "shaping": {"repo": "org/repo", "pr": 7, "head": head},
                     },
-                    write_verdict=False,
+                    write_verdict=False, produce_fresh=False,
                 )
                 normalized_issue = {"identifier": "TUR-1", "state": "Todo", "updatedAt": "t1"}
                 binding = f"linear:TUR-1:{exact_fingerprint(normalized_issue)}"
@@ -2294,16 +2299,13 @@ class OperatorControlTests(unittest.TestCase):
                     conversation_log_references=["session-log-1"],
                     conversation_cutoff="2026-07-18T00:00:00Z",
                 )
+                store.write_text(json.dumps([{"id": 1, "body": marker}]))
                 state_file = case / "state.txt"
                 state_file.write_text("Todo")
-                gh_response = case / "gh.json"
-                gh_response.write_text(json.dumps({
-                    "headRefOid": head, "comments": [{"id": 1, "body": marker}],
-                }))
                 call_log = case / "calls.log"
                 env = dict(
                     base_env, STATE_FILE=str(state_file),
-                    GH_RESPONSE_FILE=str(gh_response), CALL_LOG=str(call_log),
+                    GH_HEAD=head, GH_COMMENTS=str(store), CALL_LOG=str(call_log),
                 )
                 result = transition(case, receipt, include_new_flags=False, env=env)
                 self.assertNotEqual(0, result.returncode)
@@ -2311,11 +2313,29 @@ class OperatorControlTests(unittest.TestCase):
                 self.assertEqual("Todo", state_file.read_text())
                 self.assertFalse(call_log.exists())
 
-            fabricated = (
-                'schema_version = 1\nintent_ref = "ruling-15"\n'
-                f'head = "{"f" * 40}"\nrecorded_at = "2026-07-21T00:00:00+00:00"\n'
-            )
-            rejections = [
+            module = _load_octo_control_module()
+
+            def forged_record(*, head_value: str, repo_value: str, pr_value: int) -> str:
+                # A hand-authored valid-head record whose surface_sha256 is a
+                # correct self-digest, but with NO matching live PR comment.
+                recorded_at = "2026-07-21T00:00:00+00:00"
+                body = module._intent_surface_body(
+                    repo=repo_value, pr=pr_value, head=head_value,
+                    intent_ref="ruling-15", recorded_at=recorded_at,
+                )
+                digest = module._surface_digest(body)
+                return (
+                    'schema_version = 1\nintent_ref = "ruling-15"\n'
+                    f'head = "{head_value}"\nrecorded_at = "{recorded_at}"\n'
+                    f'repo = {json.dumps(repo_value)}\npr = {pr_value}\n'
+                    f'surface_sha256 = "{digest}"\n'
+                )
+
+            forged_valid_head = forged_record(head_value=head, repo_value=str(repo), pr_value=7)
+
+            # Group 1: rejections that fail before any external call, so no
+            # Linear or GitHub call is logged.
+            pre_call_rejections = [
                 ("stream_authority_forbidden", {"use_stream": True}, "persistent receipt authority"),
                 ("unverified_receipt", {"receipt_kwargs": {"verified": False}}, "bootstrap not verified"),
                 ("wrong_role", {"receipt_kwargs": {"role": "implementer"}}, "issue-orchestrator role"),
@@ -2335,18 +2355,38 @@ class OperatorControlTests(unittest.TestCase):
                     {"verdict_kwargs": {"provenance": False, "ack_echo": True}},
                     "rollout-record provenance",
                 ),
-                ("missing_intent_record", {"intent_text": None}, "intent record missing"),
-                ("fabricated_intent_record", {"intent_text": fabricated}, "head unknown"),
-                ("wrong_head_intent_record", {"intent_text": stale_intent}, "head mismatch with journalled verdict"),
+                # Repo-arg bind: a clear verdict for a different repo than the
+                # CLI repo argument is rejected before any GitHub call.
+                (
+                    "verdict_repo_ne_cli_repo",
+                    {"verdict_kwargs": {"repo": "org/other"}},
+                    "does not match CLI repo argument",
+                ),
+                # Missing/fabricated-shape intent records fail on read before
+                # the live-surface fetch.
+                ("missing_intent_record", {"produce_fresh": False, "intent_text": None}, "intent record missing"),
+                (
+                    "shape_forged_intent_record",
+                    {
+                        "produce_fresh": False,
+                        "intent_text": (
+                            'schema_version = 1\nintent_ref = "ruling-15"\n'
+                            f'head = "{"f" * 40}"\nrecorded_at = "2026-07-21T00:00:00+00:00"\n'
+                        ),
+                    },
+                    "repo missing",
+                ),
             ]
-            for name, overrides, fragment in rejections:
+            for name, overrides, fragment in pre_call_rejections:
                 with self.subTest(case=name):
                     overrides = dict(overrides)
                     cmd_stream = overrides.pop("use_stream", False)
                     include_flags = overrides.pop("include_new_flags", True)
-                    case, receipt = prepare_case(name, **overrides)
+                    overrides.setdefault("produce_fresh", False)
+                    overrides.setdefault("intent_text", forged_valid_head)
+                    case, receipt, store = prepare_case(name, **overrides)
                     call_log = case / "calls.log"
-                    env = dict(base_env, CALL_LOG=str(call_log))
+                    env = dict(base_env, GH_HEAD=head, GH_COMMENTS=str(store), CALL_LOG=str(call_log))
                     result = transition(
                         case, receipt,
                         use_stream=(case / "streams" / "TUR-1") if cmd_stream else None,
@@ -2355,6 +2395,39 @@ class OperatorControlTests(unittest.TestCase):
                     self.assertNotEqual(0, result.returncode, name)
                     self.assertIn(fragment, result.stderr, result.stderr)
                     self.assertFalse(call_log.exists(), name)
+
+            # Group 2: intent-record rejections that legitimately reach the
+            # gh surface fetch; they must reject and never mutate Linear.
+            surface_rejections = [
+                # CORE forgery distinction: a valid-head, correctly self-
+                # digested local record with NO matching command-published PR
+                # surface is rejected.
+                (
+                    "forged_valid_head_no_published_surface",
+                    {"produce_fresh": False, "intent_text": forged_valid_head},
+                    "no command-published surface",
+                ),
+                # A wrong-head command-produced record (its own live surface
+                # exists) is rejected against the journalled verdict head.
+                (
+                    "wrong_head_intent_record",
+                    {
+                        "produce_fresh": False, "intent_text": stale_intent,
+                        "intent_store_from": stale_store,
+                    },
+                    "head mismatch with journalled verdict",
+                ),
+            ]
+            for name, overrides, fragment in surface_rejections:
+                with self.subTest(case=name):
+                    case, receipt, store = prepare_case(name, **overrides)
+                    state_file = case / "state.txt"
+                    state_file.write_text("Todo")
+                    env = dict(base_env, STATE_FILE=str(state_file), GH_HEAD=head, GH_COMMENTS=str(store))
+                    result = transition(case, receipt, env=env)
+                    self.assertNotEqual(0, result.returncode, name)
+                    self.assertIn(fragment, result.stderr, result.stderr)
+                    self.assertEqual("Todo", state_file.read_text(), name)
 
     def test_linear_transition_to_shaped_verifies_fresh_pr_head_then_mutates_reads_back_and_notifies(self) -> None:
         # After the compare Linear read, Shaped refetches the exact live PR
@@ -2381,25 +2454,30 @@ class OperatorControlTests(unittest.TestCase):
                     case = base / "cases" / name
                     stream = case / "streams" / "TUR-1"
                     receipt = stream / "receipt.toml"
+                    store = case / "comments.json"
                     self._write_persistent_orchestrator_receipt(receipt, caller="issue-opus")
-                    self._write_verdict_journal(case / "verdict.json", head=head)
+                    self._write_verdict_journal(case / "verdict.json", head=head, repo=str(repo))
+                    # Publish the command surface into the case store (no call
+                    # log) so the later verify finds the live PR comment.
                     produced = subprocess.run(
                         [
                             str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                            "--intent-ref", "ruling-15", "--repo", str(repo),
+                            "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
                         ],
                         capture_output=True, text=True,
+                        env=dict(
+                            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+                            GH_HEAD=head, GH_COMMENTS=str(store),
+                        ),
                     )
                     self.assertEqual(0, produced.returncode, produced.stderr)
                     state_file = case / "state.txt"
                     state_file.write_text("Todo")
                     call_log = case / "calls.log"
-                    gh_response = case / "gh.json"
-                    gh_response.write_text(json.dumps({"headRefOid": live_head}))
                     env = dict(
                         os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
                         STATE_FILE=str(state_file), CALL_LOG=str(call_log),
-                        GH_RESPONSE_FILE=str(gh_response),
+                        GH_HEAD=live_head, GH_COMMENTS=str(store),
                     )
                     result = subprocess.run(
                         [
@@ -2414,22 +2492,26 @@ class OperatorControlTests(unittest.TestCase):
                         env=env, capture_output=True, text=True,
                     )
                     calls = call_log.read_text().splitlines() if call_log.exists() else []
+                    # The operator-intent surface fetch precedes the compare
+                    # read, then fresh-head, mutate, readback, notify.
+                    self.assertTrue(calls[0].startswith("gh api"), calls)
+                    self.assertIn("/comments", calls[0])
                     if expect_ok:
                         self.assertEqual(0, result.returncode, result.stderr)
                         self.assertEqual("Shaped", state_file.read_text())
-                        self.assertEqual(5, len(calls), calls)
-                        self.assertTrue(calls[0].startswith("linear issue view"), calls)
-                        self.assertTrue(calls[1].startswith("gh pr view 7"), calls)
-                        self.assertIn("headRefOid", calls[1])
-                        self.assertTrue(calls[2].startswith("linear issue update"), calls)
-                        self.assertTrue(calls[3].startswith("linear issue view"), calls)
-                        self.assertTrue(calls[4].startswith("herdr-say "), calls)
+                        self.assertEqual(6, len(calls), calls)
+                        self.assertTrue(calls[1].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[2].startswith("gh pr view 7"), calls)
+                        self.assertIn("headRefOid", calls[2])
+                        self.assertTrue(calls[3].startswith("linear issue update"), calls)
+                        self.assertTrue(calls[4].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[5].startswith("herdr-say "), calls)
                     else:
                         self.assertNotEqual(0, result.returncode)
                         self.assertEqual("Todo", state_file.read_text())
-                        self.assertEqual(2, len(calls), calls)
-                        self.assertTrue(calls[0].startswith("linear issue view"), calls)
-                        self.assertTrue(calls[1].startswith("gh pr view 7"), calls)
+                        self.assertEqual(3, len(calls), calls)
+                        self.assertTrue(calls[1].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[2].startswith("gh pr view 7"), calls)
 
 
 if __name__ == "__main__":
@@ -2579,6 +2661,111 @@ def _load_octo_control_module():
     return module
 
 
+# A stateful gh fake for the intent-record PR/status surface (TUR-447 F5,
+# Units J and L): it persists issue comments in $GH_COMMENTS as a JSON list so
+# a POST/PATCH publication is actually readable back on a later paginate or
+# single-comment read, mirrors the exact gh api shapes octo-control invokes,
+# and answers pr view --json headRefOid from $GH_HEAD. This lets a real
+# command-published surface exist for verification while a hand-authored local
+# record has no matching live comment.
+_GH_INTENT_FAKE = r"""#!/usr/bin/env python3
+import json
+import os
+import sys
+
+argv = sys.argv[1:]
+log = os.environ.get("CALL_LOG")
+if log:
+    with open(log, "a") as handle:
+        handle.write("gh " + " ".join(argv) + "\n")
+store = os.environ["GH_COMMENTS"]
+
+
+def load():
+    if not os.path.exists(store):
+        return []
+    with open(store) as handle:
+        text = handle.read().strip()
+    return json.loads(text) if text else []
+
+
+def save(items):
+    with open(store, "w") as handle:
+        handle.write(json.dumps(items))
+
+
+def field(flag):
+    for value in argv:
+        if value.startswith(flag + "="):
+            return value.split("=", 1)[1]
+    return None
+
+
+if argv[:2] == ["pr", "view"]:
+    print(json.dumps({"headRefOid": os.environ.get("GH_HEAD", "")}))
+    sys.exit(0)
+
+if argv[0] == "api":
+    method = None
+    if "--method" in argv:
+        method = argv[argv.index("--method") + 1]
+    # endpoint is the first bare token after api/flags
+    endpoint = None
+    skip = {"api", "--method", "-f", "--paginate"}
+    idx = 1
+    while idx < len(argv):
+        token = argv[idx]
+        if token == "--method":
+            idx += 2
+            continue
+        if token == "-f":
+            idx += 2
+            continue
+        if token == "--paginate":
+            idx += 1
+            continue
+        endpoint = token
+        break
+    parts = endpoint.split("/")
+    if endpoint.endswith("/comments") and (method is None or method == "GET"):
+        print(json.dumps(load()))
+        sys.exit(0)
+    if endpoint.endswith("/comments") and method == "POST":
+        items = load()
+        new = {"id": len(items) + 1, "body": field("body"),
+               "html_url": "https://example/comment/%d" % (len(items) + 1)}
+        items.append(new)
+        save(items)
+        print(json.dumps(new))
+        sys.exit(0)
+    if "/comments/" in endpoint and method == "PATCH":
+        cid = int(parts[-1])
+        items = load()
+        for item in items:
+            if item["id"] == cid:
+                item["body"] = field("body")
+                save(items)
+                print(json.dumps(item))
+                sys.exit(0)
+        sys.exit(3)
+    if "/comments/" in endpoint and method is None:
+        cid = int(parts[-1])
+        for item in load():
+            if item["id"] == cid:
+                print(json.dumps(item))
+                sys.exit(0)
+        sys.exit(4)
+sys.exit(9)
+"""
+
+
+def _install_gh_intent_fake(fake_bin: Path) -> None:
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    gh = fake_bin / "gh"
+    gh.write_text(_GH_INTENT_FAKE)
+    gh.chmod(0o755)
+
+
 class IntentRecordTests(unittest.TestCase):
     # Unit L operator-intent record producer (delivery-lifecycle
     # shaping-operator-approval and shaping-operator-approval-binding,
@@ -2595,22 +2782,32 @@ class IntentRecordTests(unittest.TestCase):
             check=True, capture_output=True, text=True,
         ).stdout.strip()
 
+    def _surface_env(self, base: Path, head: str) -> dict:
+        fake_bin = base / "bin"
+        _install_gh_intent_fake(fake_bin)
+        return dict(
+            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+            GH_HEAD=head, GH_COMMENTS=str(base / "comments.json"),
+        )
+
     def test_intent_record_stamps_the_current_exact_head_at_action_time(self) -> None:
         # shaping-operator-approval-binding: tooling captures the head itself;
-        # the record binds intent reference, exact head, and a timestamp, and
-        # success reports the record path plus bound head machine-readably.
+        # the record binds intent reference, exact head, a timestamp, and the
+        # command-published surface repo/PR/digest, and success reports the
+        # record path plus bound head machine-readably.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
             head = self._init_repo(repo)
             stream = base / "stream"
+            env = self._surface_env(base, head)
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record",
                     "--stream-dir", str(stream), "--intent-ref", "ruling-15",
-                    "--repo", str(repo),
+                    "--repo", str(repo), "--pr", "7",
                 ],
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=env,
             )
             self.assertEqual(0, result.returncode, result.stderr)
             payload = json.loads(result.stdout)
@@ -2622,6 +2819,9 @@ class IntentRecordTests(unittest.TestCase):
             self.assertEqual(1, record["schema_version"])
             self.assertEqual("ruling-15", record["intent_ref"])
             self.assertEqual(head, record["head"])
+            self.assertEqual(str(repo), record["repo"])
+            self.assertEqual(7, record["pr"])
+            self.assertRegex(record["surface_sha256"], r"^[0-9a-f]{64}$")
             from datetime import datetime
             datetime.fromisoformat(record["recorded_at"])
 
@@ -2681,12 +2881,13 @@ class IntentRecordTests(unittest.TestCase):
             stream = base / "stream"
             stream.mkdir()
             (stream / "intent-record.toml").write_text('intent_ref = "trunc')
+            env = self._surface_env(base, head)
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
                 ],
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=env,
             )
             self.assertEqual(0, result.returncode, result.stderr)
             with (stream / "intent-record.toml").open("rb") as handle:
@@ -2703,6 +2904,8 @@ class IntentRecordTests(unittest.TestCase):
             repo = base / "repo"
             head = self._init_repo(repo)
             stream = base / "stream"
+            fake_bin = base / "bin"
+            _install_gh_intent_fake(fake_bin)
             module = _load_octo_control_module()
             original = module._atomic_write_text
 
@@ -2712,10 +2915,18 @@ class IntentRecordTests(unittest.TestCase):
             module._atomic_write_text = corrupting_write
             args = type("Args", (), {
                 "stream_dir": str(stream), "intent_ref": "ruling-15",
-                "repo": str(repo), "verify": False,
+                "repo": str(repo), "pr": 7, "verify": False,
             })()
-            with self.assertRaises(module.GateError):
-                module.command_intent_record(args)
+            saved = dict(os.environ)
+            os.environ["PATH"] = f"{fake_bin}:{os.environ['PATH']}"
+            os.environ["GH_HEAD"] = head
+            os.environ["GH_COMMENTS"] = str(base / "comments.json")
+            try:
+                with self.assertRaises(module.GateError):
+                    module.command_intent_record(args)
+            finally:
+                os.environ.clear()
+                os.environ.update(saved)
 
     def test_intent_record_verify_rejects_fabricated_records(self) -> None:
         # Consumer red for Unit J (launch-shaping-authority): a missing,
@@ -2752,18 +2963,20 @@ class IntentRecordTests(unittest.TestCase):
 
     def test_intent_record_verify_accepts_a_command_produced_record(self) -> None:
         # The verify path Unit J calls accepts exactly the record the producer
-        # wrote, echoing the bound head machine-readably.
+        # wrote, re-reading the live command-published PR surface and echoing
+        # the bound head machine-readably.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
             head = self._init_repo(repo)
             stream = base / "stream"
+            env = self._surface_env(base, head)
             produced = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
                 ],
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=env,
             )
             self.assertEqual(0, produced.returncode, produced.stderr)
             result = subprocess.run(
@@ -2771,11 +2984,12 @@ class IntentRecordTests(unittest.TestCase):
                     str(CONTROL), "intent-record", "--verify",
                     "--stream-dir", str(stream), "--repo", str(repo),
                 ],
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=env,
             )
             self.assertEqual(0, result.returncode, result.stderr)
             payload = json.loads(result.stdout)
             self.assertEqual(head, payload["head"])
+            self.assertEqual(7, payload["pr"])
             self.assertEqual(str((stream / "intent-record.toml").resolve()), payload["record"])
 
 
@@ -3413,3 +3627,223 @@ class TimerLinearAuthTests(unittest.TestCase):
             # PATH and owner are still passed as before.
             self.assertIn("--setenv=PATH=", call)
             self.assertIn("--setenv=OCTO_OPERATOR_OWNER=", call)
+
+
+class IntentRecordSurfaceForgeryTests(unittest.TestCase):
+    # TUR-447 F5 (Units J and L, code-review finding F5): Shaped authority
+    # could not distinguish a command-produced operator-intent record from
+    # fabricated TOML, because verification accepted any nonempty intent_ref +
+    # recorded_at + any existing commit. The producer now publishes and reads
+    # back the binding on the PR/status surface, and the consumer re-reads the
+    # live surface so a forged valid-head local TOML without the matching
+    # command-published surface is rejected (delivery-lifecycle
+    # shaping-operator-approval-binding; operator-control
+    # supervision-operator-gate-no-hashes; role-runtime launch-shaping-authority).
+
+    def _init_repo(self, repo: Path) -> str:
+        _init_target_repo(repo)
+        return subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def _env(self, base: Path, head: str, store: Path | None = None) -> dict:
+        fake_bin = base / "bin"
+        _install_gh_intent_fake(fake_bin)
+        return dict(
+            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+            GH_HEAD=head, GH_COMMENTS=str(store or (base / "comments.json")),
+        )
+
+    def test_producer_requires_pr_for_surface_publication(self) -> None:
+        # Unit L: the binding must be recorded on the PR/status surface, so a
+        # producer run without --pr cannot publish and is rejected before any
+        # local record is written.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                ],
+                capture_output=True, text=True, env=self._env(base, head),
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("--pr", result.stderr)
+            self.assertFalse((stream / "intent-record.toml").exists())
+
+    def test_producer_failed_surface_readback_aborts_before_writing_record(self) -> None:
+        # Unit L red: a failed surface readback (the live comment does not echo
+        # exactly what was published) aborts and no local record is written.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            # A gh fake that publishes but reads back a corrupted body on the
+            # single-comment GET, so producer readback must fail.
+            (fake_bin / "gh").write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "argv = sys.argv[1:]\n"
+                "store = os.environ['GH_COMMENTS']\n"
+                "def load():\n"
+                "    return json.load(open(store)) if os.path.exists(store) else []\n"
+                "if argv[:2] == ['pr', 'view']:\n"
+                "    print(json.dumps({'headRefOid': os.environ.get('GH_HEAD', '')})); sys.exit(0)\n"
+                "method = argv[argv.index('--method')+1] if '--method' in argv else None\n"
+                "endpoint = [t for i, t in enumerate(argv) if i>0 and argv[i-1] not in ('--method','-f') and t not in ('--paginate','--method','-f','api')][0]\n"
+                "def field(f):\n"
+                "    return next((v.split('=',1)[1] for v in argv if v.startswith(f+'=')), None)\n"
+                "if endpoint.endswith('/comments') and method is None:\n"
+                "    print(json.dumps(load())); sys.exit(0)\n"
+                "if endpoint.endswith('/comments') and method == 'POST':\n"
+                "    items = load(); new = {'id': len(items)+1, 'body': field('body'), 'html_url': 'u'}\n"
+                "    items.append(new); json.dump(items, open(store, 'w')); print(json.dumps(new)); sys.exit(0)\n"
+                "if '/comments/' in endpoint and method is None:\n"
+                "    cid = int(endpoint.split('/')[-1])\n"
+                "    for it in load():\n"
+                "        if it['id'] == cid:\n"
+                "            corrupt = dict(it); corrupt['body'] = 'TAMPERED'\n"
+                "            print(json.dumps(corrupt)); sys.exit(0)\n"
+                "sys.exit(9)\n"
+            )
+            (fake_bin / "gh").chmod(0o755)
+            env = dict(
+                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+                GH_HEAD=head, GH_COMMENTS=str(base / "comments.json"),
+            )
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                ],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("surface readback mismatch", result.stderr)
+            self.assertFalse((stream / "intent-record.toml").exists())
+
+    def test_verify_rejects_forged_valid_head_record_without_published_surface(self) -> None:
+        # CORE F5 red: a hand-authored record with a valid head, correct repo
+        # and PR, and a correct self-digest, but NO matching command-published
+        # PR surface, is rejected as forged.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            stream.mkdir()
+            module = _load_octo_control_module()
+            body = module._intent_surface_body(
+                repo=str(repo), pr=7, head=head, intent_ref="ruling-15",
+                recorded_at="2026-07-21T00:00:00+00:00",
+            )
+            digest = module._surface_digest(body)
+            (stream / "intent-record.toml").write_text(
+                'schema_version = 1\nintent_ref = "ruling-15"\n'
+                f'head = "{head}"\nrecorded_at = "2026-07-21T00:00:00+00:00"\n'
+                f'repo = {json.dumps(str(repo))}\npr = 7\n'
+                f'surface_sha256 = "{digest}"\n'
+            )
+            # Empty live surface store: no command ever published this record.
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--verify",
+                    "--stream-dir", str(stream), "--repo", str(repo),
+                ],
+                capture_output=True, text=True, env=self._env(base, head),
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("no command-published surface", result.stderr)
+
+    def test_verify_rejects_record_whose_repo_differs_from_cli_repo_argument(self) -> None:
+        # Repo-arg bind at the record level: a record produced against another
+        # repo than the CLI repo argument carries no authority here.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            other = base / "other"
+            repo = base / "repo"
+            head_other = self._init_repo(other)
+            self._init_repo(repo)
+            stream = base / "stream"
+            store = base / "comments.json"
+            produced = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                    "--intent-ref", "ruling-15", "--repo", str(other), "--pr", "7",
+                ],
+                capture_output=True, text=True, env=self._env(base, head_other, store),
+            )
+            self.assertEqual(0, produced.returncode, produced.stderr)
+            # Verify against a DIFFERENT CLI repo argument than the record binds.
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--verify",
+                    "--stream-dir", str(stream), "--repo", str(repo),
+                ],
+                capture_output=True, text=True, env=self._env(base, head_other, store),
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("repo mismatch with CLI repo argument", result.stderr)
+
+    def test_verify_rejects_surface_digest_that_does_not_bind_its_own_fields(self) -> None:
+        # A record carrying a surface_sha256 that is not the digest of its own
+        # head/intent/repo/pr is self-inconsistent and rejected before the
+        # live fetch: the digest cannot be borrowed from an unrelated surface.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            stream.mkdir()
+            (stream / "intent-record.toml").write_text(
+                'schema_version = 1\nintent_ref = "ruling-15"\n'
+                f'head = "{head}"\nrecorded_at = "2026-07-21T00:00:00+00:00"\n'
+                f'repo = {json.dumps(str(repo))}\npr = 7\n'
+                f'surface_sha256 = "{"0" * 64}"\n'
+            )
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--verify",
+                    "--stream-dir", str(stream), "--repo", str(repo),
+                ],
+                capture_output=True, text=True, env=self._env(base, head),
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("does not bind its own fields", result.stderr)
+
+    def test_producer_replaces_partial_record_atomically_leaving_no_temp(self) -> None:
+        # Non-atomic partial write red: a truncated prior record is replaced
+        # whole via the atomic pattern and no temporary file remains.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            stream.mkdir()
+            (stream / "intent-record.toml").write_text('intent_ref = "trunc')
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                ],
+                capture_output=True, text=True, env=self._env(base, head),
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(
+                ["intent-record.toml"], sorted(p.name for p in stream.iterdir())
+            )
+            with (stream / "intent-record.toml").open("rb") as handle:
+                record = tomllib.load(handle)
+            self.assertEqual(head, record["head"])
+            self.assertRegex(record["surface_sha256"], r"^[0-9a-f]{64}$")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -200,11 +201,20 @@ def _verify_shaped_transition_authority(args) -> dict:
     if not args.verdict_journal or not args.repo:
         raise GateError("Shaped transition requires --verdict-journal and --repo")
     verdict = _read_shaping_verdict_journal(Path(args.verdict_journal), args.issue)
+    # Repo-arg bind: the octo-control CLI repo argument is the repo the fresh
+    # PR head is verified against, so a verdict binding a different repo than
+    # the CLI repo argument carries no authority here.
+    if verdict["repo"] != args.repo:
+        raise GateError("journalled verdict repo does not match CLI repo argument")
     # The Unit L operator-intent record, validated via the intent-record
-    # --verify path, must stamp that same exact head.
+    # --verify path (which re-reads the command-published PR/status surface so
+    # a forged valid-head local TOML is rejected), must stamp that same exact
+    # head and bind the same repo and PR the verdict does.
     record = _verify_intent_record(stream_dir / "intent-record.toml", args.repo)
     if record["head"] != verdict["head"]:
         raise GateError("operator-intent record head mismatch with journalled verdict")
+    if record["pr"] != verdict["pr"]:
+        raise GateError("operator-intent record pr mismatch with journalled verdict")
     return {"repo": verdict["repo"], "pr": verdict["pr"], "head": verdict["head"]}
 
 
@@ -470,6 +480,29 @@ def _current_repo_head(repo: str) -> str:
     return head
 
 
+_INTENT_SURFACE_MARKER = "<!-- octo-lite-intent-record -->"
+
+
+def _intent_surface_body(*, repo: str, pr: object, head: str, intent_ref: str, recorded_at: str) -> str:
+    # The command-published PR/status surface body. It binds the exact repo,
+    # PR, head, intent reference, and stamp, so a hand-authored local TOML
+    # cannot forge the matching live publication: the record carries a digest
+    # of exactly this body and Unit J re-reads the live surface to match it.
+    payload = {
+        "schema_version": 1,
+        "repo": repo,
+        "pr": pr,
+        "head": head,
+        "intent_ref": intent_ref,
+        "recorded_at": recorded_at,
+    }
+    return _INTENT_SURFACE_MARKER + "\n```json\n" + json.dumps(payload, sort_keys=True) + "\n```\n"
+
+
+def _surface_digest(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
 def _read_intent_record(path: Path) -> dict:
     if not path.is_file():
         raise GateError("intent record missing")
@@ -479,11 +512,24 @@ def _read_intent_record(path: Path) -> dict:
         raise GateError("intent record unreadable") from error
     if record.get("schema_version") != 1:
         raise GateError("intent record schema mismatch")
-    for key in ("intent_ref", "head", "recorded_at"):
+    for key in ("intent_ref", "head", "recorded_at", "repo", "surface_sha256"):
         value = record.get(key)
         if not isinstance(value, str) or not value.strip():
             raise GateError(f"intent record {key} missing")
+    if not isinstance(record.get("pr"), int):
+        raise GateError("intent record pr missing")
     return record
+
+
+def _fetch_intent_surface(repo: str, pr: object) -> str | None:
+    comments = run_json(
+        ["gh", "api", f"repos/{repo}/issues/{pr}/comments", "--paginate"]
+    )
+    surface = next(
+        (item for item in comments if _INTENT_SURFACE_MARKER in item.get("body", "")),
+        None,
+    )
+    return surface.get("body") if surface else None
 
 
 def _verify_intent_record(path: Path, repo: str) -> dict:
@@ -491,12 +537,32 @@ def _verify_intent_record(path: Path, repo: str) -> dict:
     head = record["head"]
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise GateError("intent record head malformed")
+    # Repo-arg bind: the record binds the exact CLI repo argument; a record
+    # produced against another repo is not this transition's authority.
+    if record["repo"] != repo:
+        raise GateError("intent record repo mismatch with CLI repo argument")
     probe = subprocess.run(
         ["git", "-C", repo, "cat-file", "-e", f"{head}^{{commit}}"],
         capture_output=True, text=True,
     )
     if probe.returncode != 0:
         raise GateError("intent record head unknown to repo")
+    # Forgery distinction: a valid-head local TOML must FAIL unless the
+    # command actually published the matching PR/status surface. Re-read the
+    # live PR comment surface and require the record's digest to equal the
+    # digest of the command-published body; a hand-authored record without
+    # the matching command-published surface is rejected.
+    expected_body = _intent_surface_body(
+        repo=repo, pr=record["pr"], head=head,
+        intent_ref=record["intent_ref"], recorded_at=record["recorded_at"],
+    )
+    if record["surface_sha256"] != _surface_digest(expected_body):
+        raise GateError("intent record surface digest does not bind its own fields")
+    live_body = _fetch_intent_surface(repo, record["pr"])
+    if live_body is None:
+        raise GateError("intent record has no command-published surface: forged record rejected")
+    if _surface_digest(live_body) != record["surface_sha256"]:
+        raise GateError("intent record surface digest mismatch with live publication")
     return record
 
 
@@ -509,19 +575,39 @@ def command_intent_record(args) -> dict:
             "head": record["head"],
             "intent_ref": record["intent_ref"],
             "recorded_at": record["recorded_at"],
+            "repo": record["repo"],
+            "pr": record["pr"],
             "verified": True,
         }
     if not isinstance(args.intent_ref, str) or not args.intent_ref.strip():
         raise GateError("intent-ref required nonempty")
+    if not isinstance(args.pr, int):
+        raise GateError("intent record requires --pr for surface publication")
     # Compare: the tool captures the current exact head itself at action time;
     # no supplied head is ever accepted (no --head flag exists).
     head = _current_repo_head(args.repo)
     recorded_at = datetime.now(timezone.utc).isoformat()
+    surface_body = _intent_surface_body(
+        repo=args.repo, pr=args.pr, head=head,
+        intent_ref=args.intent_ref, recorded_at=recorded_at,
+    )
+    surface_sha256 = _surface_digest(surface_body)
+    # Publish the binding to the PR/status surface, then read it back off the
+    # live surface before persisting the record: a failed readback aborts.
+    published = _publish_intent_surface(args.repo, args.pr, surface_body)
+    readback = run_json(
+        ["gh", "api", f"repos/{args.repo}/issues/comments/{published['id']}"]
+    )
+    if readback.get("body") != surface_body:
+        raise GateError("intent record surface readback mismatch")
     text = (
         "schema_version = 1\n"
         f"intent_ref = {json.dumps(args.intent_ref)}\n"
         f'head = "{head}"\n'
         f'recorded_at = "{recorded_at}"\n'
+        f"repo = {json.dumps(args.repo)}\n"
+        f"pr = {args.pr}\n"
+        f'surface_sha256 = "{surface_sha256}"\n'
     )
     # Act: whole-record atomic replace; a partial or corrupt existing record
     # is overwritten, never appended.
@@ -532,6 +618,9 @@ def command_intent_record(args) -> dict:
         record["intent_ref"] != args.intent_ref
         or record["head"] != head
         or record["recorded_at"] != recorded_at
+        or record["repo"] != args.repo
+        or record["pr"] != args.pr
+        or record["surface_sha256"] != surface_sha256
     ):
         raise GateError("intent record readback mismatch")
     return {
@@ -539,7 +628,35 @@ def command_intent_record(args) -> dict:
         "head": head,
         "intent_ref": args.intent_ref,
         "recorded_at": recorded_at,
+        "repo": args.repo,
+        "pr": args.pr,
+        "surface_url": readback.get("html_url"),
     }
+
+
+def _publish_intent_surface(repo: str, pr: object, body: str) -> dict:
+    comments = run_json(
+        ["gh", "api", f"repos/{repo}/issues/{pr}/comments", "--paginate"]
+    )
+    existing = next(
+        (item for item in comments if _INTENT_SURFACE_MARKER in item.get("body", "")),
+        None,
+    )
+    if existing:
+        return run_json(
+            [
+                "gh", "api", "--method", "PATCH",
+                f"repos/{repo}/issues/comments/{existing['id']}",
+                "-f", f"body={body}",
+            ]
+        )
+    return run_json(
+        [
+            "gh", "api", "--method", "POST",
+            f"repos/{repo}/issues/{pr}/comments",
+            "-f", f"body={body}",
+        ]
+    )
 
 
 def command_workspace_admit(args) -> dict:
@@ -711,6 +828,7 @@ def parser() -> argparse.ArgumentParser:
     intent.add_argument("--stream-dir", required=True)
     intent.add_argument("--intent-ref")
     intent.add_argument("--repo", required=True)
+    intent.add_argument("--pr", type=int)
     intent.add_argument("--verify", action="store_true")
     intent.set_defaults(run=command_intent_record)
 
