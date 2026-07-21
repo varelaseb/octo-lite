@@ -11,6 +11,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { launchRevision } from '../workflows/lib/gates.mjs'
@@ -80,6 +81,11 @@ function readyEnvelope(overrides = {}) {
     brief: 'do the work',
     worktree_root: '/root', worktree: 'octo-lite',
     loop_fire_args: '--reason ship',
+    // Resolver-required bound inputs the loop threads into the COMPLETE role_resolver.py resolve
+    // command (TUR-447 cycle1 pass2 F2). starting_head lets resolverCommand build a spawn id.
+    spawn_id: 'spawn-tur447-1', parent: 'orchestrator', reply_route: PR,
+    review_delivery: 'pr-comment', execution_location: 'local',
+    starting_head: HEAD,
   }
   const merged = { ...base, ...overrides }
   // A genuine caller supplies the launch_revision computed over the exact bound inputs
@@ -105,7 +111,7 @@ function makeAgent(script) {
   const calls = []
   async function agent(prompt, opts = {}) {
     const label = opts.label ?? ''
-    calls.push({ label, agentType: opts.agentType ?? null, phase: opts.phase })
+    calls.push({ label, agentType: opts.agentType ?? null, phase: opts.phase, prompt, opts })
     for (const [matcher, responder] of script) {
       if (label.startsWith(matcher)) {
         const value = typeof responder === 'function' ? responder({ prompt, opts, calls }) : responder
@@ -119,6 +125,20 @@ function makeAgent(script) {
 }
 
 const noop = () => {}
+
+// The resolved runtime a genuine role-resolver subagent returns after running the COMPLETE
+// role_resolver.py resolve command (TUR-447 cycle1 pass2 F2). Native workers resolve model,
+// effort, service_tier, contract_blob, the canonical contract TEXT, and the skill set FROM
+// roles.toml; the loop never hardcodes them.
+const RESOLVED_WORKER_RUNTIME = {
+  provider: 'anthropic', model: 'claude-sonnet-5', effort: 'xhigh', service_tier: 'default',
+  contract_blob: 'wk-contract-blob', contract_text: '# Implementer\ncanonical contract text',
+  skills: ['tdd', 'commit'],
+}
+const RESOLVED_REVIEWER_RUNTIME = {
+  provider: 'openai', model: 'gpt-5.6-sol', effort: 'high', service_tier: 'default',
+  contract_blob: 'rv-contract-blob', contract_text: '# Code reviewer\ncanonical contract text',
+}
 
 // A full healthy implement script: readback -> ack (Explore) -> mutation (write) each
 // answer with a genuine echo, and a genuine red-before-mutation-then-green proof.
@@ -134,6 +154,7 @@ function implementScript({ fresh = freshReads(), red, green, mutationAck = ackFo
   return [
     ['loop-fire:', { command: 'octo-control linear-transition', exit_status: 0, readback_state: fireState }],
     ['implementer-readback:', fresh],
+    ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
     ['implementer-ack:', { ack: ackFor('implementer') }],
     ['implementer:', {
       ack: mutationAck, issue: ISSUE, pr_url: PR, branch: BRANCH, head: NEWHEAD,
@@ -241,4 +262,182 @@ test('TDD gate: a genuine red-before-mutation-then-green sequence is ACCEPTED', 
   const result = await factory(agent, JSON.stringify(A), noop)
   assert.equal(result.stage, 'code-review-required')
   assert.equal(result.implementation.green.exit_status, 0)
+})
+
+// TUR-447 cycle1 pass2 F2 composed-runtime proof: a delivery worker pass ACTUALLY resolves its
+// runtime FROM roles.toml, and the resolver-subagent brief carries a COMPLETE, runnable
+// role_resolver.py resolve command with EVERY required arg and NO literal '...'. The mutation
+// spawn then runs under the resolved model and effort, not a hardcoded generic spawn.
+test('F2: the implementer pass resolves runtime from roles.toml via a COMPLETE resolver command and mutates under the resolved model/effort', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  const A = readyEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'code-review-required')
+  // A runtime-resolution spawn ran, read-only, before the mutation.
+  const runtimeCall = agent.calls.find((c) => c.label === `implementer-runtime:${ISSUE}`)
+  assert.ok(runtimeCall, 'implementer runtime-resolution spawn ran')
+  assert.equal(runtimeCall.agentType, 'Explore', 'runtime resolution is read-only')
+  const brief = runtimeCall.prompt
+  // The brief carries the COMPLETE resolver command: the script name, the resolve subcommand,
+  // the role, and every required arg. No literal '...' placeholder.
+  assert.ok(brief.includes('role_resolver.py'), 'resolver script named')
+  assert.ok(/\bresolve\b/.test(brief) && brief.includes('resolve implementer'), 'resolve subcommand + role present')
+  assert.ok(!brief.includes('...'), 'no literal ... placeholder in the resolver command')
+  for (const arg of ['--spawn-id', '--parent', '--reply-route', '--repo', '--worktree',
+    '--execution-location', '--review-delivery']) {
+    assert.ok(brief.includes(arg), `resolver command passes ${arg}`)
+  }
+  // The bound values are actually substituted (not left as templates).
+  assert.ok(brief.includes(`--repo ${REPO}`), 'repo threaded into the command')
+  assert.ok(brief.includes('--worktree /root/octo-lite'), 'absolute contained worktree threaded')
+  assert.ok(brief.includes('--execution-location local'), 'execution-location threaded')
+  // The mutation spawn ran under the RESOLVED model and effort (from roles.toml), not hardcoded.
+  const mut = agent.calls.find((c) => c.label === `implementer:${ISSUE}` && c.agentType === null)
+  assert.ok(mut, 'write-capable mutation spawn ran')
+  assert.equal(mut.opts.model, RESOLVED_WORKER_RUNTIME.model, 'mutation uses resolved model')
+  assert.equal(mut.opts.effort, RESOLVED_WORKER_RUNTIME.effort, 'mutation uses resolved effort')
+  // The resolved canonical contract text is carried into the worker prompt.
+  assert.ok(mut.prompt.includes(RESOLVED_WORKER_RUNTIME.contract_text), 'resolved contract text in worker prompt')
+})
+
+// The loop binds journalledBoundInputs(role, startingHead) and revalidates the launch revision
+// over THAT object, so a reviewer/shaping pass must carry the revision computed for its own role
+// and starting HEAD (not the implementer's), exactly as a genuine caller would.
+function boundInputsFor(role, startingHead) {
+  return {
+    role, repo: REPO, issue: ISSUE, pr: PR,
+    starting_head: startingHead, spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
+  }
+}
+
+// A code-review pass drives the OpenAI relay path end to end through the composed loop.
+function reviewEnvelope(overrides = {}) {
+  const base = readyEnvelope()
+  const merged = {
+    ...base, mode: 'code-review', head: HEAD, cycle: 1, linear_state: 'Todo', ...overrides,
+  }
+  merged.launch_revision = launchRevision(boundInputsFor('code-reviewer', HEAD))
+  return merged
+}
+
+function reviewerScript({
+  role = 'code-reviewer', runtime = RESOLVED_REVIEWER_RUNTIME, verdict = 'clear', linearState = 'Todo',
+} = {}) {
+  const SESSION = 'sess-tur447'
+  const PAYLOAD = 'REVIEWER FINAL MESSAGE VERBATIM'
+  const ack = ackFor(role)
+  return [
+    [`${role}-readback:`, freshReads({ linear_state: linearState })],
+    [`${role}-runtime:`, runtime],
+    [`${role}-relay:`, {
+      claimed_session_id: SESSION, payload: PAYLOAD,
+      bootstrap_argv: ['codex', 'exec', '--json', '-C', '/root/octo-lite', '-m', runtime.model, '-s', 'read-only', '-'],
+      resume_argv: [
+        'codex', 'exec', 'resume', '--json',
+        '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true', SESSION, '-',
+      ],
+      needs_live_reads: true,
+      worktree_before: { head: HEAD, status: '' }, worktree_after: { head: HEAD, status: '' },
+    }],
+    [`${role}-rollout:`, {
+      source: 'independent-rollout-subagent',
+      data: { provider: runtime.provider, model: runtime.model, effort: runtime.effort, final_message: PAYLOAD },
+    }],
+    [`${role}:`, {
+      ack, head: HEAD, verdict, findings: verdict === 'blocking' ? ['f'] : [],
+      comment_url: `${PR}#c`,
+    }],
+  ]
+}
+
+// P0 composed-runtime proof: the OpenAI relay prompt carries the REAL per-pass brief, the
+// contained WORKTREE path, and the canonical CONTRACT TEXT resolved from roles.toml, and the
+// runtime is resolved through the COMPLETE resolver command (role-openai-relay).
+test('P0: the code-reviewer relay prompt carries the real brief, worktree path, and resolved canonical contract text', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(reviewerScript())
+  const A = reviewEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'code-clear')
+  // Runtime resolved from roles.toml via the COMPLETE resolver command.
+  const runtimeCall = agent.calls.find((c) => c.label === `code-reviewer-runtime:${ISSUE}`)
+  assert.ok(runtimeCall && runtimeCall.agentType === 'Explore', 'reviewer runtime resolved read-only')
+  assert.ok(!runtimeCall.prompt.includes('...'), 'no ... in reviewer resolver command')
+  assert.ok(runtimeCall.prompt.includes('resolve code-reviewer'), 'resolves the code-reviewer role')
+  assert.ok(runtimeCall.prompt.includes('--review-delivery'), 'reviewer resolver command complete')
+  // The relay prompt carries brief + worktree + canonical contract text.
+  const relayCall = agent.calls.find((c) => c.label === `code-reviewer-relay:${ISSUE}`)
+  assert.ok(relayCall, 'relay spawn ran')
+  assert.ok(relayCall.prompt.includes('do the work'), 'relay carries the real per-pass brief')
+  assert.ok(relayCall.prompt.includes('/root/octo-lite'), 'relay carries the contained worktree path')
+  assert.ok(
+    relayCall.prompt.includes(RESOLVED_REVIEWER_RUNTIME.contract_text),
+    'relay carries the resolved canonical contract text',
+  )
+  // The rollout reader is a DISTINCT read-only spawn (independent provenance).
+  const rolloutCall = agent.calls.find((c) => c.label === `code-reviewer-rollout:${ISSUE}`)
+  assert.ok(rolloutCall && rolloutCall.agentType === 'Explore', 'independent rollout reader ran read-only')
+})
+
+// P0 composed-runtime proof: shaping-reviewer has a WORKING spawn path through the same relay
+// with the shaping-review admission purpose and the shaping-review relay acceptance gate.
+test('P0: shaping-reviewer has a working relay spawn path (launch-purpose-shaping-roles)', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(reviewerScript({ role: 'shaping-reviewer', linearState: 'Shaped' }))
+  // A shaping-review pass runs at a shaping-eligible Linear state (Shaped) with head bound.
+  const A = {
+    ...readyEnvelope(), mode: 'shaping-review', head: HEAD, linear_state: 'Shaped',
+    launch_revision: launchRevision(boundInputsFor('shaping-reviewer', HEAD)),
+  }
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'shaping-review-verdict')
+  assert.equal(result.shaping_review.verdict, 'clear')
+  // The shaping-reviewer runtime resolved from roles.toml and its relay ran.
+  assert.ok(
+    agent.calls.some((c) => c.label === `shaping-reviewer-runtime:${ISSUE}` && c.agentType === 'Explore'),
+    'shaping-reviewer runtime resolved read-only',
+  )
+  assert.ok(
+    agent.calls.some((c) => c.label === `shaping-reviewer-relay:${ISSUE}`),
+    'shaping-reviewer relay spawn ran',
+  )
+})
+
+// P0 composed proof: the shaping relay is genuinely fail-closed. A relay-supplied rollout (not
+// from the independent read-only subagent) is rejected exactly as at the reviewer gate.
+test('P0-negative: a shaping-reviewer relay whose rollout is not from the independent reader is REJECTED', async () => {
+  const factory = loadLoop()
+  const script = reviewerScript({ role: 'shaping-reviewer', linearState: 'Shaped' }).map(([m, r]) =>
+    m === 'shaping-reviewer-rollout:' ? [m, { ...r, source: 'relay' }] : [m, r])
+  const agent = makeAgent(script)
+  const A = {
+    ...readyEnvelope(), mode: 'shaping-review', head: HEAD, linear_state: 'Shaped',
+    launch_revision: launchRevision(boundInputsFor('shaping-reviewer', HEAD)),
+  }
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /not from the independent read-only subagent/,
+  )
+})
+
+// F2 real-run proof: the exact resolver command the loop tells its subagent to run actually
+// exits 0 and PRINTS the resolved runtime (provider/model/effort/service_tier/contract_blob)
+// plus the canonical contract text, parseably. This proves the brief is runnable, not just
+// well-formed.
+test('F2: the resolver command runs for real, exits 0, and prints the resolved runtime + contract', () => {
+  const out = execFileSync('python3', [
+    'workflows/lib/role_resolver.py', 'resolve', 'code-reviewer',
+    '--spawn-id', 'composed-1', '--parent', 'orchestrator', '--reply-route', 'route',
+    '--repo', ROOT, '--worktree', ROOT, '--execution-location', 'local',
+    '--review-delivery', 'pr-comment', '--emit-contract',
+  ], { cwd: ROOT, encoding: 'utf8' })
+  assert.ok(out.includes('[runtime]'), 'resolve prints a runtime section')
+  assert.ok(out.includes('provider = "openai"'), 'resolve prints provider')
+  assert.ok(out.includes('model = "gpt-5.6-sol"'), 'resolve prints model')
+  assert.ok(/effort = "high"/.test(out), 'resolve prints effort')
+  assert.ok(/service_tier = "default"/.test(out), 'resolve prints service_tier')
+  assert.ok(out.includes('[contract]'), 'resolve prints the canonical contract table')
+  assert.ok(/blob = "[0-9a-f]{40,64}"/.test(out), 'resolve prints contract blob')
+  assert.ok(out.includes('Independently review one exact implementation HEAD'), 'resolve prints contract text')
 })

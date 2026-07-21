@@ -292,6 +292,63 @@ class RoleResolverTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bootstrap acknowledgment mismatch"):
             self.resolver.verify_bootstrap_ack(receipt, bad_ack)
 
+    # TUR-447 cycle1 pass2 F2/P0 (role-runtime role-machine-map, role-openai-relay,
+    # role-no-prompt-copy). The `resolve` CLI a workflow resolver subagent invokes must exit 0
+    # and PRINT the resolved runtime (provider, model, effort, service_tier, contract_blob) in a
+    # parseable form PLUS the canonical contract text verbatim, so the relay path can carry the
+    # exact runtime and contract without the loop hardcoding either or copying prompt literals.
+    def test_resolve_cli_prints_runtime_and_verbatim_contract_text(self) -> None:
+        result = subprocess.run(
+            [
+                "python3", str(MODULE_PATH), "resolve", "code-reviewer",
+                "--spawn-id", "cli-1", "--parent", "orchestrator",
+                "--reply-route", "herdr://route", "--repo", str(ROOT),
+                "--worktree", str(ROOT), "--execution-location", "local",
+                "--review-delivery", "pr-comment", "--emit-contract",
+            ],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout
+        # The ENTIRE stdout is valid TOML so every consumer that loads the resolve output as a
+        # receipt still parses, and the canonical contract text rides in a [contract] table.
+        parsed = tomllib.loads(out)
+        runtime = parsed["runtime"]
+        self.assertEqual(runtime["provider"], "openai")
+        self.assertEqual(runtime["model"], "gpt-5.6-sol")
+        self.assertEqual(runtime["effort"], "high")
+        self.assertEqual(runtime["service_tier"], "default")
+        # The canonical contract path, git blob, and text ride in the [contract] table so the
+        # durable launch-receipt revision (fingerprinted over the receipt) is unchanged while the
+        # relay still gets the exact contract identity and prose.
+        registry = self.resolver.load_registry(ROOT)
+        resolved = self.resolver.resolve_role(registry, "code-reviewer")
+        self.assertRegex(parsed["contract"]["blob"], r"^[0-9a-f]{40,64}$")
+        self.assertEqual(parsed["contract"]["blob"], resolved.contract_blob)
+        self.assertEqual(parsed["contract"]["path"], "roles/code-reviewer.md")
+        self.assertEqual(parsed["contract"]["text"].strip("\n"), resolved.contract_text.strip("\n"))
+
+    def test_resolve_cli_default_omits_contract_and_stays_a_fingerprint_stable_receipt(self) -> None:
+        # TUR-447 cycle1 pass2 P0: without --emit-contract the resolve stdout is EXACTLY the
+        # durable launch receipt with NO [contract] table, so the persistent launch path that
+        # writes this stdout to receipt.toml and fingerprints it stays revision-stable. The
+        # printed launch_revision equals the launch_revision recomputed over the parsed receipt.
+        result = subprocess.run(
+            [
+                "python3", str(MODULE_PATH), "resolve", "code-reviewer",
+                "--spawn-id", "cli-2", "--parent", "orchestrator",
+                "--reply-route", "herdr://route", "--repo", str(ROOT),
+                "--worktree", str(ROOT), "--execution-location", "local",
+                "--review-delivery", "pr-comment",
+            ],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = tomllib.loads(result.stdout)
+        self.assertNotIn("contract", parsed, "default resolve output carries no [contract] table")
+        from octo_lite.runtime import launch_revision as launch_rev
+        self.assertEqual(parsed["launch_revision"], launch_rev(parsed))
+
     def _load_mutated_registry(self, mutate):
         text = mutate((ROOT / "roles.toml").read_text())
         with tempfile.TemporaryDirectory(dir=ROOT) as tmp:

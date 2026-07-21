@@ -206,14 +206,27 @@ class CutoverConformanceTests(unittest.TestCase):
         # The composite fail-closed relay gate is the acceptance point, and it is fed the
         # independently-fetched rollout, never a relay-supplied record.
         relay = code[code.index("async function spawnOpenaiReviewer"):code.index("async function loopFire")]
+        # TUR-447 cycle1 pass2 F2/P0: the COMPLETE, runnable role-resolver command (no literal
+        # '...') is wired into the loop, and the reviewer relay path resolves its runtime FROM
+        # roles.toml through that resolver before the relay. resolverCommand builds the exact
+        # command; resolveRuntime runs it in a read-only subagent and returns the resolved
+        # runtime plus the canonical contract text.
+        self.assertIn("role_resolver.py", code)
+        self.assertIn("'resolve'", code)
+        # The old incomplete brief with the literal '...' placeholder is gone.
+        self.assertNotIn("resolve ${role} ...", code)
+        self.assertNotIn("role_resolver.py resolve ${role} ...", code)
+        # Every required resolver arg is passed from the bound inputs.
+        for arg in ("--spawn-id", "--parent", "--reply-route", "--repo", "--worktree",
+                    "--execution-location", "--review-delivery"):
+            self.assertIn(arg, code)
         # Three distinct subagent spawns: runtime resolution, the codex relay, and a SEPARATE
         # read-only rollout reader, in that order, before the composite gate.
         self.assertIn("REVIEWER_RUNTIME_SCHEMA", relay)
-        self.assertIn("role_resolver.py resolve", relay)
         resolve_at = relay.index("REVIEWER_RUNTIME_SCHEMA")
         relay_at = relay.index("RELAY_SCHEMA")
         rollout_at = relay.index("ROLLOUT_SCHEMA")
-        accept_at = relay.index("acceptOpenaiReviewRelay(")
+        accept_at = relay.index("acceptRelay(")
         self.assertLess(resolve_at, relay_at)
         self.assertLess(relay_at, rollout_at)
         self.assertLess(rollout_at, accept_at)
@@ -225,9 +238,20 @@ class CutoverConformanceTests(unittest.TestCase):
         # Sandbox law: read-only-first bootstrap, resume via -c sandbox_mode config never -s.
         self.assertIn("read-only", relay)
         self.assertIn('sandbox_mode="workspace-write"', relay)
-        # The composite gate and relay-verbatim verification are both reachable (the gate calls
-        # verifyRelayVerbatim internally over the independently-fetched rollout).
-        self.assertIn("acceptOpenaiReviewRelay(role, runtime, relay, rollout)", relay)
+        # The composite gate and relay-verbatim verification are both reachable through the
+        # parametrized accept function, defaulting to acceptOpenaiReviewRelay for reviewers and
+        # acceptShapingReviewRelay for the shaping-review cutover path.
+        self.assertIn("acceptRelay(role, runtime, relay, rollout)", relay)
+        self.assertIn("accept ?? acceptOpenaiReviewRelay", relay)
+        # The relay carries the real per-pass brief, the contained worktree path, and the
+        # canonical contract TEXT resolved from roles.toml (role-openai-relay), not literals.
+        self.assertIn("runtime.contract_text", relay)
+        self.assertIn("CONTAINED REVIEW WORKTREE", relay)
+        # P0 shaping-reviewer cutover: it has a real relay spawn path through the same relay
+        # function with the shaping-review admission purpose and the shaping-review accept gate.
+        self.assertIn("spawnShapingReviewer", code)
+        self.assertIn("acceptShapingReviewRelay", code)
+        self.assertIn("purpose: 'shaping-review'", code)
         # The loop must not resume with a top-level -s flag anywhere in the relay brief.
         self.assertNotIn("-s workspace-write", relay)
 

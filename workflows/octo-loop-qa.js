@@ -729,11 +729,28 @@ function assertReviewWorktreeImmutable(before, after) {
 // structurally required, not merely conventional.
 const INDEPENDENT_ROLLOUT_SOURCE = 'independent-rollout-subagent'
 const OPENAI_REVIEWER_ROLES = new Set(['code-reviewer', 'qa-reviewer'])
+// TUR-447 cycle1 pass2 P0 (role-runtime launch-purpose-shaping-roles, role-openai-relay,
+// role-openai-fail-closed, role-machine-map, role-worker-migration): roles.toml declares
+// shaping-reviewer as an OpenAI Workflow relay (provider=openai, gpt-5.6-sol, provenance
+// relay-verbatim-rollout), so the shaping flow needs a cutover relay path that spawns it
+// with the SAME rollout-record provenance and sandbox law as the code/qa reviewers. The
+// sole OpenAI-reviewer relay set admitted only code-reviewer and qa-reviewer, so
+// shaping-reviewer had no execution path at all. This admits it through an identical
+// fail-closed relay acceptance keyed on its own admitted-role set.
+const SHAPING_REVIEWER_ROLES = new Set(['shaping-reviewer'])
 
-function acceptOpenaiReviewRelay(role, resolvedRuntime, relay, rollout) {
-  required(role, 'reviewer role')
-  if (!OPENAI_REVIEWER_ROLES.has(role)) {
-    throw new Error(`relay verbatim rejected: ${role} is not an OpenAI reviewer role`)
+// Shared fail-closed relay verdict acceptance for every OpenAI relay role
+// (role-runtime role-openai-relay, role-openai-fail-closed, launch-correctness-path,
+// launch-review-sandbox-integrity, launch-resume-sandbox-config). admittedRoles is the
+// exact role set the calling purpose admits; roleError names the purpose in the rejection.
+// The body is the single deterministic gate: role admission, resolved-OpenAI-runtime shape,
+// relay/rollout provenance (rollout MUST come from the independent read-only reader, never
+// the relay), sandbox law over the exact argv, worktree immutability, and relay-verbatim
+// effective identity proven FROM the independently fetched rollout record.
+function acceptRelayVerdict(admittedRoles, roleError, role, resolvedRuntime, relay, rollout) {
+  required(role, 'relay role')
+  if (!admittedRoles.has(role)) {
+    throw new Error(`relay verbatim rejected: ${role} is not ${roleError}`)
   }
   required(resolvedRuntime, 'resolved reviewer runtime')
   if (resolvedRuntime.provider !== 'openai') {
@@ -765,6 +782,26 @@ function acceptOpenaiReviewRelay(role, resolvedRuntime, relay, rollout) {
   // payload must equal that record's final assistant message verbatim.
   const verified = verifyRelayVerbatim(resolvedRuntime, claimedSessionId, relay.payload, rollout.data)
   return { verdict_payload: verified.final_message, session_id: claimedSessionId, runtime: verified }
+}
+
+function acceptOpenaiReviewRelay(role, resolvedRuntime, relay, rollout) {
+  return acceptRelayVerdict(
+    OPENAI_REVIEWER_ROLES, 'an OpenAI reviewer role', role, resolvedRuntime, relay, rollout,
+  )
+}
+
+// TUR-447 cycle1 pass2 P0 shaping-reviewer cutover (role-runtime launch-purpose-shaping-roles,
+// role-openai-relay, role-openai-fail-closed, launch-correctness-path). The shaping-review
+// purpose admits role shaping-reviewer through the identical fail-closed relay acceptance the
+// code/qa reviewers use: same independent rollout-record provenance, same sandbox law, same
+// relay-verbatim effective-identity read-back. This is the workflow-layer acceptance the
+// shaping relay spawn path calls so shaping-reviewer has a real cutover execution path rather
+// than none. A non-shaping-review role rejects here exactly as a non-reviewer role does at the
+// OpenAI-reviewer gate.
+function acceptShapingReviewRelay(role, resolvedRuntime, relay, rollout) {
+  return acceptRelayVerdict(
+    SHAPING_REVIEWER_ROLES, 'a shaping-review relay role', role, resolvedRuntime, relay, rollout,
+  )
 }
 // GATES-EMBED-END
 
@@ -848,6 +885,21 @@ const IMPLEMENT_SCHEMA = {
 }
 
 const REVIEW_SCHEMA = {
+  type: 'object',
+  required: ['ack', 'head', 'verdict', 'findings', 'comment_url'],
+  properties: {
+    ack: ACK_SCHEMA,
+    head: { type: 'string' },
+    verdict: { enum: ['clear', 'blocking', 'ambiguous'] },
+    findings: { type: 'array', items: { type: 'string' } },
+    comment_url: { type: 'string' },
+  },
+}
+
+// TUR-447 cycle1 pass2 P0 shaping-review verdict (role-runtime launch-purpose-shaping-roles,
+// role-openai-relay). The OpenAI shaping-reviewer binds an exact-head shaping verdict from the
+// verbatim relay payload: clear, blocking, or ambiguous, with findings and the review artifact.
+const SHAPING_REVIEW_SCHEMA = {
   type: 'object',
   required: ['ack', 'head', 'verdict', 'findings', 'comment_url'],
   properties: {
@@ -995,6 +1047,65 @@ function journalledBoundInputs(role, startingHead) {
     spec_blobs: specBlobs(),
     contract_hash: required(A.contract_hash, 'contract hash'),
   }
+}
+
+// TUR-447 cycle1 pass2 F2 (role-runtime role-machine-map, role-resolver, role-openai-relay).
+// The COMPLETE, runnable role-resolver command carrying every required argument from the bound
+// inputs. The prior brief had a literal '...' that omitted every required arg, so it was not
+// runnable and no runtime was ever resolved. This builds the exact command a resolver subagent
+// runs: role plus --spawn-id --parent --reply-route --repo --worktree --execution-location
+// --review-delivery, plus --capability for each matched conditional-skill trigger and
+// --operator-loopback when the launch context confirms operator loopback. worktreeAbs is the
+// contained absolute worktree path (worktree_root + worktree, containment-checked).
+function resolverCommand(role, worktreeAbs) {
+  const repo = required(A.repo, 'repo')
+  const spawnId = A.spawn_id ?? `${role}-${required(A.issue, 'issue')}-${required(A.starting_head ?? A.shaping_head ?? A.head, 'starting head')}`
+  const parent = A.parent ?? 'orchestrator'
+  const replyRoute = A.reply_route ?? required(A.pr, 'pr')
+  const executionLocation = A.execution_location ?? 'local'
+  const reviewDelivery = A.review_delivery ?? required(A.pr, 'pr')
+  const parts = [
+    'python3', 'workflows/lib/role_resolver.py', 'resolve', role,
+    '--spawn-id', spawnId,
+    '--parent', parent,
+    '--reply-route', replyRoute,
+    '--repo', repo,
+    '--worktree', worktreeAbs,
+    '--execution-location', executionLocation,
+    '--review-delivery', reviewDelivery,
+    // Emit the canonical contract text (as a valid TOML [contract] table) so the relay and the
+    // native worker carry the exact contract prose; the durable persistent-launch path omits it.
+    '--emit-contract',
+  ]
+  if (A.operator_loopback === true || A.operator_loopback === false) {
+    parts.push('--operator-loopback', String(A.operator_loopback))
+  }
+  const capabilities = Array.isArray(A.capabilities) ? A.capabilities : []
+  for (const capability of capabilities) parts.push('--capability', capability)
+  return parts.join(' ')
+}
+
+// TUR-447 cycle1 pass2 F2c (role-runtime role-machine-map, role-worker-migration,
+// role-openai-relay). Resolve one role's runtime FROM roles.toml through the role resolver in a
+// read-only Explore subagent that runs the COMPLETE resolverCommand and returns the exact
+// resolved provider, model, effort, service_tier, contract_blob, the canonical contract TEXT,
+// and (for native workers) the resolved skill set. The loop cannot read files, so it never
+// hardcodes any runtime field; every worker and reviewer pass binds the resolved identity.
+async function resolveRuntime(role, phaseTitle, worktreeAbs, schema, issue) {
+  const command = resolverCommand(role, worktreeAbs)
+  const runtime = await agent([
+    `Resolve the octo-lite ${role} runtime from roles.toml through the role resolver. One pass; read-only.`,
+    'Run EXACTLY this command from the repo root and parse its VALID-TOML output:',
+    command,
+    'The whole stdout is one TOML document. Return provider, model, effort, and service_tier',
+    'from the [runtime] table; contract_blob from [contract].blob; contract_text as the VERBATIM',
+    '[contract].text value; and skills as the [skills].resolved array.',
+    'Do not invent or override any field; report exactly what the resolver printed.',
+  ].join('\n'), {
+    label: `${role}-runtime:${issue}`, phase: phaseTitle, schema, agentType: 'Explore',
+  })
+  if (runtime === null) throw new Error(`${role} runtime resolution returned no result`)
+  return runtime
 }
 
 // Live readback immediately before EVERY native spawn (TUR-447 F3 Unit H; role-runtime
@@ -1190,6 +1301,11 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
   const revision = resolveLaunchRevision(bound)
   log(`journal spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash} ${revision}`)
   const brief = required(A.brief, 'pass brief')
+  // TUR-447 cycle1 pass2 F2c (role-runtime role-machine-map, role-worker-migration): resolve
+  // the native worker runtime FROM roles.toml through the role resolver, not a hardcoded or
+  // generic spawn. The mutation phase runs under the resolved model and effort, and the
+  // resolved canonical contract text is carried into the worker prompt.
+  const runtime = await resolveRuntime(role, phaseTitle, worktree, WORKER_RUNTIME_SCHEMA, bound.issue)
   // Containment again at each child subagent spawn (launch-containment).
   assertContainment(A.worktree_root, worktree)
   // Phase 1: read-only acknowledgment spawn under the real read-only subagent type
@@ -1223,6 +1339,9 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
   assertContainment(A.worktree_root, worktree)
   const prompt = [
     `You are a fresh octo-lite ${role}. One pass only. Never reuse a worker session.`,
+    'CANONICAL ROLE CONTRACT (resolved from roles.toml; follow it exactly):',
+    runtime.contract_text,
+    `RESOLVED SKILLS (load these): ${JSON.stringify(runtime.skills)}`,
     'BOUND INPUTS: verify each against your own reads, echo them verbatim as the ack',
     'object in your structured result, and stop before any mutation on any mismatch:',
     JSON.stringify(bound, null, 2),
@@ -1235,8 +1354,11 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     'did not run before the change, or a green whose scenario differs from red, is rejected.',
     brief,
   ].join('\n\n')
+  // The mutation spawn runs under the resolved model and effort from roles.toml; only the real
+  // agent() opts are passed (label, phase, schema, model, effort).
   const result = await agent(prompt, {
     label: `${role}:${bound.issue}`, phase: phaseTitle, schema,
+    model: runtime.model, effort: runtime.effort,
   })
   if (result === null) throw new Error(`${role} pass returned no result`)
   // TUR-447 F1 fix (role-runtime launch-identity, launch-receipt; operating-model
@@ -1314,13 +1436,36 @@ async function acceptWorkerEchoOrDiscard(role, phaseTitle, bound, result, worktr
 // verified final message becomes the reviewer verdict payload the review schema carries.
 const REVIEWER_RUNTIME_SCHEMA = {
   type: 'object',
-  required: ['provider', 'model', 'effort', 'service_tier', 'contract_blob'],
+  required: ['provider', 'model', 'effort', 'service_tier', 'contract_blob', 'contract_text'],
   properties: {
     provider: { type: 'string' },
     model: { type: 'string' },
     effort: { type: 'string' },
     service_tier: { type: 'string' },
     contract_blob: { type: 'string' },
+    // TUR-447 cycle1 pass2 P0 (role-runtime role-openai-relay): the resolver subagent returns
+    // the canonical role contract TEXT it read from roles.toml so the relay carries the exact
+    // contract as the codex exec prompt; the loop cannot read files and never hardcodes it.
+    contract_text: { type: 'string' },
+  },
+}
+
+// Native delivery-worker runtime resolved FROM roles.toml (TUR-447 cycle1 pass2 F2c;
+// role-runtime role-machine-map, role-worker-migration). implementer and qa-capture are
+// anthropic workers whose model, effort, and skill set must be resolved through the role
+// resolver, not hardcoded. The resolver subagent returns the exact runtime plus the resolved
+// skill set and the canonical contract text so the mutation spawn uses the resolved identity.
+const WORKER_RUNTIME_SCHEMA = {
+  type: 'object',
+  required: ['provider', 'model', 'effort', 'service_tier', 'contract_blob', 'contract_text', 'skills'],
+  properties: {
+    provider: { type: 'string' },
+    model: { type: 'string' },
+    effort: { type: 'string' },
+    service_tier: { type: 'string' },
+    contract_blob: { type: 'string' },
+    contract_text: { type: 'string' },
+    skills: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -1356,9 +1501,22 @@ const ROLLOUT_SCHEMA = {
   },
 }
 
-async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema) {
-  // Same admission, containment, journal, and revision revalidation as any delivery pass.
-  assertAdmission({ purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') })
+// TUR-447 cycle1 pass2 P0 (role-runtime role-openai-relay, launch-purpose-shaping-roles,
+// launch-purpose-delivery-roles). The single OpenAI relay spawn path for every OpenAI role.
+// admission is the exact purpose/role/linear-state gate the role's purpose requires (delivery
+// for code-reviewer and qa-reviewer, shaping-review for shaping-reviewer); accept is the
+// matching fail-closed relay acceptance gate. This one path resolves the runtime FROM
+// roles.toml through the COMPLETE resolver command, carries the real per-pass brief, the
+// contained worktree path, and the canonical contract TEXT into the relay prompt, reads the
+// rollout record through a SEPARATE independent Explore subagent, and binds the verdict from
+// the verbatim relay payload. shaping-reviewer now has a working spawn path here.
+async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { admission, accept } = {}) {
+  // Same admission, containment, journal, and revision revalidation as any relay pass. The
+  // admission purpose/capabilities come from the caller so a shaping-review pass admits through
+  // launch-purpose-shaping-roles and a reviewer pass through launch-purpose-delivery-roles.
+  const admit = admission ?? { purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') }
+  assertAdmission(admit)
+  const acceptRelay = accept ?? acceptOpenaiReviewRelay
   const worktree = assertContainment(
     required(A.worktree_root, 'worktree root'),
     required(A.worktree, 'worker worktree'),
@@ -1373,29 +1531,31 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema) {
   log(`journal relay-spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash} ${revision}`)
   const brief = required(A.brief, 'pass brief')
   assertContainment(A.worktree_root, worktree)
-  // 1. Resolve the OpenAI runtime FROM roles.toml through the role resolver; the loop never
-  // hardcodes provider/model/effort/service_tier.
-  const runtime = await agent([
-    `Resolve the octo-lite ${role} runtime from roles.toml through the role resolver.`,
-    `Run: python3 workflows/lib/role_resolver.py resolve ${role} ... and read roles.toml.`,
-    'Return provider, model, effort, service_tier, and contract_blob EXACTLY as resolved.',
-    'Do not invent or override any field; read-only.',
-  ].join('\n'), {
-    label: `${role}-runtime:${bound.issue}`, phase: phaseTitle, schema: REVIEWER_RUNTIME_SCHEMA,
-    agentType: 'Explore',
-  })
-  if (runtime === null) throw new Error(`${role} runtime resolution returned no result`)
+  // 1. Resolve the OpenAI runtime FROM roles.toml through the role resolver via the COMPLETE
+  // resolver command (no literal '...'); the loop never hardcodes provider/model/effort/
+  // service_tier and receives the canonical contract TEXT the relay carries.
+  const runtime = await resolveRuntime(role, phaseTitle, worktree, REVIEWER_RUNTIME_SCHEMA, bound.issue)
   // 2. Relay subagent runs one codex exec for the resolved OpenAI runtime and returns the
   // verbatim final message plus the claimed session id, the exact bootstrap/resume argv, and
-  // the review worktree HEAD+status before and after. It NEVER supplies the rollout record.
+  // the review worktree HEAD+status before and after. It NEVER supplies the rollout record. The
+  // relay carries the ACTUAL per-pass brief, the contained worktree path, and the canonical
+  // contract TEXT (role-openai-relay).
   const relayPrompt = [
     `You are a fresh octo-lite codex relay subagent for the OpenAI ${role} role. One pass only.`,
     'BOUND INPUTS (verify against your own reads before relaying, echo verbatim is not required here):',
     JSON.stringify(bound, null, 2),
     'RESOLVED OPENAI RUNTIME to relay verbatim as the codex exec runtime:',
-    JSON.stringify(runtime, null, 2),
+    JSON.stringify(
+      { provider: runtime.provider, model: runtime.model, effort: runtime.effort, service_tier: runtime.service_tier },
+      null, 2,
+    ),
+    `CONTAINED REVIEW WORKTREE (run codex exec with -C this exact path): ${worktree}`,
+    'CANONICAL ROLE CONTRACT to pass VERBATIM as the codex exec prompt (never copy a workflow literal):',
+    runtime.contract_text,
+    'PER-PASS BRIEF for this exact pass:',
+    brief,
     'Run exactly one `codex exec` relay carrying that exact model, effort, service tier, the',
-    'contained review worktree, and the canonical role contract as the exec prompt.',
+    'contained review worktree above, and the canonical role contract above as the exec prompt.',
     'Bootstrap read-only first (-s read-only). If the pass needs live GitHub or Linear reads,',
     'resume with the sandbox selected ONLY through -c sandbox_mode="workspace-write" plus -c',
     'sandbox_workspace_write.network_access=true; NEVER use the top-level -s flag on resume.',
@@ -1426,7 +1586,7 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema) {
   // Composite fail-closed acceptance: sandbox law, worktree immutability, independent
   // provenance, and relay-verbatim identity. A generic native agent() reviewer pass, a
   // relay-supplied rollout, an edited payload, or a top-level -s resume all reject here.
-  const accepted = acceptOpenaiReviewRelay(role, runtime, relay, rollout)
+  const accepted = acceptRelay(role, runtime, relay, rollout)
   assertLaunchRevision(revision, bound)
   // The verified rollout final message is the reviewer verdict payload. The reviewer verdict
   // envelope is bound from the relay pass; the payload is the verbatim reviewer message.
@@ -1445,6 +1605,20 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema) {
   assertWorkerAckEcho(bound, verdict.ack)
   assertLaunchRevision(revision, bound)
   return verdict
+}
+
+// TUR-447 cycle1 pass2 P0 shaping-reviewer cutover (role-runtime launch-purpose-shaping-roles,
+// role-openai-relay, role-openai-fail-closed, launch-correctness-path; role-worker-migration).
+// roles.toml declares shaping-reviewer as an OpenAI Workflow relay, and the shaping flow needs
+// the workflow to spawn it. This routes shaping-reviewer through the SAME relay path as the
+// code/qa reviewers with the shaping-review admission purpose (launch-purpose-shaping-roles)
+// and the shaping-review relay acceptance gate (acceptShapingReviewRelay), so it has a real
+// cutover execution path with identical rollout-record provenance rather than none.
+async function spawnShapingReviewer(phaseTitle, startingHead, schema) {
+  return spawnOpenaiReviewer('shaping-reviewer', phaseTitle, startingHead, schema, {
+    admission: { purpose: 'shaping-review', role: 'shaping-reviewer', linearState: required(A.linear_state, 'linear state') },
+    accept: acceptShapingReviewRelay,
+  })
 }
 
 // Loop fire (delivery-lifecycle linear-loop-fire-transition, delivery-entry-gate):
@@ -1619,6 +1793,18 @@ if (mode === 'reconcile') {
       ? 'Fable judges the escalated reconcile case; no agent resolves ambiguity.'
       : 'Reconcile classification bound to the durable journal; worktree cleaned keyed on the journal.',
   }
+}
+
+if (mode === 'shaping-review') {
+  // TUR-447 cycle1 pass2 P0 (role-runtime launch-purpose-shaping-roles, role-openai-relay,
+  // role-worker-migration). The shaping-review cutover entry point: the shaping flow spawns the
+  // OpenAI shaping-reviewer through the codex relay path with shaping-review admission and the
+  // shaping-review relay acceptance gate. Same fail-closed independent rollout provenance and
+  // sandbox law as the code/qa reviewers. This gives shaping-reviewer a real workflow spawn
+  // path; the prior sole relay path admitted only code-reviewer and qa-reviewer.
+  const head = required(A.head ?? A.shaping_head, 'head')
+  const shapingReview = await spawnShapingReviewer('Shaping Review', head, SHAPING_REVIEW_SCHEMA)
+  return { stage: 'shaping-review-verdict', issue: A.issue, head, shaping_review: shapingReview }
 }
 
 throw new Error(`unknown mode: ${mode}`)

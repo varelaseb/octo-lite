@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   acceptCodeReview,
   acceptOpenaiReviewRelay,
+  acceptShapingReviewRelay,
   assertReviewWorktreeImmutable,
   assertAdmission,
   acceptQaReview,
@@ -993,5 +994,41 @@ test('OpenAI-reviewer relay gate rejects a non-reviewer role', () => {
   assert.throws(
     () => acceptOpenaiReviewRelay('implementer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(), independentRollout()),
     /not an OpenAI reviewer role/,
+  )
+})
+
+// TUR-447 cycle1 pass2 P0: shaping-reviewer has a real cutover relay execution path with the
+// SAME fail-closed independent-rollout provenance and sandbox law the code/qa reviewers use
+// (role-runtime launch-purpose-shaping-roles, role-openai-relay, role-openai-fail-closed).
+test('shaping-review relay gate accepts a fully verified shaping-reviewer relay pass', () => {
+  const accepted = acceptShapingReviewRelay(
+    'shaping-reviewer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(), independentRollout(),
+  )
+  assert.equal(accepted.verdict_payload, RELAY_MESSAGE)
+  assert.equal(accepted.session_id, SESSION_ID)
+})
+
+// Red: the shaping relay path must NOT admit a code/qa reviewer or any non-shaping role, and
+// the code/qa gate must NOT admit shaping-reviewer; each purpose keeps its own admitted set.
+test('shaping-review relay gate rejects a non-shaping role and the reviewer gate rejects shaping-reviewer', () => {
+  assert.throws(
+    () => acceptShapingReviewRelay('code-reviewer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(), independentRollout()),
+    /not a shaping-review relay role/,
+  )
+  assert.throws(
+    () => acceptOpenaiReviewRelay('shaping-reviewer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(), independentRollout()),
+    /not an OpenAI reviewer role/,
+  )
+})
+
+// Red: the shaping relay is genuinely fail-closed: a relay-supplied rollout is rejected before
+// verification exactly as at the reviewer gate.
+test('shaping-review relay gate rejects rollout data not from the independent read-only subagent', () => {
+  assert.throws(
+    () => acceptShapingReviewRelay(
+      'shaping-reviewer', RESOLVED_REVIEWER_RUNTIME, reviewerRelay(),
+      { source: 'relay', data: reviewerRolloutRecord() },
+    ),
+    /not from the independent read-only subagent/,
   )
 })

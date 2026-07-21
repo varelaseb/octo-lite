@@ -433,6 +433,28 @@ def render_receipt(receipt: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_contract_section(resolved: ResolvedRole) -> str:
+    """Render the canonical contract text as a valid TOML [contract] table.
+
+    The relay carries this text verbatim as the codex exec prompt, and every consumer that
+    loads the resolve stdout as TOML still parses cleanly. The text is emitted as a multiline
+    basic string with backslash and quote sequences escaped so the value round-trips exactly.
+    """
+    text = resolved.contract_text
+    escaped = text.replace("\\", "\\\\").replace('"""', '""\\"')
+    body = escaped if escaped.startswith("\n") else "\n" + escaped
+    if not body.endswith("\n"):
+        body += "\n"
+    return "".join(
+        [
+            "\n[contract]\n",
+            f"blob = {_toml_string(resolved.contract_blob)}\n",
+            f"path = {_toml_string(resolved.role.contract)}\n",
+            f'text = """{body}"""\n',
+        ]
+    )
+
+
 def dry_run_child(resolved: ResolvedRole, receipt: dict[str, Any]) -> dict[str, Any]:
     """Cross a real child-process boundary and return its launch acknowledgment."""
     child = r'''
@@ -528,6 +550,11 @@ def main(argv: list[str] | None = None) -> int:
     resolve.add_argument("--execution-location", choices=("local", "remote"), required=True)
     resolve.add_argument("--operator-loopback", choices=("true", "false"), default="false")
     resolve.add_argument("--review-delivery", required=True)
+    # TUR-447 cycle1 pass2 P0 (role-runtime role-openai-relay): a relay resolver run opts in to
+    # the canonical contract text so the relay carries it as the codex exec prompt. Off by
+    # default so a durable launch-receipt consumer (the persistent launch path writes this
+    # stdout to receipt.toml and fingerprints it) sees the exact receipt with no extra section.
+    resolve.add_argument("--emit-contract", action="store_true")
     args = parser.parse_args(argv)
     registry = load_registry(args.root)
     if args.command == "generate":
@@ -553,6 +580,14 @@ def main(argv: list[str] | None = None) -> int:
         review_delivery=args.review_delivery,
     )
     print(render_receipt(receipt), end="")
+    # TUR-447 cycle1 pass2 P0 (role-runtime role-openai-relay, role-no-prompt-copy): with
+    # --emit-contract, print the canonical role contract text VERBATIM after the receipt as a
+    # VALID TOML [contract] table so a relay subagent carries the exact contract as the codex
+    # exec prompt without a copied workflow literal, and the whole stdout stays parseable TOML.
+    # The blob field binds the printed text's identity. Omitted by default so the durable launch
+    # receipt written by the persistent launch path stays fingerprint-stable.
+    if args.emit_contract:
+        print(render_contract_section(resolved), end="")
     return 0
 
 

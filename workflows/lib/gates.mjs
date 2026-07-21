@@ -701,11 +701,28 @@ export function assertReviewWorktreeImmutable(before, after) {
 // structurally required, not merely conventional.
 const INDEPENDENT_ROLLOUT_SOURCE = 'independent-rollout-subagent'
 const OPENAI_REVIEWER_ROLES = new Set(['code-reviewer', 'qa-reviewer'])
+// TUR-447 cycle1 pass2 P0 (role-runtime launch-purpose-shaping-roles, role-openai-relay,
+// role-openai-fail-closed, role-machine-map, role-worker-migration): roles.toml declares
+// shaping-reviewer as an OpenAI Workflow relay (provider=openai, gpt-5.6-sol, provenance
+// relay-verbatim-rollout), so the shaping flow needs a cutover relay path that spawns it
+// with the SAME rollout-record provenance and sandbox law as the code/qa reviewers. The
+// sole OpenAI-reviewer relay set admitted only code-reviewer and qa-reviewer, so
+// shaping-reviewer had no execution path at all. This admits it through an identical
+// fail-closed relay acceptance keyed on its own admitted-role set.
+const SHAPING_REVIEWER_ROLES = new Set(['shaping-reviewer'])
 
-export function acceptOpenaiReviewRelay(role, resolvedRuntime, relay, rollout) {
-  required(role, 'reviewer role')
-  if (!OPENAI_REVIEWER_ROLES.has(role)) {
-    throw new Error(`relay verbatim rejected: ${role} is not an OpenAI reviewer role`)
+// Shared fail-closed relay verdict acceptance for every OpenAI relay role
+// (role-runtime role-openai-relay, role-openai-fail-closed, launch-correctness-path,
+// launch-review-sandbox-integrity, launch-resume-sandbox-config). admittedRoles is the
+// exact role set the calling purpose admits; roleError names the purpose in the rejection.
+// The body is the single deterministic gate: role admission, resolved-OpenAI-runtime shape,
+// relay/rollout provenance (rollout MUST come from the independent read-only reader, never
+// the relay), sandbox law over the exact argv, worktree immutability, and relay-verbatim
+// effective identity proven FROM the independently fetched rollout record.
+function acceptRelayVerdict(admittedRoles, roleError, role, resolvedRuntime, relay, rollout) {
+  required(role, 'relay role')
+  if (!admittedRoles.has(role)) {
+    throw new Error(`relay verbatim rejected: ${role} is not ${roleError}`)
   }
   required(resolvedRuntime, 'resolved reviewer runtime')
   if (resolvedRuntime.provider !== 'openai') {
@@ -737,4 +754,24 @@ export function acceptOpenaiReviewRelay(role, resolvedRuntime, relay, rollout) {
   // payload must equal that record's final assistant message verbatim.
   const verified = verifyRelayVerbatim(resolvedRuntime, claimedSessionId, relay.payload, rollout.data)
   return { verdict_payload: verified.final_message, session_id: claimedSessionId, runtime: verified }
+}
+
+export function acceptOpenaiReviewRelay(role, resolvedRuntime, relay, rollout) {
+  return acceptRelayVerdict(
+    OPENAI_REVIEWER_ROLES, 'an OpenAI reviewer role', role, resolvedRuntime, relay, rollout,
+  )
+}
+
+// TUR-447 cycle1 pass2 P0 shaping-reviewer cutover (role-runtime launch-purpose-shaping-roles,
+// role-openai-relay, role-openai-fail-closed, launch-correctness-path). The shaping-review
+// purpose admits role shaping-reviewer through the identical fail-closed relay acceptance the
+// code/qa reviewers use: same independent rollout-record provenance, same sandbox law, same
+// relay-verbatim effective-identity read-back. This is the workflow-layer acceptance the
+// shaping relay spawn path calls so shaping-reviewer has a real cutover execution path rather
+// than none. A non-shaping-review role rejects here exactly as a non-reviewer role does at the
+// OpenAI-reviewer gate.
+export function acceptShapingReviewRelay(role, resolvedRuntime, relay, rollout) {
+  return acceptRelayVerdict(
+    SHAPING_REVIEWER_ROLES, 'a shaping-review relay role', role, resolvedRuntime, relay, rollout,
+  )
 }
