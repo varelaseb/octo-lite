@@ -65,4 +65,20 @@ temporary="$state.$$.tmp"
   echo "acknowledged_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
 } >"$temporary"
 mv "$temporary" "$state"
+
+# Operator answer relay clears the Source B operator-wait stamp (sweep-operator-ask):
+# any per-stream stamp whose message_id is this acked message is removed, so the
+# sweep stops surfacing the ask on the next run.
+waits="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/operator-waits"
+if [[ -d "$waits" ]]; then
+  for stamp in "$waits"/*.toml; do
+    [[ -f "$stamp" ]] || continue
+    stamp_id="$(python3 -c 'import sys,tomllib;
+try:
+    print(tomllib.load(open(sys.argv[1],"rb")).get("message_id",""))
+except Exception:
+    print("")' "$stamp")"
+    [[ "$stamp_id" == "$id" ]] && rm -f "$stamp"
+  done
+fi
 echo "message_id=$id status=$status"

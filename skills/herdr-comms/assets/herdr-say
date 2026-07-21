@@ -22,12 +22,6 @@ case "$kind" in info|command|ruling|ownership|question) ;; *) exit 64 ;; esac
   exit 64
 }
 
-case "$target" in
-  *:p*) pane="$target" ;;
-  *) pane="$(herdr agent get "$target" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" ;;
-esac
-[[ -n "$pane" ]] || { echo "herdr-say: unresolved target $target" >&2; exit 66; }
-
 root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/messages"
 inbox="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/inbox/$target"
 mkdir -p "$root" "$inbox"
@@ -35,6 +29,36 @@ id="$(date -u +%Y%m%dT%H%M%S)-$$-$RANDOM"
 state="$root/$id.toml"
 
 quote() { jq -Rn --arg value "$1" '$value'; }
+
+# Source B operator-gate stamp (sweep-operator-ask): when the lane operator-ask
+# path sends a --kind question and OCTO_STREAM names the sending stream, stamp a
+# mechanical per-stream operator-wait the sweep reads. This is written before any
+# transport so it holds even when the pane is unresolved, and is modal-safe (no
+# pane transcript scrape). The operator answer relay (herdr-ack of this exact
+# message) clears it.
+if [[ "$kind" == "question" && -n "${OCTO_STREAM:-}" ]]; then
+  waits="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/operator-waits"
+  mkdir -p "$waits"
+  wait_stamp="$waits/$OCTO_STREAM.toml"
+  wait_tmp="$wait_stamp.$$.tmp"
+  {
+    echo 'schema_version = 1'
+    echo "owner = $(quote "operator")"
+    echo "stream = $(quote "$OCTO_STREAM")"
+    echo "message_id = $(quote "$id")"
+    echo "target = $(quote "$target")"
+    echo "ask = $(quote "$message")"
+    echo "created_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  } >"$wait_tmp"
+  mv "$wait_tmp" "$wait_stamp"
+fi
+
+case "$target" in
+  *:p*) pane="$target" ;;
+  *) pane="$(herdr agent get "$target" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" ;;
+esac
+[[ -n "$pane" ]] || { echo "herdr-say: unresolved target $target" >&2; exit 66; }
+
 write_state() {
   local status="$1" temporary="$state.$$.tmp"
   {
