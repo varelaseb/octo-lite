@@ -1391,6 +1391,15 @@ function acceptShapingReviewRelay(role, resolvedRuntime, relay, rollout) {
 }
 // GATES-EMBED-END
 
+// TUR-447 D2 F2 residual 1 (ARGS QUOTED; role-machine-map, role-resolver, role-openai-relay). POSIX
+// single-quote one shell argument so a value carrying a space or a shell metacharacter (; | $ ` etc.)
+// cannot break the command or inject: wrap in single quotes and escape an embedded single quote as
+// the standard '\'' sequence (close-quote, escaped-quote, reopen-quote). Every interpolated value in
+// a resolver command or a codex exec command a subagent runs is passed through this.
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`
+}
+
 // Decision 109 (operating-model decision-109-workflow-native and decision-109-binding;
 // role-runtime launch-correctness-path and role-worker-migration): this Workflow spawns
 // every worker role pass natively as a fresh subagent. The retired CLI pass launcher
@@ -1790,24 +1799,37 @@ function resolverCommand(role, worktreeAbs) {
   const replyRoute = A.reply_route ?? A.pr_url ?? required(A.pr, 'pr')
   const executionLocation = A.execution_location ?? 'local'
   const reviewDelivery = A.review_delivery ?? A.pr_url ?? required(A.pr, 'pr')
+  // TUR-447 D2 F2 residual 4 (RESOLVER FROM CONTROL REPO; role-machine-map, role-resolver): resolve
+  // role_resolver.py from the CONTROL REPO when the frozen-contract env OCTO_CONTROL_REPO names one
+  // (an absolute control-repo path), falling back to the current worktree-relative path when unset.
+  // The loop cannot read env, so it emits a command whose SHELL performs the ${OCTO_CONTROL_REPO:-.}
+  // expansion at run time. #8 provisioning guarantees INV5 (the resolver root is the provisioned
+  // worktree with the canonical roles.toml + roles/*.md), so this only CONSUMES the env, it does not
+  // reinvent resolver-path correctness. The '.' fallback and the resolver-root arg are not quoted so
+  // the shell expands them; every INTERPOLATED value below is single-quoted (residual 1).
+  const resolverPath = '"${OCTO_CONTROL_REPO:-.}/workflows/lib/role_resolver.py"'
+  // TUR-447 D2 F2 residual 1 (ARGS QUOTED; role-openai-relay, loop-correctness single-writer): a value
+  // carrying a space or a shell metacharacter must NOT break or inject the resolver command, so every
+  // interpolated argument is POSIX single-quoted (wrap in single quotes, escape an embedded single
+  // quote as '\''). role and the flag names are loop-controlled literals and stay bare.
   const parts = [
-    'python3', 'workflows/lib/role_resolver.py', 'resolve', role,
-    '--spawn-id', spawnId,
-    '--parent', parent,
-    '--reply-route', replyRoute,
-    '--repo', repo,
-    '--worktree', worktreeAbs,
-    '--execution-location', executionLocation,
-    '--review-delivery', reviewDelivery,
+    'python3', resolverPath, 'resolve', role,
+    '--spawn-id', shellQuote(spawnId),
+    '--parent', shellQuote(parent),
+    '--reply-route', shellQuote(replyRoute),
+    '--repo', shellQuote(repo),
+    '--worktree', shellQuote(worktreeAbs),
+    '--execution-location', shellQuote(executionLocation),
+    '--review-delivery', shellQuote(reviewDelivery),
     // Emit the canonical contract text (as a valid TOML [contract] table) so the relay and the
     // native worker carry the exact contract prose; the durable persistent-launch path omits it.
     '--emit-contract',
   ]
   if (A.operator_loopback === true || A.operator_loopback === false) {
-    parts.push('--operator-loopback', String(A.operator_loopback))
+    parts.push('--operator-loopback', shellQuote(String(A.operator_loopback)))
   }
   const capabilities = Array.isArray(A.capabilities) ? A.capabilities : []
-  for (const capability of capabilities) parts.push('--capability', capability)
+  for (const capability of capabilities) parts.push('--capability', shellQuote(capability))
   return parts.join(' ')
 }
 
@@ -2096,6 +2118,12 @@ async function spawnReconciler(phaseTitle) {
   // it (never blind), and re-echoes the verified ack.
   assertContainment(worktreeRoot, worktree)
   const brief = required(A.brief, 'reconcile brief')
+  // TUR-447 D2 F2 residual 3 (RECONCILE CLASSIFIER UNDER RESOLVED MODEL/EFFORT; role-runtime
+  // role-machine-map, role-reconciler-input, role-reconciler-authority): the reconcile classifier must
+  // run under the reconciler runtime resolved FROM roles.toml through the role resolver, not an
+  // unconfigured/default agent. Resolve it through the COMPLETE resolver command exactly as a native
+  // worker does, then spawn the classifier under the resolved model and effort.
+  const runtime = await resolveRuntime('reconciler', phaseTitle, worktree, WORKER_RUNTIME_SCHEMA, issue)
   const classified = await agent([
     'You are a fresh READ-ONLY octo-lite reconciler in the classification phase. Never mutate a source,',
     'never override a deterministic mismatch, never investigate open-endedly, never silently resolve',
@@ -2105,12 +2133,15 @@ async function spawnReconciler(phaseTitle) {
     'needs_fable. Missing or unparseable input and semantic ambiguity return needs_fable so Fable judges',
     'the case. Re-echo the verified ack object (its snapshot_path and snapshot_digest included) and return',
     'the classification, needs_fable, and the concrete deltas.',
+    'CANONICAL ROLE CONTRACT (resolved from roles.toml; follow it exactly):',
+    runtime.contract_text,
     `journal path: ${journalPath}`,
     `verified snapshot_path: ${verifiedPath}`,
     `verified snapshot_digest: ${verifiedDigest}`,
     `\n${brief}`,
   ].join('\n'), {
     label: `reconciler:${issue}`, phase: phaseTitle, schema: RECONCILE_RESULT_SCHEMA, agentType: 'Explore',
+    model: runtime.model, effort: runtime.effort,
   })
   if (classified === null) throw new Error('reconciler classification phase returned no result')
   // The classification is BOUND to the verified snapshot: the classifier's re-echoed ack must carry the

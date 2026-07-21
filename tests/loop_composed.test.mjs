@@ -190,6 +190,13 @@ const RESOLVED_REVIEWER_RUNTIME = {
   provider: 'openai', model: 'gpt-5.6-sol', effort: 'high', service_tier: 'default',
   contract_blob: 'rv-contract-blob', contract_text: '# Code reviewer\ncanonical contract text',
 }
+// The resolved reconciler runtime a genuine role-resolver subagent returns for the reconcile
+// classifier: reconciler is anthropic/claude-sonnet-5/high in roles.toml; the loop never hardcodes it.
+const RESOLVED_RECONCILER_RUNTIME = {
+  provider: 'anthropic', model: 'claude-sonnet-5', effort: 'high', service_tier: 'default',
+  contract_blob: 'rc-contract-blob', contract_text: '# Reconciler\ncanonical contract text',
+  skills: [],
+}
 
 // TUR-447 D1 reshaped delivery loop: a full healthy implement script under the COMMITTED model. fire
 // (post-fire Todo state AND fingerprint) -> readback -> runtime -> ack (Explore) -> mutation (write,
@@ -963,9 +970,10 @@ test('F2: the implementer pass resolves runtime from roles.toml via a COMPLETE r
     '--execution-location', '--review-delivery']) {
     assert.ok(brief.includes(arg), `resolver command passes ${arg}`)
   }
-  assert.ok(brief.includes(`--repo ${REPO}`), 'repo threaded into the command')
-  assert.ok(brief.includes('--worktree /root/octo-lite'), 'absolute contained worktree threaded')
-  assert.ok(brief.includes('--execution-location local'), 'execution-location threaded')
+  // TUR-447 D2 F2: interpolated args are SHELL-QUOTED (single-quoted), never bare.
+  assert.ok(brief.includes(`--repo '${REPO}'`), 'repo threaded into the command, single-quoted')
+  assert.ok(brief.includes(`--worktree '/root/octo-lite'`), 'absolute contained worktree threaded, single-quoted')
+  assert.ok(brief.includes(`--execution-location 'local'`), 'execution-location threaded, single-quoted')
   const mut = agent.calls.find((c) => c.label === `implementer:${ISSUE}` && c.agentType === null)
   assert.ok(mut, 'write-capable mutation spawn ran')
   assert.equal(mut.opts.model, RESOLVED_WORKER_RUNTIME.model, 'mutation uses resolved model')
@@ -1135,6 +1143,10 @@ function reconcileEnvelope(overrides = {}) {
     worktree_root: '/root/worktrees', worktree: 'sweep-1',
     journal_path: JOURNAL_PATH,
     brief: 'Classify the reconcile deltas against the journal-bound snapshot.',
+    // D2 F2: resolver-required bound inputs the loop threads into the COMPLETE role_resolver.py
+    // resolve command so the reconcile classifier runs under the resolved reconciler runtime.
+    spawn_id: 'spawn-recon-1', parent: 'orchestrator', reply_route: PR_URL,
+    review_delivery: 'pr-comment', execution_location: 'local', starting_head: HEAD,
     ...overrides,
   }
 }
@@ -1154,6 +1166,8 @@ function reconcileScript({
   }
   const echoedAck = classifierAck ?? ack
   return [
+    // D2 F2: the reconcile classifier resolves the reconciler runtime from roles.toml first.
+    ['reconciler-runtime:', RESOLVED_RECONCILER_RUNTIME],
     ['reconciler-ack:', { ack }],
     ['reconciler-ack-verify:', {
       verified: true, snapshot_path: ack.snapshot_path, snapshot_digest: verifiedDigest,
@@ -1222,4 +1236,100 @@ test('reconcile: a classifier whose re-echoed ack digest MISMATCHES the verified
   )
   // The binder was never reached: a mismatch fails closed in the loop before binding.
   assert.ok(!agent.calls.some((c) => c.label === `reconciler-bind:${ISSUE}`), 'binder not reached on ack mismatch')
+})
+
+// ===================================================================================================
+// TUR-447 D2 F2 residual fixes (role-runtime role-machine-map, role-resolver, role-openai-relay,
+// role-reconciler-input, role-reconciler-authority; loop-correctness single-writer). The D1 reshape
+// left four F2 residuals the cycle-1 re-review raised. These composed tests drive the REAL path and
+// fail closed before the fix lands.
+// ===================================================================================================
+
+// D2 F2 residual 1 (ARGS QUOTED): resolverCommand must SHELL-QUOTE every interpolated argument so a
+// value carrying a space or a shell metacharacter cannot break or inject the command. The prior
+// parts.join(' ') left every arg bare.
+test('D2 F2 args-quoted: the resolver command shell-quotes interpolated args (a worktree with a space stays one argument)', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  // A worktree path with a space: contained under a worktree_root that also has a space.
+  const A = committedEnvelope({
+    worktree_root: '/root/my worktrees', worktree: 'octo lite wt',
+    reply_route: 'route with space', review_delivery: 'pr comment; rm -rf /',
+  })
+  // Re-anchor the identity anchors + reads to the space-containing worktree so identity passes and the
+  // pass reaches the resolver spawn (we only assert the resolver command shape here).
+  const SPACE_WT = '/root/my worktrees/octo lite wt'
+  const spaceScript = implementScript({
+    receipt: receiptFor({ worktree: SPACE_WT }),
+    reality: worktreeRealityFor({ read_worktree: SPACE_WT }),
+    prePushReAnchor: worktreeRealityFor({ read_worktree: SPACE_WT, head: FINAL_COMMIT }),
+  })
+  A.launch_revision = launchRevision({
+    role: 'implementer', repo: REPO, repo_slug: REPO_SLUG, worktree: SPACE_WT,
+    issue: ISSUE, pr: PR, starting_head: HEAD, spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
+  })
+  const agent2 = makeAgent(spaceScript)
+  await factory(agent2, JSON.stringify(A), noop).catch(() => {})
+  const runtimeCall = agent2.calls.find((c) => c.label === `implementer-runtime:${ISSUE}`)
+  assert.ok(runtimeCall, 'runtime-resolution spawn ran for the space worktree')
+  const cmd = runtimeCall.prompt
+  // The space-containing worktree must appear as a single SINGLE-QUOTED argument, never bare.
+  assert.ok(cmd.includes(`'${SPACE_WT}'`), 'worktree with a space is single-quoted as one argument')
+  assert.ok(!/--worktree \/root\/my worktrees\/octo lite wt(\s|$)/.test(cmd), 'worktree not left bare (would split)')
+  // A shell metacharacter in a review-delivery value must be quoted, not left to the shell.
+  assert.ok(cmd.includes(`'pr comment; rm -rf /'`), 'a shell-metacharacter arg is single-quoted')
+})
+
+// D2 F2 residual 4 (RESOLVER FROM CONTROL REPO): the resolver command must invoke role_resolver.py
+// from OCTO_CONTROL_REPO when the env is set, falling back to the worktree-relative path when unset.
+// The loop cannot read env, so it emits a command whose shell picks the control repo (${OCTO_CONTROL_REPO:-...}).
+test('D2 F2 resolver-from-control-repo: the resolver command consumes OCTO_CONTROL_REPO with a worktree-relative fallback', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  const A = committedEnvelope()
+  await factory(agent, JSON.stringify(A), noop)
+  const runtimeCall = agent.calls.find((c) => c.label === `implementer-runtime:${ISSUE}`)
+  const cmd = runtimeCall.prompt
+  assert.ok(cmd.includes('OCTO_CONTROL_REPO'), 'resolver command references the OCTO_CONTROL_REPO env')
+  // Shell parameter expansion with a fallback: ${OCTO_CONTROL_REPO:-...}/workflows/lib/role_resolver.py
+  assert.ok(/\$\{OCTO_CONTROL_REPO:-[^}]+\}\/workflows\/lib\/role_resolver\.py/.test(cmd),
+    'control-repo env with a worktree-relative fallback prefixes role_resolver.py')
+})
+
+// D2 F2 residual 4 real-run: role_resolver.py resolves from OCTO_CONTROL_REPO when the env is set,
+// using the exact shell expansion the loop emits. Proves the control-repo path is genuinely runnable.
+test('D2 F2 resolver-from-control-repo real-run: the resolver runs from OCTO_CONTROL_REPO and resolves the reconciler runtime', () => {
+  const out = execFileSync('bash', ['-c',
+    'python3 "${OCTO_CONTROL_REPO:-.}/workflows/lib/role_resolver.py" resolve reconciler '
+    + "--spawn-id 's 1' --parent orchestrator --reply-route route --repo '" + ROOT + "' "
+    + "--worktree '" + ROOT + "' --execution-location local --review-delivery pr-comment --emit-contract",
+  ], { cwd: '/tmp', env: { ...process.env, OCTO_CONTROL_REPO: ROOT }, encoding: 'utf8' })
+  assert.ok(out.includes('[runtime]'), 'resolve prints a runtime section from the control repo')
+  assert.ok(out.includes('provider = "anthropic"'), 'reconciler provider resolved')
+  assert.ok(out.includes('model = "claude-sonnet-5"'), 'reconciler model resolved')
+  assert.ok(/effort = "high"/.test(out), 'reconciler effort resolved')
+  // The quoted spawn-id carrying a space survived as one argument.
+  assert.ok(out.includes('spawn_id = "s 1"'), 'a spawn-id with a space survived shell quoting as one arg')
+})
+
+// D2 F2 residual 3 (RECONCILE CLASSIFIER UNDER RESOLVED MODEL/EFFORT): the reconcile classifier must
+// run under the reconciler runtime resolved from roles.toml, not an unconfigured/default agent.
+test('D2 F2 reconcile-classifier-resolved: the classifier resolves the reconciler runtime and runs under the resolved model/effort', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(reconcileScript())
+  const A = reconcileEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'reconcile-classified')
+  // The reconciler runtime is resolved from roles.toml through the COMPLETE resolver command.
+  const runtimeCall = agent.calls.find((c) => c.label === `reconciler-runtime:${ISSUE}`)
+  assert.ok(runtimeCall, 'reconciler runtime-resolution spawn ran')
+  assert.equal(runtimeCall.agentType, 'Explore', 'runtime resolution is read-only')
+  assert.ok(runtimeCall.prompt.includes('role_resolver.py'), 'resolver script named')
+  assert.ok(runtimeCall.prompt.includes('resolve reconciler'), 'resolve reconciler role')
+  assert.ok(!runtimeCall.prompt.includes('...'), 'no literal ... placeholder')
+  // The classifier spawn carries the resolved model + effort (not an unconfigured default).
+  const classifierCall = agent.calls.find((c) => c.label === `reconciler:${ISSUE}`)
+  assert.ok(classifierCall, 'classifier spawn ran')
+  assert.equal(classifierCall.opts.model, RESOLVED_RECONCILER_RUNTIME.model, 'classifier uses resolved model')
+  assert.equal(classifierCall.opts.effort, RESOLVED_RECONCILER_RUNTIME.effort, 'classifier uses resolved effort')
 })
