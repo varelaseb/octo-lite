@@ -357,13 +357,12 @@ def main() -> int:
     # verified bytes to snapshot_path and binds the receipt to that exact final
     # location, so bootstrap always reads an existing, matching source.
     pending_snapshot_path = control / f".sweep-pending-{fingerprint}.md"
+    # liveness.json is a plain operator report, current when the reconciler
+    # reads it; the launch failure handler removes it with the pending snapshot.
     liveness_path = control / "liveness.json"
+    atomic_write(liveness_path, json.dumps(liveness, sort_keys=True, indent=1) + "\n")
+    atomic_write(pending_snapshot_path, snapshot)
     try:
-        # liveness.json must be current when the reconciler reads it: written
-        # inside the guarded region so ANY failure from here on removes it and
-        # the pending snapshot, leaving nothing behind.
-        atomic_write(liveness_path, json.dumps(liveness, sort_keys=True, indent=1) + "\n")
-        atomic_write(pending_snapshot_path, snapshot)
         # Sole reconciler launch gateway: same worktree provisioning, containment,
         # and receipt binding as scripts/octo-launch, narrowed to the reconciler's
         # aggregate read-only shape. Fails closed before any provider call on
