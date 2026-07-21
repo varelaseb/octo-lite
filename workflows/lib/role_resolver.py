@@ -25,11 +25,16 @@ ROLE_FIELDS = {
     "effort",
     "mode",
     "session",
+    "execution",
     "service_tier",
     "tools",
     "required_skills",
     "conditional_skills",
 }
+OPTIONAL_ROLE_FIELDS = {"subagent_access", "provenance"}
+PERSISTENT_EXECUTION_ROLES = {"meta-operator", "orchestrator"}
+SUBAGENT_ACCESS_VALUES = {"standard", "read-restricted"}
+PROVENANCE_VALUES = {"relay-verbatim-rollout"}
 
 
 class ConditionalSkill(NamedTuple):
@@ -45,6 +50,9 @@ class Role(NamedTuple):
     effort: str
     mode: str
     session: str
+    execution: str
+    subagent_access: str | None
+    provenance: str | None
     service_tier: str
     tools: tuple[str, ...]
     required_skills: tuple[str, ...]
@@ -138,7 +146,7 @@ def load_registry(root: Path | str) -> Registry:
     for name, raw in raw_roles.items():
         if not isinstance(raw, dict):
             raise ValueError(f"role {name} must be a table")
-        unknown = set(raw) - ROLE_FIELDS
+        unknown = set(raw) - ROLE_FIELDS - OPTIONAL_ROLE_FIELDS
         missing = ROLE_FIELDS - set(raw)
         if unknown or missing:
             raise ValueError(f"role {name} fields invalid: missing={sorted(missing)} unknown={sorted(unknown)}")
@@ -153,6 +161,24 @@ def load_registry(root: Path | str) -> Registry:
             raise ValueError(f"role {name} mode unsupported")
         if raw["session"] not in {"persistent", "fresh"}:
             raise ValueError(f"role {name} session unsupported")
+        if raw["execution"] not in {"workflow-subagent", "persistent"}:
+            raise ValueError(f"role {name} execution unsupported")
+        if raw["execution"] == "persistent" and name not in PERSISTENT_EXECUTION_ROLES:
+            raise ValueError(f"role {name} execution persistent restricted to meta-operator and orchestrator")
+        subagent_access = raw.get("subagent_access")
+        provenance = raw.get("provenance")
+        if raw["execution"] == "persistent":
+            if subagent_access is not None:
+                raise ValueError(f"role {name} subagent_access only on workflow-subagent roles")
+            if provenance is not None:
+                raise ValueError(f"role {name} provenance only on workflow-subagent roles")
+        else:
+            if subagent_access is None:
+                raise ValueError(f"role {name} subagent_access required for workflow-subagent roles")
+        if subagent_access is not None and subagent_access not in SUBAGENT_ACCESS_VALUES:
+            raise ValueError(f"role {name} subagent_access unsupported")
+        if provenance is not None and provenance not in PROVENANCE_VALUES:
+            raise ValueError(f"role {name} provenance unsupported")
         if raw["service_tier"] not in {"default", "fast"}:
             raise ValueError(f"role {name} service_tier unsupported")
 
@@ -187,6 +213,9 @@ def load_registry(root: Path | str) -> Registry:
             effort=raw["effort"],
             mode=raw["mode"],
             session=raw["session"],
+            execution=raw["execution"],
+            subagent_access=subagent_access,
+            provenance=provenance,
             service_tier=raw["service_tier"],
             tools=_strings(raw["tools"], "tools", name, allow_empty=False),
             required_skills=_strings(raw["required_skills"], "required_skills", name),
@@ -239,6 +268,11 @@ def _toml_array(values: tuple[str, ...] | list[str]) -> str:
 def render_claude_adapter(resolved: ResolvedRole) -> str:
     role = resolved.role
     conditional = [f"{item.skill}:{item.when}" for item in role.conditional_skills]
+    runtime_extra = [f"execution: {role.execution}"]
+    if role.subagent_access is not None:
+        runtime_extra.append(f"subagentAccess: {role.subagent_access}")
+    if role.provenance is not None:
+        runtime_extra.append(f"provenance: {role.provenance}")
     header = [
         "---",
         f"name: {role.name}",
@@ -250,6 +284,7 @@ def render_claude_adapter(resolved: ResolvedRole) -> str:
         f"effort: {role.effort}",
         f"permissionMode: {role.mode}",
         f"session: {role.session}",
+        *runtime_extra,
         f"serviceTier: {role.service_tier}",
         f"tools: {json.dumps(role.tools)}",
         f"requiredSkills: {json.dumps(role.required_skills)}",

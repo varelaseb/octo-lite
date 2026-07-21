@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -20,6 +21,40 @@ ROLES = {
     "qa-reviewer",
     "reconciler",
 }
+WORKER_ROLES = {
+    "shaping-reviewer",
+    "implementer",
+    "code-reviewer",
+    "qa-capture",
+    "qa-reviewer",
+    "reconciler",
+}
+READ_RESTRICTED_ROLES = {"shaping-reviewer", "code-reviewer", "qa-reviewer", "reconciler"}
+REVIEWER_ROLES = {"shaping-reviewer", "code-reviewer", "qa-reviewer"}
+
+
+def _mutate_role(text: str, role: str, field: str, value: str | None) -> str:
+    """Set or remove one scalar field inside one [roles.<role>] table."""
+    lines = text.splitlines()
+    out: list[str] = []
+    in_table = False
+    seen = False
+    for line in lines:
+        if line.strip() == f"[roles.{role}]":
+            in_table = True
+            seen = True
+            out.append(line)
+            if value is not None:
+                out.append(f'{field} = "{value}"')
+            continue
+        if in_table and line.startswith("["):
+            in_table = False
+        if in_table and line.startswith(f"{field} ="):
+            continue
+        out.append(line)
+    if not seen:
+        raise AssertionError(f"role table not found: {role}")
+    return "\n".join(out) + "\n"
 
 
 def load_module():
@@ -256,6 +291,75 @@ class RoleResolverTest(unittest.TestCase):
         bad_ack = dict(acknowledgment, model="rolling-alias")
         with self.assertRaisesRegex(ValueError, "bootstrap acknowledgment mismatch"):
             self.resolver.verify_bootstrap_ack(receipt, bad_ack)
+
+    def _load_mutated_registry(self, mutate):
+        text = mutate((ROOT / "roles.toml").read_text())
+        with tempfile.TemporaryDirectory(dir=ROOT) as tmp:
+            temp_root = Path(tmp)
+            shutil.copytree(ROOT / "roles", temp_root / "roles")
+            (temp_root / "roles.toml").write_text(text)
+            return self.resolver.load_registry(temp_root)
+
+    # spec: role-runtime role-worker-migration; operating-model decision-109-workflow-native
+    def test_worker_roles_declare_workflow_subagent_execution(self) -> None:
+        registry = self.resolver.load_registry(ROOT)
+        for name in WORKER_ROLES:
+            self.assertEqual(registry.roles[name].execution, "workflow-subagent", name)
+        for name in ROLES - WORKER_ROLES:
+            role = registry.roles[name]
+            self.assertEqual(role.execution, "persistent", name)
+            self.assertIsNone(role.subagent_access, name)
+            self.assertIsNone(role.provenance, name)
+
+    def test_reconciler_and_review_roles_declare_read_restricted_subagent_access(self) -> None:
+        registry = self.resolver.load_registry(ROOT)
+        for name in READ_RESTRICTED_ROLES:
+            self.assertEqual(registry.roles[name].subagent_access, "read-restricted", name)
+        for name in WORKER_ROLES - READ_RESTRICTED_ROLES:
+            self.assertEqual(registry.roles[name].subagent_access, "standard", name)
+
+    def test_reviewer_roles_declare_relay_verbatim_rollout_provenance(self) -> None:
+        registry = self.resolver.load_registry(ROOT)
+        for name in REVIEWER_ROLES:
+            self.assertEqual(registry.roles[name].provenance, "relay-verbatim-rollout", name)
+        for name in ROLES - REVIEWER_ROLES:
+            self.assertIsNone(registry.roles[name].provenance, name)
+
+    def test_registry_rejects_old_shape_missing_execution(self) -> None:
+        with self.assertRaisesRegex(ValueError, r"missing=\['execution'\]"):
+            self._load_mutated_registry(lambda text: _mutate_role(text, "implementer", "execution", None))
+
+    def test_registry_rejects_unsupported_execution_value(self) -> None:
+        with self.assertRaisesRegex(ValueError, "execution unsupported"):
+            self._load_mutated_registry(lambda text: _mutate_role(text, "implementer", "execution", "cli-pass"))
+
+    def test_registry_rejects_persistent_execution_for_worker_role(self) -> None:
+        with self.assertRaisesRegex(ValueError, "execution persistent restricted"):
+            self._load_mutated_registry(lambda text: _mutate_role(text, "implementer", "execution", "persistent"))
+
+    def test_registry_rejects_missing_subagent_access_on_worker_role(self) -> None:
+        with self.assertRaisesRegex(ValueError, "subagent_access required"):
+            self._load_mutated_registry(lambda text: _mutate_role(text, "qa-capture", "subagent_access", None))
+
+    def test_registry_rejects_unsupported_subagent_access_value(self) -> None:
+        with self.assertRaisesRegex(ValueError, "subagent_access unsupported"):
+            self._load_mutated_registry(lambda text: _mutate_role(text, "implementer", "subagent_access", "write"))
+
+    def test_registry_rejects_subagent_access_on_persistent_role(self) -> None:
+        with self.assertRaisesRegex(ValueError, "subagent_access only on workflow-subagent"):
+            self._load_mutated_registry(
+                lambda text: _mutate_role(text, "orchestrator", "subagent_access", "read-restricted")
+            )
+
+    def test_registry_rejects_unsupported_provenance_value(self) -> None:
+        with self.assertRaisesRegex(ValueError, "provenance unsupported"):
+            self._load_mutated_registry(lambda text: _mutate_role(text, "code-reviewer", "provenance", "summarized"))
+
+    def test_registry_rejects_provenance_on_persistent_role(self) -> None:
+        with self.assertRaisesRegex(ValueError, "provenance only on workflow-subagent"):
+            self._load_mutated_registry(
+                lambda text: _mutate_role(text, "meta-operator", "provenance", "relay-verbatim-rollout")
+            )
 
     def test_registry_rejects_dash_style_and_contract_path_escape(self) -> None:
         registry = self.resolver.load_registry(ROOT)
