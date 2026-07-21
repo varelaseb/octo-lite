@@ -2463,3 +2463,211 @@ class SweepStreamLivenessTests(unittest.TestCase):
         self.assertIn('control / "liveness.json"', source)
         for phantom in ("waiting.toml", "inflight.toml", "pane-activity.txt", "herdr-queue", "observations"):
             self.assertNotIn(phantom, source)
+
+
+def _load_octo_control_module():
+    loader = importlib.machinery.SourceFileLoader("octo_control", str(CONTROL))
+    spec = importlib.util.spec_from_file_location("octo_control", CONTROL, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+class IntentRecordTests(unittest.TestCase):
+    # Unit L operator-intent record producer (delivery-lifecycle
+    # shaping-operator-approval and shaping-operator-approval-binding,
+    # operator-control supervision-operator-gate-no-hashes and
+    # supervision-default-action, role-runtime launch-shaping-authority):
+    # tooling stamps the exact head automatically at action time under prior
+    # explicit operator intent and records the binding on machine surfaces,
+    # never inside an operator notification.
+
+    def _init_repo(self, repo: Path) -> str:
+        _init_target_repo(repo)
+        return subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def test_intent_record_stamps_the_current_exact_head_at_action_time(self) -> None:
+        # shaping-operator-approval-binding: tooling captures the head itself;
+        # the record binds intent reference, exact head, and a timestamp, and
+        # success reports the record path plus bound head machine-readably.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record",
+                    "--stream-dir", str(stream), "--intent-ref", "ruling-15",
+                    "--repo", str(repo),
+                ],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(result.stdout)
+            record_path = stream / "intent-record.toml"
+            self.assertEqual(str(record_path.resolve()), payload["record"])
+            self.assertEqual(head, payload["head"])
+            with record_path.open("rb") as handle:
+                record = tomllib.load(handle)
+            self.assertEqual(1, record["schema_version"])
+            self.assertEqual("ruling-15", record["intent_ref"])
+            self.assertEqual(head, record["head"])
+            from datetime import datetime
+            datetime.fromisoformat(record["recorded_at"])
+
+    def test_intent_record_rejects_missing_or_empty_intent_ref(self) -> None:
+        # shaping-operator-approval: the durable operator-intent decision is
+        # the authorization; a record without an intent reference records no
+        # prior explicit operator intent and must not exist.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            self._init_repo(repo)
+            stream = base / "stream"
+            missing = subprocess.run(
+                [str(CONTROL), "intent-record", "--stream-dir", str(stream), "--repo", str(repo)],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, missing.returncode)
+            self.assertFalse((stream / "intent-record.toml").exists())
+            for empty_ref in ("", "   "):
+                result = subprocess.run(
+                    [
+                        str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                        "--intent-ref", empty_ref, "--repo", str(repo),
+                    ],
+                    capture_output=True, text=True,
+                )
+                self.assertNotEqual(0, result.returncode, empty_ref)
+                self.assertFalse((stream / "intent-record.toml").exists())
+
+    def test_intent_record_has_no_head_flag_so_a_manual_head_is_never_accepted(self) -> None:
+        # supervision-operator-gate-no-hashes: no human or agent supplies the
+        # head; only the tool stamps it at action time, so --head cannot exist.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            self._init_repo(repo)
+            stream = base / "stream"
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                    "--head", "0" * 40,
+                ],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("--head", result.stderr)
+            self.assertFalse((stream / "intent-record.toml").exists())
+
+    def test_intent_record_replaces_a_partial_or_corrupt_record_atomically(self) -> None:
+        # A partial or corrupt existing record is replaced whole via the
+        # atomic-write pattern, never appended, and no temporary file remains.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            stream.mkdir()
+            (stream / "intent-record.toml").write_text('intent_ref = "trunc')
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                ],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            with (stream / "intent-record.toml").open("rb") as handle:
+                record = tomllib.load(handle)
+            self.assertEqual(head, record["head"])
+            self.assertNotIn("trunc", (stream / "intent-record.toml").read_text())
+            self.assertEqual(["intent-record.toml"], sorted(p.name for p in stream.iterdir()))
+
+    def test_intent_record_readback_mismatch_fails_nonzero(self) -> None:
+        # Compare, act, readback: success is reported only after the persisted
+        # bytes are read back and verified; a divergent persisted record fails.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            module = _load_octo_control_module()
+            original = module._atomic_write_text
+
+            def corrupting_write(path, text):
+                original(path, text.replace(head, "0" * 40))
+
+            module._atomic_write_text = corrupting_write
+            args = type("Args", (), {
+                "stream_dir": str(stream), "intent_ref": "ruling-15",
+                "repo": str(repo), "verify": False,
+            })()
+            with self.assertRaises(module.GateError):
+                module.command_intent_record(args)
+
+    def test_intent_record_verify_rejects_fabricated_records(self) -> None:
+        # Consumer red for Unit J (launch-shaping-authority): a missing,
+        # fabricated, or wrong-head operator-intent record carries no shaping
+        # authority; fabrication without the command fails the verify path.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            stream.mkdir()
+            record_path = stream / "intent-record.toml"
+            verify = [
+                str(CONTROL), "intent-record", "--verify",
+                "--stream-dir", str(stream), "--repo", str(repo),
+            ]
+
+            missing = subprocess.run(verify, capture_output=True, text=True)
+            self.assertNotEqual(0, missing.returncode)
+
+            record_path.write_text(
+                'schema_version = 1\nintent_ref = "ruling-15"\n'
+                f'head = "{head}"\n'
+            )
+            no_timestamp = subprocess.run(verify, capture_output=True, text=True)
+            self.assertNotEqual(0, no_timestamp.returncode)
+
+            record_path.write_text(
+                'schema_version = 1\nintent_ref = "ruling-15"\n'
+                f'head = "{"f" * 40}"\nrecorded_at = "2026-07-21T00:00:00+00:00"\n'
+            )
+            unknown_head = subprocess.run(verify, capture_output=True, text=True)
+            self.assertNotEqual(0, unknown_head.returncode)
+
+    def test_intent_record_verify_accepts_a_command_produced_record(self) -> None:
+        # The verify path Unit J calls accepts exactly the record the producer
+        # wrote, echoing the bound head machine-readably.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            head = self._init_repo(repo)
+            stream = base / "stream"
+            produced = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                ],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, produced.returncode, produced.stderr)
+            result = subprocess.run(
+                [
+                    str(CONTROL), "intent-record", "--verify",
+                    "--stream-dir", str(stream), "--repo", str(repo),
+                ],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(head, payload["head"])
+            self.assertEqual(str((stream / "intent-record.toml").resolve()), payload["record"])

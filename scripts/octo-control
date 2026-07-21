@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -55,6 +56,13 @@ def linear_read(issue: str) -> dict:
     return {"issue": normalized, "fingerprint": exact_fingerprint(normalized)}
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary.write_text(text)
+    os.replace(temporary, path)
+
+
 def write_status(path: Path, issue: dict, args) -> None:
     text = (
         f"Outcome: {args.outcome}\n"
@@ -65,10 +73,7 @@ def write_status(path: Path, issue: dict, args) -> None:
         f"Linear state: {issue['state']}\n"
         f"Linear fingerprint: {exact_fingerprint(issue)}\n"
     )
-    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary.write_text(text)
-    os.replace(temporary, path)
+    _atomic_write_text(path, text)
 
 
 def command_linear_read(args) -> dict:
@@ -399,6 +404,97 @@ def command_result_bind(args) -> dict:
     return {"binding": binding}
 
 
+# Unit L operator-intent record (delivery-lifecycle shaping-operator-approval
+# and shaping-operator-approval-binding, operator-control
+# supervision-operator-gate-no-hashes and supervision-default-action,
+# role-runtime launch-shaping-authority): prior explicit operator intent is
+# recorded machine-checkably, the tool itself stamps the current exact head at
+# action time, and Unit J consumes exactly this record.
+
+
+def _current_repo_head(repo: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", repo, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+    head = result.stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise GateError("repo head unreadable")
+    return head
+
+
+def _read_intent_record(path: Path) -> dict:
+    if not path.is_file():
+        raise GateError("intent record missing")
+    try:
+        record = load_toml(path)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise GateError("intent record unreadable") from error
+    if record.get("schema_version") != 1:
+        raise GateError("intent record schema mismatch")
+    for key in ("intent_ref", "head", "recorded_at"):
+        value = record.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise GateError(f"intent record {key} missing")
+    return record
+
+
+def _verify_intent_record(path: Path, repo: str) -> dict:
+    record = _read_intent_record(path)
+    head = record["head"]
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise GateError("intent record head malformed")
+    probe = subprocess.run(
+        ["git", "-C", repo, "cat-file", "-e", f"{head}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    if probe.returncode != 0:
+        raise GateError("intent record head unknown to repo")
+    return record
+
+
+def command_intent_record(args) -> dict:
+    path = Path(args.stream_dir) / "intent-record.toml"
+    if args.verify:
+        record = _verify_intent_record(path, args.repo)
+        return {
+            "record": str(path.resolve()),
+            "head": record["head"],
+            "intent_ref": record["intent_ref"],
+            "recorded_at": record["recorded_at"],
+            "verified": True,
+        }
+    if not isinstance(args.intent_ref, str) or not args.intent_ref.strip():
+        raise GateError("intent-ref required nonempty")
+    # Compare: the tool captures the current exact head itself at action time;
+    # no supplied head is ever accepted (no --head flag exists).
+    head = _current_repo_head(args.repo)
+    recorded_at = datetime.now(timezone.utc).isoformat()
+    text = (
+        "schema_version = 1\n"
+        f"intent_ref = {json.dumps(args.intent_ref)}\n"
+        f'head = "{head}"\n'
+        f'recorded_at = "{recorded_at}"\n'
+    )
+    # Act: whole-record atomic replace; a partial or corrupt existing record
+    # is overwritten, never appended.
+    _atomic_write_text(path, text)
+    # Readback: verify persisted content before reporting success.
+    record = _read_intent_record(path)
+    if (
+        record["intent_ref"] != args.intent_ref
+        or record["head"] != head
+        or record["recorded_at"] != recorded_at
+    ):
+        raise GateError("intent record readback mismatch")
+    return {
+        "record": str(path.resolve()),
+        "head": head,
+        "intent_ref": args.intent_ref,
+        "recorded_at": recorded_at,
+    }
+
+
 def command_workspace_admit(args) -> dict:
     root = Path(args.worktree_root)
     target = Path(args.worktree)
@@ -561,6 +657,13 @@ def parser() -> argparse.ArgumentParser:
     result_bind.add_argument("--role", required=True)
     result_bind.add_argument("--result", required=True)
     result_bind.set_defaults(run=command_result_bind)
+
+    intent = sub.add_parser("intent-record")
+    intent.add_argument("--stream-dir", required=True)
+    intent.add_argument("--intent-ref")
+    intent.add_argument("--repo", required=True)
+    intent.add_argument("--verify", action="store_true")
+    intent.set_defaults(run=command_intent_record)
 
     admission = sub.add_parser("workspace-admit")
     admission.add_argument("--worktree", required=True)
