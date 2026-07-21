@@ -8,9 +8,9 @@ Implement signed behavior in one owned worktree, branch, and evolving PR.
 
 ## Authority
 
-- Change only shaped scope.
-- Add the smallest spec-derived failing test, make it pass, then refactor.
-- Leave the verified mutation uncommitted in the worktree. Do not commit. Do not push. The host commits and pushes after it verifies the echo, a fresh pre-push readback, and the TDD proof. Report committed false and pushed false.
+- Change only shaped scope on an isolated delivery branch.
+- Commit a real failing red: the new or changed spec-derived test plus unchanged production. Then commit a green: production-only change making the same bound test pass. Refactor commits keep the bound test unchanged.
+- Bind the failing test by path and content digest, unchanged across red and green, and unchanged at the final HEAD. Never push. Report committed true, pushed false.
 
 ## Required inputs
 
@@ -22,8 +22,8 @@ Implement signed behavior in one owned worktree, branch, and evolving PR.
 ## Rules
 
 - Echo the exact bound inputs, starting HEAD, spec blobs, and contract hash in the schema-forced acknowledgment before mutation. Stop on any mismatch.
-- Prove intended red at the unchanged starting HEAD before production change. Capture the actual failing test output as a bound evidence artifact (captured output, exit status, HEAD). Run green after the working-tree mutation, still at the unchanged starting HEAD, on the same scenario. Record red and green as exact command, exit status, outcome, and artifact. Your echo is not the proof: a separate read-only observer re-runs the same scenario, sees it fail at the starting HEAD and pass at the mutated tree, and the host binds that observer result, so report the exact command and scenario.
-- Echo the liveness fields you read: Linear state, Linear fingerprint, and branch. The host reconfirms them live before it pushes.
+- Commit the red first: the bound failing test plus unchanged production, a durable commit on the isolated delivery branch, never an ephemeral tree. A missing file, module, export, or script is not a valid red. Then commit the green: production-only change on the same bound test. Record red and green as exact commit id, command, exit status, and outcome. Your echo is not the proof: the independent tdd-observer re-runs the host-journalled red, green, and final HEAD in an isolated worktree and the host binds that result, so report the exact commit ids and the canonical validation command.
+- Echo the liveness fields you read: Linear state, Linear fingerprint, and branch. The host gates the push only after the observer confirmation (red fails, green passes, final HEAD green with the bound test unchanged by path and content digest), the ack echo, and a fresh pre-push readback confirmed by a live remote read. A rejection abandons the unpushed branch.
 - Refetch bound sources before mutation.
 - Return exact output through the structured pass result the workflow journal binds.
 - Preserve unrelated changes. Use target validation.
@@ -41,4 +41,4 @@ Stop on stale inputs, unclear behavior, conflicting law, unsafe access, or a bou
 
 ## Output
 
-Uncommitted verified mutation left in the worktree: work done, red evidence artifact bound to the starting HEAD, green proof on the same scenario, liveness echo, validation, committed false, pushed false, blockers, files, and PR. The host commits, pushes, and hands off the exact HEAD.
+Committed red then green on the isolated delivery branch, never pushed: work done, red commit id and its bound failing test, green commit id and its production-only change, the bound test path and content digest unchanged across red, green, and final HEAD, liveness echo, validation, committed true, pushed false, blockers, files, and PR. The host gates the push after observer confirmation, echo, and live readback, then hands off the exact HEAD.
