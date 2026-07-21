@@ -2278,6 +2278,49 @@ class SweepStreamLivenessTests(unittest.TestCase):
             )
             self.assertEqual("suspected-stuck", live["classification"])
 
+    def test_reconciler_reads_current_liveness_at_launch_time(self) -> None:
+        # v15 finding red: on a changed sweep, liveness.json must exist with
+        # CURRENT bytes when the reconciler runs, and a failed run leaves no
+        # liveness artifact. The fake reconciler snapshots the file it can read.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/TUR-9"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("- waiting-on: operator: Approve please.\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "s"\nowner_route = "r"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            probe = FAKE_RECONCILER_CLAUDE.replace(
+                "prompt=\"$(cat)\"",
+                "cat \"$LIVENESS_PROBE\" >>\"$CALL_LOG\" 2>/dev/null || printf 'liveness-missing\\n' >>\"$CALL_LOG\"\nprompt=\"$(cat)\"",
+            )
+            (fake_bin / "claude").write_text(probe)
+            (fake_bin / "claude").chmod(0o755)
+            (fake_bin / "operator-say").write_text("#!/usr/bin/env bash\nexit 0\n")
+            (fake_bin / "operator-say").chmod(0o755)
+            env = dict(
+                os.environ,
+                PATH=f"{fake_bin}:{os.environ['PATH']}",
+                CALL_LOG=str(log),
+                LIVENESS_PROBE=str(control / "liveness.json"),
+            )
+            result = subprocess.run(
+                [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            calls = log.read_text()
+            self.assertNotIn("liveness-missing", calls)
+            self.assertIn('"wait_owner": "operator"', calls)
+            self.assertIn("Approve please.", calls)
+
     def test_liveness_never_enters_the_digested_snapshot(self) -> None:
         source = SWEEP.read_text()
         # the digested snapshot is parts + declared facts only; liveness goes to

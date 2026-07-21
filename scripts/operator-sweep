@@ -357,6 +357,10 @@ def main() -> int:
     # verified bytes to snapshot_path and binds the receipt to that exact final
     # location, so bootstrap always reads an existing, matching source.
     pending_snapshot_path = control / f".sweep-pending-{fingerprint}.md"
+    # liveness.json must be current when the reconciler reads it, so it is
+    # written before the launch and removed on failure (nothing left behind).
+    liveness_path = control / "liveness.json"
+    atomic_write(liveness_path, json.dumps(liveness, sort_keys=True, indent=1) + "\n")
     atomic_write(pending_snapshot_path, snapshot)
     try:
         # Sole reconciler launch gateway: same worktree provisioning, containment,
@@ -386,6 +390,7 @@ def main() -> int:
         )
     except BaseException:
         pending_snapshot_path.unlink(missing_ok=True)
+        liveness_path.unlink(missing_ok=True)
         raise
     pending_snapshot_path.unlink(missing_ok=True)
 
@@ -411,7 +416,6 @@ def main() -> int:
     if delivered.returncode not in {0, 75}:
         raise SystemExit(delivered.returncode)
 
-    atomic_write(control / "liveness.json", json.dumps(liveness, sort_keys=True, indent=1) + "\n")
     atomic_write(
         state_path,
         "schema_version = 1\n"
