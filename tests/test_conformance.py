@@ -947,6 +947,7 @@ class CutoverConformanceTests(unittest.TestCase):
             "test_observer_replays_committed_red_then_green",
             "test_observer_rejects_worker_supplied_observation",
             "test_observer_inputs_exclude_worker_strings",
+            "test_observer_commit_inputs_are_host_journalled",
             "test_invalid_red_missing_file_rejected",
             "test_invalid_red_that_does_not_fail_rejected",
             "test_test_identity_binding_green_may_not_weaken_red",
@@ -961,6 +962,55 @@ class CutoverConformanceTests(unittest.TestCase):
         # No Markdown counterpart is generated for either spec-chat canonical document.
         self.assertFalse((ROOT / "spec/domains/delivery-lifecycle.spec.md").exists())
         self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
+
+    def test_observer_execution_inputs_are_host_journalled_not_worker_authored(self) -> None:
+        # TUR-447 reshape observer-inputs host-sourced (ruling gap-1 sharpening):
+        # the trusted-command-source anchors cover the observer's test COMMAND source,
+        # but the operator ruling was explicit that BOTH halves of the observer's
+        # execution inputs, the commit selection (which red, green, and final-HEAD
+        # commit identifiers to check out) AND the test command, come from a trusted
+        # host/journal binding of the worker's committed delivery branch, never a
+        # worker-authored claim. This closes the commit-selection half.
+        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
+        role_runtime = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
+
+        # Delivery-lifecycle: a dedicated anchor states the commit identifiers and the
+        # command are host-supplied from the journal binding, never worker-authored.
+        self.assertIn('data-anchor="delivery-tdd-observer-inputs-host-sourced"', delivery)
+        self.assertIn('id="delivery-tdd-observer-inputs-host-sourced"', delivery)
+        self.assertIn("red, green, and final-HEAD commit identifiers", delivery)
+        self.assertIn("supplied by the host from the journal binding", delivery)
+        self.assertIn("never from any worker-authored claim", delivery)
+        self.assertIn(
+            "The host records the committed branch and its red, green, and final commit ids in the journal",
+            delivery,
+        )
+        self.assertIn(
+            "the observer checks out exactly those host-journalled commits",
+            delivery,
+        )
+
+        # Role-runtime: the tdd-observer mirror states its commit identifiers and command
+        # come from the host journal binding, never worker-authored.
+        self.assertIn('data-anchor="role-tdd-observer-host-sourced-inputs"', role_runtime)
+        self.assertIn('id="role-tdd-observer-host-sourced-inputs"', role_runtime)
+        self.assertIn("commit identifiers and command from the host journal binding", role_runtime)
+        self.assertIn("never worker-authored", role_runtime)
+
+        # Named smallest-failing delivery TDD covers rejecting a worker-claimed commit id
+        # that differs from the host-journalled committed branch commits.
+        self.assertIn(
+            "<code>test_observer_commit_inputs_are_host_journalled</code>",
+            delivery,
+        )
+        self.assertIn(
+            "a worker-claimed commit id that differs from the host-journalled committed branch commits is rejected",
+            delivery,
+        )
+        self.assertIn(
+            "the observer checks out only host-journalled commits",
+            delivery,
+        )
 
 
 if __name__ == "__main__":
