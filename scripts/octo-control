@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from octo_lite.launch import verify_relay_verbatim  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
     GateError,
     append_trace,
@@ -138,13 +139,33 @@ def _read_shaping_verdict_journal(path: Path, issue: str) -> dict:
     # Workflow-native reviewer provenance of rollout-record grade (Unit C):
     # an unqualified verdict, including the interim published-verdict
     # ack-echo binding without these fields, carries no shaping authority.
-    for key in ("codex_session_id", "verdict_sha256"):
+    for key in ("codex_session_id", "verdict_sha256", "codex_model", "codex_effort", "verdict_payload"):
         if not isinstance(entry.get(key), str) or not entry[key].strip():
             raise GateError(f"journalled shaping verdict lacks rollout-record provenance: {key} missing")
     if entry.get("provenance") != "relay-verbatim-rollout":
         raise GateError(
             "journalled shaping verdict lacks rollout-record provenance: interim ack-echo authority retired"
         )
+    # Rollout readback (role-runtime launch-shaping-authority, role-openai-fail-closed,
+    # decision-identity-source): the declared provenance session id must resolve to
+    # an ACTUAL codex rollout record under CODEX_HOME/sessions proving effective
+    # provider=openai and the declared model/effort, and the verdict payload +
+    # its sha256 must match that rollout's own final assistant message. An
+    # arbitrary session id or hash with no resolvable rollout record, or a
+    # non-OpenAI provider or wrong model/effort, is rejected fail-closed. The
+    # self-reported codex_session_id/verdict_sha256 alone never suffice.
+    try:
+        verify_relay_verbatim(
+            entry["codex_session_id"],
+            entry["verdict_payload"],
+            entry["verdict_sha256"],
+            entry["codex_model"],
+            entry["codex_effort"],
+        )
+    except GateError as error:
+        raise GateError(
+            f"journalled shaping verdict rollout readback failed: {error}"
+        ) from error
     return entry
 
 
@@ -198,24 +219,33 @@ def _verify_shaped_transition_authority(args) -> dict:
         other_identity = other_issue_table.get("identifier") if isinstance(other_issue_table, dict) else None
         if other_identity != args.issue:
             raise GateError("caller session is registered to another issue in the live stream registry")
-    if not args.verdict_journal or not args.repo:
-        raise GateError("Shaped transition requires --verdict-journal and --repo")
+    if not args.verdict_journal or not args.repo or not args.repo_slug:
+        raise GateError("Shaped transition requires --verdict-journal, --repo, and --repo-slug")
+    # Repo split: --repo is the LOCAL PATH used for git -C head checks; the
+    # canonical owner/repo slug used for gh api / gh pr view is --repo-slug.
+    # The single-value --repo dual-meaning is impossible (a filesystem path is
+    # never a valid gh slug and vice versa), so the two are separate arguments
+    # and the cross-surface binding compares one canonical slug identity.
+    cli_slug = _canonical_slug(args.repo_slug)
     verdict = _read_shaping_verdict_journal(Path(args.verdict_journal), args.issue)
-    # Repo-arg bind: the octo-control CLI repo argument is the repo the fresh
-    # PR head is verified against, so a verdict binding a different repo than
-    # the CLI repo argument carries no authority here.
-    if verdict["repo"] != args.repo:
-        raise GateError("journalled verdict repo does not match CLI repo argument")
+    # Repo-arg bind: a verdict binding a different canonical repo slug than the
+    # CLI repo slug carries no authority here.
+    if _canonical_slug(verdict["repo"]) != cli_slug:
+        raise GateError("journalled verdict repo does not match CLI repo slug")
     # The Unit L operator-intent record, validated via the intent-record
-    # --verify path (which re-reads the command-published PR/status surface so
-    # a forged valid-head local TOML is rejected), must stamp that same exact
-    # head and bind the same repo and PR the verdict does.
-    record = _verify_intent_record(stream_dir / "intent-record.toml", args.repo)
+    # --verify path (which re-reads the command-published PR/status surface and
+    # checks the trusted-publisher comment author so a forged valid-head local
+    # TOML is rejected), must stamp that same exact head and bind the same
+    # canonical repo slug and PR the verdict does. The local path proves the
+    # head commit exists; the slug is the surface identity.
+    record = _verify_intent_record(
+        stream_dir / "intent-record.toml", args.repo, cli_slug, args.trusted_publisher
+    )
     if record["head"] != verdict["head"]:
         raise GateError("operator-intent record head mismatch with journalled verdict")
     if record["pr"] != verdict["pr"]:
         raise GateError("operator-intent record pr mismatch with journalled verdict")
-    return {"repo": verdict["repo"], "pr": verdict["pr"], "head": verdict["head"]}
+    return {"repo_slug": cli_slug, "pr": verdict["pr"], "head": verdict["head"]}
 
 
 def _verify_fresh_shaping_head(repo: str, pr: object, expected_head: str) -> None:
@@ -249,7 +279,7 @@ def command_linear_transition(args) -> dict:
 
     def mutate(target):
         if shaping is not None:
-            _verify_fresh_shaping_head(shaping["repo"], shaping["pr"], shaping["head"])
+            _verify_fresh_shaping_head(shaping["repo_slug"], shaping["pr"], shaping["head"])
         subprocess.run(
             ["linear", "issue", "update", args.issue, "--state", target],
             check=True,
@@ -469,6 +499,27 @@ def command_result_bind(args) -> dict:
 # action time, and Unit J consumes exactly this record.
 
 
+def _canonical_slug(slug: str) -> str:
+    # Canonical owner/repo identity for cross-surface binding: strip a git host
+    # prefix, a trailing .git, and case, so the verdict repo, the intent record
+    # repo, and the CLI repo slug all normalize to one comparable identity even
+    # if a caller passes a full remote URL. It is deliberately NOT a filesystem
+    # path: git -C uses the separate --repo local path, gh uses this slug.
+    value = slug.strip()
+    if not value:
+        raise GateError("repo slug empty")
+    for prefix in ("git@github.com:", "https://github.com/", "http://github.com/", "ssh://git@github.com/"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+            break
+    if value.endswith(".git"):
+        value = value[: -len(".git")]
+    value = value.strip("/").lower()
+    if not re.fullmatch(r"[0-9a-z._-]+/[0-9a-z._-]+", value):
+        raise GateError(f"repo slug not a canonical owner/repo identity: {slug}")
+    return value
+
+
 def _current_repo_head(repo: str) -> str:
     result = subprocess.run(
         ["git", "-C", repo, "rev-parse", "HEAD"],
@@ -484,10 +535,13 @@ _INTENT_SURFACE_MARKER = "<!-- octo-lite-intent-record -->"
 
 
 def _intent_surface_body(*, repo: str, pr: object, head: str, intent_ref: str, recorded_at: str) -> str:
-    # The command-published PR/status surface body. It binds the exact repo,
-    # PR, head, intent reference, and stamp, so a hand-authored local TOML
-    # cannot forge the matching live publication: the record carries a digest
-    # of exactly this body and Unit J re-reads the live surface to match it.
+    # The command-published PR/status surface body. It binds the exact repo
+    # slug, PR, head, intent reference, and stamp, so a hand-authored local
+    # TOML cannot forge the matching live publication: the record carries a
+    # digest of exactly this body and Unit J re-reads the live surface to match
+    # it. Body equality is necessary but not sufficient: the record also binds
+    # the exact live comment id and the trusted publisher author identity, so a
+    # matching body posted by any other identity is rejected.
     payload = {
         "schema_version": 1,
         "repo": repo,
@@ -497,6 +551,15 @@ def _intent_surface_body(*, repo: str, pr: object, head: str, intent_ref: str, r
         "recorded_at": recorded_at,
     }
     return _INTENT_SURFACE_MARKER + "\n```json\n" + json.dumps(payload, sort_keys=True) + "\n```\n"
+
+
+def _comment_author_login(comment: dict) -> str | None:
+    user = comment.get("user")
+    if isinstance(user, dict):
+        login = user.get("login")
+        if isinstance(login, str) and login.strip():
+            return login
+    return None
 
 
 def _surface_digest(body: str) -> str:
@@ -512,64 +575,90 @@ def _read_intent_record(path: Path) -> dict:
         raise GateError("intent record unreadable") from error
     if record.get("schema_version") != 1:
         raise GateError("intent record schema mismatch")
-    for key in ("intent_ref", "head", "recorded_at", "repo", "surface_sha256"):
+    for key in ("intent_ref", "head", "recorded_at", "repo", "surface_sha256", "publisher"):
         value = record.get(key)
         if not isinstance(value, str) or not value.strip():
             raise GateError(f"intent record {key} missing")
     if not isinstance(record.get("pr"), int):
         raise GateError("intent record pr missing")
+    if not isinstance(record.get("comment_id"), int):
+        raise GateError("intent record comment_id missing")
     return record
 
 
-def _fetch_intent_surface(repo: str, pr: object) -> str | None:
-    comments = run_json(
-        ["gh", "api", f"repos/{repo}/issues/{pr}/comments", "--paginate"]
-    )
-    surface = next(
-        (item for item in comments if _INTENT_SURFACE_MARKER in item.get("body", "")),
-        None,
-    )
-    return surface.get("body") if surface else None
+def _fetch_intent_comment(repo_slug: str, comment_id: int) -> dict | None:
+    try:
+        comment = run_json(
+            ["gh", "api", f"repos/{repo_slug}/issues/comments/{comment_id}"]
+        )
+    except subprocess.CalledProcessError:
+        return None
+    if not isinstance(comment, dict):
+        return None
+    return comment
 
 
-def _verify_intent_record(path: Path, repo: str) -> dict:
+def _verify_intent_record(
+    path: Path, repo_local: str, repo_slug: str, trusted_publisher: str
+) -> dict:
+    if not isinstance(trusted_publisher, str) or not trusted_publisher.strip():
+        raise GateError("intent record verify requires a trusted publisher identity")
     record = _read_intent_record(path)
     head = record["head"]
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise GateError("intent record head malformed")
-    # Repo-arg bind: the record binds the exact CLI repo argument; a record
-    # produced against another repo is not this transition's authority.
-    if record["repo"] != repo:
-        raise GateError("intent record repo mismatch with CLI repo argument")
+    # Repo split + canonical bind: the record binds the exact canonical repo
+    # slug; --repo is the separate local path used only for the git head check.
+    if _canonical_slug(record["repo"]) != _canonical_slug(repo_slug):
+        raise GateError("intent record repo mismatch with CLI repo slug")
     probe = subprocess.run(
-        ["git", "-C", repo, "cat-file", "-e", f"{head}^{{commit}}"],
+        ["git", "-C", repo_local, "cat-file", "-e", f"{head}^{{commit}}"],
         capture_output=True, text=True,
     )
     if probe.returncode != 0:
         raise GateError("intent record head unknown to repo")
-    # Forgery distinction: a valid-head local TOML must FAIL unless the
-    # command actually published the matching PR/status surface. Re-read the
-    # live PR comment surface and require the record's digest to equal the
-    # digest of the command-published body; a hand-authored record without
-    # the matching command-published surface is rejected.
+    # Self-consistency: the surface digest must be the digest of exactly this
+    # record's own fields, so a digest borrowed from an unrelated surface fails
+    # before any live fetch.
     expected_body = _intent_surface_body(
-        repo=repo, pr=record["pr"], head=head,
+        repo=record["repo"], pr=record["pr"], head=head,
         intent_ref=record["intent_ref"], recorded_at=record["recorded_at"],
     )
     if record["surface_sha256"] != _surface_digest(expected_body):
         raise GateError("intent record surface digest does not bind its own fields")
-    live_body = _fetch_intent_surface(repo, record["pr"])
-    if live_body is None:
+    # Unforgeable publication identity: fetch the EXACT bound comment id off the
+    # live PR surface and require (a) it actually exists, (b) its body digest
+    # equals the record digest, and (c) its author login equals the trusted
+    # command-publisher identity. gh api returns each comment's author identity,
+    # so a fabricated TOML plus a self-posted comment under any other login is
+    # rejected: only a comment the trusted publisher actually posted, bound by
+    # exact id, carries authority. A local record with no such comment fails.
+    comment = _fetch_intent_comment(repo_slug, record["comment_id"])
+    if comment is None:
         raise GateError("intent record has no command-published surface: forged record rejected")
-    if _surface_digest(live_body) != record["surface_sha256"]:
+    if _INTENT_SURFACE_MARKER not in (comment.get("body") or ""):
+        raise GateError("intent record bound comment is not an operator-intent surface")
+    if _surface_digest(comment["body"]) != record["surface_sha256"]:
         raise GateError("intent record surface digest mismatch with live publication")
+    author = _comment_author_login(comment)
+    if author != trusted_publisher:
+        raise GateError(
+            "intent record surface not published by the trusted command identity: forged record rejected"
+        )
+    if record["publisher"] != trusted_publisher:
+        raise GateError("intent record publisher does not match the trusted command identity")
     return record
 
 
 def command_intent_record(args) -> dict:
     path = Path(args.stream_dir) / "intent-record.toml"
+    # Repo split: --repo is the LOCAL PATH for git -C, --repo-slug is the
+    # canonical owner/repo gh identity. A single value cannot serve both.
+    repo_slug = _canonical_slug(args.repo_slug)
     if args.verify:
-        record = _verify_intent_record(path, args.repo)
+        if not isinstance(args.trusted_publisher, str) or not args.trusted_publisher.strip():
+            raise GateError("intent record verify requires --trusted-publisher")
+        record = _verify_intent_record(path, args.repo, repo_slug, args.trusted_publisher)
         return {
             "record": str(path.resolve()),
             "head": record["head"],
@@ -577,6 +666,8 @@ def command_intent_record(args) -> dict:
             "recorded_at": record["recorded_at"],
             "repo": record["repo"],
             "pr": record["pr"],
+            "comment_id": record["comment_id"],
+            "publisher": record["publisher"],
             "verified": True,
         }
     if not isinstance(args.intent_ref, str) or not args.intent_ref.strip():
@@ -584,30 +675,41 @@ def command_intent_record(args) -> dict:
     if not isinstance(args.pr, int):
         raise GateError("intent record requires --pr for surface publication")
     # Compare: the tool captures the current exact head itself at action time;
-    # no supplied head is ever accepted (no --head flag exists).
+    # no supplied head is ever accepted (no --head flag exists). The head comes
+    # from the LOCAL repo path.
     head = _current_repo_head(args.repo)
     recorded_at = datetime.now(timezone.utc).isoformat()
     surface_body = _intent_surface_body(
-        repo=args.repo, pr=args.pr, head=head,
+        repo=repo_slug, pr=args.pr, head=head,
         intent_ref=args.intent_ref, recorded_at=recorded_at,
     )
     surface_sha256 = _surface_digest(surface_body)
     # Publish the binding to the PR/status surface, then read it back off the
-    # live surface before persisting the record: a failed readback aborts.
-    published = _publish_intent_surface(args.repo, args.pr, surface_body)
+    # live surface before persisting the record: a failed readback aborts. The
+    # readback captures the actual command-publisher author identity and the
+    # exact comment id, so the persisted record binds an unforgeable publication.
+    published = _publish_intent_surface(repo_slug, args.pr, surface_body)
     readback = run_json(
-        ["gh", "api", f"repos/{args.repo}/issues/comments/{published['id']}"]
+        ["gh", "api", f"repos/{repo_slug}/issues/comments/{published['id']}"]
     )
     if readback.get("body") != surface_body:
         raise GateError("intent record surface readback mismatch")
+    comment_id = readback.get("id")
+    if not isinstance(comment_id, int):
+        raise GateError("intent record surface readback missing comment id")
+    publisher = _comment_author_login(readback)
+    if publisher is None:
+        raise GateError("intent record surface readback missing publisher identity")
     text = (
         "schema_version = 1\n"
         f"intent_ref = {json.dumps(args.intent_ref)}\n"
         f'head = "{head}"\n'
         f'recorded_at = "{recorded_at}"\n'
-        f"repo = {json.dumps(args.repo)}\n"
+        f"repo = {json.dumps(repo_slug)}\n"
         f"pr = {args.pr}\n"
         f'surface_sha256 = "{surface_sha256}"\n'
+        f"comment_id = {comment_id}\n"
+        f"publisher = {json.dumps(publisher)}\n"
     )
     # Act: whole-record atomic replace; a partial or corrupt existing record
     # is overwritten, never appended.
@@ -618,9 +720,11 @@ def command_intent_record(args) -> dict:
         record["intent_ref"] != args.intent_ref
         or record["head"] != head
         or record["recorded_at"] != recorded_at
-        or record["repo"] != args.repo
+        or record["repo"] != repo_slug
         or record["pr"] != args.pr
         or record["surface_sha256"] != surface_sha256
+        or record["comment_id"] != comment_id
+        or record["publisher"] != publisher
     ):
         raise GateError("intent record readback mismatch")
     return {
@@ -628,8 +732,10 @@ def command_intent_record(args) -> dict:
         "head": head,
         "intent_ref": args.intent_ref,
         "recorded_at": recorded_at,
-        "repo": args.repo,
+        "repo": repo_slug,
         "pr": args.pr,
+        "comment_id": comment_id,
+        "publisher": publisher,
         "surface_url": readback.get("html_url"),
     }
 
@@ -714,7 +820,9 @@ def parser() -> argparse.ArgumentParser:
     transition.add_argument("--stream")
     transition.add_argument("--receipt")
     transition.add_argument("--verdict-journal")
-    transition.add_argument("--repo")
+    transition.add_argument("--repo", help="local repo path for git -C head checks")
+    transition.add_argument("--repo-slug", help="canonical owner/repo slug for gh api / gh pr view")
+    transition.add_argument("--trusted-publisher", help="trusted command-publisher comment author identity")
     transition.set_defaults(run=command_linear_transition)
 
     verdict = sub.add_parser("verdict-publish")
@@ -827,9 +935,11 @@ def parser() -> argparse.ArgumentParser:
     intent = sub.add_parser("intent-record")
     intent.add_argument("--stream-dir", required=True)
     intent.add_argument("--intent-ref")
-    intent.add_argument("--repo", required=True)
+    intent.add_argument("--repo", required=True, help="local repo path for git -C head checks")
+    intent.add_argument("--repo-slug", required=True, help="canonical owner/repo slug for gh api")
     intent.add_argument("--pr", type=int)
     intent.add_argument("--verify", action="store_true")
+    intent.add_argument("--trusted-publisher", help="trusted command-publisher comment author identity")
     intent.set_defaults(run=command_intent_record)
 
     admission = sub.add_parser("workspace-admit")

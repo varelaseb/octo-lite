@@ -163,6 +163,38 @@ fi
 """
 
 
+# TUR-447 F5: a canonical owner/repo slug (gh identity) distinct from the local
+# repo filesystem path (git -C identity), and the trusted command-publisher
+# comment author identity the intent surface is posted under.
+SLUG = "org/repo"
+PUBLISHER = "octo-lite-bot"
+
+
+def _write_codex_rollout(
+    codex_home: Path, session_id: str, *, model: str, effort: str,
+    final_message: str, provider: str = "openai",
+) -> None:
+    # Mirror the codex rollout record shape (octo_lite.launch._read_codex_rollout_record):
+    # a session_meta provider, a turn_context model/effort, and a final
+    # assistant message, so verify_relay_verbatim can prove the verdict came
+    # from an actual rollout under CODEX_HOME/sessions.
+    sessions_dir = codex_home / "sessions" / "2026" / "07" / "21"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    rollout = sessions_dir / f"rollout-2026-07-21T00-00-00-{session_id}.jsonl"
+    lines = [
+        json.dumps({"type": "session_meta", "payload": {"session_id": session_id, "model_provider": provider}}),
+        json.dumps({"type": "turn_context", "payload": {"model": model, "effort": effort}}),
+        json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": final_message}],
+            },
+        }),
+    ]
+    rollout.write_text("\n".join(lines) + "\n")
+
+
 def _init_target_repo(
     repo: Path,
     *,
@@ -2121,20 +2153,36 @@ class OperatorControlTests(unittest.TestCase):
         path.write_text("\n".join(lines) + "\n")
 
     def _write_verdict_journal(
-        self, path: Path, *, head: str, issue: str = "TUR-1", repo: str = "org/repo",
+        self, path: Path, *, head: str, issue: str = "TUR-1", repo: str = SLUG,
         pr: int = 7, verdict: str = "clear", provenance: bool = True,
-        ack_echo: bool = False,
+        ack_echo: bool = False, codex_home: Path | None = None,
+        session_id: str = "codex-session-1", model: str = "gpt-5.6-sol",
+        effort: str = "high", write_rollout: bool = True,
+        rollout_provider: str = "openai", rollout_model: str | None = None,
+        rollout_effort: str | None = None,
     ) -> None:
+        payload = "SHAPING VERDICT: clear at exact head " + head
         entry: dict = {
             "schema_version": 1, "review_type": "shaping", "verdict": verdict,
             "issue": issue, "repo": repo, "pr": pr, "head": head,
         }
         if provenance:
             entry.update({
-                "codex_session_id": "codex-session-1",
-                "verdict_sha256": "a" * 64,
+                "codex_session_id": session_id,
+                "verdict_payload": payload,
+                "verdict_sha256": hashlib.sha256(payload.encode()).hexdigest(),
+                "codex_model": model,
+                "codex_effort": effort,
                 "provenance": "relay-verbatim-rollout",
             })
+            # A real rollout record backs the declared session id, so an
+            # arbitrary session/hash with no resolvable record fails closed.
+            if codex_home is not None and write_rollout:
+                _write_codex_rollout(
+                    codex_home, session_id,
+                    model=rollout_model or model, effort=rollout_effort or effort,
+                    final_message=payload, provider=rollout_provider,
+                )
         if ack_echo:
             entry.update({
                 "bound_inputs": [f"linear:{issue}:{'0' * 64}"],
@@ -2198,7 +2246,13 @@ class OperatorControlTests(unittest.TestCase):
 
             fake_bin = base / "bin"
             self._install_shaped_fakes(fake_bin)
-            base_env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+            codex_home = base / "codex-home"
+            # Repo split: --repo is the local path, SLUG is the gh identity; the
+            # command publishes the intent surface under the trusted PUBLISHER.
+            base_env = dict(
+                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+                CODEX_HOME=str(codex_home), GH_PUBLISHER=PUBLISHER,
+            )
             caller = "issue-opus"
 
             def produce_intent(directory: Path, *, at_head: str, store: Path) -> str:
@@ -2209,7 +2263,8 @@ class OperatorControlTests(unittest.TestCase):
                 produced = subprocess.run(
                     [
                         str(CONTROL), "intent-record", "--stream-dir", str(directory),
-                        "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                        "--intent-ref", "ruling-15", "--repo", str(repo),
+                        "--repo-slug", SLUG, "--pr", "7",
                     ],
                     capture_output=True, text=True, env=env,
                 )
@@ -2243,7 +2298,7 @@ class OperatorControlTests(unittest.TestCase):
                         caller=caller, issue=other_stream_issue,
                     )
                 if write_verdict:
-                    values: dict = {"head": head, "repo": str(repo)}
+                    values: dict = {"head": head, "repo": SLUG, "codex_home": codex_home}
                     values.update(verdict_kwargs or {})
                     self._write_verdict_journal(case / "verdict.json", **values)
                 if produce_fresh:
@@ -2273,7 +2328,11 @@ class OperatorControlTests(unittest.TestCase):
                 else:
                     argv += ["--receipt", str(receipt)]
                 if include_new_flags:
-                    argv += ["--verdict-journal", str(case / "verdict.json"), "--repo", str(repo)]
+                    argv += [
+                        "--verdict-journal", str(case / "verdict.json"),
+                        "--repo", str(repo), "--repo-slug", SLUG,
+                        "--trusted-publisher", PUBLISHER,
+                    ]
                 return subprocess.run(argv, env=env or base_env, capture_output=True, text=True)
 
             # Accept path: the full authority tuple admits exactly one
@@ -2328,8 +2387,10 @@ class OperatorControlTests(unittest.TestCase):
             module = _load_octo_control_module()
 
             def forged_record(*, head_value: str, repo_value: str, pr_value: int) -> str:
-                # A hand-authored valid-head record whose surface_sha256 is a
-                # correct self-digest, but with NO matching live PR comment.
+                # A hand-authored valid-head record with full shape (correct
+                # self-digest, a fabricated comment_id, and the trusted
+                # publisher name), but with NO matching live PR comment: the
+                # consumer fetches the bound comment id and rejects.
                 recorded_at = "2026-07-21T00:00:00+00:00"
                 body = module._intent_surface_body(
                     repo=repo_value, pr=pr_value, head=head_value,
@@ -2341,9 +2402,10 @@ class OperatorControlTests(unittest.TestCase):
                     f'head = "{head_value}"\nrecorded_at = "{recorded_at}"\n'
                     f'repo = {json.dumps(repo_value)}\npr = {pr_value}\n'
                     f'surface_sha256 = "{digest}"\n'
+                    f'comment_id = 999\npublisher = {json.dumps(PUBLISHER)}\n'
                 )
 
-            forged_valid_head = forged_record(head_value=head, repo_value=str(repo), pr_value=7)
+            forged_valid_head = forged_record(head_value=head, repo_value=SLUG, pr_value=7)
 
             # Group 1: rejections that fail before any external call, so no
             # Linear or GitHub call is logged.
@@ -2367,12 +2429,12 @@ class OperatorControlTests(unittest.TestCase):
                     {"verdict_kwargs": {"provenance": False, "ack_echo": True}},
                     "rollout-record provenance",
                 ),
-                # Repo-arg bind: a clear verdict for a different repo than the
-                # CLI repo argument is rejected before any GitHub call.
+                # Repo-arg bind: a clear verdict for a different canonical repo
+                # slug than the CLI repo slug is rejected before any GitHub call.
                 (
                     "verdict_repo_ne_cli_repo",
                     {"verdict_kwargs": {"repo": "org/other"}},
-                    "does not match CLI repo argument",
+                    "does not match CLI repo slug",
                 ),
                 # Missing/fabricated-shape intent records fail on read before
                 # the live-surface fetch.
@@ -2457,6 +2519,7 @@ class OperatorControlTests(unittest.TestCase):
             ).stdout.strip()
             fake_bin = base / "bin"
             self._install_shaped_fakes(fake_bin)
+            codex_home = base / "codex-home"
 
             for name, live_head, expect_ok in (
                 ("valid", head, True),
@@ -2468,18 +2531,21 @@ class OperatorControlTests(unittest.TestCase):
                     receipt = stream / "receipt.toml"
                     store = case / "comments.json"
                     self._write_persistent_orchestrator_receipt(receipt, caller="issue-opus")
-                    self._write_verdict_journal(case / "verdict.json", head=head, repo=str(repo))
+                    self._write_verdict_journal(
+                        case / "verdict.json", head=head, repo=SLUG, codex_home=codex_home
+                    )
                     # Publish the command surface into the case store (no call
                     # log) so the later verify finds the live PR comment.
                     produced = subprocess.run(
                         [
                             str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                            "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                            "--intent-ref", "ruling-15", "--repo", str(repo),
+                            "--repo-slug", SLUG, "--pr", "7",
                         ],
                         capture_output=True, text=True,
                         env=dict(
                             os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
-                            GH_HEAD=head, GH_COMMENTS=str(store),
+                            GH_HEAD=head, GH_COMMENTS=str(store), GH_PUBLISHER=PUBLISHER,
                         ),
                     )
                     self.assertEqual(0, produced.returncode, produced.stderr)
@@ -2490,6 +2556,7 @@ class OperatorControlTests(unittest.TestCase):
                         os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
                         STATE_FILE=str(state_file), CALL_LOG=str(call_log),
                         GH_HEAD=live_head, GH_COMMENTS=str(store),
+                        GH_PUBLISHER=PUBLISHER, CODEX_HOME=str(codex_home),
                     )
                     result = subprocess.run(
                         [
@@ -2499,7 +2566,9 @@ class OperatorControlTests(unittest.TestCase):
                             "--status", str(case / "status.md"),
                             "--parent", "epic-opus", "--outcome", "shaped", "--gate", "review",
                             "--caller", "issue-opus", "--receipt", str(receipt),
-                            "--verdict-journal", str(case / "verdict.json"), "--repo", str(repo),
+                            "--verdict-journal", str(case / "verdict.json"),
+                            "--repo", str(repo), "--repo-slug", SLUG,
+                            "--trusted-publisher", PUBLISHER,
                         ],
                         env=env, capture_output=True, text=True,
                     )
@@ -2745,6 +2814,7 @@ if argv[0] == "api":
     if endpoint.endswith("/comments") and method == "POST":
         items = load()
         new = {"id": len(items) + 1, "body": field("body"),
+               "user": {"login": os.environ.get("GH_PUBLISHER", "octo-lite-bot")},
                "html_url": "https://example/comment/%d" % (len(items) + 1)}
         items.append(new)
         save(items)
@@ -2800,13 +2870,15 @@ class IntentRecordTests(unittest.TestCase):
         return dict(
             os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
             GH_HEAD=head, GH_COMMENTS=str(base / "comments.json"),
+            GH_PUBLISHER=PUBLISHER,
         )
 
     def test_intent_record_stamps_the_current_exact_head_at_action_time(self) -> None:
         # shaping-operator-approval-binding: tooling captures the head itself;
         # the record binds intent reference, exact head, a timestamp, and the
         # command-published surface repo/PR/digest, and success reports the
-        # record path plus bound head machine-readably.
+        # record path plus bound head machine-readably. Repo split: --repo is
+        # the local path, --repo-slug the canonical gh identity the record binds.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
@@ -2817,7 +2889,7 @@ class IntentRecordTests(unittest.TestCase):
                 [
                     str(CONTROL), "intent-record",
                     "--stream-dir", str(stream), "--intent-ref", "ruling-15",
-                    "--repo", str(repo), "--pr", "7",
+                    "--repo", str(repo), "--repo-slug", SLUG, "--pr", "7",
                 ],
                 capture_output=True, text=True, env=env,
             )
@@ -2831,9 +2903,11 @@ class IntentRecordTests(unittest.TestCase):
             self.assertEqual(1, record["schema_version"])
             self.assertEqual("ruling-15", record["intent_ref"])
             self.assertEqual(head, record["head"])
-            self.assertEqual(str(repo), record["repo"])
+            self.assertEqual(SLUG, record["repo"])
             self.assertEqual(7, record["pr"])
             self.assertRegex(record["surface_sha256"], r"^[0-9a-f]{64}$")
+            self.assertEqual(PUBLISHER, record["publisher"])
+            self.assertIsInstance(record["comment_id"], int)
             from datetime import datetime
             datetime.fromisoformat(record["recorded_at"])
 
@@ -2847,7 +2921,10 @@ class IntentRecordTests(unittest.TestCase):
             self._init_repo(repo)
             stream = base / "stream"
             missing = subprocess.run(
-                [str(CONTROL), "intent-record", "--stream-dir", str(stream), "--repo", str(repo)],
+                [
+                    str(CONTROL), "intent-record", "--stream-dir", str(stream),
+                    "--repo", str(repo), "--repo-slug", SLUG,
+                ],
                 capture_output=True, text=True,
             )
             self.assertNotEqual(0, missing.returncode)
@@ -2856,7 +2933,7 @@ class IntentRecordTests(unittest.TestCase):
                 result = subprocess.run(
                     [
                         str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                        "--intent-ref", empty_ref, "--repo", str(repo),
+                        "--intent-ref", empty_ref, "--repo", str(repo), "--repo-slug", SLUG,
                     ],
                     capture_output=True, text=True,
                 )
@@ -2874,7 +2951,7 @@ class IntentRecordTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--repo-slug", SLUG,
                     "--head", "0" * 40,
                 ],
                 capture_output=True, text=True,
@@ -2897,7 +2974,7 @@ class IntentRecordTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--repo-slug", SLUG, "--pr", "7",
                 ],
                 capture_output=True, text=True, env=env,
             )
@@ -2927,12 +3004,14 @@ class IntentRecordTests(unittest.TestCase):
             module._atomic_write_text = corrupting_write
             args = type("Args", (), {
                 "stream_dir": str(stream), "intent_ref": "ruling-15",
-                "repo": str(repo), "pr": 7, "verify": False,
+                "repo": str(repo), "repo_slug": SLUG, "pr": 7, "verify": False,
+                "trusted_publisher": PUBLISHER,
             })()
             saved = dict(os.environ)
             os.environ["PATH"] = f"{fake_bin}:{os.environ['PATH']}"
             os.environ["GH_HEAD"] = head
             os.environ["GH_COMMENTS"] = str(base / "comments.json")
+            os.environ["GH_PUBLISHER"] = PUBLISHER
             try:
                 with self.assertRaises(module.GateError):
                     module.command_intent_record(args)
@@ -2954,6 +3033,7 @@ class IntentRecordTests(unittest.TestCase):
             verify = [
                 str(CONTROL), "intent-record", "--verify",
                 "--stream-dir", str(stream), "--repo", str(repo),
+                "--repo-slug", SLUG, "--trusted-publisher", PUBLISHER,
             ]
 
             missing = subprocess.run(verify, capture_output=True, text=True)
@@ -2986,7 +3066,7 @@ class IntentRecordTests(unittest.TestCase):
             produced = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--repo-slug", SLUG, "--pr", "7",
                 ],
                 capture_output=True, text=True, env=env,
             )
@@ -2995,6 +3075,7 @@ class IntentRecordTests(unittest.TestCase):
                 [
                     str(CONTROL), "intent-record", "--verify",
                     "--stream-dir", str(stream), "--repo", str(repo),
+                    "--repo-slug", SLUG, "--trusted-publisher", PUBLISHER,
                 ],
                 capture_output=True, text=True, env=env,
             )
@@ -3002,6 +3083,7 @@ class IntentRecordTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertEqual(head, payload["head"])
             self.assertEqual(7, payload["pr"])
+            self.assertEqual(PUBLISHER, payload["publisher"])
             self.assertEqual(str((stream / "intent-record.toml").resolve()), payload["record"])
 
 
@@ -3826,6 +3908,7 @@ class IntentRecordSurfaceForgeryTests(unittest.TestCase):
         return dict(
             os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
             GH_HEAD=head, GH_COMMENTS=str(store or (base / "comments.json")),
+            GH_PUBLISHER=PUBLISHER,
         )
 
     def test_producer_requires_pr_for_surface_publication(self) -> None:
@@ -3840,7 +3923,7 @@ class IntentRecordSurfaceForgeryTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--repo-slug", SLUG,
                 ],
                 capture_output=True, text=True, env=self._env(base, head),
             )
@@ -3894,7 +3977,7 @@ class IntentRecordSurfaceForgeryTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--repo-slug", SLUG, "--pr", "7",
                 ],
                 capture_output=True, text=True, env=env,
             )
@@ -3914,21 +3997,25 @@ class IntentRecordSurfaceForgeryTests(unittest.TestCase):
             stream.mkdir()
             module = _load_octo_control_module()
             body = module._intent_surface_body(
-                repo=str(repo), pr=7, head=head, intent_ref="ruling-15",
+                repo=SLUG, pr=7, head=head, intent_ref="ruling-15",
                 recorded_at="2026-07-21T00:00:00+00:00",
             )
             digest = module._surface_digest(body)
+            # Full-shape forged record (self-digest correct, a fabricated
+            # comment_id, the trusted publisher name), but no live comment.
             (stream / "intent-record.toml").write_text(
                 'schema_version = 1\nintent_ref = "ruling-15"\n'
                 f'head = "{head}"\nrecorded_at = "2026-07-21T00:00:00+00:00"\n'
-                f'repo = {json.dumps(str(repo))}\npr = 7\n'
+                f'repo = {json.dumps(SLUG)}\npr = 7\n'
                 f'surface_sha256 = "{digest}"\n'
+                f'comment_id = 999\npublisher = {json.dumps(PUBLISHER)}\n'
             )
             # Empty live surface store: no command ever published this record.
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--verify",
                     "--stream-dir", str(stream), "--repo", str(repo),
+                    "--repo-slug", SLUG, "--trusted-publisher", PUBLISHER,
                 ],
                 capture_output=True, text=True, env=self._env(base, head),
             )
@@ -3936,34 +4023,35 @@ class IntentRecordSurfaceForgeryTests(unittest.TestCase):
             self.assertIn("no command-published surface", result.stderr)
 
     def test_verify_rejects_record_whose_repo_differs_from_cli_repo_argument(self) -> None:
-        # Repo-arg bind at the record level: a record produced against another
-        # repo than the CLI repo argument carries no authority here.
+        # Repo-arg bind at the record level: a record produced against one
+        # canonical repo slug carries no authority when verified against a
+        # different CLI repo slug, even with the same local path.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            other = base / "other"
             repo = base / "repo"
-            head_other = self._init_repo(other)
-            self._init_repo(repo)
+            head = self._init_repo(repo)
             stream = base / "stream"
             store = base / "comments.json"
             produced = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(other), "--pr", "7",
+                    "--intent-ref", "ruling-15", "--repo", str(repo),
+                    "--repo-slug", "org/repo", "--pr", "7",
                 ],
-                capture_output=True, text=True, env=self._env(base, head_other, store),
+                capture_output=True, text=True, env=self._env(base, head, store),
             )
             self.assertEqual(0, produced.returncode, produced.stderr)
-            # Verify against a DIFFERENT CLI repo argument than the record binds.
+            # Verify against a DIFFERENT canonical repo slug than the record binds.
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--verify",
                     "--stream-dir", str(stream), "--repo", str(repo),
+                    "--repo-slug", "org/other", "--trusted-publisher", PUBLISHER,
                 ],
-                capture_output=True, text=True, env=self._env(base, head_other, store),
+                capture_output=True, text=True, env=self._env(base, head, store),
             )
             self.assertNotEqual(0, result.returncode)
-            self.assertIn("repo mismatch with CLI repo argument", result.stderr)
+            self.assertIn("repo mismatch with CLI repo slug", result.stderr)
 
     def test_verify_rejects_surface_digest_that_does_not_bind_its_own_fields(self) -> None:
         # A record carrying a surface_sha256 that is not the digest of its own
@@ -3978,13 +4066,15 @@ class IntentRecordSurfaceForgeryTests(unittest.TestCase):
             (stream / "intent-record.toml").write_text(
                 'schema_version = 1\nintent_ref = "ruling-15"\n'
                 f'head = "{head}"\nrecorded_at = "2026-07-21T00:00:00+00:00"\n'
-                f'repo = {json.dumps(str(repo))}\npr = 7\n'
+                f'repo = {json.dumps(SLUG)}\npr = 7\n'
                 f'surface_sha256 = "{"0" * 64}"\n'
+                f'comment_id = 999\npublisher = {json.dumps(PUBLISHER)}\n'
             )
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--verify",
                     "--stream-dir", str(stream), "--repo", str(repo),
+                    "--repo-slug", SLUG, "--trusted-publisher", PUBLISHER,
                 ],
                 capture_output=True, text=True, env=self._env(base, head),
             )
@@ -4004,7 +4094,7 @@ class IntentRecordSurfaceForgeryTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(CONTROL), "intent-record", "--stream-dir", str(stream),
-                    "--intent-ref", "ruling-15", "--repo", str(repo), "--pr", "7",
+                    "--intent-ref", "ruling-15", "--repo", str(repo), "--repo-slug", SLUG, "--pr", "7",
                 ],
                 capture_output=True, text=True, env=self._env(base, head),
             )
