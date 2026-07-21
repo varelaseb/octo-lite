@@ -618,14 +618,14 @@ class RolloutMessageBindsVerdictTests(unittest.TestCase):
     def test_message_binding_this_issue_pr_head_and_clear_verdict_is_accepted(self) -> None:
         module = _load_module()
         head = "c" * 40
-        payload = f"SHAPING VERDICT clear for TUR-1 PR 7 at exact head {head}"
+        payload = f"octo-verdict: clear issue=TUR-1 pr=7 head={head}"
         module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
 
     def test_message_clearing_a_different_issue_is_rejected(self) -> None:
         module = _load_module()
         head = "c" * 40
         # A real rollout that cleared a DIFFERENT issue at the same PR/head.
-        payload = f"SHAPING VERDICT clear for TUR-999 PR 7 at exact head {head}"
+        payload = f"octo-verdict: clear issue=TUR-999 pr=7 head={head}"
         with self.assertRaises(module.GateError) as ctx:
             module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
         self.assertIn("issue", str(ctx.exception))
@@ -634,7 +634,7 @@ class RolloutMessageBindsVerdictTests(unittest.TestCase):
         module = _load_module()
         head = "c" * 40
         # A real rollout whose message BLOCKED (no clear verdict) for this tuple.
-        payload = f"SHAPING VERDICT blocking for TUR-1 PR 7 at exact head {head}"
+        payload = f"octo-verdict: blocking issue=TUR-1 pr=7 head={head}"
         with self.assertRaises(module.GateError) as ctx:
             module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
         self.assertIn("clear-verdict", str(ctx.exception))
@@ -644,8 +644,8 @@ class RolloutMessageBindsVerdictTests(unittest.TestCase):
         head = "c" * 40
         other = "d" * 40
         for label, payload in (
-            ("pr", f"SHAPING VERDICT clear for TUR-1 PR 8 at exact head {head}"),
-            ("head", f"SHAPING VERDICT clear for TUR-1 PR 7 at exact head {other}"),
+            ("pr", f"octo-verdict: clear issue=TUR-1 pr=8 head={head}"),
+            ("head", f"octo-verdict: clear issue=TUR-1 pr=7 head={other}"),
         ):
             with self.subTest(case=label):
                 with self.assertRaises(module.GateError) as ctx:
@@ -670,7 +670,7 @@ class RolloutMessageBindsVerdictExactTests(unittest.TestCase):
         module = _load_module()
         head = "c" * 40
         # A real clear rollout for TUR-10 must NOT back a TUR-1 transition.
-        payload = f"SHAPING VERDICT clear for TUR-10 PR 7 at exact head {head}"
+        payload = f"octo-verdict: clear issue=TUR-10 pr=7 head={head}"
         with self.assertRaises(module.GateError) as ctx:
             module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
         self.assertIn("issue", str(ctx.exception))
@@ -679,7 +679,7 @@ class RolloutMessageBindsVerdictExactTests(unittest.TestCase):
         module = _load_module()
         head = "c" * 40
         # TUR-447 must NOT be satisfied by a rollout that cleared TUR-4470.
-        payload = f"SHAPING VERDICT clear for TUR-4470 PR 7 at exact head {head}"
+        payload = f"octo-verdict: clear issue=TUR-4470 pr=7 head={head}"
         with self.assertRaises(module.GateError) as ctx:
             module._verify_rollout_message_binds_verdict(payload, issue="TUR-447", pr=7, head=head)
         self.assertIn("issue", str(ctx.exception))
@@ -687,8 +687,10 @@ class RolloutMessageBindsVerdictExactTests(unittest.TestCase):
     def test_blocking_message_containing_the_word_clear_is_rejected(self) -> None:
         module = _load_module()
         head = "c" * 40
-        # A BLOCKING verdict whose prose happens to contain the word "clear".
-        payload = f"SHAPING VERDICT blocking for TUR-1 PR 7 at exact head {head}: Not clear to proceed"
+        # A BLOCKING canonical verdict whose prose happens to contain "clear".
+        payload = (
+            f"octo-verdict: blocking issue=TUR-1 pr=7 head={head}\nNot clear to proceed"
+        )
         with self.assertRaises(module.GateError) as ctx:
             module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
         self.assertIn("clear-verdict", str(ctx.exception))
@@ -698,8 +700,11 @@ class RolloutMessageBindsVerdictExactTests(unittest.TestCase):
         head = "c" * 40
         for phrase in ("not clear", "cannot clear", "unclear", "blocking"):
             with self.subTest(phrase=phrase):
+                # Canonical line clears, but the free-text secondary guard sees a
+                # negated/blocking marker and rejects fail-closed.
                 payload = (
-                    f"verdict: clear for TUR-1 PR 7 at exact head {head} -- however {phrase}"
+                    f"octo-verdict: clear issue=TUR-1 pr=7 head={head}\n"
+                    f"however {phrase}"
                 )
                 with self.assertRaises(module.GateError) as ctx:
                     module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
@@ -709,10 +714,10 @@ class RolloutMessageBindsVerdictExactTests(unittest.TestCase):
         module = _load_module()
         head = "c" * 40
         # A genuine clear for THIS issue/head but naming PR 60 must NOT satisfy
-        # PR 6 (and PR 16 must not either): the PR needs both boundaries.
+        # PR 6 (and PR 16 must not either).
         for other_pr in ("60", "16"):
             with self.subTest(pr=other_pr):
-                payload = f"verdict: clear for TUR-1 PR {other_pr} at exact head {head}"
+                payload = f"octo-verdict: clear issue=TUR-1 pr={other_pr} head={head}"
                 with self.assertRaises(module.GateError) as ctx:
                     module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=6, head=head)
                 self.assertIn("pr", str(ctx.exception))
@@ -720,7 +725,7 @@ class RolloutMessageBindsVerdictExactTests(unittest.TestCase):
     def test_genuine_clear_for_exact_issue_pr_head_is_accepted(self) -> None:
         module = _load_module()
         head = "c" * 40
-        payload = f"verdict: clear for TUR-6 PR 6 at exact head {head}"
+        payload = f"octo-verdict: clear issue=TUR-6 pr=6 head={head}"
         module._verify_rollout_message_binds_verdict(payload, issue="TUR-6", pr=6, head=head)
 
 
@@ -788,6 +793,117 @@ class VerdictPublishRepoSlugTests(unittest.TestCase):
             self.assertIn(f"repos/{SLUG}/", calls)
             self.assertIn(f"--repo {SLUG}", calls)
             self.assertNotIn(str(repo), calls)
+
+
+# TUR-447 D3 cycle3 F5: the c2 exact-but-INDEPENDENT lexical searches in
+# _verify_rollout_message_binds_verdict did NOT bind the verdict tuple as a UNIT.
+# The codex gate found three confirmed bypasses (threat = accidental cross-issue
+# authorization / misconfig, ruling-61 proportionate):
+#   (a) TUPLE NOT BOUND: a clear verdict for TUR-999 PR 8 backs TUR-1 PR 7 when
+#       the expected TUR-1 / PR 7 / head tokens appear ELSEWHERE as context; the
+#       independent searches each pass on unrelated occurrences.
+#   (b) HEAD substring: the 40-hex head matched via `head not in text`, so a head
+#       embedded inside a LONGER hex run passes.
+#   (c) blocking deny-list ASCII-only: a curly-apostrophe `can't clear` (U+2019)
+#       bypasses the `can't clear` ASCII negation and clears.
+# Fix: require ONE canonical machine-parseable verdict-binding line
+#   octo-verdict: <clear|blocking> issue=<ISSUE> pr=<N> head=<40hex>
+# parse that single line (one match), extract verdict/issue/pr/head from THAT ONE
+# line, require verdict==clear AND issue==expected AND pr==expected AND
+# head==expected all from that one line. Match head as a delimited 40-hex field,
+# never substring. NFKC-normalize + map typographic apostrophes before the
+# secondary blocking scan (delivery-lifecycle shaping-operator-approval-binding).
+class RolloutMessageBindsVerdictCanonicalLineTests(unittest.TestCase):
+
+    def test_canonical_clear_line_for_exact_tuple_is_accepted(self) -> None:
+        module = _load_module()
+        head = "c" * 40
+        payload = (
+            "Shaping review complete.\n"
+            f"octo-verdict: clear issue=TUR-1 pr=7 head={head}\n"
+            "Reasoning above."
+        )
+        module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+
+    def test_clear_for_a_different_tuple_with_expected_tokens_as_context_is_rejected(self) -> None:
+        # Bypass (a): the CANONICAL line clears TUR-999 PR 8, but the expected
+        # TUR-1 / PR 7 / head tokens appear elsewhere as prose context. The tuple
+        # is bound as a UNIT from the one canonical line, so this is rejected.
+        module = _load_module()
+        head = "c" * 40
+        payload = (
+            f"Context: this supersedes the earlier clear for TUR-1 PR 7 at head {head}.\n"
+            f"octo-verdict: clear issue=TUR-999 pr=8 head={head}\n"
+        )
+        with self.assertRaises(module.GateError) as ctx:
+            module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+        msg = str(ctx.exception)
+        self.assertTrue("issue" in msg or "pr" in msg, msg)
+
+    def test_head_embedded_in_a_longer_hex_run_is_rejected(self) -> None:
+        # Bypass (b): the expected 40-hex head is a substring of a longer hex run
+        # on the canonical line, so it is NOT a delimited 40-hex field.
+        module = _load_module()
+        head = "c" * 40
+        longer = head + "abcd"  # 44-hex run; the expected head is a prefix
+        payload = f"octo-verdict: clear issue=TUR-1 pr=7 head={longer}\n"
+        # The head field must be an EXACT delimited 40-hex token, so a 44-hex run
+        # is not a valid canonical head field: the line does not parse as a
+        # canonical binding line and the transition is rejected fail-closed.
+        with self.assertRaises(module.GateError) as ctx:
+            module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+        msg = str(ctx.exception)
+        self.assertTrue("head" in msg or "canonical" in msg.lower(), msg)
+
+    def test_curly_apostrophe_cant_clear_is_rejected(self) -> None:
+        # Bypass (c): a blocking canonical line whose prose uses the typographic
+        # apostrophe (U+2019) `can’t clear`. After NFKC + apostrophe mapping
+        # the blocking scan catches it, and the canonical verdict is blocking.
+        module = _load_module()
+        head = "c" * 40
+        payload = (
+            f"octo-verdict: blocking issue=TUR-1 pr=7 head={head}\n"
+            "We can’t clear this yet."
+        )
+        with self.assertRaises(module.GateError) as ctx:
+            module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+        self.assertIn("clear-verdict", str(ctx.exception))
+
+    def test_missing_canonical_line_is_rejected(self) -> None:
+        # An artifact lacking the canonical verdict-binding line entirely carries
+        # no authority (reviewer-contract prompt-TDD unchanged-red).
+        module = _load_module()
+        head = "c" * 40
+        payload = f"SHAPING VERDICT clear for TUR-1 PR 7 at exact head {head}"
+        with self.assertRaises(module.GateError) as ctx:
+            module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+        self.assertIn("canonical", str(ctx.exception).lower())
+
+    def test_two_canonical_lines_is_rejected(self) -> None:
+        # Exactly one canonical line must match; a second (conflicting) line
+        # makes the binding ambiguous and is rejected fail-closed.
+        module = _load_module()
+        head = "c" * 40
+        payload = (
+            f"octo-verdict: clear issue=TUR-1 pr=7 head={head}\n"
+            f"octo-verdict: blocking issue=TUR-1 pr=7 head={head}\n"
+        )
+        with self.assertRaises(module.GateError):
+            module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+
+
+class ShapingReviewerCanonicalLineContractTests(unittest.TestCase):
+    # Reviewer contract prompt-TDD: roles/shaping-reviewer.md MUST instruct the
+    # reviewer to emit the canonical octo-verdict binding line in its verdict
+    # artifact. unchanged-red = old prose lacked it; changed-green = prose names
+    # the exact octo-verdict: line format.
+
+    def test_role_prose_names_the_canonical_verdict_binding_line(self) -> None:
+        prose = (ROOT / "roles/shaping-reviewer.md").read_text()
+        self.assertIn("octo-verdict:", prose)
+        self.assertIn("issue=", prose)
+        self.assertIn("pr=", prose)
+        self.assertIn("head=", prose)
 
 
 if __name__ == "__main__":

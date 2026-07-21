@@ -2161,10 +2161,11 @@ class OperatorControlTests(unittest.TestCase):
         rollout_provider: str = "openai", rollout_model: str | None = None,
         rollout_effort: str | None = None, payload: str | None = None,
     ) -> None:
-        # F5-r2 fix 3: the reviewer rollout final message (== verdict payload)
-        # must COMMIT to this exact clear verdict on this issue, PR, and HEAD.
+        # D3 cycle3 F5: the reviewer rollout final message (== verdict payload)
+        # must carry the one canonical verdict-binding line that ties verdict,
+        # issue, PR, and the exact 40-hex HEAD as one unit.
         if payload is None:
-            payload = f"SHAPING VERDICT clear for {issue} PR {pr} at exact head {head}"
+            payload = f"octo-verdict: {verdict} issue={issue} pr={pr} head={head}"
         entry: dict = {
             "schema_version": 1, "review_type": "shaping", "verdict": verdict,
             "issue": issue, "repo": repo, "pr": pr, "head": head,
