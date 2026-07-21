@@ -473,6 +473,59 @@ exec {real_mv} "$@"
             with state.open("rb") as handle:
                 self.assertEqual("completed", tomllib.load(handle)["status"])
 
+    def test_failed_target_resolution_leaves_a_wait_the_operator_can_clear_by_ack(self):
+        # TUR-447: a --kind question with OCTO_STREAM stamps a per-stream operator
+        # wait BEFORE target resolution. If resolution then FAILS (unresolved
+        # target, exit 66) the message-state file must still exist so herdr-ack of
+        # that exact message id can acknowledge and clear the orphan wait via its
+        # advertised path. At prior HEAD no state file was written, so herdr-ack
+        # rejected the id as unknown and the wait was unclearable.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "herdr"
+            # agent get resolves to an EMPTY pane_id: herdr-say cannot resolve the
+            # target and must exit 66 after the wait stamp is already written.
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -eu\n"
+                'if [[ "$1 $2" == "agent get" ]]; then\n'
+                "  echo '{\"result\":{\"agent\":{}}}'\n"
+                "else\n"
+                "  exit 0\n"
+                "fi\n"
+            )
+            fake.chmod(0o755)
+            env = dict(os.environ)
+            env.update(
+                PATH=f"{fake_bin}:{env['PATH']}",
+                XDG_STATE_HOME=str(root / "state"),
+                OCTO_STREAM="scratch-ask",
+            )
+            ask = "Approve promotion of TUR-447 to Live?"
+            said = subprocess.run(
+                ["bash", str(SAY), "--kind", "question", "operator-1", ask],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(66, said.returncode, said.stderr)
+
+            waits_dir = root / "state/octo-lite/operator-waits"
+            stamp_path = waits_dir / "scratch-ask.toml"
+            self.assertTrue(stamp_path.is_file(), said.stderr)
+            with stamp_path.open("rb") as handle:
+                stamp = tomllib.load(handle)
+            message_id = stamp["message_id"]
+
+            # The advertised clear path: herdr-ack of that exact message id must
+            # succeed and remove the orphan wait stamp.
+            acked = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "operator-1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, acked.returncode, acked.stderr)
+            self.assertFalse(stamp_path.is_file())
+
     def test_info_kind_never_carries_an_ack_instruction_or_claims_acknowledged(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")

@@ -53,12 +53,6 @@ if [[ "$kind" == "question" && -n "${OCTO_STREAM:-}" ]]; then
   mv "$wait_tmp" "$wait_stamp"
 fi
 
-case "$target" in
-  *:p*) pane="$target" ;;
-  *) pane="$(herdr agent get "$target" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" ;;
-esac
-[[ -n "$pane" ]] || { echo "herdr-say: unresolved target $target" >&2; exit 66; }
-
 write_state() {
   local status="$1" temporary="$state.$$.tmp"
   {
@@ -72,6 +66,22 @@ write_state() {
     echo "created_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
   } >"$temporary"
   mv "$temporary" "$state"
+}
+
+case "$target" in
+  *:p*) pane="$target" ;;
+  *) pane="$(herdr agent get "$target" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" ;;
+esac
+# TUR-447: a --kind question with OCTO_STREAM already wrote a pre-transport
+# operator-wait stamp keyed to this exact message id. If the target is now
+# unresolved, still persist a pending message-state record so herdr-ack of this
+# exact id can acknowledge and clear that wait via its advertised path. Without
+# it the wait is orphaned and unacknowledgeable. Status is pending, matching the
+# ack lifecycle (pending -> acknowledged); no transport is claimed.
+[[ -n "$pane" ]] || {
+  write_state pending
+  echo "herdr-say: unresolved target $target" >&2
+  exit 66
 }
 
 # herdr-say never infers composer state, consumption, or delivery from pane
