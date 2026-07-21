@@ -201,6 +201,99 @@ def _canonical_shaping_reviewer_identity() -> tuple[str, str]:
     return role.model, role.effort
 
 
+# D4 shaping-verdict journal PRODUCER (role-runtime launch-shaping-authority,
+# role-openai-relay, role-openai-fail-closed; delivery-lifecycle
+# shaping-operator-approval-order; operating-model decision-identity-source):
+# the production writer that persists the journalled clear shaping verdict Unit
+# J's _read_shaping_verdict_journal consumes. It does NOT trust caller-supplied
+# payload/sha256/model/effort: it resolves the shaping-reviewer relay's exact
+# codex session id to codex's OWN rollout record under CODEX_HOME/sessions
+# (verify_relay_verbatim), proving effective provider=openai and the CANONICAL
+# roles.toml shaping-reviewer model/effort, and takes the VERBATIM final
+# assistant message and its sha256 from that record. The persisted journal
+# therefore carries only rollout-record-grade provenance, and reading it back
+# through the consumer proves the round-trip is authority-satisfying.
+def command_shaping_verdict_journal_write(args) -> dict:
+    path = Path(args.journal)
+    head = args.head.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise GateError("shaping verdict journal requires a 40-hex --head")
+    if not isinstance(args.pr, int):
+        raise GateError("shaping verdict journal requires --pr")
+    repo_slug = _canonical_slug(args.repo_slug)
+    if not isinstance(args.codex_session_id, str) or not args.codex_session_id.strip():
+        raise GateError("shaping verdict journal requires --codex-session-id")
+    session_id = args.codex_session_id.strip()
+    # Canonical reviewer identity (never caller-supplied): the readback verifies
+    # the rollout matches THIS canonical value, like-with-like.
+    expected_model, expected_effort = _canonical_shaping_reviewer_identity()
+    # Rollout readback: resolve the relay session id to codex's OWN rollout
+    # record, prove provider=openai and the canonical model/effort, and take the
+    # VERBATIM final assistant message from that record. Caller-supplied
+    # payload/sha256 are never a source; an absent or wrong-identity rollout
+    # fails closed here. The producer commits to exactly the record's own final
+    # message and its digest, then re-verifies via verify_relay_verbatim so the
+    # persisted payload/sha256 are the SAME the consumer independently reproves.
+    payload = _rollout_final_message(session_id)
+    verdict_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    record = verify_relay_verbatim(
+        session_id, payload, verdict_sha256, expected_model, expected_effort,
+    )
+    # The persisted verdict must genuinely clear THIS exact issue, PR, and head,
+    # exactly as Unit J's rollout-message binding requires; a rollout that
+    # cleared a different issue, blocked, or named a different PR/head is
+    # rejected before the journal is written, so a mis-provisioned pipeline
+    # never persists an unusable journal.
+    _verify_rollout_message_binds_verdict(payload, issue=args.issue, pr=args.pr, head=head)
+    entry = {
+        "schema_version": 1,
+        "review_type": "shaping",
+        "verdict": "clear",
+        "issue": args.issue,
+        "repo": repo_slug,
+        "pr": args.pr,
+        "head": head,
+        "codex_session_id": args.codex_session_id.strip(),
+        "verdict_payload": payload,
+        "verdict_sha256": verdict_sha256,
+        "codex_model": record["model"],
+        "codex_effort": record["effort"],
+        "provenance": "relay-verbatim-rollout",
+    }
+    _atomic_write_text(path, json.dumps(entry, sort_keys=True))
+    # Consumer round-trip: read the persisted journal back through the exact
+    # consumer Unit J uses, so a journal this producer writes is proven
+    # authority-satisfying before success is reported.
+    verified = _read_shaping_verdict_journal(path, args.issue)
+    return {
+        "journal": str(path.resolve()),
+        "issue": verified["issue"],
+        "repo": verified["repo"],
+        "pr": verified["pr"],
+        "head": verified["head"],
+        "verdict": verified["verdict"],
+        "codex_session_id": verified["codex_session_id"],
+        "verdict_sha256": verified["verdict_sha256"],
+        "codex_model": verified["codex_model"],
+        "codex_effort": verified["codex_effort"],
+        "provenance": verified["provenance"],
+    }
+
+
+def _rollout_final_message(session_id: str) -> str:
+    # Resolve the verbatim final assistant message from codex's own rollout
+    # record. This is the SAME record verify_relay_verbatim proves; reading it
+    # first lets the producer commit to exactly that verbatim payload and its
+    # digest rather than trusting any caller-supplied text.
+    from octo_lite.launch import _read_codex_rollout_record  # noqa: E402
+
+    record = _read_codex_rollout_record(session_id)
+    message = record.get("final_message") or ""
+    if not message:
+        raise GateError("shaping verdict journal: rollout record has no final assistant message")
+    return message
+
+
 def _verify_shaped_transition_authority(args) -> dict:
     if args.stream or not args.receipt:
         raise GateError("Shaped transition requires exact persistent receipt authority")
@@ -1094,6 +1187,18 @@ def parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--expected-head", required=True)
     cleanup.add_argument("--remote-ref", required=True)
     cleanup.set_defaults(run=command_workspace_cleanup)
+
+    shaping_journal = sub.add_parser("shaping-verdict-journal-write")
+    shaping_journal.add_argument("--journal", required=True, help="output journal path Unit J consumes")
+    shaping_journal.add_argument("--issue", required=True)
+    shaping_journal.add_argument("--repo-slug", required=True, help="canonical owner/repo slug")
+    shaping_journal.add_argument("--pr", type=int, required=True)
+    shaping_journal.add_argument("--head", required=True, help="40-hex clear-verdict head")
+    shaping_journal.add_argument(
+        "--codex-session-id", required=True,
+        help="shaping-reviewer relay codex session id whose rollout record backs the verdict",
+    )
+    shaping_journal.set_defaults(run=command_shaping_verdict_journal_write)
     return root
 
 
