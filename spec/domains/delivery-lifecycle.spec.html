@@ -1356,6 +1356,16 @@
 <p data-anchor="linear-deployment-target-owned" id="linear-deployment-target-owned">Generic octo-lite defines only that post-acceptance deployment and promotion states are durable, operator-authorized, and evidence-backed; the exact state names and the concrete facts that trigger each one are target-owned Linear state mapping, defined in the target repo, never in generic octo-lite.</p>
 </section>
 
+<section data-anchor="sweep-operator-gate" id="sweep-operator-gate">
+<h2>Sweep operator-gate surfacing</h2>
+<p data-anchor="sweep-carried-issues" id="sweep-carried-issues">Each operator sweep run reads the current Linear state of every issue a stream carries, not one bound issue, so no carried issue state is ever unread.</p>
+<p data-anchor="sweep-operator-gated-set" id="sweep-operator-gated-set">A Linear state is operator-gated when it awaits an operator act: the acceptance state <code>Awaiting Accept</code> plus every operator-owned promotion state in the target Linear mapping, and it excludes the terminal live state, the accepted-and-merged transient, and every agent-owned or mechanical state.</p>
+<p data-anchor="sweep-operator-gate-loud" id="sweep-operator-gate-loud">Any carried issue in an operator-gated state emits, at the very top of the sweep delta before all other content, one loud line naming the issue id, the state, and a one-line operator action.</p>
+<p data-anchor="sweep-operator-gate-unsuppressible" id="sweep-operator-gate-unsuppressible">Operator-gate output is exempt from every suppression, vestige, consumed-ask, and unchanged-fingerprint class, so an unchanged sweep still surfaces it and no heuristic ever silences it.</p>
+<p data-anchor="sweep-operator-gate-classify" id="sweep-operator-gate-classify">A stream carrying an operator-gated issue classifies waiting-on-operator regardless of transcript activity, never active or suspected-stuck.</p>
+<p data-anchor="sweep-operator-ask" id="sweep-operator-ask">A stream with an open unanswered operator-facing question surfaces the same loud top line naming the stream and the verbatim ask, the lane operator-ask path stamps that wait mechanically, the operator answer relay clears it, and detection is modal-safe and never scrapes pane transcript text.</p>
+</section>
+
 <section data-anchor="diagram-story-contract" id="diagram-story-contract">
 <h2>Story, specification, and QA contract</h2>
 <script type="application/spec+json" data-render="chart" data-lib="echarts">
