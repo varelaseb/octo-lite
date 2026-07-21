@@ -81,14 +81,22 @@ case "$target" in
     pane="$(printf '%s' "$resolved" | jq -r '.result.agent.pane_id // empty' 2>/dev/null || true)"
     ;;
 esac
-# TUR-447: a --kind question with OCTO_STREAM already wrote a pre-transport
-# operator-wait stamp keyed to this exact message id. If the target is now
-# unresolved, still persist a pending message-state record so herdr-ack of this
-# exact id can acknowledge and clear that wait via its advertised path. Without
-# it the wait is orphaned and unacknowledgeable. Status is pending, matching the
-# ack lifecycle (pending -> acknowledged); no transport is claimed.
+# TUR-447: an unresolved target aborts before any transport. The pending
+# message-state guard exists ONLY to make a stamped operator-wait clearable.
+# D5: scope it to the operator-wait kinds (--kind question with OCTO_STREAM,
+# the exact case that just wrote the pre-transport operator-wait stamp keyed to
+# this message id). For that case persist a pending message-state record so
+# herdr-ack of this exact id can acknowledge and clear the wait via its
+# advertised path; without it the wait is orphaned and unacknowledgeable.
+# Status is pending, matching the ack lifecycle (pending -> acknowledged); no
+# transport is claimed. For every NON-operator-wait message (no wait was
+# stamped) writing a pending state would be falsely herdr-ack-acknowledgeable
+# and would not retry; instead leave no state and exit 66 so the send stays
+# retryable (herdr-drain retries transport once the target resolves).
 [[ -n "$pane" ]] || {
-  write_state pending
+  if [[ "$kind" == "question" && -n "${OCTO_STREAM:-}" ]]; then
+    write_state pending
+  fi
   echo "herdr-say: unresolved target $target" >&2
   exit 66
 }

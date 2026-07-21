@@ -591,6 +591,87 @@ exec {real_mv} "$@"
             with states[0].open("rb") as handle:
                 self.assertEqual("acknowledged", tomllib.load(handle)["status"])
 
+    def test_non_operator_unresolved_target_stays_retryable_not_ack_acknowledgeable(self):
+        # TUR-447 D5: the unresolved-target pending guard exists only to make a
+        # stamped operator-wait (kind==question && OCTO_STREAM) clearable by
+        # herdr-ack. A NON-operator message (kind=info, no OCTO_STREAM) stamps no
+        # wait, so an unresolved target must NOT write a herdr-ack-acknowledgeable
+        # pending state; it must fail (exit 66) and stay retryable. At prior HEAD
+        # the guard wrote a pending state for every kind, falsely acknowledgeable.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "herdr"
+            # agent get resolves to an EMPTY pane_id: the target is unresolved.
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -eu\n"
+                'if [[ "$1 $2" == "agent get" ]]; then\n'
+                "  echo '{\"result\":{\"agent\":{}}}'\n"
+                "else\n"
+                "  exit 0\n"
+                "fi\n"
+            )
+            fake.chmod(0o755)
+            env = dict(os.environ)
+            env.update(
+                PATH=f"{fake_bin}:{env['PATH']}",
+                XDG_STATE_HOME=str(root / "state"),
+            )
+            env.pop("OCTO_STREAM", None)
+            said = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "fyi status update"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(66, said.returncode, said.stderr)
+
+            # No message-state file is written: nothing for herdr-ack to falsely
+            # acknowledge, so the message stays retryable/unsent.
+            msg_dir = root / "state/octo-lite/messages"
+            states = list(msg_dir.glob("*.toml")) if msg_dir.exists() else []
+            self.assertEqual([], states, said.stderr)
+
+            # No operator wait was stamped for a non-question, non-stream send.
+            waits_dir = root / "state/octo-lite/operator-waits"
+            self.assertFalse(waits_dir.exists() and any(waits_dir.iterdir()))
+
+    def test_operator_wait_unresolved_target_still_writes_ack_clearable_state(self):
+        # TUR-447 D5 counterpart: the operator-wait case (question + OCTO_STREAM)
+        # must STILL write the clearable pending message-state on an unresolved
+        # target, so herdr-ack clears the stamped wait. Scoping the guard to
+        # operator-wait kinds must not regress this path.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "herdr"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -eu\n"
+                'if [[ "$1 $2" == "agent get" ]]; then\n'
+                "  echo '{\"result\":{\"agent\":{}}}'\n"
+                "else\n"
+                "  exit 0\n"
+                "fi\n"
+            )
+            fake.chmod(0o755)
+            env = dict(os.environ)
+            env.update(
+                PATH=f"{fake_bin}:{env['PATH']}",
+                XDG_STATE_HOME=str(root / "state"),
+                OCTO_STREAM="scratch-ask",
+            )
+            said = subprocess.run(
+                ["bash", str(SAY), "--kind", "question", "operator-1", "Approve?"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(66, said.returncode, said.stderr)
+            states = list((root / "state/octo-lite/messages").glob("*.toml"))
+            self.assertEqual(1, len(states), said.stderr)
+            with states[0].open("rb") as handle:
+                self.assertEqual("pending", tomllib.load(handle)["status"])
+
     def test_info_kind_never_carries_an_ack_instruction_or_claims_acknowledged(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
