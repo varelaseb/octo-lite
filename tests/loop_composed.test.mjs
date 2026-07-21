@@ -36,6 +36,7 @@ function loadLoop() {
 }
 
 const REPO = '/root/octo-lite'
+const REPO_SLUG = 'varelaseb/octo-lite'
 const ISSUE = 'TUR-447'
 const PR = 'https://github.com/x/y/pull/6'
 const BRANCH = 'octo-lite/tur-443-operating-model'
@@ -81,7 +82,7 @@ function ackFor(role, overrides = {}) {
 function readyEnvelope(overrides = {}) {
   const base = {
     mode: 'implement',
-    repo: REPO, issue: ISSUE, pr: PR, branch: BRANCH,
+    repo: REPO, repo_slug: REPO_SLUG, issue: ISSUE, pr: PR, branch: BRANCH,
     shaping_head: HEAD, pr_head: HEAD, pr_base: 'main',
     spec_revision: 'r1', linear_revision: 'lr1', topology_revision: 't1',
     linear_fingerprint: fingerprintFor('Shaped'), linear_state: 'Shaped',

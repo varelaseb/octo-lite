@@ -83,6 +83,7 @@ const BREAK_OBSERVER = (src) => removeSeamGate(
 
 // --- Composed-harness fixtures (mirrors loop_composed.test.mjs) --------------------------------
 const REPO = '/root/octo-lite'
+const REPO_SLUG = 'varelaseb/octo-lite'
 const ISSUE = 'TUR-447'
 const PR = 'https://github.com/x/y/pull/6'
 const BRANCH = 'octo-lite/tur-443-operating-model'
@@ -116,7 +117,7 @@ function ackFor(role, overrides = {}) {
 function readyEnvelope(overrides = {}) {
   const base = {
     mode: 'implement',
-    repo: REPO, issue: ISSUE, pr: PR, branch: BRANCH,
+    repo: REPO, repo_slug: REPO_SLUG, issue: ISSUE, pr: PR, branch: BRANCH,
     shaping_head: HEAD, pr_head: HEAD, pr_base: 'main',
     spec_revision: 'r1', linear_revision: 'lr1', topology_revision: 't1',
     linear_fingerprint: fingerprintFor('Shaped'), linear_state: 'Shaped',
@@ -474,6 +475,11 @@ const CWD_PIN_SITES = [
   { name: 'liveReadback', anchor: 'You are a fresh READ-ONLY octo-lite readback subagent' },
   { name: 'pre-push readback', anchor: 'You are a fresh READ-ONLY octo-lite pre-push readback' },
   { name: 'host push', anchor: 'You are a fresh octo-lite host push subagent' },
+  // TUR-447 ruling-56 cycle2: the full git-reading site matrix must also cover the abort/abandon and
+  // reset sites and the post-push live-remote readback, so every git op in them is worktree-pinned.
+  { name: 'abandon/abort', anchor: 'You are a fresh octo-lite host-non-push abort subagent' },
+  { name: 'reset', anchor: 'You are a fresh octo-lite workspace-cleanup subagent' },
+  { name: 'post-push live-remote readback', anchor: 'You are a fresh READ-ONLY octo-lite post-push live-remote readback' },
   { name: 'reviewer relay worktree snapshot', anchor: 'CONTAINED REVIEW WORKTREE (run codex exec with -C this exact path)' },
 ]
 
@@ -548,4 +554,141 @@ test('cwd-pin: no subagent prompt in the loop carries a bare cwd-dependent backt
     offenders, [],
     `every backtick git command in a subagent prompt must be git -C \${worktree} (or the isolation reader): ${offenders.join(', ')}`,
   )
+})
+
+// === TUR-447 ruling-56 cycle2: GITHUB reads must be REPO-PINNED, and the host PUSH + abort remote
+// verify must be git -C-pinned (delivery-lifecycle launch-readback, delivery-tdd-host-gated-push,
+// delivery-tdd-named-test-live-remote-readback; loop-correctness single-writer). The cycle-1 fix
+// pinned only git HEAD reads with git -C, leaving TWO residual repo-inference holes:
+//   (obligation 1) every `gh pr view` / `gh api` in a subagent prompt inferred the repo from the
+//   AMBIENT cwd, so on the shared box a foreign lane worktree could select the WRONG repository. A gh
+//   read must be REPO-PINNED to the canonical owner/repo slug from bound inputs: `gh pr view <pr>
+//   --repo <slug>` or a repo-bound `gh api repos/<slug>/...` endpoint, never a cwd-inferred repo.
+//   (obligation 4) the host git PUSH command itself was unspecified (a subagent could run bare `git
+//   push` in the foreign cwd) and the abort remote-verify was unpinned. The push must be `git -C
+//   <worktree> push` and the abandon/abort remote verify must use `git -C <worktree>` (or a repo-
+//   pinned gh), so nothing inherits the ambient cwd or a cwd-inferred repo.
+// These are SOURCE assertions over the real production loop text. They FAIL on the cycle-1 loop
+// (which had bare `gh pr view`, a bare `gh api` with no repos/<slug>/ endpoint, and no `git -C
+// <worktree> push` literal) and pass only after the gh + push pin lands.
+
+// Every gh-reading prompt site and the gh command shape it must carry. `apiEndpoint:true` sites use
+// the gh REST api (must carry a repo-bound `repos/<slug>/` endpoint); the rest use `gh pr view`
+// (must carry `--repo <slug>`). Both derive the canonical slug from the bound inputs, never cwd.
+const GH_PIN_SITES = [
+  { name: 'liveReadback', anchor: 'You are a fresh READ-ONLY octo-lite readback subagent', apiEndpoint: false },
+  { name: 'pre-push readback', anchor: 'You are a fresh READ-ONLY octo-lite pre-push readback', apiEndpoint: false },
+  { name: 'post-push live-remote readback', anchor: 'You are a fresh READ-ONLY octo-lite post-push live-remote readback', apiEndpoint: true },
+]
+
+function ghPinRegion(anchor) {
+  const start = LOOP_SRC.indexOf(anchor)
+  assert.ok(start >= 0, `gh-pin anchor missing from loop source: ${anchor}`)
+  // Each prompt array joins into a single agent() call; 1700 chars covers the gh-read instructions.
+  return LOOP_SRC.slice(start, start + 1700)
+}
+
+test('gh-pin: every gh-reading prompt is REPO-PINNED to the canonical slug (gh pr view --repo <slug> / gh api repos/<slug>/), never a cwd-inferred repo', () => {
+  for (const site of GH_PIN_SITES) {
+    const region = ghPinRegion(site.anchor)
+    if (site.apiEndpoint) {
+      // A gh api read must hit a repo-BOUND endpoint (repos/<slug>/...), interpolating the slug.
+      assert.match(
+        region, /gh api repos\/\$\{slug\}\//,
+        `${site.name} gh api must use a repo-bound endpoint gh api repos/\${slug}/...`,
+      )
+    } else {
+      // A gh pr view read must carry --repo <slug> so gh does not infer the repo from cwd.
+      assert.match(
+        region, /gh pr view \$\{pr\} --repo \$\{slug\}/,
+        `${site.name} must pin gh pr view with --repo \${slug}`,
+      )
+    }
+  }
+})
+
+test('gh-pin: no gh-reading prompt carries a bare cwd-inferred gh pr view (no --repo) or a repo-unpinned gh api', () => {
+  for (const site of GH_PIN_SITES) {
+    const region = ghPinRegion(site.anchor)
+    // A `gh pr view <pr>` not immediately followed by --repo would infer the repo from the ambient
+    // (foreign) cwd. None may remain.
+    assert.doesNotMatch(
+      region, /gh pr view \$\{pr\} --json/,
+      `${site.name} must not use a bare gh pr view (no --repo) that infers the repo from cwd`,
+    )
+    // A backtick `gh api` command literal not bound to a repos/<slug>/ endpoint infers the repo from
+    // cwd. None may remain (prose references to the "gh api" label are not command literals).
+    assert.doesNotMatch(
+      region, /`gh api(?!\s+repos\/\$\{slug\}\/)/,
+      `${site.name} must not use a repo-unpinned gh api command that infers the repo from cwd`,
+    )
+  }
+})
+
+test('push-pin: the host push COMMAND is git -C ${worktree}-pinned (git -C <worktree> push), never a bare git push', () => {
+  const start = LOOP_SRC.indexOf('You are a fresh octo-lite host push subagent')
+  assert.ok(start >= 0, 'host-push anchor missing from loop source')
+  const region = LOOP_SRC.slice(start, start + 1700)
+  // The push command itself must be pinned to the host issue worktree; a bare `git push` would push
+  // from the ambient (foreign) cwd's branch.
+  assert.match(
+    region, /git -C \$\{worktree\} push/,
+    'the host push command must be git -C ${worktree} push',
+  )
+  assert.doesNotMatch(
+    region, /`git push\b/,
+    'the host push command must not be a bare git push',
+  )
+})
+
+test('push-pin: the abort remote-verify is git -C ${worktree}-pinned (or repo-pinned gh), never a cwd-inferred remote read', () => {
+  const start = LOOP_SRC.indexOf('You are a fresh octo-lite host-non-push abort subagent')
+  assert.ok(start >= 0, 'abort anchor missing from loop source')
+  const region = LOOP_SRC.slice(start, start + 1700)
+  // The abort verifies the branch is NOT on the remote. That remote read must be pinned: a
+  // git -C <worktree> ls-remote or a repo-pinned gh api repos/<slug>/, never a bare cwd-inferred read.
+  assert.match(
+    region, /git -C \$\{worktree\} ls-remote|gh api repos\/\$\{slug\}\//,
+    'the abort remote-verify must use git -C ${worktree} ls-remote or a repo-pinned gh api',
+  )
+  assert.doesNotMatch(
+    region, /`gh api(?!\s+repos\/\$\{slug\}\/)/,
+    'the abort must not use a repo-unpinned gh api command that infers the repo from cwd',
+  )
+})
+
+// Source-wide audit (loop-correctness single-writer): NO subagent prompt in the loop may carry a
+// repo-UNPINNED gh command literal. Every backtick-quoted `gh <cmd>` string the loop hands a subagent
+// must be repo-pinned to the canonical slug: `gh pr view ... --repo ${slug}` or `gh api repos/${slug}/`,
+// so nothing infers the repo from the ambient (foreign lane) cwd. There is NO isolation-reader
+// exemption for gh: even an isolated-worktree reader that hits GitHub must name the canonical repo.
+test('gh-pin: no subagent prompt in the loop carries a repo-unpinned backtick gh command literal', () => {
+  const lines = LOOP_SRC.split('\n')
+  const offenders = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (/^\s*\/\//.test(line)) continue // skip pure comment lines
+    // Match a backtick-quoted gh command literal: `gh <subcommand>...
+    const m = line.match(/`gh (pr|api|issue|repo|release|run|workflow)\b/)
+    if (!m) continue
+    // A repo-pinned gh pr view carries --repo ${slug}; a repo-bound gh api carries repos/${slug}/.
+    if (/--repo \$\{slug\}/.test(line) || /repos\/\$\{slug\}\//.test(line)) continue
+    offenders.push(`L${i + 1}: ${m[0].slice(1)}`)
+  }
+  assert.deepEqual(
+    offenders, [],
+    `every backtick gh command in a subagent prompt must be repo-pinned (--repo \${slug} or repos/\${slug}/): ${offenders.join(', ')}`,
+  )
+})
+
+// The source-wide bare-git scanner must also catch a bare `git push`, not only reads. The cycle-1
+// scanner exempted `git rev-list` (the isolation reader's ancestry read); it must NOT blanket-exempt
+// every git subcommand. This asserts a bare backtick `git push` (no -C) is caught as an offender by
+// the existing scanner regex, so a host push command can never be an unpinned bare git push.
+test('push-pin: the source-wide bare-git scanner catches a bare backtick git push (not exempted)', () => {
+  // The scanner regex from the audit above; a bare `git push` must match it (and is not the rev-list
+  // exemption), proving a bare push literal would be reported as an offender.
+  const m = '`git push origin'.match(/`git (?!-C\b)([a-z-]+)/)
+  assert.ok(m && m[1] === 'push', 'a bare git push must be caught by the bare-git scanner')
+  assert.notEqual(m[1], 'rev-list', 'git push is not the sanctioned rev-list exemption')
 })

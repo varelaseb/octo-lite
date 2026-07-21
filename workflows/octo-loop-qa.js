@@ -1624,6 +1624,16 @@ async function resolveRuntime(role, phaseTitle, worktreeAbs, schema, issue) {
   return runtime
 }
 
+// TUR-447 ruling-56 cycle2 canonical GitHub repo slug (loop-correctness single-writer; delivery-
+// lifecycle launch-readback). A.repo is a LOCAL PATH used for git -C; the canonical owner/repo gh
+// identity is the SEPARATE A.repo_slug the host derives from the worktree remote (git -C <worktree>
+// remote get-url origin, normalized to owner/repo) and binds into the envelope. Every gh command in a
+// subagent prompt is pinned to THIS slug (gh pr view --repo <slug> / gh api repos/<slug>/...), so gh
+// never infers the repository from the ambient (foreign lane) cwd. A missing slug fails closed.
+function ghRepoSlug() {
+  return requiredNonEmptyString(A.repo_slug, 'canonical GitHub repo slug (owner/repo)')
+}
+
 // Live readback immediately before EVERY native spawn (TUR-447 F3 Unit H; role-runtime
 // launch-readback, launch-gates-workflow-layer). The loop itself cannot read Linear, the
 // PR, or git (the Workflow sandbox has no filesystem or network), and it must NOT trust a
@@ -1645,6 +1655,10 @@ async function liveReadback(role, phaseTitle, startingHead, worktree) {
   // WRONG worktree. Pin the git read to the host issue worktree (git -C ${worktree}) and forbid the
   // subagent from relying on the ambient current working directory.
   requiredNonEmptyString(worktree, 'readback host worktree')
+  // TUR-447 ruling-56 cycle2 gh repo pin (loop-correctness single-writer): a gh read must NOT infer
+  // the repo from the ambient (foreign lane) cwd. Every gh command is pinned to the canonical
+  // owner/repo slug from the bound inputs, so it always selects the right repository.
+  const slug = ghRepoSlug()
   const fresh = await agent([
     `You are a fresh READ-ONLY octo-lite readback subagent for the ${role} spawn. One pass;`,
     'never mutate. Perform LIVE reads NOW, immediately before dispatch, and return them:',
@@ -1656,8 +1670,9 @@ async function liveReadback(role, phaseTitle, startingHead, worktree) {
     // Todo-entry passes while a real content change still diverges the exact_fingerprint.
     `- linear_fingerprint: run scripts/octo-control linear-read ${issue} and use ITS returned`,
     '  fingerprint field verbatim. Do NOT improvise, recompute, or self-hash the fingerprint.',
-    `- pr_head: the live PR head oid (gh pr view ${pr} --json headRefOid) of the PR.`,
-    `- branch: the live head branch of the PR (expected ${branch}).`,
+    `- pr_head: the live PR head oid (\`gh pr view ${pr} --repo ${slug} --json headRefOid\`) of the PR.`,
+    `  The gh read is REPO-PINNED to ${slug}; never let gh infer the repo from the current working directory.`,
+    `- branch: the live head branch of the PR (\`gh pr view ${pr} --repo ${slug} --json headRefName\`, expected ${branch}).`,
     `- git_head: the live git HEAD of the host issue worktree, read via \`git -C ${worktree} rev-parse HEAD\`.`,
     `  Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
     '  it may be a foreign lane worktree on a shared box.',
@@ -2000,6 +2015,9 @@ async function acceptWorkerEchoOrDiscard(role, phaseTitle, bound, result, worktr
 async function abandonUnpushedBranchOrStop(reason, phaseTitle, bound, result, worktree) {
   const branch = required(A.branch, 'branch')
   const finalCommit = result.final_commit ?? result.head
+  // TUR-447 ruling-56 cycle2 repo pin (obligation 4): the remote-verify read is pinned to the host
+  // worktree (git -C ls-remote) or the canonical slug (gh api repos/<slug>/), never a cwd-inferred repo.
+  const slug = ghRepoSlug()
   const abandoned = await agent([
     `You are a fresh octo-lite host-non-push abort subagent for a REJECTED committed ${bound.role} pass (${reason}).`,
     'One pass only; NEVER push. The worker committed the red then green on the ISOLATED delivery branch and the',
@@ -2012,7 +2030,9 @@ async function abandonUnpushedBranchOrStop(reason, phaseTitle, bound, result, wo
     // a FOREIGN lane worktree; pin every git op to the host issue worktree via git -C, never the ambient cwd.
     `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
     'it may be a foreign lane worktree on a shared box.',
-    'Confirm the branch is NOT pushed (its commits are absent from the remote), and read back the worktree',
+    `Confirm the branch is NOT pushed: read the live remote with \`git -C ${worktree} ls-remote origin ${branch}\``,
+    `(or the repo-pinned \`gh api repos/${slug}/git/ref/heads/${branch}\`, which 404s when absent); its commits`,
+    'must be ABSENT from the remote. Never infer the repo from the ambient cwd. Then read back the worktree',
     `HEAD (\`git -C ${worktree} rev-parse HEAD\`) and \`git -C ${worktree} status --porcelain\`. If the worktree is`,
     'clean at the committed HEAD, leave the branch in place unpushed and return abandoned:true, pushed:false,',
     'dirty:false with the head and status. If the',
@@ -2221,6 +2241,9 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
   const issue = required(A.issue, 'issue')
   const pr = required(A.pr, 'pr')
   const branch = required(A.branch, 'branch')
+  // TUR-447 ruling-56 cycle2 gh repo pin: the gh reads below are pinned to the canonical slug, never
+  // inferred from the ambient (foreign lane) cwd.
+  const slug = ghRepoSlug()
   const freshAfter = await agent([
     `You are a fresh READ-ONLY octo-lite pre-push readback subagent for the ${role} pass. One pass;`,
     'never mutate. Perform LIVE reads NOW, immediately before the host pushes the committed branch, and',
@@ -2230,8 +2253,9 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     // linear-read exact_fingerprint (the same source as the envelope), NEVER improvised or self-hashed.
     `- linear_fingerprint: run scripts/octo-control linear-read ${issue} and use ITS returned`,
     '  fingerprint field verbatim. Do NOT improvise, recompute, or self-hash the fingerprint.',
-    `- pr_head: the live PR head oid (gh pr view ${pr} --json headRefOid).`,
-    `- branch: the live head branch of the PR (expected ${branch}).`,
+    `- pr_head: the live PR head oid (\`gh pr view ${pr} --repo ${slug} --json headRefOid\`).`,
+    `  The gh read is REPO-PINNED to ${slug}; never let gh infer the repo from the current working directory.`,
+    `- branch: the live head branch of the PR (\`gh pr view ${pr} --repo ${slug} --json headRefName\`, expected ${branch}).`,
     `- git_head: the live git HEAD of the host issue worktree, read via \`git -C ${worktree} rev-parse HEAD\``,
     `  (expected the committed final HEAD ${finalCommit}).`,
     `  Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
@@ -2269,7 +2293,10 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     `  branch: ${branch}`,
     `  committed_final_head: ${finalCommit}`,
     `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
-    'it may be a foreign lane worktree on a shared box. Push the branch of that pinned worktree.',
+    'it may be a foreign lane worktree on a shared box.',
+    // TUR-447 ruling-56 cycle2 push pin (obligation 4): the PUSH command itself is pinned to the host
+    // issue worktree via git -C, so it never pushes the ambient (foreign lane) cwd's branch.
+    `PUSH the pinned worktree's branch with \`git -C ${worktree} push origin ${branch}\`; do not run an unpinned push.`,
     `Return pushed:true and the pushed head (\`git -C ${worktree} rev-parse HEAD\`, which must equal the committed final HEAD).`,
   ].join('\n'), {
     label: `host-push:${bound.issue}`, phase: phaseTitle,
@@ -2292,11 +2319,13 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     `You are a fresh READ-ONLY octo-lite post-push live-remote readback subagent for the ${role} pass.`,
     'One pass; never mutate. The host just pushed the committed branch. Confirm the pushed HEAD by a LIVE',
     'REMOTE read, NOT a local tracking ref:',
-    `- remote_head: the live pushed head oid on remote branch ${branch}, read via \`gh api\` (the PR/branch`,
-    `  ref) or \`git -C ${worktree} ls-remote\` the remote; do NOT read a local remote-tracking ref.`,
+    `- remote_head: the live pushed head oid on remote branch ${branch}, read via a REPO-PINNED`,
+    `  \`gh api repos/${slug}/git/ref/heads/${branch}\` (the repo-bound REST endpoint) or`,
+    `  \`git -C ${worktree} ls-remote origin ${branch}\`; do NOT read a local remote-tracking ref.`,
     '- remote_source: "gh-api" if you used gh api, or "git-ls-remote" if you used git ls-remote.',
-    // TUR-447 ruling-56 host cwd pin: gh api resolves the repo from the PR/branch ref (not cwd); any git
-    // ls-remote must run against the host issue worktree via git -C, never the ambient cwd.
+    // TUR-447 ruling-56 cycle2 repo pin (obligation 1): the REST call hits the repo-bound
+    // repos/<slug>/ endpoint, never inferring the repo from cwd; any git ls-remote runs against the
+    // host issue worktree via git -C, never the ambient cwd.
     `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
     'it may be a foreign lane worktree on a shared box. Read it yourself from the live remote; do NOT copy any',
     'value from this prompt or the push subagent.',
