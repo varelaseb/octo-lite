@@ -1210,46 +1210,80 @@ async function spawnReconciler(phaseTitle) {
   })
   if (acknowledged === null) throw new Error('reconciler read-only ack phase returned no result')
   // Host verifies the snapshot-proof echo against the durable journal binding through the launcher;
-  // a missing or digest-mismatched snapshot, or the retired receipt shape, fails closed here.
+  // a missing or digest-mismatched snapshot, or the retired receipt shape, fails closed here. The
+  // verifier RETURNS the journal-bound snapshot path and digest it proved, so the classifier is wired
+  // to the ACTUAL verified snapshot (TUR-447 cycle1 pass3 reconcile binding, gpt-5.6-sol HIGH).
   const verified = await agent([
     'You are a fresh READ-ONLY octo-lite reconcile ack verifier. One pass; never mutate.',
     'Invoke octo_lite.launch verify_reconcile_workflow_ack with the journal path and the ack below;',
     `journal path: ${journalPath}`,
     'ack:', JSON.stringify(acknowledged.ack ?? acknowledged, null, 2),
-    'Return { verified: true } only if it succeeds; a GateError means fail closed, do not swallow it.',
+    'It returns the verified echo. Return { verified: true, snapshot_path, snapshot_digest } echoing the',
+    'journal-bound reconcile.snapshot_path and reconcile.snapshot_digest it verified; a GateError means',
+    'fail closed, do not swallow it.',
   ].join('\n'), {
     label: `reconciler-ack-verify:${issue}`, phase: phaseTitle,
-    schema: { type: 'object', required: ['verified'], properties: { verified: { type: 'boolean' } } },
+    schema: {
+      type: 'object', required: ['verified', 'snapshot_path', 'snapshot_digest'],
+      properties: {
+        verified: { type: 'boolean' },
+        snapshot_path: { type: 'string' }, snapshot_digest: { type: 'string' },
+      },
+    },
     agentType: 'Explore',
   })
   if (verified === null || verified.verified !== true) throw new Error('reconciler ack verification failed')
+  const verifiedDigest = required(verified.snapshot_digest, 'verified snapshot digest')
+  const verifiedPath = required(verified.snapshot_path, 'verified snapshot path')
   // Phase 2: read-only classification spawn (Sonnet classifies deltas; needs_fable escalates). Still
   // Read-restricted: the reconciler never mutates a source, so this phase also runs under agentType
-  // 'Explore'. It returns the classification and re-echoes the ack.
+  // 'Explore'. The classifier is bound to the verified snapshot: it receives the journal path AND the
+  // verified snapshot path+digest, opens that exact journal-bound snapshot itself, classifies against
+  // it (never blind), and re-echoes the verified ack.
   assertContainment(worktreeRoot, worktree)
   const brief = required(A.brief, 'reconcile brief')
   const classified = await agent([
     'You are a fresh READ-ONLY octo-lite reconciler in the classification phase. Never mutate a source,',
     'never override a deterministic mismatch, never investigate open-endedly, never silently resolve',
-    'ambiguity. One pass only. Classify the journal-bound normalized snapshot deltas as one of changed,',
-    'missing, stale, contradictory, unchanged, or needs_fable. Missing or unparseable input and semantic',
-    'ambiguity return needs_fable so Fable judges the case. Re-echo the verified ack object and return the',
-    `classification, needs_fable, and the concrete deltas.\n\n${brief}`,
+    'ambiguity. One pass only. Read the durable reconcile journal entry and the exact journal-bound',
+    'verified snapshot yourself; classify against that snapshot, not blind. Classify the journal-bound',
+    'normalized snapshot deltas as one of changed, missing, stale, contradictory, unchanged, or',
+    'needs_fable. Missing or unparseable input and semantic ambiguity return needs_fable so Fable judges',
+    'the case. Re-echo the verified ack object (its snapshot_path and snapshot_digest included) and return',
+    'the classification, needs_fable, and the concrete deltas.',
+    `journal path: ${journalPath}`,
+    `verified snapshot_path: ${verifiedPath}`,
+    `verified snapshot_digest: ${verifiedDigest}`,
+    `\n${brief}`,
   ].join('\n'), {
     label: `reconciler:${issue}`, phase: phaseTitle, schema: RECONCILE_RESULT_SCHEMA, agentType: 'Explore',
   })
   if (classified === null) throw new Error('reconciler classification phase returned no result')
+  // The classification is BOUND to the verified snapshot: the classifier's re-echoed ack must carry the
+  // exact journal-bound snapshot digest the host verified, or the classification came from a different
+  // (or no) snapshot and fails closed here before any binding. The ack is NOT discarded.
+  const classifiedAck = classified.ack ?? {}
+  if (String(classifiedAck.snapshot_digest) !== String(verifiedDigest)) {
+    throw new Error('reconcile classification not bound to the verified snapshot')
+  }
   // Host binds the classification into the durable journal and cleans up the read-only worktree KEYED ON
-  // that journal entry (workspace-cleanup-reconcile), through the launcher. A vanished or substituted
-  // journal, or the retired receipt shape, fails closed and preserves the worktree.
+  // that journal entry (workspace-cleanup-reconcile), through the launcher. It carries the re-echoed ack
+  // and the verified snapshot digest so bind_reconcile_workflow_result re-verifies the ack, the enum, the
+  // digest, and needs_fable consistency; a vanished/substituted journal or retired receipt shape fails
+  // closed and preserves the worktree.
   const bound = await agent([
     'You are a fresh octo-lite reconcile result binder. One pass only.',
     'Invoke octo_lite.launch bind_reconcile_workflow_result with the journal path and the classification',
     'below; it binds the result into the durable journal entry and cleans up the read-only worktree keyed',
-    'on that journal entry. Never write a TOML receipt.',
+    'on that journal entry. It re-verifies the carried ack against the journal and rejects a non-enum',
+    'classification, a digest mismatch, a missing ack, or an inconsistent needs_fable flag. Never write a',
+    'TOML receipt.',
     `journal path: ${journalPath}`,
     'classification:', JSON.stringify(
-      { classification: classified.classification, needs_fable: classified.needs_fable, deltas: classified.deltas },
+      {
+        classification: classified.classification, needs_fable: classified.needs_fable,
+        deltas: classified.deltas, snapshot_digest: verifiedDigest, ack: classifiedAck,
+      },
       null, 2,
     ),
     'Return the bound result it returns.',

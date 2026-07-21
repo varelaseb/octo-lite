@@ -441,3 +441,109 @@ test('F2: the resolver command runs for real, exits 0, and prints the resolved r
   assert.ok(/blob = "[0-9a-f]{40,64}"/.test(out), 'resolve prints contract blob')
   assert.ok(out.includes('Independently review one exact implementation HEAD'), 'resolve prints contract text')
 })
+
+// TUR-447 cycle1 pass3 reconcile binding (role-runtime role-reconciler-snapshot-receipt-binding,
+// role-reconciler-snapshot-integrity, role-reconciler-authority; operating-model
+// decision-109-binding). The gpt-5.6-sol HIGH finding: the reconcile classifier received neither
+// the journal path nor the verified snapshot, so it classified BLIND, and the loop discarded the
+// classified.ack, binding whatever classification came back. These composed tests drive the ACTUAL
+// reconcile mode end to end and prove the classifier is wired to the journal-bound snapshot and the
+// verified ack is carried into the binder, never discarded.
+const JOURNAL_PATH = '/root/worktrees/sweep-1/journal.json'
+const SNAP_DIGEST = 'd'.repeat(64)
+
+function reconcileEnvelope(overrides = {}) {
+  return {
+    mode: 'reconcile',
+    repo: REPO, issue: ISSUE, pr: PR, branch: BRANCH,
+    worktree_root: '/root/worktrees', worktree: 'sweep-1',
+    journal_path: JOURNAL_PATH,
+    brief: 'Classify the reconcile deltas against the journal-bound snapshot.',
+    ...overrides,
+  }
+}
+
+// A healthy reconcile script: read-only ack (Explore) -> ack verify -> read-only classify
+// (Explore) -> bind. The ack + ack-verify echo the journal-bound snapshot digest; the
+// classifier re-echoes the verified ack; the binder returns the bound result.
+function reconcileScript({
+  ackSnapshotDigest = SNAP_DIGEST, verifiedDigest = SNAP_DIGEST,
+  classification = 'changed', needsFable = false, classifierAck, boundOk = true,
+} = {}) {
+  const ack = {
+    schema_version: 1, spawn_id: 'spawn-recon-1', launch_revision: 'lr-recon',
+    role: 'reconciler', worktree: '/root/worktrees/sweep-1', starting_head: HEAD,
+    snapshot_path: '/root/worktrees/sweep-1/snapshot.md', snapshot_digest: ackSnapshotDigest,
+    ready: true, blocker: '',
+  }
+  const echoedAck = classifierAck ?? ack
+  return [
+    ['reconciler-ack:', { ack }],
+    ['reconciler-ack-verify:', {
+      verified: true, snapshot_path: ack.snapshot_path, snapshot_digest: verifiedDigest,
+    }],
+    ['reconciler:', {
+      ack: echoedAck, classification, needs_fable: needsFable,
+      deltas: ['TUR-1 PR head moved'],
+    }],
+    ['reconciler-bind:', ({ prompt }) => {
+      // A genuine binder subagent invokes bind_reconcile_workflow_result, which now REQUIRES
+      // the re-echoed ack; a bind prompt that omitted it would fail closed in Python. The
+      // composed binder returns the bound result the loop reports.
+      return boundOk
+        ? { bound: true, classification, needs_fable: needsFable, deltas: ['TUR-1 PR head moved'] }
+        : { bound: false, classification, needs_fable: needsFable, deltas: [] }
+    }],
+  ]
+}
+
+test('reconcile: the classifier receives the journal path AND the verified snapshot (not blind)', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(reconcileScript())
+  const A = reconcileEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'reconcile-classified')
+  assert.equal(result.classification, 'changed')
+  const classifierCall = agent.calls.find((c) => c.label === `reconciler:${ISSUE}`)
+  assert.ok(classifierCall, 'classifier spawn ran')
+  assert.equal(classifierCall.agentType, 'Explore', 'classifier is read-only')
+  // Not blind: the classifier prompt carries the journal path so it classifies against the
+  // ACTUAL journal-bound snapshot, and it carries the verified snapshot digest.
+  assert.ok(classifierCall.prompt.includes(JOURNAL_PATH), 'classifier brief carries the journal path')
+  assert.ok(classifierCall.prompt.includes(SNAP_DIGEST), 'classifier brief carries the verified snapshot digest')
+})
+
+test('reconcile: the verified ack is CARRIED into the binder, never discarded', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(reconcileScript())
+  const A = reconcileEnvelope()
+  await factory(agent, JSON.stringify(A), noop)
+  const bindCall = agent.calls.find((c) => c.label === `reconciler-bind:${ISSUE}`)
+  assert.ok(bindCall, 'bind spawn ran')
+  // The classifier re-echoed the verified ack; the binder prompt must carry that ack (its
+  // snapshot_path + digest) so bind_reconcile_workflow_result can re-verify it. A loop that
+  // discarded classified.ack would omit it here.
+  assert.ok(bindCall.prompt.includes('snapshot_digest'), 'bind prompt carries the ack snapshot digest field')
+  assert.ok(bindCall.prompt.includes(SNAP_DIGEST), 'bind prompt carries the verified snapshot digest')
+  assert.ok(bindCall.prompt.includes('/root/worktrees/sweep-1/snapshot.md'), 'bind prompt carries the ack snapshot path')
+})
+
+test('reconcile: a classifier whose re-echoed ack digest MISMATCHES the verified digest is REJECTED', async () => {
+  const factory = loadLoop()
+  // The classifier re-echoes an ack whose snapshot digest disagrees with the digest the host
+  // verified against the journal: the reconciler is not bound to the verified snapshot.
+  const badAck = {
+    schema_version: 1, spawn_id: 'spawn-recon-1', launch_revision: 'lr-recon',
+    role: 'reconciler', worktree: '/root/worktrees/sweep-1', starting_head: HEAD,
+    snapshot_path: '/root/worktrees/sweep-1/snapshot.md', snapshot_digest: '0'.repeat(64),
+    ready: true, blocker: '',
+  }
+  const agent = makeAgent(reconcileScript({ classifierAck: badAck }))
+  const A = reconcileEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /reconcile classification not bound to the verified snapshot/,
+  )
+  // The binder was never reached: a mismatch fails closed in the loop before binding.
+  assert.ok(!agent.calls.some((c) => c.label === `reconciler-bind:${ISSUE}`), 'binder not reached on ack mismatch')
+})

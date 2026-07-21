@@ -1469,22 +1469,61 @@ def verify_reconcile_workflow_ack(journal_path: Path, acknowledgment: Mapping[st
     return echo
 
 
+# role-reconciler-authority, role-reconciler-escalation: the exhaustive set of
+# classifications the reconciler may bind. Anything else is not a valid deterministic
+# verdict and never binds. needs_fable is the sole escalation label.
+RECONCILE_CLASSIFICATIONS = (
+    "changed",
+    "missing",
+    "stale",
+    "contradictory",
+    "unchanged",
+    "needs_fable",
+)
+
+
 def bind_reconcile_workflow_result(journal_path: Path, classification: Mapping[str, Any]) -> dict[str, Any]:
     """Bind the reconciler subagent's read-only classification into the durably persisted
     journal entry, then clean up keyed on that entry (workspace-cleanup-reconcile). The
-    reconciler classifies deltas as changed, missing, stale, contradictory, or needs_fable
-    and never mutates a source (role-reconciler-input, role-reconciler-authority); missing,
+    reconciler classifies deltas as changed, missing, stale, contradictory, or unchanged and
+    never mutates a source (role-reconciler-input, role-reconciler-authority); missing,
     unparseable, or semantically ambiguous input escalates with needs_fable so Fable judges
-    the case (role-reconciler-escalation). A journal that vanished or was substituted since
-    bootstrap, or that presents the retired receipt shape, fails closed and preserves the
-    worktree for inspection."""
+    the case (role-reconciler-escalation).
+
+    TUR-447 cycle1 pass3 reconcile binding (role-reconciler-snapshot-receipt-binding,
+    role-reconciler-snapshot-integrity): the classification is BOUND to the verified,
+    journal-bound snapshot proof, never accepted blind. It must carry the reconciler's
+    re-echoed acknowledgment, which is re-verified against the durable journal binding here
+    (so a missing, discarded, or digest-mismatched ack fails closed and the ack is never
+    dropped); its classification must be an exhaustive-enum member; the snapshot digest it
+    reports must equal the journal-bound digest; and its needs_fable flag must be consistent
+    with the classification. A journal that vanished or was substituted since bootstrap, or
+    that presents the retired receipt shape, fails closed and preserves the worktree."""
     bound = load_reconcile_journal(journal_path)
     if bound.get("bootstrap", {}).get("verified") is not True:
         raise GateError("reconcile journal bootstrap not verified")
+    # The reconciler's re-echoed ack is ENFORCED, not discarded: re-verify it against the
+    # durable journal binding. A missing ack, or one whose journal-bound snapshot path/digest
+    # or bound identity disagrees, raises here before anything binds.
+    acknowledgment = classification.get("ack")
+    if not isinstance(acknowledgment, Mapping) or not acknowledgment:
+        raise GateError("reconcile result ack missing")
+    verified_echo = verify_reconcile_workflow_ack(journal_path, acknowledgment)
+    # The classification's own reported snapshot digest must equal the journal-bound digest,
+    # so a classification produced against a different (or no) snapshot never binds.
+    journal_digest = str(bound["reconcile"]["snapshot_digest"])
+    if str(classification.get("snapshot_digest")) != journal_digest:
+        raise GateError("reconcile result snapshot_digest mismatch")
+    if str(verified_echo.get("snapshot_digest")) != journal_digest:
+        raise GateError("reconcile result ack snapshot_digest mismatch")
     needs_fable = bool(classification.get("needs_fable"))
-    label = str(classification.get("classification") or ("needs_fable" if needs_fable else ""))
-    if not label:
-        raise GateError("reconcile classification required")
+    label = str(classification.get("classification") or "")
+    if label not in RECONCILE_CLASSIFICATIONS:
+        raise GateError(f"reconcile classification not a valid verdict: {label or '(empty)'}")
+    # needs_fable is the escalation label and only that label: the flag and the classification
+    # agree or the verdict is inconsistent.
+    if (label == "needs_fable") != needs_fable:
+        raise GateError("reconcile needs_fable flag inconsistent with classification")
     deltas = list(classification.get("deltas") or [])
     result = {
         "bound": True,

@@ -944,9 +944,7 @@ class ReconcileWorkflowSubagentTests(unittest.TestCase):
         verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
         self.assertTrue(self.worktree.exists())
         # Result binding + cleanup requires the durable journal entry, not a receipt.
-        bind_reconcile_workflow_result(
-            prepared.journal_path, {"classification": "changed", "needs_fable": False, "deltas": ["TUR-1 PR head moved"]},
-        )
+        bind_reconcile_workflow_result(prepared.journal_path, self._classified(prepared))
         bound = self.read_journal()
         self.assertTrue(bound["result"]["bound"])
         self.assertEqual("changed", bound["result"]["classification"])
@@ -955,11 +953,10 @@ class ReconcileWorkflowSubagentTests(unittest.TestCase):
     def test_workflow_cleanup_fails_closed_when_journal_vanished(self) -> None:
         prepared = self.bind()
         verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        classified = self._classified(prepared)
         prepared.journal_path.unlink()
         with self.assertRaisesRegex(GateError, "reconcile journal missing"):
-            bind_reconcile_workflow_result(
-                prepared.journal_path, {"classification": "changed", "needs_fable": False, "deltas": []},
-            )
+            bind_reconcile_workflow_result(prepared.journal_path, classified)
         self.assertTrue(self.worktree.exists())
 
     # RED 4: the new path rejects the retired octo-lite-reconcile receipt shape.
@@ -1014,7 +1011,10 @@ class ReconcileWorkflowSubagentTests(unittest.TestCase):
         verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
         bind_reconcile_workflow_result(
             prepared.journal_path,
-            {"classification": "needs_fable", "needs_fable": True, "deltas": ["ambiguous: TUR-1 contradictory state"]},
+            self._classified(
+                prepared, classification="needs_fable", needs_fable=True,
+                deltas=["ambiguous: TUR-1 contradictory state"],
+            ),
         )
         bound = self.read_journal()
         self.assertTrue(bound["result"]["bound"])
@@ -1032,6 +1032,100 @@ class ReconcileWorkflowSubagentTests(unittest.TestCase):
         ack["snapshot_digest"] = "0" * 64
         with self.assertRaisesRegex(GateError, "snapshot_digest"):
             verify_reconcile_workflow_ack(prepared.journal_path, ack)
+        self.assertNotIn("result", self.read_journal())
+        self.assertTrue(self.worktree.exists())
+
+    # TUR-447 cycle1 pass3 reconcile binding (role-reconciler-snapshot-receipt-binding,
+    # role-reconciler-snapshot-integrity, role-reconciler-authority). The gpt-5.6-sol high
+    # finding: the Python binder accepted ANY nonempty classification once bootstrap was
+    # marked verified, without checking the acknowledgment, the snapshot digest, the enum,
+    # or needs_fable consistency. The binder now cross-checks the reconciler classification
+    # against the durable journal-bound snapshot proof before it binds.
+    def _classified(self, prepared, **overrides) -> dict:
+        # A genuine classifier re-echoes the verified ack (which carries the journal-bound
+        # snapshot_path + snapshot_digest) alongside the classification, so the binder can
+        # prove the classification came from the ack-verified, journal-bound snapshot.
+        journal = self.read_journal()
+        base = {
+            "classification": "changed",
+            "needs_fable": False,
+            "deltas": ["TUR-1 PR head moved"],
+            "ack": self.workflow_ack(prepared),
+            "snapshot_digest": journal["reconcile"]["snapshot_digest"],
+        }
+        base.update(overrides)
+        return base
+
+    # RED (result must carry the ack; a MISSING/failed ack is rejected, ack not discarded).
+    def test_result_binding_rejects_a_classification_with_no_verified_ack(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        classified = self._classified(prepared)
+        del classified["ack"]
+        with self.assertRaisesRegex(GateError, "reconcile result ack"):
+            bind_reconcile_workflow_result(prepared.journal_path, classified)
+        self.assertNotIn("result", self.read_journal())
+        self.assertTrue(self.worktree.exists())
+
+    def test_result_binding_rejects_a_classification_whose_ack_snapshot_digest_mismatches(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        bad_ack = self.workflow_ack(prepared)
+        bad_ack["snapshot_digest"] = "0" * 64
+        classified = self._classified(prepared, ack=bad_ack, snapshot_digest="0" * 64)
+        with self.assertRaisesRegex(GateError, "snapshot_digest"):
+            bind_reconcile_workflow_result(prepared.journal_path, classified)
+        self.assertNotIn("result", self.read_journal())
+        self.assertTrue(self.worktree.exists())
+
+    def test_result_binding_rejects_a_classification_whose_result_digest_mismatches_the_journal(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        # The ack is intact but the result's own snapshot_digest field disagrees with the
+        # journal-bound digest: the classification is not bound to the verified snapshot.
+        classified = self._classified(prepared, snapshot_digest="0" * 64)
+        with self.assertRaisesRegex(GateError, "snapshot_digest"):
+            bind_reconcile_workflow_result(prepared.journal_path, classified)
+        self.assertNotIn("result", self.read_journal())
+        self.assertTrue(self.worktree.exists())
+
+    def test_result_binding_rejects_a_non_enum_classification(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        classified = self._classified(prepared, classification="fabricated")
+        with self.assertRaisesRegex(GateError, "reconcile classification"):
+            bind_reconcile_workflow_result(prepared.journal_path, classified)
+        self.assertNotIn("result", self.read_journal())
+        self.assertTrue(self.worktree.exists())
+
+    def test_result_binding_rejects_needs_fable_inconsistent_with_classification(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        # classification says needs_fable but the needs_fable flag is false: inconsistent.
+        classified = self._classified(prepared, classification="needs_fable", needs_fable=False)
+        with self.assertRaisesRegex(GateError, "needs_fable"):
+            bind_reconcile_workflow_result(prepared.journal_path, classified)
+        self.assertNotIn("result", self.read_journal())
+        self.assertTrue(self.worktree.exists())
+
+    def test_result_binding_accepts_a_genuine_ack_verified_digest_matching_enum_valid_classification(self) -> None:
+        prepared = self.bind()
+        verify_reconcile_workflow_ack(prepared.journal_path, self.workflow_ack(prepared))
+        result = bind_reconcile_workflow_result(prepared.journal_path, self._classified(prepared))
+        self.assertTrue(result["bound"])
+        self.assertEqual("changed", result["classification"])
+        self.assertFalse(result["needs_fable"])
+        bound = self.read_journal()
+        self.assertTrue(bound["result"]["bound"])
+        self.assertEqual("changed", bound["result"]["classification"])
+        self.assertFalse(self.worktree.exists())
+
+    def test_result_binding_still_fails_closed_before_ack_verification(self) -> None:
+        # Even a perfectly-shaped classification with a matching digest must not bind if the
+        # journal bootstrap was never verified (ack never enforced).
+        prepared = self.bind()
+        with self.assertRaisesRegex(GateError, "bootstrap not verified"):
+            bind_reconcile_workflow_result(prepared.journal_path, self._classified(prepared))
         self.assertNotIn("result", self.read_journal())
         self.assertTrue(self.worktree.exists())
 
