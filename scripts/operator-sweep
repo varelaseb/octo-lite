@@ -143,6 +143,40 @@ def canonical_blobs(repo: Path, head: str) -> tuple[list[str], list[str]]:
     return spec_bound, adr_bound
 
 
+# Operator-gated Linear states (sweep-operator-gated-set): the acceptance state
+# plus this target's operator-owned promotion states, excluding the terminal
+# live state, the accepted-and-merged transient, and every agent/mechanical
+# state. Exact casing verified against the repo's own 9-state usage.
+OPERATOR_GATED_STATES = {"Awaiting Accept", "In Staging", "In Preprod"}
+# One-line operator action per gated state (sweep-operator-gate-loud).
+OPERATOR_GATE_ACTION = {
+    "Awaiting Accept": "accept or reject the delivered work",
+    "In Staging": "verify staging then promote or hold",
+    "In Preprod": "authorize the live traffic shift or hold",
+}
+
+
+def _carried_issues(linear_decl) -> list[str]:
+    """A stream may declare a single `issue = "..."` (back-compat) and/or a
+    LIST `issues = ["...", "..."]`; every carried issue is read (sweep-carried-issues)."""
+    issues: list[str] = []
+    if isinstance(linear_decl, dict):
+        if linear_decl.get("issue"):
+            issues.append(str(linear_decl["issue"]))
+        raw_list = linear_decl.get("issues")
+        if isinstance(raw_list, list):
+            for entry in raw_list:
+                if entry:
+                    issues.append(str(entry))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for issue in issues:
+        if issue not in seen:
+            seen.add(issue)
+            ordered.append(issue)
+    return ordered
+
+
 def declared_stream_facts(stream_dir: Path) -> dict:
     sources_path = stream_dir / "sources.toml"
     if not sources_path.is_file():
@@ -150,12 +184,29 @@ def declared_stream_facts(stream_dir: Path) -> dict:
     declared = load_toml(sources_path)
     linear_decl = declared.get("linear")
     pr_decl = declared.get("pull_request")
-    linear_issue = str(linear_decl["issue"]) if isinstance(linear_decl, dict) and linear_decl.get("issue") else None
+    carried = _carried_issues(linear_decl)
     pr_repo = str(pr_decl["repo"]) if isinstance(pr_decl, dict) and pr_decl.get("repo") else None
     pr_number = int(pr_decl["number"]) if isinstance(pr_decl, dict) and pr_decl.get("number") else None
     facts: dict = {}
-    if linear_issue or (pr_repo and pr_number):
-        facts.update(fetch_stream_binding(linear_issue=linear_issue, pr_repo=pr_repo, pr_number=pr_number))
+    # The first carried issue plus the pull request keep the original single-issue
+    # binding shape the reconcile gateway re-verifies; the full carried set is read
+    # and surfaced through carried_linear below.
+    primary_issue = carried[0] if carried else None
+    if primary_issue or (pr_repo and pr_number):
+        facts.update(fetch_stream_binding(linear_issue=primary_issue, pr_repo=pr_repo, pr_number=pr_number))
+    if carried:
+        carried_linear = []
+        # The primary issue's binding is already fetched above; reuse it and read
+        # only the remaining carried issues, so each carried issue is read exactly
+        # once (sweep-carried-issues) with no redundant Linear call.
+        if facts.get("linear"):
+            carried_linear.append(facts["linear"])
+        for issue in carried[1:]:
+            binding = fetch_stream_binding(linear_issue=issue, pr_repo=None, pr_number=None)
+            if "linear" in binding:
+                carried_linear.append(binding["linear"])
+        if carried_linear:
+            facts["carried_linear"] = carried_linear
     for name in ("evidence", "deployment"):
         decl = declared.get(name)
         if isinstance(decl, dict) and decl.get("path"):
@@ -165,6 +216,57 @@ def declared_stream_facts(stream_dir: Path) -> dict:
                 "hash": hashlib.sha256(artifact.read_bytes()).hexdigest() if artifact.is_file() else "missing",
             }
     return facts
+
+
+def _gated_carried_states(stream_facts: dict) -> list[tuple[str, str]]:
+    """Every (issue_id, state) a stream carries whose state is operator-gated."""
+    gated: list[tuple[str, str]] = []
+    bindings = stream_facts.get("carried_linear")
+    if not bindings and stream_facts.get("linear"):
+        bindings = [stream_facts["linear"]]
+    for binding in bindings or []:
+        state = str(binding.get("state") or "")
+        identifier = str(binding.get("identifier") or "")
+        if identifier and state in OPERATOR_GATED_STATES:
+            gated.append((identifier, state))
+    return gated
+
+
+def operator_waits(waits_root: Path, stream_name: str) -> list[dict]:
+    """Source B substrate (sweep-operator-ask): a mechanical per-stream stamp the
+    lane operator-ask path writes when it sends a --kind question to the operator
+    route, cleared by the operator answer relay (herdr-ack). Read structurally,
+    never from pane transcript text, so detection is modal-safe."""
+    stamp_path = waits_root / f"{stream_name}.toml"
+    if not stamp_path.is_file():
+        return []
+    try:
+        stamp = load_toml(stamp_path)
+    except Exception:
+        return []
+    if str(stamp.get("owner") or "") != "operator":
+        return []
+    ask = str(stamp.get("ask") or "").strip()
+    if not ask:
+        return []
+    return [{"ask": ask, "message_id": str(stamp.get("message_id") or "")}]
+
+
+def operator_gate_lines(stream_dirs: list[Path], facts: dict, waits_root: Path) -> list[str]:
+    """Loud, unsuppressible operator-gate block (sweep-operator-gate-loud). Source
+    A is every carried issue in an operator-gated Linear state; Source B is every
+    open unanswered operator ask. Emitted at the very top of the sweep delta before
+    all other content, and never silenced by any suppression class."""
+    lines: list[str] = []
+    for stream_dir in stream_dirs:
+        stream_facts = facts.get(stream_dir.name)
+        if isinstance(stream_facts, dict):
+            for identifier, state in _gated_carried_states(stream_facts):
+                action = OPERATOR_GATE_ACTION.get(state, "review and act")
+                lines.append(f"OPERATOR ACTION NEEDED: {identifier} {state} - {action}")
+        for wait in operator_waits(waits_root, stream_dir.name):
+            lines.append(f"OPERATOR ACTION NEEDED: {stream_dir.name} asks: {wait['ask']}")
+    return lines
 
 
 def sanitize_project_dir(cwd: str) -> str:
@@ -192,7 +294,7 @@ def _stream_transcript_paths(stream_dir: Path, projects_root: Path) -> list[Path
     return paths
 
 
-def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None) -> dict:
+def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None, operator_gated: bool = False) -> dict:
     """Per-stream liveness report (sweep-stream-liveness): real surfaces only,
     session transcript mtime from the stream receipts, status gate lines, and
     the Herdr XDG inbox and message state. Classification is time-derived and
@@ -254,9 +356,13 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
                 undelivered_set.add(str(state.get("message_id") or state_path.stem))
     undelivered = sorted(undelivered_set)
 
-    # Activity is session-transcript activity ONLY; status or gate-line age
-    # never counts (sweep-suspected-stuck law).
-    if wait_owner:
+    # An operator gate (a carried operator-gated issue or an open operator ask)
+    # classifies the stream waiting-on-operator regardless of transcript activity
+    # (sweep-operator-gate-classify): it takes precedence over active and
+    # suspected-stuck, and is never silenced by ask_consumed.
+    if operator_gated:
+        classification = "waiting-on-operator"
+    elif wait_owner:
         classification = "waiting"
     elif transcript_mtime is None or (current - transcript_mtime) > idle_seconds:
         classification = "suspected-stuck"
@@ -272,6 +378,30 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
         "undelivered_queue": undelivered,
         "classification": classification,
     }
+
+
+def _emit_operator_gate(gate_lines: list[str], root: Path, owner_file: Path, owner_route: str) -> None:
+    """Surface the loud operator-gate block on the noop path: print each line to
+    stdout and deliver the block to the operator route. Never silenced by the
+    unchanged-fingerprint class (sweep-operator-gate-unsuppressible)."""
+    if not gate_lines:
+        return
+    for line in gate_lines:
+        print(line)
+    environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
+    operator_say = os.environ.get("OCTO_OPERATOR_SAY") or str(root / "skills/herdr-comms/assets/operator-say")
+    handle, temporary = tempfile.mkstemp(prefix=".operator-gate-", suffix=".md")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(gate_lines) + "\n")
+        subprocess.run(
+            [operator_say, "--kind", "info", "--artifact", temporary, "Operator gate"],
+            env=environment,
+            check=False,
+        )
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def main() -> int:
@@ -307,10 +437,12 @@ def main() -> int:
     xdg_state = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "octo-lite"
     inbox_root = xdg_state / "inbox"
     messages_root = xdg_state / "messages"
-    liveness = {
-        stream_dir.name: stream_liveness(stream_dir, inbox_root, messages_root, idle_seconds=3600)
-        for stream_dir in stream_dirs
-    }
+    waits_root = xdg_state / "operator-waits"
+
+    # Declared facts (including every carried issue's Linear state) are read
+    # before liveness so an operator gate can drive classification, and before
+    # the fingerprint/gate-line block so the loud operator-gate output is
+    # deterministic on both the changed and the unchanged-fingerprint paths.
     streams = []
     for stream_dir in stream_dirs:
         stream_facts = declared_stream_facts(stream_dir)
@@ -323,6 +455,19 @@ def main() -> int:
             if "pull_request" in stream_facts:
                 entry["pull_request"] = stream_facts["pull_request"]
             streams.append(entry)
+
+    liveness = {}
+    for stream_dir in stream_dirs:
+        stream_facts = facts.get(stream_dir.name)
+        gated = bool(
+            (isinstance(stream_facts, dict) and _gated_carried_states(stream_facts))
+            or operator_waits(waits_root, stream_dir.name)
+        )
+        liveness[stream_dir.name] = stream_liveness(
+            stream_dir, inbox_root, messages_root, idle_seconds=3600, operator_gated=gated
+        )
+
+    gate_lines = operator_gate_lines(stream_dirs, facts, waits_root)
     normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
 
     snapshot = (
@@ -332,12 +477,17 @@ def main() -> int:
     fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()
     state_path = control / "sweep-state.toml"
     prior = load_toml(state_path) if state_path.exists() else {}
+    root = Path(__file__).resolve().parents[1]
     if prior.get("fingerprint") == fingerprint:
         # Liveness is an operator report, not reconcile-gateway input: one
         # control-level file plus stdout, written only on completed sweeps so a
         # failed gateway leaves nothing behind.
         atomic_write(control / "liveness.json", json.dumps(liveness, sort_keys=True, indent=1) + "\n")
-        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "liveness": liveness}))
+        # Operator-gate output is exempt from the unchanged-fingerprint class
+        # (sweep-operator-gate-unsuppressible): even on the noop path the loud
+        # lines are surfaced to stdout and delivered to the operator.
+        _emit_operator_gate(gate_lines, root, owner_file, owner_route)
+        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "liveness": liveness, "operator_gate": gate_lines}))
         return 0
 
     sweep_dir = control / "sweeps" / fingerprint
@@ -345,7 +495,6 @@ def main() -> int:
     journal_path = sweep_dir / "journal.json"
     result_path = sweep_dir / "result.md"
 
-    root = Path(__file__).resolve().parents[1]
     worktree_root = control / "worktrees"
     worktree = worktree_root / fingerprint
 
@@ -404,7 +553,18 @@ def main() -> int:
         "Read only. Never mutate. Return a compact delta for the operator as plain text."
     )
     message = run_reconcile_launch(prepared, judgment_prompt)
+    # Operator-gate lines are PREPENDED to the delivered delta at the very top,
+    # before all reconciler content (sweep-operator-gate-loud). They are the
+    # deterministic sweep's own output, never the LLM's judgment, so they cannot
+    # be silenced by any reconcile suppression, vestige, or consumed-ask class.
+    if gate_lines:
+        message = "\n".join(gate_lines) + "\n\n" + message
     atomic_write(result_path, message)
+
+    # Echo the loud operator-gate block to stdout too, so the deterministic gate
+    # surfaces even where the delivered artifact is not read.
+    for line in gate_lines:
+        print(line)
 
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
     # systemd user services run with a bare PATH (live FileNotFoundError

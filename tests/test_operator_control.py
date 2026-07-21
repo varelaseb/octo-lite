@@ -2777,3 +2777,237 @@ class IntentRecordTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertEqual(head, payload["head"])
             self.assertEqual(str((stream / "intent-record.toml").resolve()), payload["record"])
+
+
+# A per-issue Linear fake: reads a JSON map {issue_id: state} from
+# LINEAR_STATE_MAP and echoes the exact carried issue's state, logging each
+# `linear issue view <id>` call so a test can assert every carried issue was
+# read (multi-issue binding), not just one bound issue.
+FAKE_PER_ISSUE_LINEAR = (
+    "#!/usr/bin/env bash\n"
+    "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+    'issue=""\n'
+    'for a in "$@"; do case "$a" in TUR-*|OCTO-*) issue="$a" ;; esac; done\n'
+    'state="$(python3 -c \'import json,os,sys; print(json.load(open(os.environ[\"LINEAR_STATE_MAP\"])).get(sys.argv[1], \"Todo\"))\' "$issue")"\n'
+    "python3 -c 'import json,sys; print(json.dumps({\"identifier\": sys.argv[1], \"state\": {\"name\": sys.argv[2]}, \"updatedAt\": \"2026-07-19T00:00:00Z\"}))' \"$issue\" \"$state\"\n"
+)
+
+
+def _sweep_stdout_json(stdout: str) -> dict:
+    # Operator-gate lines are plain lines printed before the machine-readable
+    # JSON, so the JSON is always the last non-empty stdout line.
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    return json.loads(lines[-1])
+
+
+class OperatorGateTests(unittest.TestCase):
+    """TUR-489: sweep must loudly, unsuppressibly surface operator-gated Linear
+    states (Source A) and open operator asks (Source B)."""
+
+    def _write_owner(self, base: Path, control: Path) -> Path:
+        owner = base / "operator-owner.toml"
+        owner.write_text(
+            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+        )
+        return owner
+
+    def _fake_bins(self, base: Path, *, per_issue_linear: bool = True) -> tuple[Path, Path, dict]:
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        log = base / "calls.jsonl"
+        (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+        (fake_bin / "operator-say").write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
+        )
+        if per_issue_linear:
+            (fake_bin / "linear").write_text(FAKE_PER_ISSUE_LINEAR)
+        (fake_bin / "gh").write_text(
+            "#!/usr/bin/env bash\nprintf 'gh %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            "cat <<'JSON'\n"
+            '{"url": "https://github.com/org/repo/pull/6", "headRefOid": "abc123", '
+            '"headRefName": "feature", "baseRefName": "main", '
+            '"state": "OPEN", "reviewDecision": "", "statusCheckRollup": []}\n'
+            "JSON\n"
+        )
+        for name in ("claude", "operator-say", "linear", "gh"):
+            path = fake_bin / name
+            if path.exists():
+                path.chmod(0o755)
+        env = dict(
+            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+        )
+        return fake_bin, log, env
+
+    def test_t1_multi_issue_carried_states_are_all_read(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-carrier"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text(
+                'schema_version = 1\n\n[linear]\nissues = ["TUR-454", "TUR-479"]\n'
+            )
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-454": "Todo", "TUR-479": "Live"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            calls = log.read_text().splitlines()
+            self.assertTrue(any("TUR-454" in line and line.startswith("linear ") for line in calls))
+            self.assertTrue(any("TUR-479" in line and line.startswith("linear ") for line in calls))
+
+    def test_t2_source_a_loud_line_for_gated_states(self) -> None:
+        for gated_state, issue in (("In Staging", "TUR-479"), ("Awaiting Accept", "TUR-454")):
+            with self.subTest(state=gated_state):
+                with tempfile.TemporaryDirectory() as td:
+                    base = Path(td)
+                    repo = base / "repo"
+                    _init_target_repo(repo)
+                    control = base / "control"
+                    stream = control / "streams/tf-carrier"
+                    stream.mkdir(parents=True)
+                    (stream / "status.md").write_text("Outcome: ready\n")
+                    (stream / "sources.toml").write_text(
+                        f'schema_version = 1\n\n[linear]\nissue = "{issue}"\n'
+                    )
+                    owner = self._write_owner(base, control)
+                    fake_bin, log, env = self._fake_bins(base)
+                    state_map = base / "state-map.json"
+                    state_map.write_text(json.dumps({issue: gated_state}))
+                    env["LINEAR_STATE_MAP"] = str(state_map)
+                    command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+                    result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+                    self.assertIn(
+                        f"OPERATOR ACTION NEEDED: {issue} {gated_state}", result.stdout
+                    )
+                    # delivered to the operator too (operator-say artifact echoed to log)
+                    self.assertIn(
+                        f"OPERATOR ACTION NEEDED: {issue} {gated_state}", log.read_text()
+                    )
+
+    def test_t3_gate_line_survives_unchanged_fingerprint_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-carrier"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            first = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            second = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertFalse(_sweep_stdout_json(second.stdout)["changed"])
+            # Even though the fingerprint is unchanged (noop path), the loud
+            # operator-gate line is STILL surfaced.
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", second.stdout)
+
+    def test_t4_gated_stream_classifies_waiting_on_operator_despite_busy_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-carrier"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-454"\n')
+            # A fresh (busy) transcript: build a receipt + a live transcript file.
+            projects = base / "projects"
+            worktree = base / "wt"
+            worktree.mkdir()
+            session = "sess-busy"
+            sanitized = __import__("re").sub(r"[^A-Za-z0-9]", "-", str(worktree))
+            tpath = projects / sanitized / f"{session}.jsonl"
+            tpath.parent.mkdir(parents=True)
+            tpath.write_text("{}\n")
+            (stream / "receipt.toml").write_text(
+                'schema_version = 1\n\n[bootstrap]\nprovider_session_id = '
+                f'"{session}"\n\n[workspace]\nworktree = "{worktree}"\n'
+            )
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-454": "Awaiting Accept"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["HOME"] = str(base)  # keep default projects root away from real home
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            liveness = json.loads((control / "liveness.json").read_text())
+            self.assertEqual("waiting-on-operator", liveness["tf-carrier"]["classification"])
+
+    def test_t5_source_b_operator_ask_surfaces_then_clears_on_ack(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/scratch-ask"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: working\n")
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base, per_issue_linear=False)
+
+            xdg = base / "xdg"
+            env["XDG_STATE_HOME"] = str(xdg)
+            env["HOME"] = str(base)
+
+            # A fake herdr resolves the operator pane and accepts the send, so
+            # herdr-say follows its normal transport path and leaves a pending
+            # message record the operator answer relay (herdr-ack) later processes.
+            (fake_bin / "herdr").write_text(
+                "#!/usr/bin/env bash\n"
+                'case "$1 $2" in\n'
+                '  "agent get") echo \'{"result":{"agent":{"pane_id":"%1:p0"}}}\' ;;\n'
+                '  "pane read") echo "" ;;\n'
+                "  *) exit 0 ;;\n"
+                "esac\n"
+            )
+            (fake_bin / "herdr").chmod(0o755)
+
+            # The lane operator-ask path stamps a mechanical per-stream wait.
+            herdr_say = ROOT / "skills/herdr-comms/assets/herdr-say"
+            ask = "Approve promotion of TUR-479 to Live?"
+            stamp_env = dict(env, OCTO_STREAM="scratch-ask")
+            said = subprocess.run(
+                [str(herdr_say), "--kind", "question", "operator-1", ask],
+                env=stamp_env, capture_output=True, text=True,
+            )
+            # herdr-say may not resolve a real pane; the stamp must be written
+            # regardless (mechanical, pre-transport).
+            waits_dir = xdg / "octo-lite" / "operator-waits"
+            self.assertTrue((waits_dir / "scratch-ask.toml").is_file(), said.stderr)
+            with (waits_dir / "scratch-ask.toml").open("rb") as handle:
+                stamp = tomllib.load(handle)
+            self.assertEqual("operator", stamp["owner"])
+            self.assertEqual(ask, stamp["ask"])
+            message_id = stamp["message_id"]
+
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertIn(f"OPERATOR ACTION NEEDED: scratch-ask asks: {ask}", result.stdout)
+
+            # Operator answer relay: ack of that exact ask clears the stamp.
+            herdr_ack = ROOT / "skills/herdr-comms/assets/herdr-ack"
+            subprocess.run(
+                [str(herdr_ack), message_id, "acknowledged", "--by", "operator-1"],
+                env=env, capture_output=True, text=True, check=True,
+            )
+            self.assertFalse((waits_dir / "scratch-ask.toml").is_file())
+            after = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertNotIn("OPERATOR ACTION NEEDED: scratch-ask asks:", after.stdout)
