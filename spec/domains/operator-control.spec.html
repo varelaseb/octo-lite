@@ -725,7 +725,7 @@
 {
   "aria": {
     "enabled": true,
-    "description": "One host timer wakes the verified operator route. Exact checks detect deltas. No change is a cheap no-op. Material deltas may receive fresh read-only Sonnet classification before Fable updates operation truth."
+    "description": "One host timer runs the deterministic sweep directly. No change is a silent no-op. Material deltas receive fresh read-only Sonnet classification and only then message the verified operator route for the Fable update."
   },
   "tooltip": {
     "trigger": "item"
@@ -875,24 +875,16 @@
       "links": [
         {
           "source": "Host timer",
-          "target": "operator-say",
-          "value": "sweep wake",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "operator-say",
-          "target": "Current owner pointer",
-          "value": "resolve",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "Current owner pointer",
           "target": "Deterministic exact checks",
-          "value": "verified route",
+          "value": "runs directly",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh Sonnet reconcile",
+          "target": "operator-say",
+          "value": "classified delta",
           "lineStyle": {
             "curveness": 0
           }
@@ -914,17 +906,25 @@
           }
         },
         {
-          "source": "Fresh Sonnet reconcile",
-          "target": "Fable update",
-          "value": "classified delta",
+          "source": "Fable update",
+          "target": "Status and dashboard",
+          "value": "reconcile",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Fable update",
-          "target": "Status and dashboard",
-          "value": "reconcile",
+          "source": "operator-say",
+          "target": "Current owner pointer",
+          "value": "resolve",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Current owner pointer",
+          "target": "Fable update",
+          "value": "verified route",
           "lineStyle": {
             "curveness": 0
           }

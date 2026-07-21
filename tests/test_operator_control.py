@@ -1273,6 +1273,9 @@ class OperatorControlTests(unittest.TestCase):
                 {control / "streams/TUR-1/status.md", control / "streams/TUR-1/sources.toml"},
                 set(leftover),
             )
+            # explicit liveness-cleanup red (v16 finding 2): a failed gateway
+            # removes the pre-written liveness report with everything else.
+            self.assertFalse((control / "liveness.json").exists())
 
     def test_sweep_detects_changed_target_head_even_when_linear_and_pr_facts_are_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as td:

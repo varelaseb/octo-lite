@@ -18,10 +18,11 @@ Run `scripts/launch-meta-operator.sh`. It:
 - injects remote access facts from turn one
 - launches through `herdr-spawn` as `🧠 operator`
 - requires bootstrap acknowledgment before mutation
-- installs one lifecycle-bound host timer that only sends `operator-say sweep`
+- installs one lifecycle-bound host timer that runs `operator-sweep` directly
 
-On each `sweep` wake, Fable runs `operator-sweep`. The timer never reads stream
-state or launches a reconciler itself.
+The timer executes the deterministic sweep itself; only a changed sweep
+messages Fable through the sweep's own delta path, so no periodic wake message
+ever enters the operator context.
 
 The new Fable begins with read-only inventory. It confirms objective, authority,
 and done condition before redirecting work. It owns the reconciled operation
