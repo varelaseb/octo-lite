@@ -1636,10 +1636,15 @@ async function resolveRuntime(role, phaseTitle, worktreeAbs, schema, issue) {
 // live git HEAD is proven equal to the caller starting HEAD too, so a stale HEAD never
 // spawns. This runs before the ack/relay spawn in EVERY delivery mode (implement,
 // code-review, fix, qa-capture, qa-review), not just implement.
-async function liveReadback(role, phaseTitle, startingHead) {
+async function liveReadback(role, phaseTitle, startingHead, worktree) {
   const issue = required(A.issue, 'issue')
   const pr = required(A.pr, 'pr')
   const branch = required(A.branch, 'branch')
+  // TUR-447 ruling-56 host cwd pin (loop-correctness single-writer): the readback subagent runs in an
+  // AMBIENT cwd that on the shared box is a FOREIGN lane worktree, so a bare git read would read the
+  // WRONG worktree. Pin the git read to the host issue worktree (git -C ${worktree}) and forbid the
+  // subagent from relying on the ambient current working directory.
+  requiredNonEmptyString(worktree, 'readback host worktree')
   const fresh = await agent([
     `You are a fresh READ-ONLY octo-lite readback subagent for the ${role} spawn. One pass;`,
     'never mutate. Perform LIVE reads NOW, immediately before dispatch, and return them:',
@@ -1653,9 +1658,11 @@ async function liveReadback(role, phaseTitle, startingHead) {
     '  fingerprint field verbatim. Do NOT improvise, recompute, or self-hash the fingerprint.',
     `- pr_head: the live PR head oid (gh pr view ${pr} --json headRefOid) of the PR.`,
     `- branch: the live head branch of the PR (expected ${branch}).`,
-    '- git_head: the live git HEAD of the contained worktree (git rev-parse HEAD).',
-    'Read state, pr_head, branch, and git_head yourself from Linear, GitHub, and git; do NOT copy',
-    'any value from this prompt or from any caller-supplied blob. Return exactly the five fields.',
+    `- git_head: the live git HEAD of the host issue worktree, read via \`git -C ${worktree} rev-parse HEAD\`.`,
+    `  Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
+    '  it may be a foreign lane worktree on a shared box.',
+    'Read state, pr_head, branch, and git_head yourself from Linear, GitHub, and the host-pinned worktree;',
+    'do NOT copy any value from this prompt or from any caller-supplied blob. Return exactly the five fields.',
   ].join('\n'), {
     label: `${role}-readback:${issue}`, phase: phaseTitle, schema: FRESH_READS_SCHEMA,
     agentType: 'Explore', effort: 'low',
@@ -1851,7 +1858,7 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
   // read-only Explore subagent performs the live Linear/PR/branch/HEAD reads and the pure
   // readback gate rejects a stale self-consistent caller envelope. No caller fresh_reads
   // blob is trusted.
-  await liveReadback(role, phaseTitle, startingHead)
+  await liveReadback(role, phaseTitle, startingHead, worktree)
   // Launch-revision revalidation before spawn (launch-entrypoint-revalidation): the
   // revision is REQUIRED and revalidated against the bound inputs whose HEAD was just
   // proven live; it is never recomputed from a stale caller fallback.
@@ -2001,9 +2008,14 @@ async function abandonUnpushedBranchOrStop(reason, phaseTitle, bound, result, wo
     `  worktree: ${worktree}`,
     `  isolated_branch: ${branch}`,
     `  committed_head: ${finalCommit}`,
+    // TUR-447 ruling-56 host cwd pin: this abort subagent runs in an AMBIENT cwd that on the shared box is
+    // a FOREIGN lane worktree; pin every git op to the host issue worktree via git -C, never the ambient cwd.
+    `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
+    'it may be a foreign lane worktree on a shared box.',
     'Confirm the branch is NOT pushed (its commits are absent from the remote), and read back the worktree',
-    'HEAD and `git status --porcelain`. If the worktree is clean at the committed HEAD, leave the branch in',
-    'place unpushed and return abandoned:true, pushed:false, dirty:false with the head and status. If the',
+    `HEAD (\`git -C ${worktree} rev-parse HEAD\`) and \`git -C ${worktree} status --porcelain\`. If the worktree is`,
+    'clean at the committed HEAD, leave the branch in place unpushed and return abandoned:true, pushed:false,',
+    'dirty:false with the head and status. If the',
     'worktree is genuinely DIRTY or DIVERGED, do NOT discard it: return abandoned:false, dirty:true so the',
     'host STOPS for inspection.',
   ].join('\n'), {
@@ -2034,12 +2046,17 @@ async function resetWorktreeOrThrow(reason, phaseTitle, bound, worktree) {
   const cleaned = await agent([
     `You are a fresh octo-lite workspace-cleanup subagent for a REJECTED pass (${reason}). One pass only.`,
     'The host rejected this pass, so its uncommitted mutation must be DISCARDED and nothing committed or',
-    'pushed. In the contained worktree below, reset the working tree to the exact bound starting HEAD and',
-    'clear every uncommitted change:',
+    'pushed. In the host-pinned issue worktree below, reset the working tree to the exact bound starting HEAD',
+    'and clear every uncommitted change:',
     `  worktree: ${worktree}`,
     `  starting_head: ${bound.starting_head}`,
-    'Run the reset (git reset --hard to the starting HEAD and git clean of untracked changes), then read',
-    'back and return the resulting HEAD and `git status --porcelain` (empty status proves a clean tree).',
+    // TUR-447 ruling-56 host cwd pin: pin every git op to the host issue worktree via git -C, never the
+    // ambient cwd (a foreign lane worktree on a shared box).
+    `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
+    'it may be a foreign lane worktree on a shared box.',
+    `Run the reset (\`git -C ${worktree} reset --hard\` to the starting HEAD and \`git -C ${worktree} clean\` of`,
+    `untracked changes), then read back and return the resulting HEAD (\`git -C ${worktree} rev-parse HEAD\`) and`,
+    `\`git -C ${worktree} status --porcelain\` (empty status proves a clean tree).`,
   ].join('\n'), {
     label: `workspace-cleanup:${bound.issue}`, phase: phaseTitle,
     schema: {
@@ -2215,8 +2232,10 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     '  fingerprint field verbatim. Do NOT improvise, recompute, or self-hash the fingerprint.',
     `- pr_head: the live PR head oid (gh pr view ${pr} --json headRefOid).`,
     `- branch: the live head branch of the PR (expected ${branch}).`,
-    `- git_head: the live git HEAD of the contained worktree (git rev-parse HEAD) at ${worktree}`,
+    `- git_head: the live git HEAD of the host issue worktree, read via \`git -C ${worktree} rev-parse HEAD\``,
     `  (expected the committed final HEAD ${finalCommit}).`,
+    `  Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
+    '  it may be a foreign lane worktree on a shared box.',
     'Read state, pr_head, branch, and git_head yourself; do NOT copy any value from this prompt or a caller blob.',
   ].join('\n'), {
     label: `${role}-prepush-readback:${issue}`, phase: phaseTitle, schema: FRESH_READS_SCHEMA,
@@ -2249,7 +2268,9 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     `  worktree: ${worktree}`,
     `  branch: ${branch}`,
     `  committed_final_head: ${finalCommit}`,
-    'Return pushed:true and the pushed head (git rev-parse HEAD, which must equal the committed final HEAD).',
+    `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
+    'it may be a foreign lane worktree on a shared box. Push the branch of that pinned worktree.',
+    `Return pushed:true and the pushed head (\`git -C ${worktree} rev-parse HEAD\`, which must equal the committed final HEAD).`,
   ].join('\n'), {
     label: `host-push:${bound.issue}`, phase: phaseTitle,
     schema: {
@@ -2272,9 +2293,13 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     'One pass; never mutate. The host just pushed the committed branch. Confirm the pushed HEAD by a LIVE',
     'REMOTE read, NOT a local tracking ref:',
     `- remote_head: the live pushed head oid on remote branch ${branch}, read via \`gh api\` (the PR/branch`,
-    `  ref) or \`git ls-remote\` the remote; do NOT read a local remote-tracking ref.`,
+    `  ref) or \`git -C ${worktree} ls-remote\` the remote; do NOT read a local remote-tracking ref.`,
     '- remote_source: "gh-api" if you used gh api, or "git-ls-remote" if you used git ls-remote.',
-    'Read it yourself from the live remote; do NOT copy any value from this prompt or the push subagent.',
+    // TUR-447 ruling-56 host cwd pin: gh api resolves the repo from the PR/branch ref (not cwd); any git
+    // ls-remote must run against the host issue worktree via git -C, never the ambient cwd.
+    `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
+    'it may be a foreign lane worktree on a shared box. Read it yourself from the live remote; do NOT copy any',
+    'value from this prompt or the push subagent.',
   ].join('\n'), {
     label: `${role}-postpush-readback:${bound.issue}`, phase: phaseTitle,
     schema: {
@@ -2473,7 +2498,7 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
   // Live readback immediately before the relay spawn (launch-readback, TUR-447 F3): the
   // OpenAI reviewer relay path revalidates against fresh live reads exactly as the native
   // worker path does, not just implement mode.
-  await liveReadback(role, phaseTitle, startingHead)
+  await liveReadback(role, phaseTitle, startingHead, worktree)
   // Launch-revision REQUIRED and revalidated; never recomputed from a stale caller fallback.
   const revision = resolveLaunchRevision(bound)
   log(`journal relay-spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash} ${revision}`)
@@ -2498,6 +2523,11 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
       null, 2,
     ),
     `CONTAINED REVIEW WORKTREE (run codex exec with -C this exact path): ${worktree}`,
+    // TUR-447 ruling-56 host cwd pin (loop-correctness single-writer): the relay subagent runs in an
+    // AMBIENT cwd that on the shared box is a FOREIGN lane worktree. Pin the codex exec AND the worktree
+    // snapshot git reads to the host issue worktree; do NOT rely on the current working directory.
+    `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
+    'it may be a foreign lane worktree on a shared box.',
     'CANONICAL ROLE CONTRACT to pass VERBATIM as the codex exec prompt (never copy a workflow literal):',
     runtime.contract_text,
     'PER-PASS BRIEF for this exact pass:',
@@ -2507,8 +2537,9 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
     'Bootstrap read-only first (-s read-only). If the pass needs live GitHub or Linear reads,',
     'resume with the sandbox selected ONLY through -c sandbox_mode="workspace-write" plus -c',
     'sandbox_workspace_write.network_access=true; NEVER use the top-level -s flag on resume.',
-    'Capture the review worktree HEAD and `git status --porcelain` once BEFORE the bootstrap',
-    'and again AFTER the resumed pass; the review pass must not mutate the worktree.',
+    `Capture the review worktree HEAD (\`git -C ${worktree} rev-parse HEAD\`) and \`git -C ${worktree} status`,
+    '--porcelain` once BEFORE the bootstrap and again AFTER the resumed pass; the review pass must not',
+    'mutate the worktree.',
     'Return the codex final assistant message VERBATIM as payload (never summarize or edit it),',
     'the claimed_session_id, bootstrap_argv, resume_argv, needs_live_reads, worktree_before, and',
     'worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',

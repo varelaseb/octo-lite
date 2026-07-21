@@ -459,3 +459,93 @@ test('fingerprint-source: no readback/liveness prompt tells the subagent to impr
     )
   }
 })
+
+// === TUR-447 ruling-56: host-pin subagent cwd to the ISSUE worktree at every git-reading
+// readback/liveness/pre-push/review prompt (delivery-lifecycle launch-readback; loop-correctness
+// single-writer). On the shared box the loop readback/liveness/pre-push/review subagents run in an
+// AMBIENT cwd that is a FOREIGN lane worktree, so a bare `git rev-parse HEAD` (or bare `git status`)
+// read the WRONG worktree and the loop bound a stale/foreign HEAD. The fix pins EVERY such git op to
+// the host-supplied issue worktree via `git -C ${worktree}` and forbids reliance on the ambient cwd.
+// This is a SOURCE assertion over the real production loop text: each git-reading prompt region must
+// interpolate `git -C ${worktree}` (never a bare cwd-dependent git) and must tell the subagent not to
+// rely on the current working directory. It STRENGTHENS correctness on the shared box without
+// weakening any gate: the pinned worktree is the host-contained issue worktree, containment-checked.
+const CWD_PIN_SITES = [
+  { name: 'liveReadback', anchor: 'You are a fresh READ-ONLY octo-lite readback subagent' },
+  { name: 'pre-push readback', anchor: 'You are a fresh READ-ONLY octo-lite pre-push readback' },
+  { name: 'host push', anchor: 'You are a fresh octo-lite host push subagent' },
+  { name: 'reviewer relay worktree snapshot', anchor: 'CONTAINED REVIEW WORKTREE (run codex exec with -C this exact path)' },
+]
+
+function cwdPinRegion(anchor) {
+  const start = LOOP_SRC.indexOf(anchor)
+  assert.ok(start >= 0, `cwd-pin anchor missing from loop source: ${anchor}`)
+  // Each prompt array joins into a single agent() call; 1700 chars covers the git-read instructions
+  // (the reviewer relay region spans the runtime-relay preamble before its worktree snapshot capture).
+  return LOOP_SRC.slice(start, start + 1700)
+}
+
+test('cwd-pin: every git-reading readback/liveness/pre-push/review prompt pins git to the host issue worktree with git -C ${worktree}', () => {
+  for (const site of CWD_PIN_SITES) {
+    const region = cwdPinRegion(site.anchor)
+    assert.match(
+      region, /git -C \$\{worktree\}/,
+      `${site.name} must pin git to the host issue worktree via git -C \${worktree}`,
+    )
+  }
+})
+
+test('cwd-pin: no git-reading readback/liveness/pre-push/review prompt uses a bare cwd-dependent git rev-parse or git status', () => {
+  for (const site of CWD_PIN_SITES) {
+    const region = cwdPinRegion(site.anchor)
+    // A bare `git rev-parse` / `git status` (no -C) would inherit the ambient (foreign) cwd. Every git
+    // read in these prompts must carry the -C host-worktree pin, so no bare form may remain.
+    assert.doesNotMatch(
+      region, /\bgit rev-parse HEAD\b/,
+      `${site.name} must not use a bare cwd-dependent git rev-parse HEAD`,
+    )
+    assert.doesNotMatch(
+      region, /\bgit status --porcelain\b(?![^]*git -C)/,
+      `${site.name} must not use a bare cwd-dependent git status --porcelain`,
+    )
+  }
+})
+
+test('cwd-pin: every git-reading prompt explicitly instructs the subagent not to rely on the ambient current working directory', () => {
+  for (const site of CWD_PIN_SITES) {
+    const region = cwdPinRegion(site.anchor)
+    assert.match(
+      region, /do NOT rely on the current working directory|not the ambient cwd|never the ambient cwd/i,
+      `${site.name} must forbid relying on the ambient current working directory`,
+    )
+  }
+})
+
+// Source-wide audit (loop-correctness single-writer): NO subagent prompt in the loop may carry a bare
+// cwd-dependent git command literal. Every backtick-quoted `git <cmd>` command STRING the loop hands a
+// subagent must be pinned with `git -C ${worktree}` (host issue worktree), so nothing inherits the
+// ambient (foreign lane) cwd. The ONLY sanctioned exception is the independent git reader / tdd-observer,
+// which run in a host-managed ISOLATED worktree (opts.isolation: 'worktree') and legitimately use a bare
+// git in that isolated tree; those subagents carry the isolation opt and the ancestry `git rev-list`
+// literal. Every OTHER backtick git literal on a non-comment code line must be `git -C`.
+test('cwd-pin: no subagent prompt in the loop carries a bare cwd-dependent backtick git command literal', () => {
+  const lines = LOOP_SRC.split('\n')
+  const offenders = []
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]
+    // Skip pure comment lines (JSDoc / inline rationale); they are not subagent prompt strings.
+    if (/^\s*\/\//.test(line)) continue
+    // Match a backtick-quoted git command literal: `git <subcommand>...
+    const m = line.match(/`git (?!-C\b)([a-z-]+)/)
+    if (!m) continue
+    // Sanctioned exception: the ISOLATED-worktree independent reader's ancestry `git rev-list` literal.
+    // That subagent runs with opts.isolation: 'worktree' (a fresh host-managed worktree), so a bare git
+    // there reads the correct isolated tree, not the ambient cwd.
+    if (m[1] === 'rev-list') continue
+    offenders.push(`L${i + 1}: git ${m[1]}`)
+  }
+  assert.deepEqual(
+    offenders, [],
+    `every backtick git command in a subagent prompt must be git -C \${worktree} (or the isolation reader): ${offenders.join(', ')}`,
+  )
+})
