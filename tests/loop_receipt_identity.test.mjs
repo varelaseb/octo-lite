@@ -19,13 +19,16 @@
 // fingerprint helpers as the proof; it drives the production identity gate on the real foreign path.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
   assertReceiptWorkspaceBinding,
   assertLiveWorktreeIdentity,
   assertHostTrustedIdentity,
+  assertPrePushWorktreeReAnchor,
 } from '../workflows/lib/gates.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -164,4 +167,93 @@ test('gate-position: the host-trusted identity gate runs BEFORE the Shaped -> To
   assert.ok(worker.indexOf('hostTrustedIdentity(') >= 0 && worker.indexOf('hostTrustedIdentity(') < worker.indexOf('liveReadback('), 'spawnWorker gates identity before readback')
   const reviewer = LOOP_SRC.slice(LOOP_SRC.indexOf('async function spawnOpenaiReviewer'), LOOP_SRC.indexOf('async function spawnShapingReviewer'))
   assert.ok(reviewer.indexOf('hostTrustedIdentity(') >= 0 && reviewer.indexOf('hostTrustedIdentity(') < reviewer.indexOf('liveReadback('), 'spawnOpenaiReviewer gates identity before readback')
+})
+
+// === TUR-447 ruling-61 REAL live-read over a genuine temp git repo (accidental-misrouting reality) ===
+// The identity live-read is best-effort INTERIM against ACCIDENTAL MISROUTING (tur-456: a shared dir on
+// a FOREIGN branch / different origin), not a malicious forger. This drives the production gates over a
+// GENUINE temp git repo checked out on a real foreign branch / real foreign origin: the live branch and
+// origin are read with the EXACT git commands the production re-anchor reader runs (rev-parse
+// --abbrev-ref HEAD; remote get-url origin), and those real readings are fed THROUGH the production
+// assertPrePushWorktreeReAnchor / assertLiveWorktreeIdentity. The reality check REJECTS the foreign
+// branch/origin. No forgery harness: the foreign state is a real git checkout, the reality is real git.
+
+function git(cwd, ...a) {
+  return execFileSync('git', ['-C', cwd, ...a], { encoding: 'utf8' }).trim()
+}
+// Normalize a git remote URL to the canonical owner/repo slug, as the production reader does.
+function slugFromRemote(url) {
+  const m = url.replace(/\.git$/, '').match(/[/:]([^/:]+\/[^/:]+)$/)
+  return m ? m[1] : url
+}
+// Build a real temp git repo on the given branch with the given origin url; return the live reading
+// exactly as the production receipt-pinned reader would return it.
+function realWorktreeReading({ branch: onBranch, originUrl }) {
+  const dir = mkdtempSync(join(tmpdir(), 'octo-reanchor-'))
+  git(dir, 'init', '-q')
+  git(dir, 'config', 'user.email', 'test@octo.local')
+  git(dir, 'config', 'user.name', 'octo test')
+  git(dir, 'commit', '-q', '--allow-empty', '-m', 'root')
+  git(dir, 'branch', '-M', onBranch)
+  git(dir, 'remote', 'add', 'origin', originUrl)
+  const head = git(dir, 'rev-parse', 'HEAD')
+  const liveBranch = git(dir, 'rev-parse', '--abbrev-ref', 'HEAD')
+  const liveOrigin = slugFromRemote(git(dir, 'remote', 'get-url', 'origin'))
+  return {
+    dir,
+    reading: { source: 'host-receipt-pinned-worktree-read', read_worktree: dir, head, branch: liveBranch, repo_slug: liveOrigin },
+  }
+}
+
+test('real-git re-anchor: a genuine temp repo on the EXPECTED branch+origin PASSES the production pre-push re-anchor', () => {
+  const { dir, reading } = realWorktreeReading({ branch: BRANCH, originUrl: `git@github.com:${REPO_SLUG}.git` })
+  try {
+    // The envelope expects exactly this branch/origin; the REAL live reading agrees.
+    assert.doesNotThrow(() => assertPrePushWorktreeReAnchor({ branch: BRANCH, repo_slug: REPO_SLUG }, reading))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('real-git re-anchor (tur-456): a genuine temp repo CHECKED OUT ON A FOREIGN BRANCH is REJECTED by the production pre-push re-anchor', () => {
+  // A REAL foreign-branch checkout (accidental misrouting), not a fabricated blob.
+  const { dir, reading } = realWorktreeReading({ branch: 'someone-elses/lane', originUrl: `git@github.com:${REPO_SLUG}.git` })
+  try {
+    assert.equal(reading.branch, 'someone-elses/lane', 'the live git read reflects the real foreign branch')
+    assert.throws(
+      () => assertPrePushWorktreeReAnchor({ branch: BRANCH, repo_slug: REPO_SLUG }, reading),
+      /receipt-pinned worktree is on a foreign branch at push time/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('real-git re-anchor (tur-456): a genuine temp repo whose ORIGIN is a DIFFERENT remote is REJECTED by the production pre-push re-anchor', () => {
+  const { dir, reading } = realWorktreeReading({ branch: BRANCH, originUrl: 'git@github.com:attacker/other.git' })
+  try {
+    assert.equal(reading.repo_slug, 'attacker/other', 'the live git read reflects the real foreign origin')
+    assert.throws(
+      () => assertPrePushWorktreeReAnchor({ branch: BRANCH, repo_slug: REPO_SLUG }, reading),
+      /receipt-pinned worktree origin is a foreign remote at push time/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('real-git identity anchor (tur-456): a genuine temp repo on a FOREIGN BRANCH is REJECTED by the production assertLiveWorktreeIdentity', () => {
+  // The SAME real foreign-branch reality also fails the initial live identity anchor: the two gates are
+  // consistent, the live-read reality check is the load-bearing accidental-misrouting catch at both.
+  const { dir, reading } = realWorktreeReading({ branch: 'foreign/lane', originUrl: `git@github.com:${REPO_SLUG}.git` })
+  try {
+    const receiptObj = { source: 'host-provisioned-receipt', repo: REPO, repo_slug: REPO_SLUG, worktree: dir, starting_head: reading.head }
+    const envelopeObj = { repo: REPO, repo_slug: REPO_SLUG, worktree: dir, branch: BRANCH, starting_head: reading.head }
+    assert.throws(
+      () => assertLiveWorktreeIdentity(receiptObj, envelopeObj, reading),
+      /receipt-pinned worktree is on a foreign branch/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

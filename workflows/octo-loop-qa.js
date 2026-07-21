@@ -409,6 +409,45 @@ function assertHostTrustedIdentity(envelope, receipt, live) {
   return { binding, reality }
 }
 
+// TUR-447 ruling-61 pre-push live-worktree re-anchor (delivery-lifecycle delivery-tdd-host-gated-push,
+// launch-readback; role-runtime launch-identity, launch-entrypoint-revalidation). The receipt+live-read
+// identity gate (assertLiveWorktreeIdentity) runs ONCE before the worker path. The pre-push readback
+// then reconfirms Linear/PR/HEAD but NOT the live local branch/origin of the receipt-pinned worktree,
+// and the push itself (git -C <worktree> push origin; ls-remote origin) targets the mutable remote. So
+// a branch checkout or an origin remote change on the receipt-pinned worktree AFTER the initial identity
+// check but BEFORE the push could reach and satisfy the push (a TOCTOU window). The interim threat is
+// ACCIDENTAL MISROUTING (tur-456: a shared dir switched to a foreign branch / different remote between
+// check and push), not a malicious forger (the non-forgeable trust root is the SEPARATE per-lane
+// host-provisioned worktree effort). This gate RE-ANCHORS the live branch/origin of the receipt-pinned
+// worktree immediately before the push: the host re-reads git -C <worktree> rev-parse --abbrev-ref HEAD
+// and remote get-url origin and rejects the push if the live branch no longer equals the envelope branch
+// or the live origin no longer resolves to the envelope repo_slug. reAnchor is the fresh live read
+// (same host-controlled receipt-pinned reader provenance as Anchor B); it is NOT envelope-derived.
+function assertPrePushWorktreeReAnchor(envelope, reAnchor) {
+  required(envelope, 'launch envelope')
+  required(reAnchor, 'pre-push live worktree re-anchor read')
+  // Provenance: the re-anchor read must be stamped by the host-controlled receipt-pinned reader, the
+  // same non-forgeable reality source as Anchor B, not any worker/envelope-supplied value.
+  if (reAnchor.source !== HOST_WORKTREE_READ_SOURCE) {
+    throw new Error('pre-push re-anchor rejected: not from the host-controlled receipt-pinned reader')
+  }
+  const liveBranch = requiredNonEmptyString(reAnchor.branch, 'pre-push live worktree branch')
+  const liveSlug = requiredNonEmptyString(reAnchor.repo_slug, 'pre-push live worktree origin repo slug')
+  // The live branch of the receipt-pinned worktree must STILL equal the envelope branch at push time.
+  // A checkout to a foreign branch between the initial identity check and the push is caught here.
+  requiredNonEmptyString(envelope.branch, 'envelope branch')
+  if (liveBranch !== envelope.branch) {
+    throw new Error('pre-push re-anchor rejected: receipt-pinned worktree is on a foreign branch at push time')
+  }
+  // The live origin remote of the receipt-pinned worktree must STILL resolve to the envelope repo_slug.
+  // An origin remote change between the initial identity check and the push is caught here.
+  assertRepoSlug(liveSlug, 'pre-push live origin repo slug')
+  if (liveSlug !== envelope.repo_slug) {
+    throw new Error('pre-push re-anchor rejected: receipt-pinned worktree origin is a foreign remote at push time')
+  }
+  return { branch: liveBranch, repo_slug: liveSlug }
+}
+
 function assertReadyEnvelope(envelope) {
   for (const field of [
     'issue',
@@ -2566,6 +2605,44 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     )
   } catch (error) {
     await abandonUnpushedBranchOrStop(`${role} pre-push stale race`, phaseTitle, bound, result, worktree)
+    throw error
+  }
+  // (2b) TUR-447 ruling-61 pre-push live-worktree RE-ANCHOR (delivery-tdd-host-gated-push; launch-identity,
+  // launch-entrypoint-revalidation). The receipt+live-read identity gate ran ONCE before the worker path;
+  // the pre-push readback above reconfirms Linear/PR/HEAD but NOT the live local branch/origin of the
+  // receipt-pinned worktree, and the push below targets the mutable remote. A branch checkout or an origin
+  // remote change on the receipt-pinned worktree AFTER the initial identity check but BEFORE the push
+  // (the tur-456 accidental-misrouting shape) could otherwise reach the push. A host-controlled
+  // receipt-pinned reader re-reads the LIVE branch and origin of the pinned worktree NOW, immediately
+  // before the push, and assertPrePushWorktreeReAnchor rejects if the live branch no longer equals the
+  // envelope branch or the live origin no longer resolves to the envelope repo_slug.
+  const reAnchor = await agent([
+    `You are a fresh HOST-CONTROLLED, READ-ONLY octo-lite pre-push worktree re-anchor reader for the ${role} pass.`,
+    'One pass; never mutate. Perform a LIVE git read of the receipt-pinned host issue worktree below NOW,',
+    'immediately before the host pushes, so the host can reject a branch/origin change since the identity check.',
+    'Operate ONLY on this exact path; do NOT rely on the ambient current working directory (a foreign lane',
+    'worktree on a shared box):',
+    `  receipt-pinned worktree: ${worktree}`,
+    `- head: \`git -C ${worktree} rev-parse HEAD\`.`,
+    `- branch: \`git -C ${worktree} rev-parse --abbrev-ref HEAD\` (expected ${branch}).`,
+    `- repo_slug: \`git -C ${worktree} remote get-url origin\`, normalized to the canonical owner/repo slug.`,
+    'Return source "host-receipt-pinned-worktree-read", read_worktree set to the exact worktree path above,',
+    'and head, branch, and repo_slug as you actually read them from git. Never fabricate a value.',
+  ].join('\n'), {
+    label: `${role}-prepush-reanchor:${issue}`, phase: phaseTitle, schema: LIVE_WORKTREE_READ_SCHEMA,
+    agentType: 'Explore', effort: 'low',
+  })
+  if (reAnchor === null) {
+    await abandonUnpushedBranchOrStop(`${role} pre-push re-anchor missing`, phaseTitle, bound, result, worktree)
+    throw new Error(`${role} pre-push worktree re-anchor returned no result`)
+  }
+  try {
+    assertPrePushWorktreeReAnchor(
+      { branch: envelope.branch, repo_slug: ghRepoSlug() },
+      reAnchor,
+    )
+  } catch (error) {
+    await abandonUnpushedBranchOrStop(`${role} pre-push re-anchor foreign branch/remote`, phaseTitle, bound, result, worktree)
     throw error
   }
   // (3) Only now: the host pushes the already-committed isolated branch. No new commit is authored; the

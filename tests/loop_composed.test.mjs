@@ -245,7 +245,7 @@ function implementScript({
   fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
   mutationOverrides = {}, prePush, gitRead = gitReadFor(), observation = observationFor(), postPush,
   liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
-  receipt = receiptFor(), reality = worktreeRealityFor(),
+  receipt = receiptFor(), reality = worktreeRealityFor(), prePushReAnchor = worktreeRealityFor({ head: FINAL_COMMIT }),
 } = {}) {
   // Committed model: red is the committed failing test (a real nonzero test exit), green the committed
   // production-only pass; both name the same scenario. The observer replay, not these strings, is proof.
@@ -290,6 +290,10 @@ function implementScript({
     ['workspace-cleanup:', { cleaned: true, head: HEAD, status: '' }],
     // Pre-push readback: a fresh live read immediately before the host pushes the committed branch.
     ['implementer-prepush-readback:', goodPrePush],
+    // TUR-447 ruling-61 pre-push live-worktree RE-ANCHOR: a host-controlled receipt-pinned reader re-reads
+    // the live branch/origin of the pinned worktree immediately before the push (TOCTOU close). Healthy
+    // default: still on the envelope branch/origin (the committed final HEAD is now the live HEAD).
+    ['implementer-prepush-reanchor:', prePushReAnchor],
     // Host push: pushes the already-committed isolated branch as-is (no new commit authored).
     ['host-push:', { pushed: true, head: FINAL_COMMIT }],
     // Post-push readback: independent LIVE REMOTE read of the pushed HEAD (gh api / git ls-remote).

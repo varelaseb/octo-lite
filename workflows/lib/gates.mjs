@@ -381,6 +381,45 @@ export function assertHostTrustedIdentity(envelope, receipt, live) {
   return { binding, reality }
 }
 
+// TUR-447 ruling-61 pre-push live-worktree re-anchor (delivery-lifecycle delivery-tdd-host-gated-push,
+// launch-readback; role-runtime launch-identity, launch-entrypoint-revalidation). The receipt+live-read
+// identity gate (assertLiveWorktreeIdentity) runs ONCE before the worker path. The pre-push readback
+// then reconfirms Linear/PR/HEAD but NOT the live local branch/origin of the receipt-pinned worktree,
+// and the push itself (git -C <worktree> push origin; ls-remote origin) targets the mutable remote. So
+// a branch checkout or an origin remote change on the receipt-pinned worktree AFTER the initial identity
+// check but BEFORE the push could reach and satisfy the push (a TOCTOU window). The interim threat is
+// ACCIDENTAL MISROUTING (tur-456: a shared dir switched to a foreign branch / different remote between
+// check and push), not a malicious forger (the non-forgeable trust root is the SEPARATE per-lane
+// host-provisioned worktree effort). This gate RE-ANCHORS the live branch/origin of the receipt-pinned
+// worktree immediately before the push: the host re-reads git -C <worktree> rev-parse --abbrev-ref HEAD
+// and remote get-url origin and rejects the push if the live branch no longer equals the envelope branch
+// or the live origin no longer resolves to the envelope repo_slug. reAnchor is the fresh live read
+// (same host-controlled receipt-pinned reader provenance as Anchor B); it is NOT envelope-derived.
+export function assertPrePushWorktreeReAnchor(envelope, reAnchor) {
+  required(envelope, 'launch envelope')
+  required(reAnchor, 'pre-push live worktree re-anchor read')
+  // Provenance: the re-anchor read must be stamped by the host-controlled receipt-pinned reader, the
+  // same non-forgeable reality source as Anchor B, not any worker/envelope-supplied value.
+  if (reAnchor.source !== HOST_WORKTREE_READ_SOURCE) {
+    throw new Error('pre-push re-anchor rejected: not from the host-controlled receipt-pinned reader')
+  }
+  const liveBranch = requiredNonEmptyString(reAnchor.branch, 'pre-push live worktree branch')
+  const liveSlug = requiredNonEmptyString(reAnchor.repo_slug, 'pre-push live worktree origin repo slug')
+  // The live branch of the receipt-pinned worktree must STILL equal the envelope branch at push time.
+  // A checkout to a foreign branch between the initial identity check and the push is caught here.
+  requiredNonEmptyString(envelope.branch, 'envelope branch')
+  if (liveBranch !== envelope.branch) {
+    throw new Error('pre-push re-anchor rejected: receipt-pinned worktree is on a foreign branch at push time')
+  }
+  // The live origin remote of the receipt-pinned worktree must STILL resolve to the envelope repo_slug.
+  // An origin remote change between the initial identity check and the push is caught here.
+  assertRepoSlug(liveSlug, 'pre-push live origin repo slug')
+  if (liveSlug !== envelope.repo_slug) {
+    throw new Error('pre-push re-anchor rejected: receipt-pinned worktree origin is a foreign remote at push time')
+  }
+  return { branch: liveBranch, repo_slug: liveSlug }
+}
+
 export function assertReadyEnvelope(envelope) {
   for (const field of [
     'issue',
