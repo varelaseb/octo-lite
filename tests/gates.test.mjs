@@ -12,11 +12,14 @@ import {
   assertLaunchRevision,
   assertManifestShape,
   assertReadOnlyAckPhase,
+  assertReadOnlyFirstBootstrap,
   assertReadyEnvelope,
+  assertResumeSandboxConfig,
   assertWorkerAckEcho,
   evidenceMode,
   launchRevision,
   verifyAckThenUpgrade,
+  verifyRelayVerbatim,
 } from '../workflows/lib/gates.mjs'
 
 // Spec: role-runtime launch-role-purpose-capability, launch-purpose-shaping-roles,
@@ -654,4 +657,158 @@ test('an escaping or wrong worktree path never spawns', () => {
   }
   assert.throws(() => assertContainment('', '/work/worktrees/tur-1'), /worktree root required/)
   assert.throws(() => assertContainment('/work/worktrees', ''), /worker worktree required/)
+})
+
+// TUR-447 F2a Unit C. Spec: role-runtime role-openai-relay, role-openai-fail-closed,
+// launch-correctness-path, launch-review-sandbox-integrity, launch-resume-sandbox-config
+// (blob spec/domains/role-runtime.spec.html:e1265b3c5d0a464ed416de283e11069e4796b01a);
+// operating-model ADR decision-identity-source, decision-fail-closed-identity
+// (blob spec/adr/0001-operating-model-boundaries.spec.html). The relay-verbatim gate is a
+// PURE function over data the caller fetches independently (the loop cannot read the
+// codex rollout file): it proves effective provider/model/effort FROM the rollout record
+// and rejects any relay payload that is not the rollout-derived final message.
+const EXPECTED_RUNTIME = { provider: 'openai', model: 'gpt-5.4-codex', effort: 'high' }
+const SESSION_ID = '01998888-4444-7abc-8def-0123456789ab'
+const RELAY_MESSAGE = 'BLOCKING: line 42 dereferences a possibly-null handle.'
+
+function rolloutRecord(overrides = {}) {
+  return {
+    provider: 'openai',
+    model: 'gpt-5.4-codex',
+    effort: 'high',
+    final_message: RELAY_MESSAGE,
+    ...overrides,
+  }
+}
+
+test('relay-verbatim accepts a payload byte-identical to the rollout record final message', () => {
+  assert.deepEqual(
+    verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, rolloutRecord()),
+    { provider: 'openai', model: 'gpt-5.4-codex', effort: 'high', final_message: RELAY_MESSAGE },
+  )
+  // A session-keyed map of independently fetched records resolves the exact session.
+  assert.deepEqual(
+    verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, { [SESSION_ID]: rolloutRecord() }),
+    { provider: 'openai', model: 'gpt-5.4-codex', effort: 'high', final_message: RELAY_MESSAGE },
+  )
+})
+
+// Red (a): edited payload. The relay-returned payload differs from the rollout-derived
+// final message, so a relay that authors or edits prose fails.
+test('relay-verbatim rejects a relay payload that edits the rollout final message', () => {
+  assert.throws(
+    () => verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, `${RELAY_MESSAGE} (softened by relay)`, rolloutRecord()),
+    /payload mismatch with rollout record/,
+  )
+})
+
+// Red (b): absent rollout record for the claimed session id fails closed.
+test('relay-verbatim fails closed when no rollout record resolves for the claimed session', () => {
+  assert.throws(
+    () => verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, undefined),
+    /no rollout record for session/,
+  )
+  assert.throws(
+    () => verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, { 'other-session': rolloutRecord() }),
+    /no rollout record for session/,
+  )
+  assert.throws(
+    () => verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, { session_id: 'other-session', ...rolloutRecord() }),
+    /no rollout record for session/,
+  )
+  // A record present but carrying no final assistant message is insufficient.
+  assert.throws(
+    () => verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, rolloutRecord({ final_message: '' })),
+    /no final assistant message/,
+  )
+})
+
+// Red (c): model mismatch proven from the rollout record.
+test('relay-verbatim rejects a model that disagrees with the expected role runtime', () => {
+  assert.throws(
+    () => verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, rolloutRecord({ model: 'gpt-5.4' })),
+    /effective identity mismatch: model/,
+  )
+})
+
+// Red (d): effort mismatch proven from the rollout record.
+test('relay-verbatim rejects an effort that disagrees with the expected role runtime', () => {
+  assert.throws(
+    () => verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, rolloutRecord({ effort: 'medium' })),
+    /effective identity mismatch: effort/,
+  )
+})
+
+// Red (e): provider substitution. A rollout record from any provider other than the exact
+// expected OpenAI runtime is rejected.
+test('relay-verbatim rejects a non-OpenAI provider substitution', () => {
+  assert.throws(
+    () => verifyRelayVerbatim(EXPECTED_RUNTIME, SESSION_ID, RELAY_MESSAGE, rolloutRecord({ provider: 'anthropic' })),
+    /provider substitution: anthropic/,
+  )
+})
+
+test('relay-verbatim requires the expected runtime fields and a claimed session id', () => {
+  assert.throws(() => verifyRelayVerbatim(undefined, SESSION_ID, RELAY_MESSAGE, rolloutRecord()), /expected role runtime required/)
+  assert.throws(() => verifyRelayVerbatim({ model: 'x', effort: 'high' }, SESSION_ID, RELAY_MESSAGE, rolloutRecord()), /expected provider required/)
+  assert.throws(() => verifyRelayVerbatim(EXPECTED_RUNTIME, '', RELAY_MESSAGE, rolloutRecord()), /relay session id required/)
+})
+
+// Sandbox-law predicates (launch-review-sandbox-integrity, launch-resume-sandbox-config).
+const READ_ONLY_RESUME = ['codex', 'exec', 'resume', '--json', '-c', 'sandbox_mode="read-only"', 'SID', '-']
+const LIVE_READ_RESUME = [
+  'codex', 'exec', 'resume', '--json',
+  '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true', 'SID', '-',
+]
+
+test('resume sandbox is selected through -c config and rejects the top-level -s flag', () => {
+  assert.deepEqual(assertResumeSandboxConfig(READ_ONLY_RESUME), { sandbox_mode: 'read-only', needsLiveReads: false })
+  assert.deepEqual(
+    assertResumeSandboxConfig(LIVE_READ_RESUME, { needsLiveReads: true }),
+    { sandbox_mode: 'workspace-write', needsLiveReads: true },
+  )
+  // A resume that uses the top-level -s flag is rejected: the installed CLI resume
+  // subcommand rejects -s.
+  assert.throws(
+    () => assertResumeSandboxConfig(['codex', 'exec', 'resume', '--json', '-s', 'read-only', 'SID', '-']),
+    /top-level -s flag prohibited on resume/,
+  )
+})
+
+test('a workspace-write plus network resume must declare both through -c config', () => {
+  assert.throws(
+    () => assertResumeSandboxConfig(READ_ONLY_RESUME, { needsLiveReads: true }),
+    /sandbox_mode=workspace-write/,
+  )
+  assert.throws(
+    () => assertResumeSandboxConfig(
+      ['codex', 'exec', 'resume', '--json', '-c', 'sandbox_mode="workspace-write"', 'SID', '-'],
+      { needsLiveReads: true },
+    ),
+    /network_access=true/,
+  )
+  // A non-live-read resume must stay read-only, never silently workspace-write.
+  assert.throws(
+    () => assertResumeSandboxConfig(LIVE_READ_RESUME),
+    /must stay sandbox_mode=read-only/,
+  )
+  assert.throws(
+    () => assertResumeSandboxConfig(['codex', 'exec', 'resume', '--json', 'SID', '-']),
+    /exactly one -c sandbox_mode config required/,
+  )
+})
+
+test('an OpenAI review-pass bootstrap must be read-only-first', () => {
+  assert.deepEqual(
+    assertReadOnlyFirstBootstrap(['codex', 'exec', '--json', '-C', '/wt', '-m', 'gpt-5.4-codex', '-s', 'read-only', '-']),
+    { sandbox_mode: 'read-only' },
+  )
+  assert.throws(
+    () => assertReadOnlyFirstBootstrap(['codex', 'exec', '--json', '-C', '/wt', '-m', 'gpt-5.4-codex', '-s', 'workspace-write', '-']),
+    /must be read-only-first/,
+  )
+  assert.throws(
+    () => assertReadOnlyFirstBootstrap(['codex', 'exec', '--json', '-C', '/wt', '-m', 'gpt-5.4-codex', '-']),
+    /must be read-only-first/,
+  )
 })

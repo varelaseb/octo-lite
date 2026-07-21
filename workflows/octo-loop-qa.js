@@ -521,6 +521,133 @@ function acceptPublication(expected, publication) {
   }
   return { packet_url: publication.packet_url }
 }
+
+// TUR-447 F2a Unit C. Pure relay-verbatim verification gate (role-runtime
+// role-openai-relay, role-openai-fail-closed, launch-correctness-path; operating-model
+// ADR decision-identity-source, decision-fail-closed-identity). This is the workflow-layer
+// port of octo_lite/launch.py verify_relay_verbatim. It is a PURE function over data
+// passed in: the loop cannot read files, sessions, or the network, so the caller resolves
+// the OpenAI rollout record through a separate read-only subagent and passes the record
+// here. The relay itself never supplies the record; a relay-persisted artifact alone is
+// explicitly insufficient. The record shape mirrors the codex rollout file fields the
+// launcher extracts: { provider, model, effort, final_message }.
+//
+// rolloutLookup is the INDEPENDENTLY-fetched rollout data, either the single record for
+// the claimed session id or a map of session id to record. Resolution requires a record
+// for the exact claimed session id; a session id without a rollout record is rejected
+// (fail closed). Effective provider, model, and effort are proven FROM the record, not
+// from the relay. The final assistant message is extracted FROM the record and must equal
+// the relay-returned payload, so a relay that authors or edits prose fails.
+function resolveRolloutRecord(rolloutLookup, claimedSessionId) {
+  required(claimedSessionId, 'relay session id')
+  if (rolloutLookup === undefined || rolloutLookup === null) {
+    throw new Error(`relay verbatim rejected: no rollout record for session ${claimedSessionId}`)
+  }
+  let record = rolloutLookup
+  const looksLikeMap =
+    typeof rolloutLookup === 'object' &&
+    !Array.isArray(rolloutLookup) &&
+    rolloutLookup.provider === undefined &&
+    rolloutLookup.session_id === undefined
+  if (looksLikeMap) {
+    record = rolloutLookup[claimedSessionId]
+  } else if (rolloutLookup.session_id !== undefined && rolloutLookup.session_id !== claimedSessionId) {
+    throw new Error(`relay verbatim rejected: no rollout record for session ${claimedSessionId}`)
+  }
+  if (record === undefined || record === null || typeof record !== 'object') {
+    throw new Error(`relay verbatim rejected: no rollout record for session ${claimedSessionId}`)
+  }
+  return record
+}
+
+function verifyRelayVerbatim(expectedRuntime, claimedSessionId, relayPayload, rolloutLookup) {
+  required(expectedRuntime, 'expected role runtime')
+  const expectedProvider = required(expectedRuntime.provider, 'expected provider')
+  const expectedModel = required(expectedRuntime.model, 'expected model')
+  const expectedEffort = required(expectedRuntime.effort, 'expected effort')
+  const record = resolveRolloutRecord(rolloutLookup, claimedSessionId)
+  const provider = record.provider
+  if (provider !== expectedProvider) {
+    throw new Error(`relay verbatim rejected: provider substitution: ${provider}`)
+  }
+  const mismatches = []
+  if (record.model !== expectedModel) mismatches.push('model')
+  if (record.effort !== expectedEffort) mismatches.push('effort')
+  if (mismatches.length > 0) {
+    throw new Error(`relay verbatim rejected: effective identity mismatch: ${mismatches.join(', ')}`)
+  }
+  const finalMessage = record.final_message
+  if (typeof finalMessage !== 'string' || finalMessage === '') {
+    throw new Error(`relay verbatim rejected: no final assistant message in rollout record for ${claimedSessionId}`)
+  }
+  if (relayPayload !== finalMessage) {
+    throw new Error('relay verbatim rejected: payload mismatch with rollout record')
+  }
+  return { provider, model: record.model, effort: record.effort, final_message: finalMessage }
+}
+
+// TUR-447 F2a Unit C sandbox-law predicates (role-runtime launch-review-sandbox-integrity,
+// launch-resume-sandbox-config). Pure predicate gates over the resume/bootstrap argv the
+// relay would execute. Port of the sandbox-selection rules in octo_lite/launch.py
+// _provider_argv. F2b wires the actual relay execution and HEAD/status immutability; this
+// pass provides the gates F2b calls.
+//
+// Every OpenAI resume selects its sandbox through -c sandbox_mode=... config, never the
+// top-level -s flag, because the installed CLI resume subcommand rejects -s while the exec
+// bootstrap still accepts it. A workspace-write plus network resume must declare both the
+// workspace-write sandbox_mode and network access through -c config.
+function hasTopLevelSandboxFlag(argv) {
+  return argv.some((token, index) => token === '-s' && index + 1 < argv.length)
+}
+
+function configValues(argv, key) {
+  const values = []
+  for (let i = 0; i + 1 < argv.length; i += 1) {
+    if (argv[i] === '-c' && typeof argv[i + 1] === 'string' && argv[i + 1].startsWith(`${key}=`)) {
+      values.push(argv[i + 1].slice(key.length + 1))
+    }
+  }
+  return values
+}
+
+function assertResumeSandboxConfig(resumeArgv, { needsLiveReads = false } = {}) {
+  requiredNonEmptyArray(resumeArgv, 'resume argv')
+  if (hasTopLevelSandboxFlag(resumeArgv)) {
+    throw new Error('resume sandbox rejected: top-level -s flag prohibited on resume, use -c sandbox_mode config')
+  }
+  const modes = configValues(resumeArgv, 'sandbox_mode')
+  if (modes.length !== 1) {
+    throw new Error('resume sandbox rejected: exactly one -c sandbox_mode config required')
+  }
+  const mode = modes[0].replace(/^"|"$/g, '')
+  if (needsLiveReads) {
+    if (mode !== 'workspace-write') {
+      throw new Error('resume sandbox rejected: live-read resume requires sandbox_mode=workspace-write')
+    }
+    const network = configValues(resumeArgv, 'sandbox_workspace_write.network_access')
+    if (network.length !== 1 || network[0] !== 'true') {
+      throw new Error('resume sandbox rejected: workspace-write resume requires network_access=true')
+    }
+  } else if (mode !== 'read-only') {
+    throw new Error('resume sandbox rejected: non-live-read resume must stay sandbox_mode=read-only')
+  }
+  return { sandbox_mode: mode, needsLiveReads }
+}
+
+// A review-pass bootstrap must be read-only-first: the exec bootstrap selects the
+// read-only sandbox before any workspace-write resume. A bootstrap that is not read-only
+// is rejected.
+function assertReadOnlyFirstBootstrap(bootstrapArgv) {
+  requiredNonEmptyArray(bootstrapArgv, 'bootstrap argv')
+  let sandbox = ''
+  for (let i = 0; i + 1 < bootstrapArgv.length; i += 1) {
+    if (bootstrapArgv[i] === '-s') sandbox = bootstrapArgv[i + 1]
+  }
+  if (sandbox !== 'read-only') {
+    throw new Error('bootstrap rejected: OpenAI review-pass bootstrap must be read-only-first')
+  }
+  return { sandbox_mode: 'read-only' }
+}
 // GATES-EMBED-END
 
 // Decision 109 (operating-model decision-109-workflow-native and decision-109-binding;
