@@ -1049,16 +1049,20 @@ def _codex_home() -> Path:
     return Path(os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"))
 
 
-def _read_codex_rollout_identity(session_id: str) -> dict[str, str]:
-    """Read the exact effective provider, model, and effort Codex itself recorded
-    for this session, from its own rollout file, never from the model's self-report."""
-    sessions_dir = _codex_home() / "sessions"
+def _read_codex_rollout_record(session_id: str, codex_home: Path | None = None) -> dict[str, str]:
+    """Read the exact effective provider, model, effort, and final assistant message
+    Codex itself recorded for this session, from its own rollout file under
+    CODEX_HOME/sessions, never from the model's or relay's self-report
+    (decision-identity-source, role-openai-fail-closed)."""
+    home = Path(codex_home) if codex_home is not None else _codex_home()
+    sessions_dir = home / "sessions"
     matches = sorted(sessions_dir.rglob(f"rollout-*-{session_id}.jsonl")) if sessions_dir.is_dir() else []
     if not matches:
         raise GateError(f"codex effective identity unprovable: no rollout session file for {session_id}")
     provider = ""
     model = ""
     effort = ""
+    final_message = ""
     for line in matches[-1].read_text().splitlines():
         if not line.strip():
             continue
@@ -1074,9 +1078,61 @@ def _read_codex_rollout_identity(session_id: str) -> dict[str, str]:
         elif event.get("type") == "turn_context":
             model = str(payload.get("model") or model)
             effort = str(payload.get("effort") or effort)
+        elif event.get("type") == "response_item" and payload.get("type") == "message" and payload.get("role") == "assistant":
+            texts = [
+                item["text"]
+                for item in payload.get("content") or []
+                if isinstance(item, dict) and item.get("type") == "output_text" and isinstance(item.get("text"), str)
+            ]
+            if texts:
+                final_message = "".join(texts)
+        elif event.get("type") == "event_msg" and payload.get("type") == "agent_message" and isinstance(payload.get("message"), str):
+            final_message = payload["message"]
     if not provider or not model or not effort:
         raise GateError(f"codex effective identity unprovable: rollout session file incomplete for {session_id}")
-    return {"provider": provider, "model": model, "effort": effort}
+    return {"provider": provider, "model": model, "effort": effort, "final_message": final_message}
+
+
+def _read_codex_rollout_identity(session_id: str) -> dict[str, str]:
+    """Read the exact effective provider, model, and effort Codex itself recorded
+    for this session, from its own rollout file, never from the model's self-report."""
+    record = _read_codex_rollout_record(session_id)
+    return {"provider": record["provider"], "model": record["model"], "effort": record["effort"]}
+
+
+def verify_relay_verbatim(
+    claimed_session_id: str,
+    claimed_payload: str,
+    claimed_sha256: str,
+    expected_model: str,
+    expected_effort: str,
+    codex_home: Path | None = None,
+) -> dict[str, str]:
+    """Independent relay-verbatim proof (role-openai-relay, role-openai-fail-closed).
+
+    Resolves the relay-claimed session id to codex's OWN rollout record under
+    CODEX_HOME/sessions (decision-identity-source), proves effective provider,
+    model, and effort from that record, extracts the final assistant message
+    from the record itself, and rejects any mismatch with the relay-returned
+    payload. Relay-supplied artifacts are never consulted; an absent rollout
+    record fails closed. Returns the proven record."""
+    record = _read_codex_rollout_record(claimed_session_id, codex_home)
+    if record["provider"] != "openai":
+        raise GateError(f"relay verbatim rejected: provider substitution: {record['provider']}")
+    mismatches = [
+        name
+        for name, expected in (("model", expected_model), ("effort", expected_effort))
+        if record[name] != expected
+    ]
+    if mismatches:
+        raise GateError(f"relay verbatim rejected: effective identity mismatch: {', '.join(mismatches)}")
+    final_message = record["final_message"]
+    if not final_message:
+        raise GateError(f"relay verbatim rejected: no final assistant message in rollout record for {claimed_session_id}")
+    record_sha256 = hashlib.sha256(final_message.encode()).hexdigest()
+    if record_sha256 != claimed_sha256 or record_sha256 != hashlib.sha256(claimed_payload.encode()).hexdigest():
+        raise GateError("relay verbatim rejected: payload mismatch with rollout record")
+    return record
 
 
 def verify_codex_effective_identity(receipt: Mapping[str, Any], session_id: str) -> None:

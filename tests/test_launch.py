@@ -28,6 +28,7 @@ from octo_lite.launch import (
     run_mutation,
     run_reconcile_launch,
     verify_bootstrap,
+    verify_relay_verbatim,
 )
 from octo_lite.runtime import exact_fingerprint, launch_revision, verdict_body
 
@@ -43,19 +44,36 @@ def openai_provider_output(session_id: str, message: dict) -> str:
     return "\n".join(lines)
 
 
-def write_codex_rollout(codex_home: Path, session_id: str, *, model: str, effort: str, provider: str = "openai") -> None:
+def write_codex_rollout(
+    codex_home: Path,
+    session_id: str,
+    *,
+    model: str,
+    effort: str,
+    provider: str = "openai",
+    final_message: str | None = None,
+) -> None:
     sessions_dir = codex_home / "sessions" / "2026" / "07" / "19"
     sessions_dir.mkdir(parents=True, exist_ok=True)
     rollout = sessions_dir / f"rollout-2026-07-19T00-00-00-{session_id}.jsonl"
-    rollout.write_text(
-        "\n".join(
-            [
-                json.dumps({"type": "session_meta", "payload": {"session_id": session_id, "model_provider": provider}}),
-                json.dumps({"type": "turn_context", "payload": {"model": model, "effort": effort}}),
-            ]
+    lines = [
+        json.dumps({"type": "session_meta", "payload": {"session_id": session_id, "model_provider": provider}}),
+        json.dumps({"type": "turn_context", "payload": {"model": model, "effort": effort}}),
+    ]
+    if final_message is not None:
+        lines.append(
+            json.dumps(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": final_message}],
+                    },
+                }
+            )
         )
-        + "\n"
-    )
+    rollout.write_text("\n".join(lines) + "\n")
 
 
 FAKE_GH_PR_VIEW = '''#!/usr/bin/env python3
@@ -1167,6 +1185,112 @@ class ReconcileLaunchBoundaryTests(unittest.TestCase):
         readback = tomllib.loads(prepared.receipt_path.read_text())
         self.assertNotIn("result", readback)
         self.assertTrue(self.worktree.exists())
+
+
+class RelayVerbatimTests(unittest.TestCase):
+    """Unit C: relay-verbatim proof from codex's OWN rollout record under CODEX_HOME/sessions.
+
+    Spec: role-openai-relay, role-openai-fail-closed, decision-identity-source. The
+    independent verifier never consults relay-supplied artifacts; provenance is the
+    rollout record alone."""
+
+    MODEL = "gpt-5.6-sol"
+    EFFORT = "high"
+    MESSAGE = '{"verdict": "clear", "head": "' + "a" * 40 + '"}'
+
+    def _home(self, td: str, session_id: str, **overrides) -> Path:
+        codex_home = Path(td)
+        write_codex_rollout(
+            codex_home,
+            session_id,
+            model=overrides.get("model", self.MODEL),
+            effort=overrides.get("effort", self.EFFORT),
+            provider=overrides.get("provider", "openai"),
+            final_message=overrides.get("final_message", self.MESSAGE),
+        )
+        return codex_home
+
+    def _sha(self, payload: str) -> str:
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def test_relay_verbatim_accepts_exact_rollout_derived_payload(self) -> None:
+        session_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as td:
+            codex_home = self._home(td, session_id)
+            proven = verify_relay_verbatim(
+                session_id, self.MESSAGE, self._sha(self.MESSAGE), self.MODEL, self.EFFORT, codex_home=codex_home
+            )
+        self.assertEqual("openai", proven["provider"])
+        self.assertEqual(self.MODEL, proven["model"])
+        self.assertEqual(self.EFFORT, proven["effort"])
+        self.assertEqual(self.MESSAGE, proven["final_message"])
+
+    def test_relay_verbatim_rejects_relay_edited_payload(self) -> None:
+        # A relay that authors or edits prose fails because the rollout-derived message differs.
+        session_id = str(uuid.uuid4())
+        edited = self.MESSAGE.replace("clear", "blocking")
+        with tempfile.TemporaryDirectory() as td:
+            codex_home = self._home(td, session_id)
+            with self.assertRaisesRegex(GateError, "payload mismatch"):
+                verify_relay_verbatim(
+                    session_id, edited, self._sha(edited), self.MODEL, self.EFFORT, codex_home=codex_home
+                )
+
+    def test_relay_verbatim_rejects_claimed_hash_not_matching_claimed_payload(self) -> None:
+        session_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as td:
+            codex_home = self._home(td, session_id)
+            with self.assertRaisesRegex(GateError, "payload mismatch"):
+                verify_relay_verbatim(
+                    session_id, self.MESSAGE, self._sha("tampered"), self.MODEL, self.EFFORT, codex_home=codex_home
+                )
+
+    def test_relay_verbatim_fails_closed_without_a_resolvable_rollout_record(self) -> None:
+        # A session id without a resolvable rollout record fails closed; relay-persisted
+        # artifacts alone are explicitly insufficient.
+        session_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaisesRegex(GateError, "no rollout session file"):
+                verify_relay_verbatim(
+                    session_id, self.MESSAGE, self._sha(self.MESSAGE), self.MODEL, self.EFFORT, codex_home=Path(td)
+                )
+
+    def test_relay_verbatim_rejects_model_mismatch(self) -> None:
+        session_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as td:
+            codex_home = self._home(td, session_id, model="gpt-4.1-mini")
+            with self.assertRaisesRegex(GateError, "model"):
+                verify_relay_verbatim(
+                    session_id, self.MESSAGE, self._sha(self.MESSAGE), self.MODEL, self.EFFORT, codex_home=codex_home
+                )
+
+    def test_relay_verbatim_rejects_effort_mismatch(self) -> None:
+        session_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as td:
+            codex_home = self._home(td, session_id, effort="low")
+            with self.assertRaisesRegex(GateError, "effort"):
+                verify_relay_verbatim(
+                    session_id, self.MESSAGE, self._sha(self.MESSAGE), self.MODEL, self.EFFORT, codex_home=codex_home
+                )
+
+    def test_relay_verbatim_rejects_provider_substitution(self) -> None:
+        # A rollout record from any provider other than the exact OpenAI runtime is rejected.
+        session_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as td:
+            codex_home = self._home(td, session_id, provider="anthropic")
+            with self.assertRaisesRegex(GateError, "provider"):
+                verify_relay_verbatim(
+                    session_id, self.MESSAGE, self._sha(self.MESSAGE), self.MODEL, self.EFFORT, codex_home=codex_home
+                )
+
+    def test_relay_verbatim_fails_closed_when_rollout_record_has_no_assistant_message(self) -> None:
+        session_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as td:
+            codex_home = self._home(td, session_id, final_message=None)
+            with self.assertRaisesRegex(GateError, "final assistant message"):
+                verify_relay_verbatim(
+                    session_id, self.MESSAGE, self._sha(self.MESSAGE), self.MODEL, self.EFFORT, codex_home=codex_home
+                )
 
 
 if __name__ == "__main__":
