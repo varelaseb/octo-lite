@@ -9,7 +9,15 @@ from pathlib import Path
 
 from octo_lite.launch import LaneProvision
 from octo_lite.runtime import GateError
-from octo_lite.stream_envelope import build_stream_envelope, launch_stream_lane
+from octo_lite.stream_envelope import build_stream_envelope
+
+# `launch_stream_lane` is imported LOCALLY inside
+# StreamEnvelopeProductionInvocationTests instead of at module top (re-review
+# finding 3, test_stream_envelope.py:12): a module-top import of a post-fix
+# entrypoint would fail COLLECTION of this whole file at a state where that
+# entrypoint does not yet exist, masking every OTHER regression in this file
+# (e.g. REG-6's own builder assertion) behind an ImportError instead of
+# letting it fail first on its own assertion.
 
 ROOT = Path(__file__).resolve().parents[1]
 GATES_PATH = ROOT / "workflows" / "lib" / "gates.mjs"
@@ -179,6 +187,15 @@ class StreamEnvelopeProductionInvocationTests(unittest.TestCase):
     # loop via run_lane_loop) and asserts the injected runner received
     # PARSED JSON envelope args (a dict/object), never a raw
     # `--stream <name>` string (TUR-488).
+    #
+    # `launch_stream_lane` is imported HERE, scoped to this class only (never
+    # at module top), so a missing/broken post-fix entrypoint can only ever
+    # fail THIS class's own tests, never mask collection of
+    # StreamEnvelopeBuilderTests (REG-6) elsewhere in this file.
+    def setUp(self) -> None:
+        from octo_lite.stream_envelope import launch_stream_lane
+
+        self.launch_stream_lane = launch_stream_lane
 
     def _provision(self) -> LaneProvision:
         record = {
@@ -208,7 +225,7 @@ class StreamEnvelopeProductionInvocationTests(unittest.TestCase):
             return {"ok": True}
 
         stream_name = "gh8-workspace-admit"
-        output = launch_stream_lane(
+        output = self.launch_stream_lane(
             stream_name, provision=provision, stream=STREAM, live_reads=LIVE_READS,
             contract_hash=CONTRACT_HASH, shaping_journal=SHAPING_JOURNAL, runner=runner,
         )
@@ -234,7 +251,7 @@ class StreamEnvelopeProductionInvocationTests(unittest.TestCase):
     def test_empty_stream_name_fails_closed(self) -> None:
         provision = self._provision()
         with self.assertRaises(GateError):
-            launch_stream_lane(
+            self.launch_stream_lane(
                 "", provision=provision, stream=STREAM, live_reads=LIVE_READS,
                 contract_hash=CONTRACT_HASH, shaping_journal=SHAPING_JOURNAL,
                 runner=lambda cwd, env, args: None,

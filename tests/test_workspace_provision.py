@@ -189,6 +189,27 @@ class LaneProvisionTests(unittest.TestCase):
         self.assertEqual(self.head, result.record["starting_head"])
         self.assertEqual(self.head, _git(self.worktree, "rev-parse", "HEAD"))
 
+    # REG-9 (re-review finding 1, launch.py:708): `git rev-parse <ref>` does
+    # NOT peel an ANNOTATED TAG to its commit, it returns the tag OBJECT sha,
+    # but `git worktree add` checks out the peeled commit. An annotated tag
+    # must provision cleanly, record the PEELED COMMIT sha (never the tag
+    # object sha), and leave no orphan worktree behind.
+    def test_starting_commit_annotated_tag_is_peeled_to_its_commit(self) -> None:
+        tag = "v-lane-1"
+        _git(self.control_repo, "tag", "-a", tag, "-m", "annotated tag")
+        tag_object_sha = _git(self.control_repo, "rev-parse", tag)
+        # Sanity: an annotated tag object sha differs from the commit it
+        # points at, otherwise this test would not exercise the peel bug.
+        self.assertNotEqual(self.head, tag_object_sha)
+
+        result = self.provision(head=tag)
+
+        self.assertEqual(self.head, result.record["starting_head"])
+        self.assertNotEqual(tag_object_sha, result.record["starting_head"])
+        self.assertEqual(self.head, _git(self.worktree, "rev-parse", "HEAD"))
+        listing = _git(self.control_repo, "worktree", "list", "--porcelain")
+        self.assertEqual(1, listing.count(f"worktree {self.worktree.resolve()}"))
+
     # RED-1b: characterizes the UNCHANGED existing worker-pass behavior; the
     # lane-provision path is a distinct new function, never a behavior change to
     # _prepare_worktree itself.
@@ -337,6 +358,27 @@ class LaneProvisionTests(unittest.TestCase):
         timezone_less = dict(result.record, provisioned_at="2026-07-21T00:00:00")
         with self.assertRaises(GateError):
             validate_provision_record(timezone_less)
+
+    # REG-10 (re-review finding 2, launch.py:566): `datetime.fromisoformat`
+    # accepts NON-RFC3339 forms (ISO week dates, compact/basic timestamps)
+    # that must still be REJECTED, while genuine RFC3339 values (the Z form
+    # and the numeric-offset form) must still PASS.
+    def test_record_schema_rejects_non_rfc3339_forms_but_accepts_rfc3339(self) -> None:
+        result = self.provision()
+
+        week_date = dict(result.record, provisioned_at="2026-W30-2T00:00:00+00:00")
+        with self.assertRaises(GateError):
+            validate_provision_record(week_date)
+
+        compact = dict(result.record, provisioned_at="20260721T000000+0000")
+        with self.assertRaises(GateError):
+            validate_provision_record(compact)
+
+        zulu = dict(result.record, provisioned_at="2026-07-21T00:00:00Z")
+        validate_provision_record(zulu)
+
+        numeric_offset = dict(result.record, provisioned_at="2026-07-21T00:00:00+00:00")
+        validate_provision_record(numeric_offset)
 
     # RED-6
     def test_lane_invocation_env_seam_frozen(self) -> None:
