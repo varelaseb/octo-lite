@@ -11,6 +11,7 @@ import {
   assertPassReceipt,
   assertReadyEnvelope,
   assertSchema,
+  assertWorkerAckEcho,
   evidenceMode,
   exactFingerprint,
 } from '../workflows/lib/gates.mjs'
@@ -449,6 +450,112 @@ test('the workflow independently recomputes and cross-checks the launcher-owned 
     () => assertBoundPassResult(otherReceipt, bound),
     /does not match receipt/,
   )
+})
+
+// Spec: role-runtime launch-identity, launch-receipt, launch-gates-workflow-layer
+// (blob spec/domains/role-runtime.spec.html:e1265b3c5d0a464ed416de283e11069e4796b01a);
+// operating-model decision-109-binding
+// (blob spec/domains/operating-model.spec.html:30c64f92a7085bd85609f238f7ed3891fe729b1a).
+// Worker binding proof is the workflow journal plus a schema-forced acknowledgment echo
+// of the exact bound inputs the orchestrator verifies before any mutation phase.
+const CONTRACT_HASH = 'c'.repeat(64)
+
+function journalledBoundInputs() {
+  return {
+    role: 'implementer',
+    repo: 'varelaseb/octo-lite',
+    issue: 'TUR-1',
+    pr: PR,
+    starting_head: 'abc',
+    spec_blobs: [
+      'spec/domains/role-runtime.spec.html:spec-1',
+      'spec/domains/operating-model.spec.html:spec-2',
+    ],
+    contract_hash: CONTRACT_HASH,
+  }
+}
+
+test('worker ack echo of the exact journalled bound inputs is accepted', () => {
+  const journalled = journalledBoundInputs()
+  const ack = journalledBoundInputs()
+  assert.deepEqual(assertWorkerAckEcho(journalled, ack), ack)
+})
+
+test('a role, repo, issue, or PR substitution fails the echo exactly as a HEAD mismatch does', () => {
+  const journalled = journalledBoundInputs()
+  const headError = (() => {
+    try {
+      assertWorkerAckEcho(journalled, { ...journalledBoundInputs(), starting_head: 'other' })
+    } catch (error) {
+      return error
+    }
+    throw new Error('HEAD mismatch must be rejected')
+  })()
+  assert.equal(headError.constructor, Error)
+  assert.match(headError.message, /mismatch$/)
+  const substitutions = [
+    ['role', 'code-reviewer'],
+    ['repo', 'varelaseb/other-repo'],
+    ['issue', 'TUR-9'],
+    ['pr', 'https://example.test/pr/9'],
+  ]
+  for (const [field, substituted] of substitutions) {
+    const error = (() => {
+      try {
+        assertWorkerAckEcho(journalled, { ...journalledBoundInputs(), [field]: substituted })
+      } catch (caught) {
+        return caught
+      }
+      throw new Error(`${field} substitution must be rejected`)
+    })()
+    assert.equal(error.constructor, headError.constructor)
+    assert.match(error.message, /mismatch$/)
+  }
+})
+
+test('worker ack echo requires exact spec blobs and exact contract hash', () => {
+  const journalled = journalledBoundInputs()
+  assert.throws(
+    () => assertWorkerAckEcho(journalled, { ...journalledBoundInputs(), contract_hash: 'd'.repeat(64) }),
+    /contract hash mismatch/,
+  )
+  assert.throws(
+    () => assertWorkerAckEcho(journalled, { ...journalledBoundInputs(), spec_blobs: ['spec/domains/role-runtime.spec.html:spec-1'] }),
+    /spec blobs mismatch/,
+  )
+  assert.throws(
+    () => assertWorkerAckEcho(journalled, {
+      ...journalledBoundInputs(),
+      spec_blobs: [
+        'spec/domains/operating-model.spec.html:spec-2',
+        'spec/domains/role-runtime.spec.html:spec-1',
+      ],
+    }),
+    /spec blobs mismatch/,
+  )
+  assert.throws(
+    () => assertWorkerAckEcho(journalled, {
+      ...journalledBoundInputs(),
+      spec_blobs: [
+        'spec/domains/role-runtime.spec.html:spec-1',
+        'spec/domains/operating-model.spec.html:tampered',
+      ],
+    }),
+    /spec blobs mismatch/,
+  )
+})
+
+test('a missing bound input in the worker ack echo is rejected before any mutation phase', () => {
+  const journalled = journalledBoundInputs()
+  for (const field of ['role', 'repo', 'issue', 'pr', 'starting_head', 'contract_hash']) {
+    const ack = journalledBoundInputs()
+    delete ack[field]
+    assert.throws(() => assertWorkerAckEcho(journalled, ack), /required/)
+  }
+  const noBlobs = journalledBoundInputs()
+  delete noBlobs.spec_blobs
+  assert.throws(() => assertWorkerAckEcho(journalled, noBlobs), /spec blobs required/)
+  assert.throws(() => assertWorkerAckEcho(journalled, undefined), /required/)
 })
 
 test('schema assertion enforces required fields, types, enums, and nested items', () => {

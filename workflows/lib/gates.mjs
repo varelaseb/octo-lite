@@ -239,6 +239,39 @@ export function assertPassReceipt(receipt, role, startingHead) {
   return receipt
 }
 
+// Worker binding by journal plus schema-forced ack echo (role-runtime launch-identity,
+// launch-receipt, launch-gates-workflow-layer; operating-model decision-109-binding).
+// A worker pass binds no durable TOML receipt: its binding proof is the workflow journal
+// entry for the spawn plus this echo of the exact bound inputs, which the owning
+// orchestrator verifies before any mutation phase. A role, repo, issue, or PR
+// substitution fails the echo exactly as a HEAD mismatch does.
+const WORKER_ACK_FIELDS = [
+  ['role', 'worker ack role'],
+  ['repo', 'worker ack repo'],
+  ['issue', 'worker ack issue'],
+  ['pr', 'worker ack PR'],
+  ['starting_head', 'worker ack starting HEAD'],
+  ['contract_hash', 'worker ack contract hash'],
+]
+
+export function assertWorkerAckEcho(journalled, ack) {
+  required(journalled, 'journalled bound inputs')
+  required(ack, 'worker ack')
+  for (const [field, label] of WORKER_ACK_FIELDS) {
+    requiredNonEmptyString(journalled[field], `journalled ${field}`)
+    requiredNonEmptyString(ack[field], label)
+    if (ack[field] !== journalled[field]) throw new Error(`${label} mismatch`)
+  }
+  requiredNonEmptyArray(journalled.spec_blobs, 'journalled spec_blobs')
+  if (!Array.isArray(ack.spec_blobs) || ack.spec_blobs.length === 0) {
+    throw new Error('worker ack spec blobs required')
+  }
+  const exact = ack.spec_blobs.length === journalled.spec_blobs.length &&
+    ack.spec_blobs.every((blob, index) => blob === journalled.spec_blobs[index])
+  if (!exact) throw new Error('worker ack spec blobs mismatch')
+  return ack
+}
+
 const RESULT_BINDING_PATTERN = /^[0-9a-f]{64}$/
 
 export function assertResultBinding(result) {
