@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from octo_lite.launch import fetch_stream_binding, prepare_reconcile_launch, run_reconcile_launch  # noqa: E402
+from octo_lite.runtime import GateError  # noqa: E402
 
 CANONICAL_SPEC_SIGNAL = "Canonical spec paths:"
 CANONICAL_ADR_SIGNAL = "Canonical ADR paths:"
@@ -692,6 +693,44 @@ def main() -> int:
             adr_blobs=adr_blobs,
             conversation_state_refs=[str(path.relative_to(control)) for path in paths],
         )
+    except GateError as error:
+        # A target commit landing between snapshot capture above and the gateway's
+        # own HEAD recheck fails closed inside prepare_reconcile_launch with a
+        # 'target HEAD changed' GateError. In the LIVE topology the sweep runs from
+        # a control dir another lane actively commits to, so this race is expected
+        # and must NOT crash the whole timer sweep (real crash observed 08:56:06).
+        # Tolerate a genuine mid-run HEAD change ONLY (message match OR the captured
+        # head no longer matches the current repo HEAD) by deferring the reconcile
+        # for this pass; ANY OTHER GateError (HEAD unchanged: spec/ADR/PR/Linear
+        # drift) is re-raised so the deliberate fail-closed behavior is preserved.
+        pending_snapshot_path.unlink(missing_ok=True)
+        head_changed = "target HEAD changed" in str(error) or repo_head(repo) != head
+        if not head_changed:
+            liveness_path.unlink(missing_ok=True)
+            raise
+        # Deferred reconcile: still surface the trust-critical operator-gate block
+        # (stdout AND operator-say) exactly like the noop/completed paths, print the
+        # distinct deferred note, and do NOT persist sweep-state.toml so the next
+        # 2-minute pass retries the reconcile against a stable HEAD. Exit 0 (clean).
+        _emit_operator_gate(gate_lines, root, owner_file, owner_route)
+        for note in degraded_notes:
+            print(note)
+        deferred_note = (
+            "SWEEP NOTE (deferred reconcile): target HEAD changed mid-run - "
+            "operator-gates surfaced, reconcile retried next pass"
+        )
+        print(deferred_note)
+        print(json.dumps({
+            "changed": True,
+            "deferred_reconcile": True,
+            "deferred_note": deferred_note,
+            "fingerprint": fingerprint,
+            "owner": owner_route,
+            "liveness": liveness,
+            "operator_gate": gate_lines,
+            "degraded_reads": degraded_notes,
+        }))
+        return 0
     except BaseException:
         pending_snapshot_path.unlink(missing_ok=True)
         liveness_path.unlink(missing_ok=True)

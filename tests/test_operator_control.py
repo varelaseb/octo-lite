@@ -11,6 +11,8 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from octo_lite.runtime import GateError
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SWEEP = ROOT / "scripts/operator-sweep"
@@ -1414,13 +1416,17 @@ class OperatorControlTests(unittest.TestCase):
             self.assertFalse(any(line.startswith("claude ") for line in calls))
             self.assertEqual(2, sum(line.startswith("linear ") for line in calls))
 
-    def test_sweep_fails_closed_before_any_provider_call_when_target_head_races_between_snapshot_and_gateway(self) -> None:
-        # A thin git wrapper answers the exact literal `-C <repo> rev-parse HEAD`
-        # call twice with two different commits, simulating a commit landing on
-        # the target between the sweep's own head capture (used to build the
-        # snapshot and canonical blobs) and the gateway's independent re-read of
-        # the current repo HEAD, and delegates every other git invocation
-        # (including worktree-internal ones) unchanged to the real binary.
+    def test_sweep_defers_reconcile_before_any_provider_call_when_target_head_races_between_snapshot_and_gateway(self) -> None:
+        # TUR-489: a thin git wrapper answers the exact literal `-C <repo> rev-parse
+        # HEAD` call with two different commits (first the captured head, then a
+        # newer one), simulating a commit landing on the target between the sweep's
+        # own head capture and the gateway's independent re-read of the current repo
+        # HEAD. The gateway fails closed inside prepare_reconcile_launch with a
+        # 'target HEAD changed' GateError. Previously that GateError PROPAGATED and
+        # crashed the whole timer sweep (real crash 08:56:06). The sweep now DEFERS
+        # the reconcile for this pass instead: it makes NO provider call, persists
+        # NO sweep state (so the next pass retries against a stable HEAD), leaves NO
+        # sweep artifact behind, emits the distinct deferred note, and exits 0.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
@@ -1458,14 +1464,20 @@ class OperatorControlTests(unittest.TestCase):
             env["HEAD_CALL_COUNT_FILE"] = str(call_count_file)
 
             result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("head", result.stderr.lower())
+            # Deferred, not crashed: clean exit 0.
+            self.assertEqual(0, result.returncode, result.stderr)
+            # The distinct deferred-reconcile note is surfaced.
+            self.assertIn("SWEEP NOTE (deferred reconcile):", result.stdout)
+            payload = _sweep_stdout_json(result.stdout)
+            self.assertTrue(payload.get("deferred_reconcile"))
+            # No provider call, no persisted state, no sweep artifact directory:
+            # the next pass retries the reconcile against a stable HEAD.
             self.assertFalse((control / "sweep-state.toml").exists())
             self.assertFalse((control / "worktrees").exists())
             self.assertFalse((control / "sweeps").exists())
+            self.assertEqual([], list(control.glob(".sweep-pending-*.md")))
             calls = log.read_text().splitlines() if log.exists() else []
             self.assertFalse(any(line.startswith("claude ") for line in calls))
-            self.assertFalse(any(line.startswith("operator ") for line in calls))
 
     def _write_receipt(self, path: Path, *, role: str, issue: str, provider_session_id: str, verified: bool = True) -> None:
         path.write_text(
@@ -3317,6 +3329,167 @@ class SweepGracefulDegradationTests(unittest.TestCase):
                 any("TUR-BAD" in note for note in payload.get("degraded_reads", [])),
                 payload,
             )
+
+
+class SweepDeferredReconcileTests(unittest.TestCase):
+    """TUR-489: a target commit landing MID-RUN (the sweep runs from a control dir
+    another lane actively commits to) makes prepare_reconcile_launch fail closed
+    with a 'target HEAD changed' GateError. That GateError must NOT crash the whole
+    timer sweep (real crash observed 08:56:06): the sweep defers the reconcile for
+    this pass, still surfaces the loud operator-gate block, notes the defer, and
+    does NOT persist sweep-state.toml so the next pass retries. A NON-HEAD GateError
+    (HEAD unchanged) still propagates / fails closed."""
+
+    def _write_owner(self, base: Path, control: Path) -> Path:
+        owner = base / "operator-owner.toml"
+        owner.write_text(
+            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+        )
+        return owner
+
+    def _fake_bins(self, base: Path) -> tuple[Path, Path, dict]:
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        log = base / "calls.jsonl"
+        (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+        (fake_bin / "operator-say").write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
+        )
+        (fake_bin / "linear").write_text(FAKE_PER_ISSUE_LINEAR)
+        for name in ("claude", "operator-say", "linear"):
+            (fake_bin / name).chmod(0o755)
+        env = dict(
+            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+        )
+        return fake_bin, log, env
+
+    def _run_main(self, module, control: Path, owner: Path, repo: Path, env: dict):
+        """Run module.main() in-process (so prepare_reconcile_launch can be
+        monkeypatched) with argv + os.environ swapped and stdout captured."""
+        import contextlib
+        import io
+        import sys as _sys
+
+        old_argv = _sys.argv
+        old_environ = dict(os.environ)
+        buffer = io.StringIO()
+        _sys.argv = [
+            "operator-sweep", "--control-dir", str(control),
+            "--owner-file", str(owner), "--repo", str(repo),
+        ]
+        os.environ.clear()
+        os.environ.update(env)
+        try:
+            with contextlib.redirect_stdout(buffer):
+                rc = module.main()
+        finally:
+            _sys.argv = old_argv
+            os.environ.clear()
+            os.environ.update(old_environ)
+        return rc, buffer.getvalue()
+
+    def test_mid_run_head_change_defers_reconcile_and_never_crashes(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-carrier"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["HOME"] = str(base)
+
+            real_prepare = module.prepare_reconcile_launch
+
+            def racing_prepare(**kwargs):
+                # Simulate the live race: a land advances the control HEAD AFTER the
+                # sweep captured `head`, then the gateway's own recheck fails closed.
+                expected = kwargs["expected_head"]
+                subprocess.run(
+                    ["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "mid-run land"],
+                    check=True,
+                )
+                new = module.repo_head(repo)
+                assert new != expected
+                raise GateError(f"target HEAD changed: expected {expected}, found {new}")
+
+            module.prepare_reconcile_launch = racing_prepare
+            try:
+                rc, stdout = self._run_main(module, control, owner, repo, env)
+            finally:
+                module.prepare_reconcile_launch = real_prepare
+
+            # No crash: clean exit 0, GateError did NOT propagate.
+            self.assertEqual(0, rc)
+            # The captured head genuinely no longer matches the current repo HEAD,
+            # exercising the repo_head(repo) != head branch of the handler.
+            # The trust-critical operator-gate line still surfaces on stdout.
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", stdout)
+            # ...and was delivered via operator-say too.
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", log.read_text())
+            # The distinct deferred-reconcile note is emitted (not a gate line).
+            self.assertIn("SWEEP NOTE (deferred reconcile):", stdout)
+            self.assertNotIn("OPERATOR ACTION NEEDED: SWEEP NOTE", stdout)
+            # sweep-state.toml is NOT written, so the next pass retries the reconcile.
+            self.assertFalse((control / "sweep-state.toml").exists())
+            # The pending snapshot artifact was cleaned up.
+            self.assertEqual([], list(control.glob(".sweep-pending-*.md")))
+            # Machine-readable JSON is still the last stdout line and marks the defer.
+            payload = _sweep_stdout_json(stdout)
+            self.assertTrue(payload.get("deferred_reconcile"))
+            self.assertTrue(any(
+                "OPERATOR ACTION NEEDED: TUR-479 In Staging" in line
+                for line in payload.get("operator_gate", [])
+            ), payload)
+
+    def test_non_head_gate_error_still_fails_closed(self) -> None:
+        # Regression: a GateError with the HEAD UNCHANGED (e.g. spec/ADR/PR drift)
+        # must NOT be swallowed - it propagates so the deliberate fail-closed
+        # behavior is preserved and no stale state is left behind.
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-carrier"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["HOME"] = str(base)
+
+            real_prepare = module.prepare_reconcile_launch
+
+            def drift_prepare(**kwargs):
+                # HEAD is left UNCHANGED; only a non-HEAD gateway check fails.
+                raise GateError("stale Linear input: tf-carrier")
+
+            module.prepare_reconcile_launch = drift_prepare
+            try:
+                with self.assertRaises(GateError) as caught:
+                    self._run_main(module, control, owner, repo, env)
+            finally:
+                module.prepare_reconcile_launch = real_prepare
+            self.assertIn("stale Linear input", str(caught.exception))
+            # Fail-closed: no state persisted and no pending snapshot left behind.
+            self.assertFalse((control / "sweep-state.toml").exists())
+            self.assertEqual([], list(control.glob(".sweep-pending-*.md")))
 
 
 class TimerLinearAuthTests(unittest.TestCase):
