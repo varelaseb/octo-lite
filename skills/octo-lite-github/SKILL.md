@@ -85,6 +85,19 @@ Do not create extra workflow labels unless the operator explicitly asks.
 - Do not depend on the formal Review API, reviewer identity, checks, or labels.
 - Never merge or approve as the human reviewer.
 
+## Merge And Linear Sync
+
+- Merge to the main branch is a human acceptance carve-out; the agent never
+  merges. But once a merge lands, its tracked issue owes the `In Staging`
+  transition: the merge is not complete until Linear reflects that the
+  merge-sha is genuinely an ancestor of the deployed main branch.
+- Do not rely on a human remembering that move. Where the target repo provides
+  a post-merge hook that records `In Staging` from the merge-sha reality check,
+  that hook is the enforcement; state the expectation, let the hook fire it, and
+  verify it landed.
+- Only advance, never regress: leave an issue already at or beyond `In Staging`
+  untouched, and never claim a rung the repository reality has not reached.
+
 ## Boundaries
 
 - Do not create, update, close, label, or comment on GitHub issues for
