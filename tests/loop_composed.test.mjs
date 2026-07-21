@@ -38,7 +38,12 @@ function loadLoop() {
 const REPO = '/root/octo-lite'
 const REPO_SLUG = 'varelaseb/octo-lite'
 const ISSUE = 'TUR-447'
-const PR = 'https://github.com/x/y/pull/6'
+// TUR-447 ruling-56 cycle3 slug-identity-bound: the canonical gh identity is the PR NUMBER + --repo
+// <slug>, never a URL. The prior fixture bound a foreign x/y URL that OVERRODE --repo and hid the
+// foreign-repo bug; the PR is now the number 6 and the PR web URL names the CANONICAL repo slug.
+const PR = 6
+const PR_URL = `https://github.com/${REPO_SLUG}/pull/6`
+const WORKTREE_ABS = '/root/octo-lite'
 const BRANCH = 'octo-lite/tur-443-operating-model'
 const HEAD = 'f00b13357cb1be87b5c5e6d7bd98fd9572915154'
 const NEWHEAD = 'abc1234new'
@@ -62,6 +67,10 @@ function boundInputs(role) {
   return {
     role,
     repo: REPO,
+    // TUR-447 ruling-56 cycle3 slug-identity-bound: repo_slug and the contained worktree are part of
+    // the journalled bound-input set (ack echo + launch-revision fingerprint); PR is the NUMBER.
+    repo_slug: REPO_SLUG,
+    worktree: WORKTREE_ABS,
     issue: ISSUE,
     pr: PR,
     starting_head: HEAD,
@@ -73,7 +82,8 @@ function boundInputs(role) {
 function ackFor(role, overrides = {}) {
   const b = boundInputs(role)
   return {
-    role: b.role, repo: b.repo, issue: b.issue, pr: b.pr,
+    role: b.role, repo: b.repo, repo_slug: b.repo_slug, worktree: b.worktree,
+    issue: b.issue, pr: b.pr,
     starting_head: b.starting_head, spec_blobs: b.spec_blobs, contract_hash: b.contract_hash,
     ...overrides,
   }
@@ -82,7 +92,7 @@ function ackFor(role, overrides = {}) {
 function readyEnvelope(overrides = {}) {
   const base = {
     mode: 'implement',
-    repo: REPO, repo_slug: REPO_SLUG, issue: ISSUE, pr: PR, branch: BRANCH,
+    repo: REPO, repo_slug: REPO_SLUG, issue: ISSUE, pr: PR, pr_url: PR_URL, branch: BRANCH,
     shaping_head: HEAD, pr_head: HEAD, pr_base: 'main',
     spec_revision: 'r1', linear_revision: 'lr1', topology_revision: 't1',
     linear_fingerprint: fingerprintFor('Shaped'), linear_state: 'Shaped',
@@ -97,7 +107,7 @@ function readyEnvelope(overrides = {}) {
     loop_fire_args: '--reason ship',
     // Resolver-required bound inputs the loop threads into the COMPLETE role_resolver.py resolve
     // command (TUR-447 cycle1 pass2 F2). starting_head lets resolverCommand build a spawn id.
-    spawn_id: 'spawn-tur447-1', parent: 'orchestrator', reply_route: PR,
+    spawn_id: 'spawn-tur447-1', parent: 'orchestrator', reply_route: PR_URL,
     review_delivery: 'pr-comment', execution_location: 'local',
     starting_head: HEAD,
   }
@@ -216,11 +226,11 @@ function implementScript({
   // production-only pass; both name the same scenario. The observer replay, not these strings, is proof.
   const goodRed = red ?? {
     command: VALIDATION_COMMAND, exit_status: 1, outcome: 'FAIL: behavior wrong',
-    artifact: `${PR}#c1`, head: RED_COMMIT, scenario: SCENARIO,
+    artifact: `${PR_URL}#c1`, head: RED_COMMIT, scenario: SCENARIO,
   }
   const goodGreen = green ?? {
     command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS: behavior right',
-    artifact: `${PR}#c2`, head: FINAL_COMMIT, scenario: SCENARIO,
+    artifact: `${PR_URL}#c2`, head: FINAL_COMMIT, scenario: SCENARIO,
   }
   // Pre-push readback default: git_head is the committed FINAL HEAD (the worker committed on the branch).
   const goodPrePush = prePush ?? freshReads({ git_head: FINAL_COMMIT })
@@ -233,8 +243,8 @@ function implementScript({
     ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
     ['implementer-ack:', { ack: ackFor('implementer') }],
     ['implementer:', {
-      ack: mutationAck, issue: ISSUE, pr_url: PR, branch: BRANCH, head: FINAL_COMMIT,
-      handoff_url: `${PR}#h`, red: goodRed, green: goodGreen, validation: 'suite', blocked: false,
+      ack: mutationAck, issue: ISSUE, pr_url: PR_URL, branch: BRANCH, head: FINAL_COMMIT,
+      handoff_url: `${PR_URL}#h`, red: goodRed, green: goodGreen, validation: 'suite', blocked: false,
       // Committed model: the worker COMMITTED the red then green and did NOT push, and echoed liveness.
       committed: true, pushed: false,
       red_commit: RED_COMMIT, green_commit: GREEN_COMMIT, final_commit: FINAL_COMMIT,
@@ -379,11 +389,11 @@ test('test_observer_inputs_exclude_worker_strings: no worker-supplied command or
   // ONLY the host-sourced validation command and the host-journalled commit ids, never the worker strings.
   const workerRed = {
     command: 'WORKER-CONTROLLED-COMMAND --danger', exit_status: 1, outcome: 'FAIL',
-    artifact: `${PR}#c1`, head: RED_COMMIT, scenario: 'WORKER-CONTROLLED-SCENARIO',
+    artifact: `${PR_URL}#c1`, head: RED_COMMIT, scenario: 'WORKER-CONTROLLED-SCENARIO',
   }
   const workerGreen = {
     command: 'WORKER-CONTROLLED-COMMAND --danger', exit_status: 0, outcome: 'PASS',
-    artifact: `${PR}#c2`, head: FINAL_COMMIT, scenario: 'WORKER-CONTROLLED-SCENARIO',
+    artifact: `${PR_URL}#c2`, head: FINAL_COMMIT, scenario: 'WORKER-CONTROLLED-SCENARIO',
   }
   const agent = makeAgent(implementScript({ red: workerRed, green: workerGreen }))
   const A = committedEnvelope()
@@ -467,7 +477,7 @@ test('test_worker_claim_cross_checked_against_independent_read: a worker whose c
   const agent = makeAgent(implementScript({
     mutationOverrides: { final_commit: forgedFinal, head: forgedFinal },
     green: {
-      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR}#c2`,
+      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR_URL}#c2`,
       head: forgedFinal, scenario: SCENARIO,
     },
   }))
@@ -544,7 +554,7 @@ test('test_invalid_red_that_does_not_fail_rejected: a red commit whose named tes
   const factory = loadLoop()
   // The worker reports a red proof with exit_status 0 (its own red passed): rejected at the committed gate.
   const passingRed = {
-    command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR}#c1`,
+    command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR_URL}#c1`,
     head: RED_COMMIT, scenario: SCENARIO,
   }
   const agent = makeAgent(implementScript({ red: passingRed }))
@@ -750,11 +760,11 @@ test('F1-positive: a matching committed-worker echo is ACCEPTED with no abort', 
 test('TDD gate: a committed red/green whose SCENARIO differs is REJECTED (not the same behavior)', async () => {
   const factory = loadLoop()
   const red = {
-    command: VALIDATION_COMMAND, exit_status: 1, outcome: 'FAIL', artifact: `${PR}#c1`,
+    command: VALIDATION_COMMAND, exit_status: 1, outcome: 'FAIL', artifact: `${PR_URL}#c1`,
     head: RED_COMMIT, scenario: 'scenario-A',
   }
   const green = {
-    command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR}#c2`,
+    command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR_URL}#c2`,
     head: FINAL_COMMIT, scenario: 'scenario-B',
   }
   const agent = makeAgent(implementScript({ red, green }))
@@ -818,7 +828,7 @@ test('F2: the implementer pass resolves runtime from roles.toml via a COMPLETE r
 // and starting HEAD (not the implementer's), exactly as a genuine caller would.
 function boundInputsFor(role, startingHead) {
   return {
-    role, repo: REPO, issue: ISSUE, pr: PR,
+    role, repo: REPO, repo_slug: REPO_SLUG, worktree: WORKTREE_ABS, issue: ISSUE, pr: PR,
     starting_head: startingHead, spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
   }
 }
@@ -859,7 +869,7 @@ function reviewerScript({
     }],
     [`${role}:`, {
       ack, head: HEAD, verdict, findings: verdict === 'blocking' ? ['f'] : [],
-      comment_url: `${PR}#c`,
+      comment_url: `${PR_URL}#c`,
     }],
   ]
 }

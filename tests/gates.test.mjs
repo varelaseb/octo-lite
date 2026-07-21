@@ -120,7 +120,12 @@ test('admission fails closed on any purpose outside the matrix and on missing id
 const ready = {
   issue: 'TUR-1',
   repo: '/repo',
-  pr: 'https://example.test/pr/1',
+  // TUR-447 ruling-56 cycle3 slug-identity-bound: readiness requires the canonical owner/repo slug, a
+  // contained host worktree, and the PR as a NUMBER (never a URL).
+  repo_slug: 'varelaseb/octo-lite',
+  worktree_root: '/root',
+  worktree: 'repo',
+  pr: 1,
   branch: 'octo-lite/tur-1',
   shaping_head: 'aaa',
   spec_revision: 'spec-1',
@@ -498,8 +503,12 @@ function journalledBoundInputs() {
   return {
     role: 'implementer',
     repo: 'varelaseb/octo-lite',
+    // TUR-447 ruling-56 cycle3 slug-identity-bound: repo_slug and worktree are part of the bound-input
+    // echo set, and the PR is the canonical NUMBER (never a URL).
+    repo_slug: 'varelaseb/octo-lite',
+    worktree: '/root/octo-lite',
     issue: 'TUR-1',
-    pr: PR,
+    pr: 1,
     starting_head: 'abc',
     spec_blobs: [
       'spec/domains/role-runtime.spec.html:spec-1',
@@ -530,8 +539,10 @@ test('a role, repo, issue, or PR substitution fails the echo exactly as a HEAD m
   const substitutions = [
     ['role', 'code-reviewer'],
     ['repo', 'varelaseb/other-repo'],
+    ['repo_slug', 'attacker/other'],
+    ['worktree', '/root/foreign-lane-wt'],
     ['issue', 'TUR-9'],
-    ['pr', 'https://example.test/pr/9'],
+    ['pr', 9],
   ]
   for (const [field, substituted] of substitutions) {
     const error = (() => {
@@ -663,8 +674,10 @@ test('a substituted bound input blocks the mutation phase exactly as a HEAD mism
   const substitutions = [
     ['role', 'code-reviewer'],
     ['repo', 'varelaseb/other-repo'],
+    ['repo_slug', 'attacker/other'],
+    ['worktree', '/root/foreign-lane-wt'],
     ['issue', 'TUR-9'],
-    ['pr', 'https://example.test/pr/9'],
+    ['pr', 9],
   ]
   for (const [field, substituted] of substitutions) {
     const error = (() => {
@@ -792,8 +805,11 @@ test('a launch-revision mismatch from any altered combination is rejected with n
   const alterations = [
     ['role', 'code-reviewer'],
     ['repo', 'varelaseb/other-repo'],
+    // TUR-447 ruling-56 cycle3 slug-identity-bound: repo_slug and worktree are in the fingerprint too.
+    ['repo_slug', 'attacker/other'],
+    ['worktree', '/root/foreign-lane-wt'],
     ['issue', 'TUR-9'],
-    ['pr', 'https://example.test/pr/9'],
+    ['pr', 9],
     ['starting_head', 'other'],
     ['contract_hash', 'd'.repeat(64)],
     ['spec_blobs', ['spec/domains/role-runtime.spec.html:tampered']],

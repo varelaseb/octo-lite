@@ -298,6 +298,14 @@ export function assertReadyEnvelope(envelope) {
     'shaping_reviewer_receipt',
     'conversation_cutoff',
   ]) required(envelope[field], field)
+  // TUR-447 ruling-56 cycle3 slug-identity-bound: the canonical gh repo slug (owner/repo) and the host
+  // issue worktree are REQUIRED, shape/containment-validated readiness inputs, checked BEFORE any
+  // Shaped -> Todo fire or spawn, so a missing/malformed slug or an escaping worktree fails closed at
+  // readiness rather than after the fire. The PR must be a NUMBER, not a URL, so gh cannot infer a
+  // foreign repo from a URL that overrides --repo.
+  assertRepoSlug(envelope.repo_slug, 'repo_slug')
+  requiredPrNumber(envelope.pr, 'PR')
+  assertContainment(required(envelope.worktree_root, 'worktree_root'), required(envelope.worktree, 'worktree'))
   if (!Array.isArray(envelope.conversation_log_references) || envelope.conversation_log_references.length === 0) {
     throw new Error('conversation log references required')
   }
@@ -332,17 +340,48 @@ function requiredNonEmptyArray(value, label) {
   return value
 }
 
+// TUR-447 ruling-56 cycle3 slug-identity-bound. The canonical gh identity is the PR NUMBER, never a
+// URL: `gh pr view <URL> --repo <slug>` lets the URL OVERRIDE --repo and select the URL's repository,
+// so a URL-bound PR silently reads a foreign repo. requiredPrNumber accepts an integer or an
+// all-digits string and REJECTS a URL (or any non-numeric), returning the canonical string form so a
+// numeric 6 and a string '6' compare equal.
+function requiredPrNumber(value, label) {
+  required(value, label)
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value <= 0) throw new Error(`${label} must be a positive PR number`)
+    return String(value)
+  }
+  if (typeof value === 'string' && /^[0-9]+$/.test(value)) return value
+  throw new Error(`${label} must be a PR number, not a URL`)
+}
+
+// The canonical GitHub repo slug is owner/repo (exactly one slash, no scheme, no spaces). A missing or
+// malformed slug (a bare name, a URL, or an owner/repo/extra path) is rejected so gh is always pinned to
+// the right repository and never infers it from the ambient (foreign lane) cwd.
+function assertRepoSlug(value, label) {
+  requiredNonEmptyString(value, label)
+  if (!/^[^/\s]+\/[^/\s]+$/.test(value)) {
+    throw new Error(`${label} must be a canonical owner/repo slug`)
+  }
+  return value
+}
+
 // Worker binding by journal plus schema-forced ack echo (role-runtime launch-identity,
 // launch-receipt, launch-gates-workflow-layer; operating-model decision-109-binding).
 // A worker pass binds no durable TOML receipt: its binding proof is the workflow journal
 // entry for the spawn plus this echo of the exact bound inputs, which the owning
 // orchestrator verifies before any mutation phase. A role, repo, issue, or PR
 // substitution fails the echo exactly as a HEAD mismatch does.
+// TUR-447 ruling-56 cycle3 slug-identity-bound: repo_slug (canonical owner/repo gh identity) and
+// worktree (host issue worktree) are now part of the bound-input echo set, so a FOREIGN slug or a
+// substituted worktree fails the echo exactly as a HEAD mismatch does. The PR is the canonical PR
+// NUMBER (compared number-safe), never a URL.
 const WORKER_ACK_FIELDS = [
   ['role', 'worker ack role'],
   ['repo', 'worker ack repo'],
+  ['repo_slug', 'worker ack repo slug'],
+  ['worktree', 'worker ack worktree'],
   ['issue', 'worker ack issue'],
-  ['pr', 'worker ack PR'],
   ['starting_head', 'worker ack starting HEAD'],
   ['contract_hash', 'worker ack contract hash'],
 ]
@@ -355,6 +394,10 @@ export function assertWorkerAckEcho(journalled, ack) {
     requiredNonEmptyString(ack[field], label)
     if (ack[field] !== journalled[field]) throw new Error(`${label} mismatch`)
   }
+  // The PR is the canonical PR NUMBER, compared number-safe (6 and '6' are the same PR).
+  const journalledPr = requiredPrNumber(journalled.pr, 'journalled PR')
+  const ackPr = requiredPrNumber(ack.pr, 'worker ack PR')
+  if (ackPr !== journalledPr) throw new Error('worker ack PR mismatch')
   requiredNonEmptyArray(journalled.spec_blobs, 'journalled spec_blobs')
   if (!Array.isArray(ack.spec_blobs) || ack.spec_blobs.length === 0) {
     throw new Error('worker ack spec blobs required')

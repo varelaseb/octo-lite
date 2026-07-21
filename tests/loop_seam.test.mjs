@@ -85,7 +85,12 @@ const BREAK_OBSERVER = (src) => removeSeamGate(
 const REPO = '/root/octo-lite'
 const REPO_SLUG = 'varelaseb/octo-lite'
 const ISSUE = 'TUR-447'
-const PR = 'https://github.com/x/y/pull/6'
+// TUR-447 ruling-56 cycle3 slug-identity-bound: the canonical gh identity is the PR NUMBER + --repo
+// <slug>, never a URL. The prior fixture bound a foreign x/y URL that OVERRODE --repo and hid the
+// foreign-repo bug; the PR is now the number 6 and the PR web URL names the CANONICAL repo slug.
+const PR = 6
+const PR_URL = `https://github.com/${REPO_SLUG}/pull/6`
+const WORKTREE_ABS = '/root/octo-lite'
 const BRANCH = 'octo-lite/tur-443-operating-model'
 const HEAD = 'f00b13357cb1be87b5c5e6d7bd98fd9572915154'
 const SPEC_BLOBS = ['spec/domains/role-runtime.spec.html:anchor-1']
@@ -100,15 +105,16 @@ function fingerprintFor(state) {
 
 function boundInputs(role) {
   return {
-    role, repo: REPO, issue: ISSUE, pr: PR, starting_head: HEAD,
-    spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
+    role, repo: REPO, repo_slug: REPO_SLUG, worktree: WORKTREE_ABS, issue: ISSUE, pr: PR,
+    starting_head: HEAD, spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
   }
 }
 
 function ackFor(role, overrides = {}) {
   const b = boundInputs(role)
   return {
-    role: b.role, repo: b.repo, issue: b.issue, pr: b.pr,
+    role: b.role, repo: b.repo, repo_slug: b.repo_slug, worktree: b.worktree,
+    issue: b.issue, pr: b.pr,
     starting_head: b.starting_head, spec_blobs: b.spec_blobs, contract_hash: b.contract_hash,
     ...overrides,
   }
@@ -117,7 +123,7 @@ function ackFor(role, overrides = {}) {
 function readyEnvelope(overrides = {}) {
   const base = {
     mode: 'implement',
-    repo: REPO, repo_slug: REPO_SLUG, issue: ISSUE, pr: PR, branch: BRANCH,
+    repo: REPO, repo_slug: REPO_SLUG, issue: ISSUE, pr: PR, pr_url: PR_URL, branch: BRANCH,
     shaping_head: HEAD, pr_head: HEAD, pr_base: 'main',
     spec_revision: 'r1', linear_revision: 'lr1', topology_revision: 't1',
     linear_fingerprint: fingerprintFor('Shaped'), linear_state: 'Shaped',
@@ -130,7 +136,7 @@ function readyEnvelope(overrides = {}) {
     brief: 'do the work',
     worktree_root: '/root', worktree: 'octo-lite',
     loop_fire_args: '--reason ship',
-    spawn_id: 'spawn-tur447-1', parent: 'orchestrator', reply_route: PR,
+    spawn_id: 'spawn-tur447-1', parent: 'orchestrator', reply_route: PR_URL,
     review_delivery: 'pr-comment', execution_location: 'local',
     starting_head: HEAD,
   }
@@ -211,11 +217,11 @@ function implementScript({
 } = {}) {
   const goodRed = red ?? {
     command: VALIDATION_COMMAND, exit_status: 1, outcome: 'FAIL: behavior wrong',
-    artifact: `${PR}#c1`, head: RED_COMMIT, scenario: SCENARIO,
+    artifact: `${PR_URL}#c1`, head: RED_COMMIT, scenario: SCENARIO,
   }
   const goodGreen = green ?? {
     command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS: behavior right',
-    artifact: `${PR}#c2`, head: FINAL_COMMIT, scenario: SCENARIO,
+    artifact: `${PR_URL}#c2`, head: FINAL_COMMIT, scenario: SCENARIO,
   }
   const goodPrePush = prePush ?? freshReads({ git_head: FINAL_COMMIT })
   return [
@@ -227,8 +233,8 @@ function implementScript({
     ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
     ['implementer-ack:', { ack: ackFor('implementer') }],
     ['implementer:', {
-      ack: mutationAck, issue: ISSUE, pr_url: PR, branch: BRANCH, head: FINAL_COMMIT,
-      handoff_url: `${PR}#h`, red: goodRed, green: goodGreen, validation: 'suite', blocked: false,
+      ack: mutationAck, issue: ISSUE, pr_url: PR_URL, branch: BRANCH, head: FINAL_COMMIT,
+      handoff_url: `${PR_URL}#h`, red: goodRed, green: goodGreen, validation: 'suite', blocked: false,
       committed: true, pushed: false,
       red_commit: RED_COMMIT, green_commit: GREEN_COMMIT, final_commit: FINAL_COMMIT,
       bound_test: { ...BOUND_TEST },
@@ -294,7 +300,7 @@ test('seam-reject: a worker-claimed sha differing from the independent reader is
   const { error, calls } = await driveSeam(IDENTITY, {
     mutationOverrides: { final_commit: forgedFinal, head: forgedFinal },
     green: {
-      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR}#c2`,
+      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR_URL}#c2`,
       head: forgedFinal, scenario: SCENARIO,
     },
   })
@@ -363,7 +369,7 @@ test('seam-fail-closed: REMOVING assertWorkerClaimCrossCheck from deliverCommitt
   const scriptOpts = {
     mutationOverrides: { final_commit: forgedFinal, head: forgedFinal },
     green: {
-      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR}#c2`,
+      command: VALIDATION_COMMAND, exit_status: 0, outcome: 'PASS', artifact: `${PR_URL}#c2`,
       head: forgedFinal, scenario: SCENARIO,
     },
   }
@@ -475,6 +481,9 @@ const CWD_PIN_SITES = [
   { name: 'liveReadback', anchor: 'You are a fresh READ-ONLY octo-lite readback subagent' },
   { name: 'pre-push readback', anchor: 'You are a fresh READ-ONLY octo-lite pre-push readback' },
   { name: 'host push', anchor: 'You are a fresh octo-lite host push subagent' },
+  // TUR-447 ruling-56 cycle3: the worker-liveness echo reads live git (git -C ${worktree}) and the
+  // live PR (repo-pinned gh), so it is in the cwd-pin AND gh-pin matrices.
+  { name: 'worker-liveness-echo', anchor: 'LIVENESS ECHO: read the live Linear state' },
   // TUR-447 ruling-56 cycle2: the full git-reading site matrix must also cover the abort/abandon and
   // reset sites and the post-push live-remote readback, so every git op in them is worktree-pinned.
   { name: 'abandon/abort', anchor: 'You are a fresh octo-lite host-non-push abort subagent' },
@@ -527,33 +536,67 @@ test('cwd-pin: every git-reading prompt explicitly instructs the subagent not to
   }
 })
 
-// Source-wide audit (loop-correctness single-writer): NO subagent prompt in the loop may carry a bare
-// cwd-dependent git command literal. Every backtick-quoted `git <cmd>` command STRING the loop hands a
-// subagent must be pinned with `git -C ${worktree}` (host issue worktree), so nothing inherits the
-// ambient (foreign lane) cwd. The ONLY sanctioned exception is the independent git reader / tdd-observer,
-// which run in a host-managed ISOLATED worktree (opts.isolation: 'worktree') and legitimately use a bare
-// git in that isolated tree; those subagents carry the isolation opt and the ancestry `git rev-list`
-// literal. Every OTHER backtick git literal on a non-comment code line must be `git -C`.
-test('cwd-pin: no subagent prompt in the loop carries a bare cwd-dependent backtick git command literal', () => {
+// TUR-447 ruling-56 cycle3: the source-wide bare-git scanner is TIGHTENED. Two cycle-2 holes:
+//   (a) it BLANKET-exempted every bare `git rev-list` ANYWHERE in the source, so a bare rev-list on a
+//       NON-isolation line (e.g. a readback prompt) would have slipped through. The exemption must be
+//       REGION-scoped: a bare git literal is sanctioned ONLY inside the independentGitRead /
+//       observeCommittedStates prompts (the opts.isolation: 'worktree' readers), located by line range.
+//   (b) it matched only the FIRST `git ...` per line, so a line carrying a pinned git AND a second bare
+//       git (or bare git + bare push) would report at most one and could hide the second. The scanner
+//       must scan ALL git literals per line (matchAll).
+// Compute the isolation-reader region by its function anchors; any bare git OUTSIDE that region on a
+// non-comment line is an offender.
+function isolationReaderRegion() {
   const lines = LOOP_SRC.split('\n')
+  const start = lines.findIndex((l) => /^async function independentGitRead\(/.test(l))
+  const end = lines.findIndex((l) => /^async function hostGatedPushCommittedBranch\(/.test(l))
+  assert.ok(start >= 0 && end > start, 'isolation-reader region anchors missing from loop source')
+  return { start, end }
+}
+
+test('cwd-pin: no subagent prompt in the loop carries a bare cwd-dependent backtick git command literal (rev-list exempt ONLY inside the isolation reader)', () => {
+  const lines = LOOP_SRC.split('\n')
+  const { start, end } = isolationReaderRegion()
   const offenders = []
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]
     // Skip pure comment lines (JSDoc / inline rationale); they are not subagent prompt strings.
     if (/^\s*\/\//.test(line)) continue
-    // Match a backtick-quoted git command literal: `git <subcommand>...
-    const m = line.match(/`git (?!-C\b)([a-z-]+)/)
-    if (!m) continue
-    // Sanctioned exception: the ISOLATED-worktree independent reader's ancestry `git rev-list` literal.
-    // That subagent runs with opts.isolation: 'worktree' (a fresh host-managed worktree), so a bare git
-    // there reads the correct isolated tree, not the ambient cwd.
-    if (m[1] === 'rev-list') continue
-    offenders.push(`L${i + 1}: git ${m[1]}`)
+    // Scan EVERY backtick-quoted git command literal on the line, not just the first.
+    for (const m of line.matchAll(/`git (?!-C\b)([a-z-]+)/g)) {
+      const inIsolationReader = i >= start && i < end
+      // The ONLY sanctioned bare git is the isolation reader's ancestry `git rev-list`, and ONLY inside
+      // the isolation-reader region. Anywhere else (or any other subcommand) is an offender.
+      if (m[1] === 'rev-list' && inIsolationReader) continue
+      offenders.push(`L${i + 1}: git ${m[1]}`)
+    }
   }
   assert.deepEqual(
     offenders, [],
-    `every backtick git command in a subagent prompt must be git -C \${worktree} (or the isolation reader): ${offenders.join(', ')}`,
+    `every backtick git command in a subagent prompt must be git -C \${worktree} (bare git only inside the isolation reader): ${offenders.join(', ')}`,
   )
+})
+
+// A bare `git rev-list` OUTSIDE the isolation-reader region must be flagged: the region-scoped exemption
+// is not a blanket rev-list exemption. This proves the tightening: a rev-list literal placed in, say, a
+// readback prompt would be an offender.
+test('cwd-pin: a bare git rev-list OUTSIDE the isolation-reader region is NOT exempted', () => {
+  const { start, end } = isolationReaderRegion()
+  // A readback prompt line (well before the isolation reader) with a bare rev-list must be flagged.
+  const outsideLine = 100
+  assert.ok(outsideLine < start || outsideLine >= end, 'chosen probe line is outside the isolation region')
+  const line = '    `git rev-list --reverse a..b`,'
+  const m = [...line.matchAll(/`git (?!-C\b)([a-z-]+)/g)]
+  assert.equal(m.length, 1)
+  const inIsolationReader = outsideLine >= start && outsideLine < end
+  assert.equal(inIsolationReader, false, 'a rev-list outside the isolation region is not exempt')
+})
+
+// The per-line scan must catch a SECOND bare git after a pinned one (matchAll, not the first match only).
+test('cwd-pin: the scanner scans ALL git literals per line (a pinned git + a bare push on one line is caught)', () => {
+  const line = 'read `git -C ${worktree} rev-parse HEAD` then `git push origin main`'
+  const bare = [...line.matchAll(/`git (?!-C\b)([a-z-]+)/g)].map((m) => m[1])
+  assert.deepEqual(bare, ['push'], 'the bare git push after a pinned git is caught by the all-matches scan')
 })
 
 // === TUR-447 ruling-56 cycle2: GITHUB reads must be REPO-PINNED, and the host PUSH + abort remote
@@ -579,6 +622,8 @@ const GH_PIN_SITES = [
   { name: 'liveReadback', anchor: 'You are a fresh READ-ONLY octo-lite readback subagent', apiEndpoint: false },
   { name: 'pre-push readback', anchor: 'You are a fresh READ-ONLY octo-lite pre-push readback', apiEndpoint: false },
   { name: 'post-push live-remote readback', anchor: 'You are a fresh READ-ONLY octo-lite post-push live-remote readback', apiEndpoint: true },
+  // TUR-447 ruling-56 cycle3: the worker-liveness echo reads the live PR via a repo-pinned gh pr view.
+  { name: 'worker-liveness-echo', anchor: 'LIVENESS ECHO: read the live Linear state', apiEndpoint: false },
 ]
 
 function ghPinRegion(anchor) {
@@ -662,23 +707,47 @@ test('push-pin: the abort remote-verify is git -C ${worktree}-pinned (or repo-pi
 // must be repo-pinned to the canonical slug: `gh pr view ... --repo ${slug}` or `gh api repos/${slug}/`,
 // so nothing infers the repo from the ambient (foreign lane) cwd. There is NO isolation-reader
 // exemption for gh: even an isolated-worktree reader that hits GitHub must name the canonical repo.
-test('gh-pin: no subagent prompt in the loop carries a repo-unpinned backtick gh command literal', () => {
+// TUR-447 ruling-56 cycle3: the gh scanner must scan ALL gh literals per line, not just the first. A
+// line carrying a pinned gh AND a second UNPINNED gh must be flagged. The per-line pinned-check is
+// tightened to require the pin to accompany EACH gh literal: a `gh pr view` literal must be immediately
+// followed by --repo ${slug}, and a `gh api` literal must hit repos/${slug}/, so a stray line-level
+// --repo cannot excuse a co-located unpinned gh api (or vice versa).
+test('gh-pin: no subagent prompt in the loop carries a repo-unpinned backtick gh command literal (all gh literals per line scanned)', () => {
   const lines = LOOP_SRC.split('\n')
   const offenders = []
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]
     if (/^\s*\/\//.test(line)) continue // skip pure comment lines
-    // Match a backtick-quoted gh command literal: `gh <subcommand>...
-    const m = line.match(/`gh (pr|api|issue|repo|release|run|workflow)\b/)
-    if (!m) continue
-    // A repo-pinned gh pr view carries --repo ${slug}; a repo-bound gh api carries repos/${slug}/.
-    if (/--repo \$\{slug\}/.test(line) || /repos\/\$\{slug\}\//.test(line)) continue
-    offenders.push(`L${i + 1}: ${m[0].slice(1)}`)
+    // Scan EVERY backtick-quoted gh command literal on the line.
+    for (const m of line.matchAll(/`gh (pr|api|issue|repo|release|run|workflow)\b([^`]*)/g)) {
+      const sub = m[1]
+      const rest = m[2] ?? ''
+      // Each gh literal must carry its OWN pin: a gh api literal must hit repos/${slug}/; every other gh
+      // literal (pr view, issue, etc.) must carry --repo ${slug} within the same backtick literal.
+      const pinned = sub === 'api'
+        ? /repos\/\$\{slug\}\//.test(rest)
+        : /--repo \$\{slug\}/.test(rest)
+      if (pinned) continue
+      offenders.push(`L${i + 1}: gh ${sub}`)
+    }
   }
   assert.deepEqual(
     offenders, [],
     `every backtick gh command in a subagent prompt must be repo-pinned (--repo \${slug} or repos/\${slug}/): ${offenders.join(', ')}`,
   )
+})
+
+// The per-line gh scan must catch a SECOND unpinned gh after a pinned one (matchAll, per-literal pin).
+test('gh-pin: the scanner scans ALL gh literals per line (a pinned gh + an unpinned gh api on one line is caught)', () => {
+  const line = 'read `gh pr view ${pr} --repo ${slug} --json x` then `gh api repos/other/git/ref`'
+  const offenders = []
+  for (const m of line.matchAll(/`gh (pr|api|issue|repo|release|run|workflow)\b([^`]*)/g)) {
+    const sub = m[1]
+    const rest = m[2] ?? ''
+    const pinned = sub === 'api' ? /repos\/\$\{slug\}\//.test(rest) : /--repo \$\{slug\}/.test(rest)
+    if (!pinned) offenders.push(`gh ${sub}`)
+  }
+  assert.deepEqual(offenders, ['gh api'], 'the unpinned gh api after a pinned gh pr view is caught')
 })
 
 // The source-wide bare-git scanner must also catch a bare `git push`, not only reads. The cycle-1

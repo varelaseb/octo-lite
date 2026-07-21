@@ -326,6 +326,14 @@ function assertReadyEnvelope(envelope) {
     'shaping_reviewer_receipt',
     'conversation_cutoff',
   ]) required(envelope[field], field)
+  // TUR-447 ruling-56 cycle3 slug-identity-bound: the canonical gh repo slug (owner/repo) and the host
+  // issue worktree are REQUIRED, shape/containment-validated readiness inputs, checked BEFORE any
+  // Shaped -> Todo fire or spawn, so a missing/malformed slug or an escaping worktree fails closed at
+  // readiness rather than after the fire. The PR must be a NUMBER, not a URL, so gh cannot infer a
+  // foreign repo from a URL that overrides --repo.
+  assertRepoSlug(envelope.repo_slug, 'repo_slug')
+  requiredPrNumber(envelope.pr, 'PR')
+  assertContainment(required(envelope.worktree_root, 'worktree_root'), required(envelope.worktree, 'worktree'))
   if (!Array.isArray(envelope.conversation_log_references) || envelope.conversation_log_references.length === 0) {
     throw new Error('conversation log references required')
   }
@@ -360,17 +368,48 @@ function requiredNonEmptyArray(value, label) {
   return value
 }
 
+// TUR-447 ruling-56 cycle3 slug-identity-bound. The canonical gh identity is the PR NUMBER, never a
+// URL: `gh pr view <URL> --repo <slug>` lets the URL OVERRIDE --repo and select the URL's repository,
+// so a URL-bound PR silently reads a foreign repo. requiredPrNumber accepts an integer or an
+// all-digits string and REJECTS a URL (or any non-numeric), returning the canonical string form so a
+// numeric 6 and a string '6' compare equal.
+function requiredPrNumber(value, label) {
+  required(value, label)
+  if (typeof value === 'number') {
+    if (!Number.isInteger(value) || value <= 0) throw new Error(`${label} must be a positive PR number`)
+    return String(value)
+  }
+  if (typeof value === 'string' && /^[0-9]+$/.test(value)) return value
+  throw new Error(`${label} must be a PR number, not a URL`)
+}
+
+// The canonical GitHub repo slug is owner/repo (exactly one slash, no scheme, no spaces). A missing or
+// malformed slug (a bare name, a URL, or an owner/repo/extra path) is rejected so gh is always pinned to
+// the right repository and never infers it from the ambient (foreign lane) cwd.
+function assertRepoSlug(value, label) {
+  requiredNonEmptyString(value, label)
+  if (!/^[^/\s]+\/[^/\s]+$/.test(value)) {
+    throw new Error(`${label} must be a canonical owner/repo slug`)
+  }
+  return value
+}
+
 // Worker binding by journal plus schema-forced ack echo (role-runtime launch-identity,
 // launch-receipt, launch-gates-workflow-layer; operating-model decision-109-binding).
 // A worker pass binds no durable TOML receipt: its binding proof is the workflow journal
 // entry for the spawn plus this echo of the exact bound inputs, which the owning
 // orchestrator verifies before any mutation phase. A role, repo, issue, or PR
 // substitution fails the echo exactly as a HEAD mismatch does.
+// TUR-447 ruling-56 cycle3 slug-identity-bound: repo_slug (canonical owner/repo gh identity) and
+// worktree (host issue worktree) are now part of the bound-input echo set, so a FOREIGN slug or a
+// substituted worktree fails the echo exactly as a HEAD mismatch does. The PR is the canonical PR
+// NUMBER (compared number-safe), never a URL.
 const WORKER_ACK_FIELDS = [
   ['role', 'worker ack role'],
   ['repo', 'worker ack repo'],
+  ['repo_slug', 'worker ack repo slug'],
+  ['worktree', 'worker ack worktree'],
   ['issue', 'worker ack issue'],
-  ['pr', 'worker ack PR'],
   ['starting_head', 'worker ack starting HEAD'],
   ['contract_hash', 'worker ack contract hash'],
 ]
@@ -383,6 +422,10 @@ function assertWorkerAckEcho(journalled, ack) {
     requiredNonEmptyString(ack[field], label)
     if (ack[field] !== journalled[field]) throw new Error(`${label} mismatch`)
   }
+  // The PR is the canonical PR NUMBER, compared number-safe (6 and '6' are the same PR).
+  const journalledPr = requiredPrNumber(journalled.pr, 'journalled PR')
+  const ackPr = requiredPrNumber(ack.pr, 'worker ack PR')
+  if (ackPr !== journalledPr) throw new Error('worker ack PR mismatch')
   requiredNonEmptyArray(journalled.spec_blobs, 'journalled spec_blobs')
   if (!Array.isArray(ack.spec_blobs) || ack.spec_blobs.length === 0) {
     throw new Error('worker ack spec blobs required')
@@ -1553,12 +1596,22 @@ function specBlobs() {
 
 // The exact bound inputs for one worker pass. The workflow journal records this
 // object at spawn time; the worker must echo it verbatim in its structured result.
+// TUR-447 ruling-56 cycle3 slug-identity-bound: repo_slug (canonical owner/repo gh identity) and the
+// contained host issue worktree are part of the journalled bound-input set, so they enter BOTH the
+// worker ack echo (assertWorkerAckEcho) AND the launch-revision fingerprint (launchRevision). A missing
+// or foreign slug is rejected at readiness (assertReadyEnvelope) before this runs; here they are bound
+// so a foreign slug/worktree diverges the launch revision and fails the ack echo. The PR is the
+// canonical PR NUMBER, not a URL.
 function journalledBoundInputs(role, startingHead) {
   return {
     role,
     repo: required(A.repo, 'repo'),
+    repo_slug: assertRepoSlug(A.repo_slug, 'repo_slug'),
+    worktree: assertContainment(required(A.worktree_root, 'worktree root'), required(A.worktree, 'worker worktree')),
     issue: required(A.issue, 'issue'),
-    pr: required(A.pr, 'pr'),
+    // Validate the PR is a NUMBER (never a URL) but bind the caller's exact value so the launch-revision
+    // fingerprint matches the caller-computed revision over the same bound-input shape.
+    pr: (requiredPrNumber(A.pr, 'pr'), A.pr),
     starting_head: required(startingHead, 'starting head'),
     spec_blobs: specBlobs(),
     contract_hash: required(A.contract_hash, 'contract hash'),
@@ -1577,9 +1630,9 @@ function resolverCommand(role, worktreeAbs) {
   const repo = required(A.repo, 'repo')
   const spawnId = A.spawn_id ?? `${role}-${required(A.issue, 'issue')}-${required(A.starting_head ?? A.shaping_head ?? A.head, 'starting head')}`
   const parent = A.parent ?? 'orchestrator'
-  const replyRoute = A.reply_route ?? required(A.pr, 'pr')
+  const replyRoute = A.reply_route ?? A.pr_url ?? required(A.pr, 'pr')
   const executionLocation = A.execution_location ?? 'local'
-  const reviewDelivery = A.review_delivery ?? required(A.pr, 'pr')
+  const reviewDelivery = A.review_delivery ?? A.pr_url ?? required(A.pr, 'pr')
   const parts = [
     'python3', 'workflows/lib/role_resolver.py', 'resolve', role,
     '--spawn-id', spawnId,
@@ -1869,6 +1922,11 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     required(A.worktree, 'worker worktree'),
   )
   const bound = journalledBoundInputs(role, startingHead)
+  // TUR-447 ruling-56 cycle3 slug-identity-bound: the worker-liveness echo (below) reads the live PR
+  // via a REPO-PINNED gh (never a cwd-inferred repo) and the live git via git -C the host worktree, so
+  // pin the canonical slug and the numeric PR here for that prompt.
+  const slug = ghRepoSlug()
+  const pr = bound.pr
   // Live readback immediately before spawn (launch-readback, TUR-447 F3): a fresh
   // read-only Explore subagent performs the live Linear/PR/branch/HEAD reads and the pure
   // readback gate rejects a stale self-consistent caller envelope. No caller fresh_reads
@@ -1950,7 +2008,14 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     // TUR-447 ruling-55 canonical fingerprint source: the echoed linear_fingerprint MUST come from
     // scripts/octo-control linear-read (its returned fingerprint field verbatim), NEVER improvised or
     // self-hashed, so the host reconciles the echo against the octo-control linear-read-sourced envelope.
-    'LIVENESS ECHO: read the live Linear state of the issue and the live PR branch yourself, and obtain',
+    'LIVENESS ECHO: read the live Linear state of the issue yourself, and read the live PR branch with a',
+    // TUR-447 ruling-56 cycle3 slug-identity-bound: the PR read is REPO-PINNED to the canonical slug (the
+    // PR NUMBER + --repo ${slug}), never a cwd-inferred repo, and the git read is pinned to the host issue
+    // worktree via git -C ${worktree}; do NOT rely on the ambient current working directory (a foreign
+    // lane worktree on a shared box).
+    `REPO-PINNED gh (\`gh pr view ${pr} --repo ${slug} --json headRefName\`); do NOT rely on the current`,
+    `working directory to infer the repo. Confirm the host git HEAD with \`git -C ${worktree} rev-parse HEAD\`,`,
+    `operating ONLY on the host-pinned worktree at ${worktree}, not the ambient cwd. Obtain`,
     `the live Linear content fingerprint by running scripts/octo-control linear-read ${bound.issue} and`,
     'using ITS returned fingerprint field verbatim (do NOT improvise or self-hash it). Echo them as',
     'linear_state, linear_fingerprint, and branch in your result.',
@@ -2716,7 +2781,9 @@ if (mode === 'code-review') {
   if (review.verdict === 'ambiguous') {
     return { stage: 'return-to-shaping', issue: A.issue, head, review }
   }
-  const gate = acceptCodeReview(head, A.pr, review)
+  // TUR-447 ruling-56 cycle3 slug-identity-bound: A.pr is now the canonical PR NUMBER, so the review
+  // comment-URL prefix check uses A.pr_url (the PR web URL), falling back to A.reply_route.
+  const gate = acceptCodeReview(head, required(A.pr_url ?? A.reply_route, 'PR URL'), review)
   if (gate.advance) {
     return { stage: 'code-clear', issue: A.issue, pr: A.pr, head, review, next: evidenceMode(A.user_facing !== false) }
   }
