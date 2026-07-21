@@ -2443,6 +2443,19 @@ class SweepStreamLivenessTests(unittest.TestCase):
         third = module.assemble_snapshot(["## s\ntext\n"], stable_c, '{"f":1}')
         self.assertNotEqual(first["fingerprint"], third["fingerprint"])
 
+    def test_observations_reach_the_reconciler_and_vanish_on_gateway_failure(self) -> None:
+        # v13 finding 2 red: liveness observations (mtimes + classification)
+        # must be readable by the fresh reconciler at launch time and named in
+        # its judgment prompt; a failed gateway leaves no observation artifact.
+        source = SWEEP.read_text()
+        # the judgment prompt names the observations file alongside the snapshot
+        self.assertIn("observations", source.split("judgment_prompt")[1][:400])
+        # observations are written to a pending path BEFORE the gateway and
+        # cleaned on failure exactly like the pending snapshot
+        self.assertIn(".sweep-observations-", source)
+        before_gateway = source.split("prepare_reconcile_launch(")[0]
+        self.assertIn(".sweep-observations-", before_gateway)
+
     def test_snapshot_includes_the_stream_liveness_section_and_no_phantom_sources(self) -> None:
         source = SWEEP.read_text()
         self.assertIn("## Stream liveness", source)
