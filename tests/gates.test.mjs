@@ -19,6 +19,8 @@ import {
   assertReadyEnvelope,
   assertResumeSandboxConfig,
   assertWorkerAckEcho,
+  assertPrePushReadback,
+  assertWorkerLivenessEcho,
   evidenceMode,
   launchRevision,
   verifyAckThenUpgrade,
@@ -133,6 +135,10 @@ test('ready envelope rejects wrong lifecycle and incomplete bindings', () => {
   )
 })
 
+// TUR-447 cycle2 pass1 host-gated push + TDD independent observation. The red carries a captured
+// evidence artifact bound to the UNCHANGED starting HEAD ('abc'); the green runs the SAME scenario
+// also at the unchanged starting HEAD (the worker did not commit); the worker reports committed
+// false and pushed false. The host commits/pushes afterward.
 function proof(overrides = {}) {
   return {
     command: 'python3 -m unittest tests.test_launch',
@@ -141,25 +147,28 @@ function proof(overrides = {}) {
     artifact: 'https://example.test/pr/1#issuecomment-1',
     head: 'abc',
     scenario: 'delivery-entry-gate',
+    evidence: { captured_output: 'FAILED (errors=1)', exit_status: 1, head: 'abc' },
     ...overrides,
   }
 }
 
-// TUR-447 TDD-gate fix: red runs at the unchanged starting HEAD ('abc'), green runs the
-// SAME scenario at the new post-change HEAD ('def' = result.head).
 function greenProof(overrides = {}) {
-  return proof({
+  return {
+    command: 'python3 -m unittest tests.test_launch',
     exit_status: 0, outcome: 'OK', artifact: 'https://example.test/pr/1#issuecomment-2',
-    head: 'def', ...overrides,
-  })
+    head: 'abc', scenario: 'delivery-entry-gate', ...overrides,
+  }
 }
 
-test('implementation requires TDD evidence, validation, and a new fix head', () => {
-  const result = {
-    head: 'def', validation: 'suite', blocked: false,
-    red: proof(),
-    green: greenProof(),
+function implFixture(overrides = {}) {
+  return {
+    head: 'abc', validation: 'suite', blocked: false, committed: false, pushed: false,
+    red: proof(), green: greenProof(), ...overrides,
   }
+}
+
+test('implementation requires TDD evidence, validation, and host-gated push (no worker commit)', () => {
+  const result = implFixture()
   assert.deepEqual(acceptImplementation('abc', result, true), result)
   assert.throws(() => acceptImplementation('abc', { ...result, red: null }, true), /red/)
   assert.throws(
@@ -174,34 +183,43 @@ test('implementation requires TDD evidence, validation, and a new fix head', () 
     () => acceptImplementation('abc', { ...result, green: greenProof({ exit_status: 1 }) }, true),
     /green must pass/,
   )
-  assert.throws(() => acceptImplementation('abc', { ...result, head: 'abc' }, true), /new HEAD/)
+  // Host-gated push: a worker that committed or pushed is rejected.
+  assert.throws(() => acceptImplementation('abc', { ...result, committed: true }, true), /worker must not commit/)
+  assert.throws(() => acceptImplementation('abc', { ...result, pushed: true }, true), /worker must not push/)
+  // A worker head that already moved off the starting HEAD (a committed HEAD) is rejected.
+  assert.throws(() => acceptImplementation('abc', { ...result, head: 'def' }, true), /unchanged starting HEAD/)
   assert.throws(() => acceptImplementation('abc', { ...result, blocked: true }, true), /blocked/)
 })
 
-test('TDD gate binds red to the unchanged starting HEAD and green to the same scenario', () => {
-  const result = {
-    head: 'def', validation: 'suite', blocked: false,
-    red: proof(),
-    green: greenProof(),
-  }
+test('TDD gate independently observes the red evidence artifact bound to the starting HEAD', () => {
+  const result = implFixture()
   // A proof missing head or scenario is rejected at assertProof.
   assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ head: '' }) }, true), /HEAD/)
   assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ scenario: '' }) }, true), /scenario/)
-  // A fabricated red that claims the post-mutation head (not the unchanged starting HEAD)
-  // is rejected: red-before-mutation is not proven.
+  // A red with NO evidence artifact is rejected: independent observation, not bare strings.
   assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ head: 'def' }) }, true),
-    /red must run at the unchanged starting HEAD before mutation/,
+    () => acceptImplementation('abc', { ...result, red: proof({ evidence: undefined }) }, true),
+    /red evidence artifact required/,
+  )
+  // An evidence artifact bound to a DIFFERENT head (not the unchanged starting HEAD) is rejected.
+  assert.throws(
+    () => acceptImplementation('abc', { ...result, red: proof({ evidence: { captured_output: 'x', exit_status: 1, head: 'def' } }) }, true),
+    /red evidence must be bound to the unchanged starting HEAD/,
+  )
+  // An evidence exit status disagreeing with the reported red exit is rejected.
+  assert.throws(
+    () => acceptImplementation('abc', { ...result, red: proof({ evidence: { captured_output: 'x', exit_status: 0, head: 'abc' } }) }, true),
+    /red evidence must record a genuinely failing run|red evidence exit status must match/,
   )
   // A green whose scenario differs from red is rejected: not the same behavior.
   assert.throws(
     () => acceptImplementation('abc', { ...result, green: greenProof({ scenario: 'other' }) }, true),
     /green must prove the same scenario as red/,
   )
-  // A green that did not run at the post-mutation HEAD is rejected.
+  // A green that did not run at the unchanged starting HEAD is rejected under host-gated push.
   assert.throws(
-    () => acceptImplementation('abc', { ...result, green: greenProof({ head: 'abc' }) }, true),
-    /green must run at the post-mutation HEAD/,
+    () => acceptImplementation('abc', { ...result, green: greenProof({ head: 'def' }) }, true),
+    /green must run at the unchanged starting HEAD/,
   )
 })
 
@@ -671,6 +689,57 @@ test('a stale self-consistent envelope disagreeing with fresh reads never spawns
     assert.throws(() => assertLaunchReadback(ready, fresh), /required/)
   }
   assert.throws(() => assertLaunchReadback(ready, undefined), /fresh reads required/)
+})
+
+// TUR-447 cycle2 pass1 stale-read-race pre-push readback (role-runtime launch-readback).
+test('pre-push readback rejects any live field that changed since bind, and requires git HEAD', () => {
+  const bound = {
+    linear_state: 'Todo', linear_fingerprint: 'fp-todo', pr_head: 'aaa',
+    branch: 'octo-lite/tur-1', git_head: 'aaa',
+  }
+  const fresh = { ...bound }
+  assert.deepEqual(assertPrePushReadback(bound, fresh), fresh)
+  const drift = [
+    ['linear_state', 'In Progress'],
+    ['linear_fingerprint', 'fp-moved'],
+    ['pr_head', 'bbb'],
+    ['branch', 'octo-lite/tur-9'],
+    ['git_head', 'ccc'],
+  ]
+  for (const [field, changed] of drift) {
+    assert.throws(
+      () => assertPrePushReadback(bound, { ...fresh, [field]: changed }),
+      /pre-push readback: .* changed since bind/,
+    )
+  }
+  // git HEAD is part of the pre-push read; a missing field is rejected.
+  for (const field of ['linear_state', 'linear_fingerprint', 'pr_head', 'branch', 'git_head']) {
+    const partial = { ...fresh }
+    delete partial[field]
+    assert.throws(() => assertPrePushReadback(bound, partial), /required/)
+  }
+  assert.throws(() => assertPrePushReadback(bound, undefined), /pre-push fresh reads required/)
+})
+
+// TUR-447 cycle2 pass1 stale-read-race worker liveness echo (role-runtime launch-readback).
+test('worker liveness echo must match the bound ground truth for state, fingerprint, and branch', () => {
+  const bound = { linear_state: 'Todo', linear_fingerprint: 'fp-todo', branch: 'octo-lite/tur-1' }
+  const result = { linear_state: 'Todo', linear_fingerprint: 'fp-todo', branch: 'octo-lite/tur-1' }
+  assert.equal(assertWorkerLivenessEcho(bound, result), result)
+  assert.throws(
+    () => assertWorkerLivenessEcho(bound, { ...result, linear_state: 'In Progress' }),
+    /worker liveness Linear state disagrees/,
+  )
+  assert.throws(
+    () => assertWorkerLivenessEcho(bound, { ...result, linear_fingerprint: 'fp-other' }),
+    /worker liveness Linear fingerprint disagrees/,
+  )
+  assert.throws(
+    () => assertWorkerLivenessEcho(bound, { ...result, branch: 'octo-lite/tur-9' }),
+    /worker liveness branch disagrees/,
+  )
+  // A worker that omits a liveness field is rejected.
+  assert.throws(() => assertWorkerLivenessEcho(bound, { linear_state: 'Todo', linear_fingerprint: 'fp-todo' }), /required/)
 })
 
 test('containment admits only worktrees under the declared worktree root', () => {

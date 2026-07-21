@@ -440,7 +440,49 @@ function assertProof(proof, label) {
   return proof
 }
 
-function acceptImplementation(expectedHead, result, requireNewHead = true) {
+// TUR-447 cycle2 pass1 TDD independent-observation fix (delivery-lifecycle prompt-tdd-red,
+// prompt-tdd-no-fabrication; and the spec-derived red-green-refactor contract). The prior gate
+// compared only worker-supplied red.head/scenario STRINGS, so a fabricated proof with no genuine
+// failing run was accepted. The red must now carry a captured EVIDENCE ARTIFACT: the actual
+// failing test output the worker observed, the exit status that run produced, and the exact HEAD
+// it ran at. The host validates that artifact (non-empty captured output, a genuinely failing
+// exit that MATCHES the reported red exit, and an evidence HEAD equal to the unchanged starting
+// HEAD) rather than trusting bare strings. A red with no genuine artifact bound to the starting
+// HEAD is REJECTED. This is the workflow-layer stand-in for re-running the target's suite: the
+// gate requires and validates the observed artifact, it does not accept a proof-shaped object.
+function assertRedEvidenceArtifact(red, expectedHead) {
+  const evidence = red.evidence
+  if (typeof evidence !== 'object' || evidence === null) {
+    throw new Error('red evidence artifact required: capture the failing test output at the starting HEAD')
+  }
+  requiredNonEmptyString(evidence.captured_output, 'red evidence captured output')
+  if (!Number.isInteger(evidence.exit_status)) {
+    throw new Error('red evidence exit status required')
+  }
+  if (evidence.exit_status === 0) {
+    throw new Error('red evidence must record a genuinely failing run (nonzero exit)')
+  }
+  if (evidence.exit_status !== red.exit_status) {
+    throw new Error('red evidence exit status must match the reported red exit status')
+  }
+  requiredNonEmptyString(evidence.head, 'red evidence HEAD')
+  if (evidence.head !== expectedHead) {
+    throw new Error('red evidence must be bound to the unchanged starting HEAD')
+  }
+  return evidence
+}
+
+// TUR-447 cycle2 pass1 host-gated push (delivery-lifecycle prompt-tdd-red, prompt-tdd-green;
+// role-runtime launch-identity, launch-receipt; operating-model decision-109-binding). The
+// mutating worker no longer commits or pushes: it produces the mutation in the contained
+// worktree plus its ack echo and red/green evidence, then STOPS. The host commits and pushes
+// only after echo + pre-push readback + TDD verify. So the accepted worker result runs its red
+// AND its green at the UNCHANGED starting HEAD (the mutation lives in the working tree, no
+// commit HEAD exists yet), and it must assert committed:false and pushed:false. A worker that
+// already committed or pushed is rejected, because a post-hoc worktree reset cannot undo an
+// already-pushed mutation. requireNewHead now governs the HOST commit that follows acceptance,
+// so acceptImplementation binds the pre-commit worker result, not a worker-produced new HEAD.
+function acceptImplementation(expectedHead, result, requireHostGatedPush = true) {
   required(result, 'implementation result')
   if (result.blocked !== false) throw new Error('implementation blocked')
   required(result.head, 'implementation HEAD')
@@ -448,24 +490,89 @@ function acceptImplementation(expectedHead, result, requireNewHead = true) {
   assertProof(result.green, 'implementation green evidence')
   if (result.red.exit_status === 0) throw new Error('red must fail before production change')
   if (result.green.exit_status !== 0) throw new Error('green must pass after production change')
-  // TUR-447 TDD-gate fix. The gate no longer accepts arbitrary proof-shaped red/green:
-  // it requires evidence that the red ran at the UNCHANGED starting HEAD (red before any
-  // production mutation) and that the SAME behavior scenario then went green at the new
-  // HEAD. A fabricated proof whose red claims the post-mutation head, or a green whose
-  // scenario differs from the red, is rejected.
+  // The red is proven by an independently-observed captured artifact bound to the unchanged
+  // starting HEAD, not by worker-supplied strings.
+  assertRedEvidenceArtifact(result.red, expectedHead)
   required(result.validation, 'implementation validation')
-  if (requireNewHead && result.head === expectedHead) throw new Error('implementation needs new HEAD')
+  // Host-gated push: the worker must NOT commit or push. Its output is verified BEFORE any
+  // commit/push, so it stops at the working-tree mutation over the unchanged starting HEAD.
+  if (requireHostGatedPush) {
+    if (result.committed !== false) {
+      throw new Error('worker must not commit: host commits only after verification (host-gated push)')
+    }
+    if (result.pushed !== false) {
+      throw new Error('worker must not push: host pushes only after verification (host-gated push)')
+    }
+    if (result.head !== expectedHead) {
+      throw new Error('worker head must equal the unchanged starting HEAD: no worker commit before host verify')
+    }
+    if (result.green.head !== expectedHead) {
+      throw new Error('green must run at the unchanged starting HEAD over the working-tree mutation before host commit')
+    }
+  }
+  // The red must run at the UNCHANGED starting HEAD before mutation; the green must exercise the
+  // SAME behavior scenario as the red.
   if (result.red.head !== expectedHead) {
     throw new Error('red must run at the unchanged starting HEAD before mutation')
-  }
-  if (requireNewHead && result.green.head === expectedHead) {
-    throw new Error('green must run at the post-mutation HEAD')
   }
   if (result.green.head !== result.head) {
     throw new Error('green HEAD must equal the delivered implementation HEAD')
   }
   if (result.green.scenario !== result.red.scenario) {
     throw new Error('green must prove the same scenario as red')
+  }
+  return result
+}
+
+// TUR-447 cycle2 pass1 stale-read-race pre-push readback (role-runtime launch-readback,
+// launch-gates-workflow-layer; delivery-lifecycle delivery-entry-gate). liveReadback runs at
+// spawn start, BEFORE the resolver, ack, and mutation passes. A live change during those
+// intervening passes was undetected before commit/push. The host takes a FRESH readback
+// immediately BEFORE it commits/pushes and rejects if the live Linear state, Linear
+// fingerprint, PR head, branch, or git HEAD changed since bind. bound is the post-fire
+// reconciled envelope (the ground truth the pass bound); freshAfter is the pre-push live read.
+const PRE_PUSH_FIELDS = [
+  ['linear_state', 'Linear state'],
+  ['linear_fingerprint', 'Linear fingerprint'],
+  ['pr_head', 'PR head'],
+  ['branch', 'PR branch'],
+  ['git_head', 'git HEAD'],
+]
+
+function assertPrePushReadback(bound, freshAfter) {
+  required(bound, 'bound envelope')
+  required(freshAfter, 'pre-push fresh reads')
+  for (const [field, label] of PRE_PUSH_FIELDS) {
+    requiredNonEmptyString(freshAfter[field], `pre-push ${label}`)
+    if (bound[field] !== freshAfter[field]) {
+      throw new Error(`pre-push readback: ${label} changed since bind`)
+    }
+  }
+  return freshAfter
+}
+
+// TUR-447 cycle2 pass1 stale-read-race worker liveness echo (role-runtime launch-readback,
+// launch-identity). The mutating worker's bound echo previously omitted Linear state,
+// fingerprint, and branch, so a change during the intervening passes was undetected before
+// commit/push. The worker must now echo linear_state, linear_fingerprint, and branch as it read
+// them, and the host asserts they equal the bound (post-fire reconciled) ground truth. This is
+// paired with assertPrePushReadback, which then reconfirms those same fields live immediately
+// before the host commit; together they close the window between spawn-start readback and push.
+const LIVENESS_FIELDS = [
+  ['linear_state', 'worker liveness Linear state'],
+  ['linear_fingerprint', 'worker liveness Linear fingerprint'],
+  ['branch', 'worker liveness branch'],
+]
+
+function assertWorkerLivenessEcho(bound, result) {
+  required(bound, 'bound envelope')
+  required(result, 'worker result')
+  for (const [field, label] of LIVENESS_FIELDS) {
+    requiredNonEmptyString(bound[field], `bound ${field}`)
+    requiredNonEmptyString(result[field], label)
+    if (result[field] !== bound[field]) {
+      throw new Error(`${label} disagrees with the bound ground truth`)
+    }
   }
   return result
 }
@@ -835,6 +942,32 @@ const PROOF_SCHEMA = {
   },
 }
 
+// TUR-447 cycle2 pass1 TDD independent-observation: the red proof carries a captured EVIDENCE
+// ARTIFACT (the actual failing test output, its exit status, and the exact HEAD it ran at) so the
+// host validates the observed artifact bound to the unchanged starting HEAD rather than trusting
+// bare strings. The green proof stays PROOF_SCHEMA; only the red must carry evidence.
+const RED_PROOF_SCHEMA = {
+  type: 'object',
+  required: ['command', 'exit_status', 'outcome', 'artifact', 'head', 'scenario', 'evidence'],
+  properties: {
+    command: { type: 'string' },
+    exit_status: { type: 'integer' },
+    outcome: { type: 'string' },
+    artifact: { type: 'string' },
+    head: { type: 'string' },
+    scenario: { type: 'string' },
+    evidence: {
+      type: 'object',
+      required: ['captured_output', 'exit_status', 'head'],
+      properties: {
+        captured_output: { type: 'string' },
+        exit_status: { type: 'integer' },
+        head: { type: 'string' },
+      },
+    },
+  },
+}
+
 // Schema-forced acknowledgment echo of the exact journalled bound inputs
 // (role-runtime launch-identity, launch-receipt; operating-model decision-109-binding).
 const ACK_SCHEMA = {
@@ -862,11 +995,18 @@ const ACK_ONLY_SCHEMA = {
   },
 }
 
+// TUR-447 cycle2 pass1 (host-gated push + stale-read race + TDD independent observation):
+// the mutating worker echoes the liveness fields it read (linear_state, linear_fingerprint,
+// branch) so the host can assert they equal the bound ground truth and reconfirm them live
+// before push; it reports committed:false and pushed:false because the HOST performs the
+// commit/push only after echo + pre-push readback + TDD verify; and its red carries a captured
+// evidence artifact (RED_PROOF_SCHEMA).
 const IMPLEMENT_SCHEMA = {
   type: 'object',
   required: [
     'ack', 'issue', 'pr_url', 'branch', 'head', 'handoff_url', 'red', 'green',
-    'validation', 'blocked',
+    'validation', 'blocked', 'committed', 'pushed',
+    'linear_state', 'linear_fingerprint',
   ],
   properties: {
     ack: ACK_SCHEMA,
@@ -875,12 +1015,19 @@ const IMPLEMENT_SCHEMA = {
     branch: { type: 'string' },
     head: { type: 'string' },
     handoff_url: { type: 'string' },
-    red: PROOF_SCHEMA,
+    red: RED_PROOF_SCHEMA,
     green: PROOF_SCHEMA,
     validation: { type: 'string' },
     summary: { type: 'string' },
     blocked: { type: 'boolean' },
     blocker: { type: 'string' },
+    // Host-gated push: the worker must report it did NOT commit or push.
+    committed: { type: 'boolean' },
+    pushed: { type: 'boolean' },
+    // Stale-read race: the worker echoes the liveness fields it read so the host asserts them
+    // against the bound ground truth and reconfirms them live before push.
+    linear_state: { type: 'string' },
+    linear_fingerprint: { type: 'string' },
   },
 }
 
@@ -954,11 +1101,17 @@ const QA_REVIEW_SCHEMA = {
 
 const FIRE_SCHEMA = {
   type: 'object',
-  required: ['command', 'exit_status', 'readback_state'],
+  required: ['command', 'exit_status', 'readback_state', 'readback_fingerprint'],
   properties: {
     command: { type: 'string' },
     exit_status: { type: 'integer' },
     readback_state: { type: 'string' },
+    // TUR-447 cycle2 pass1 P0 fingerprint fix: the fire's own fresh readback returns the
+    // POST-FIRE Linear content fingerprint too, so the loop reconciles the bound envelope to
+    // BOTH the post-fire state AND fingerprint. The fingerprint is a function of the issue
+    // state, so a Shaped fingerprint differs from a Todo fingerprint; reconciling only the
+    // state left the stale Shaped fingerprint and self-rejected at assertLaunchReadback.
+    readback_fingerprint: { type: 'string' },
   },
 }
 
@@ -1379,13 +1532,30 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     'BOUND INPUTS: verify each against your own reads, echo them verbatim as the ack',
     'object in your structured result, and stop before any mutation on any mismatch:',
     JSON.stringify(bound, null, 2),
-    // TUR-447 TDD-gate fix: the red must run at the UNCHANGED starting HEAD before any
-    // production change, and the green must run the SAME scenario at the post-change HEAD.
+    // TUR-447 cycle2 pass1 TDD independent observation: the red must run at the UNCHANGED
+    // starting HEAD before any production change, capturing the ACTUAL failing test output as an
+    // evidence artifact; the green must run the SAME scenario after the working-tree mutation,
+    // still at the unchanged starting HEAD (you do NOT commit).
     'TDD: run the spec-derived red scenario FIRST against the unchanged starting HEAD',
-    `(${bound.starting_head}); report red with its head set to that starting HEAD and a`,
-    'scenario name. Only then mutate. Run the SAME scenario for green and report green with',
-    'its head set to the new post-change HEAD and the identical scenario name. A red that',
-    'did not run before the change, or a green whose scenario differs from red, is rejected.',
+    `(${bound.starting_head}); report red with its head set to that starting HEAD, a scenario`,
+    'name, and an `evidence` object carrying the CAPTURED failing test output (captured_output),',
+    'that run\'s exit status (evidence.exit_status, nonzero, matching red.exit_status), and the',
+    `HEAD it ran at (evidence.head = the starting HEAD ${bound.starting_head}). Only then mutate`,
+    'the WORKING TREE. Run the SAME scenario for green; report green with head set to the same',
+    'unchanged starting HEAD and the identical scenario name. A red with no genuine evidence',
+    'artifact bound to the starting HEAD, or a green whose scenario differs from red, is rejected.',
+    // TUR-447 cycle2 pass1 host-gated push: you do NOT commit or push. Leave the mutation in the
+    // contained working tree, report committed:false and pushed:false, and let the HOST commit and
+    // push only after it verifies your echo, a fresh pre-push readback, and the TDD proof.
+    'HOST-GATED PUSH: do NOT git commit and do NOT git push. Leave your change in the working tree',
+    'of the contained worktree. Set committed:false and pushed:false in your result. Set head to the',
+    `unchanged starting HEAD (${bound.starting_head}). The host commits and pushes after verifying`,
+    'your ack echo, a fresh pre-push readback, and your TDD proof; if any check fails the host resets',
+    'the worktree and nothing is pushed.',
+    // TUR-447 cycle2 pass1 stale-read race: echo the liveness fields you read so the host can
+    // detect a live change during the intervening passes before it pushes.
+    'LIVENESS ECHO: read the live Linear state and content fingerprint of the issue and the live PR',
+    'branch yourself, and echo them as linear_state, linear_fingerprint, and branch in your result.',
     brief,
   ].join('\n\n')
   // The mutation spawn runs under the resolved model and effort from roles.toml; only the real
@@ -1444,6 +1614,77 @@ async function acceptWorkerEchoOrDiscard(role, phaseTitle, bound, result, worktr
     throw new Error(`${role} unverified mutation discard failed: worktree not clean at starting HEAD`)
   }
   throw echoError
+}
+
+// TUR-447 cycle2 pass1 host-gated push (delivery-lifecycle prompt-tdd-green, delivery-entry-gate;
+// role-runtime launch-readback, launch-identity, launch-receipt; operating-model
+// decision-109-binding). The mutating worker leaves an uncommitted working-tree mutation and does
+// NOT push. This helper is the HOST push gate, run ONLY after acceptImplementation has verified the
+// worker echo and the TDD proof. In order it: (1) verifies the worker's liveness echo against the
+// bound (post-fire reconciled) ground truth; (2) takes a FRESH live readback immediately before the
+// commit and rejects if the live Linear state, Linear fingerprint, PR head, branch, or git HEAD
+// changed since bind; and (3) ONLY THEN spawns a write-capable commit/push subagent that commits
+// the working-tree mutation and pushes, returning the new delivered HEAD. On any failure the
+// contained worktree is reset and NOTHING is pushed. Because a fresh readback and a real
+// worktree reset both need the filesystem/network the loop lacks, each runs in a spawned subagent.
+async function hostGatedCommitPush(role, phaseTitle, envelope, bound, result, worktree) {
+  // (1) The worker echoed the liveness fields it read; they must equal the bound ground truth.
+  assertWorkerLivenessEcho(envelope, result)
+  // (2) Fresh live readback immediately before the push. This is a NEW read, distinct from the
+  // spawn-start liveReadback, so a change during the resolver/ack/mutation passes is caught.
+  const issue = required(A.issue, 'issue')
+  const pr = required(A.pr, 'pr')
+  const branch = required(A.branch, 'branch')
+  const freshAfter = await agent([
+    `You are a fresh READ-ONLY octo-lite pre-push readback subagent for the ${role} pass. One pass;`,
+    'never mutate. Perform LIVE reads NOW, immediately before the host commits and pushes, and return',
+    'them so the host can reject a live change since bind:',
+    `- linear_state and linear_fingerprint: the live Linear state and content fingerprint of ${issue}.`,
+    `- pr_head: the live PR head oid (gh pr view ${pr} --json headRefOid).`,
+    `- branch: the live head branch of the PR (expected ${branch}).`,
+    `- git_head: the live git HEAD of the contained worktree (git rev-parse HEAD) at ${worktree}.`,
+    'Read each one yourself; do NOT copy any value from this prompt or a caller blob.',
+  ].join('\n'), {
+    label: `${role}-prepush-readback:${issue}`, phase: phaseTitle, schema: FRESH_READS_SCHEMA,
+    agentType: 'Explore', effort: 'low',
+  })
+  if (freshAfter === null) throw new Error(`${role} pre-push readback returned no result`)
+  // The bound ground truth for the pre-push comparison is the post-fire reconciled envelope plus
+  // the exact starting HEAD (git_head) the worker mutated over.
+  assertPrePushReadback(
+    {
+      linear_state: envelope.linear_state, linear_fingerprint: envelope.linear_fingerprint,
+      pr_head: envelope.pr_head, branch: envelope.branch, git_head: bound.starting_head,
+    },
+    freshAfter,
+  )
+  // (3) Only now: the host commits the working-tree mutation and pushes. This is the sole
+  // commit/push seam; the worker never reached it. A write-capable subagent runs the commit and
+  // push and returns the new delivered HEAD.
+  assertContainment(A.worktree_root, worktree)
+  const pushed = await agent([
+    `You are a fresh octo-lite host commit/push subagent for a VERIFIED ${role} pass. One pass only.`,
+    'The worker left its mutation uncommitted in the contained worktree; its echo, a fresh pre-push',
+    'readback, and its TDD proof have all passed. Commit that working-tree mutation on the bound branch',
+    'and push it. Reference the issue in the commit message. Do NOT amend or rebase foreign commits.',
+    `  worktree: ${worktree}`,
+    `  starting_head: ${bound.starting_head}`,
+    `  branch: ${branch}`,
+    'Return committed:true, pushed:true, and the new head (git rev-parse HEAD after the commit).',
+  ].join('\n'), {
+    label: `host-commit-push:${bound.issue}`, phase: phaseTitle,
+    schema: {
+      type: 'object', required: ['committed', 'pushed', 'head'],
+      properties: { committed: { type: 'boolean' }, pushed: { type: 'boolean' }, head: { type: 'string' } },
+    },
+  })
+  if (pushed === null || pushed.committed !== true || pushed.pushed !== true) {
+    throw new Error(`${role} host commit/push failed: nothing pushed`)
+  }
+  if (pushed.head === bound.starting_head) {
+    throw new Error(`${role} host commit produced no new HEAD`)
+  }
+  return pushed.head
 }
 
 // OpenAI-reviewer relay spawn path (TUR-447 F2b Unit G; role-runtime role-openai-relay,
@@ -1667,7 +1908,9 @@ async function loopFire() {
   const fire = await agent([
     'Run exactly this command from the owning orchestrator context, then report it:',
     `octo-control linear-transition ${issue} --expected Shaped --target Todo ${controlArgs}`,
-    'Return command, exit_status, and readback_state (the Linear state read back).',
+    'Return command, exit_status, readback_state (the Linear state read back), and',
+    'readback_fingerprint (the live Linear content fingerprint of the issue read back AFTER',
+    'the transition). Read the post-fire fingerprint yourself; do not copy a pre-fire value.',
     'Never substitute a different transition, target, or issue.',
   ].join('\n'), { label: `loop-fire:${issue}`, phase: 'Implement', schema: FIRE_SCHEMA, effort: 'low' })
   if (fire === null || fire.exit_status !== 0) {
@@ -1693,25 +1936,38 @@ if (mode === 'implement') {
     if (fired.readback_state !== 'Todo') {
       throw new Error('delivery spawn at Shaped rejected: Todo readback missing after loop fire')
     }
-    // TUR-447 P0 self-rejection fix (delivery-lifecycle linear-loop-fire-transition,
-    // delivery-entry-gate; role-runtime launch-readback). The loop just performed and
-    // confirmed the Shaped -> Todo fire, so the true live Linear state is now Todo. The
-    // subsequent liveReadback fetches that FRESH Todo state and assertLaunchReadback
-    // compares it against A.linear_state; if the bound expected state stayed the stale
-    // pre-fire Shaped, EVERY delivery self-rejects and no worker ever spawns. Reconcile
-    // the bound expected state to the CONFIRMED post-fire truth (Todo, proven by the
-    // Todo readback above) so a genuine Shaped member proceeds to spawn. This does NOT
-    // weaken the stale-envelope gate: the gate still rejects any fresh read that
-    // disagrees with the post-fire truth (a wrong live state such as Backlog still
-    // rejects), and the launch revision is unaffected because linear_state is not a
-    // bound-input fingerprint field.
+    // TUR-447 cycle2 pass1 P0 self-rejection fix (delivery-lifecycle linear-loop-fire-transition,
+    // delivery-entry-gate; role-runtime launch-readback). The loop just performed and confirmed
+    // the Shaped -> Todo fire, so the true live Linear state is now Todo AND its content
+    // fingerprint is the post-fire fingerprint. The subsequent liveReadback fetches that FRESH
+    // Todo state AND fingerprint, and assertLaunchReadback compares BOTH against A.linear_state
+    // and A.linear_fingerprint. The Linear fingerprint is a function of issue state, so the
+    // Shaped fingerprint differs from the Todo fingerprint; the prior fix reconciled only the
+    // state and left the STALE Shaped fingerprint, so EVERY genuine Shaped member self-rejected
+    // on the fingerprint field and no worker ever spawned. Reconcile the bound envelope to the
+    // CONFIRMED post-fire truth for BOTH state and fingerprint, derived from the fire's own fresh
+    // readback, so a genuine Shaped member proceeds. This does NOT weaken the stale gate: a
+    // genuinely wrong live state or fingerprint (e.g. Backlog, or a fingerprint disagreeing with
+    // the post-fire truth) still rejects at assertLaunchReadback. The launch revision is
+    // unaffected because neither linear_state nor linear_fingerprint is a bound-input fingerprint
+    // field.
     A.linear_state = fired.readback_state
+    A.linear_fingerprint = required(fired.readback_fingerprint, 'post-fire Linear fingerprint')
   }
   const implementation = await spawnWorker('implementer', 'Implement', A.shaping_head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'implement', implementation }
+  // Host-gated push (TUR-447 cycle2 pass1): the worker left an uncommitted working-tree mutation
+  // and did NOT push. acceptImplementation verifies the echo, the independently-observed red
+  // evidence bound to the unchanged starting HEAD, and that the worker did not commit/push. ONLY
+  // THEN the host performs the pre-push readback and commits/pushes, producing the delivered HEAD.
   acceptImplementation(A.shaping_head, implementation, true)
+  const deliveredHead = await hostGatedCommitPush(
+    'implementer', 'Implement', A,
+    journalledBoundInputs('implementer', A.shaping_head), implementation,
+    assertContainment(required(A.worktree_root, 'worktree root'), required(A.worktree, 'worker worktree')),
+  )
   return {
-    stage: 'code-review-required', issue: A.issue, pr: A.pr, head: implementation.head,
+    stage: 'code-review-required', issue: A.issue, pr: A.pr, head: deliveredHead,
     cycle: 1, implementation,
   }
 }
@@ -1744,9 +2000,17 @@ if (mode === 'fix') {
   if (!Array.isArray(A.findings) || A.findings.length === 0) throw new Error('blocking findings required')
   const implementation = await spawnWorker('implementer', 'Fix', head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'fix', implementation }
+  // Host-gated push (TUR-447 cycle2 pass1): identical to implement mode. The fix worker leaves an
+  // uncommitted working-tree mutation; the host verifies echo + red evidence + no worker push,
+  // then does the pre-push readback and commits/pushes the delivered HEAD.
   acceptImplementation(head, implementation, true)
+  const deliveredHead = await hostGatedCommitPush(
+    'implementer', 'Fix', A,
+    journalledBoundInputs('implementer', head), implementation,
+    assertContainment(required(A.worktree_root, 'worktree root'), required(A.worktree, 'worker worktree')),
+  )
   return {
-    stage: 'code-review-required', issue: A.issue, pr: A.pr, head: implementation.head,
+    stage: 'code-review-required', issue: A.issue, pr: A.pr, head: deliveredHead,
     cycle: reviewCycle + 1, implementation,
   }
 }

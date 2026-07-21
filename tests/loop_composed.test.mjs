@@ -44,6 +44,19 @@ const NEWHEAD = 'abc1234new'
 const SPEC_BLOBS = ['spec/domains/role-runtime.spec.html:anchor-1']
 const CONTRACT = 'c8b0440cacc5188b2926b626ee6f506ced5368ebbda67dc6b1ed0d542cddc34c'
 
+// TUR-447 cycle2 pass1 ANTI-GAMING: the Linear fingerprint is a FUNCTION of the issue state.
+// The prior harness reused ONE constant fingerprint ('lfp-1') across the Shaped -> Todo fire, so
+// the stale-fingerprint P0 could never surface. Here Shaped and Todo yield DIFFERENT fingerprints,
+// so a genuine pass MUST reconcile the bound fingerprint to the post-fire (Todo) value or it
+// self-rejects at assertLaunchReadback. fingerprintFor is the single source; no test reuses a
+// constant fingerprint across a state change.
+const FINGERPRINTS = { Shaped: 'fp-shaped-a1', Todo: 'fp-todo-b2', Backlog: 'fp-backlog-c3' }
+function fingerprintFor(state) {
+  const fp = FINGERPRINTS[state]
+  if (!fp) throw new Error(`composed harness: no fingerprint modelled for state ${state}`)
+  return fp
+}
+
 function boundInputs(role) {
   return {
     role,
@@ -71,7 +84,7 @@ function readyEnvelope(overrides = {}) {
     repo: REPO, issue: ISSUE, pr: PR, branch: BRANCH,
     shaping_head: HEAD, pr_head: HEAD, pr_base: 'main',
     spec_revision: 'r1', linear_revision: 'lr1', topology_revision: 't1',
-    linear_fingerprint: 'lfp-1', linear_state: 'Shaped',
+    linear_fingerprint: fingerprintFor('Shaped'), linear_state: 'Shaped',
     shaping_verdict: 'clear', shaping_verdict_head: HEAD,
     shaping_reviewer_receipt: 'rcpt-1', conversation_cutoff: 'session.jsonl:1',
     conversation_log_references: ['session.jsonl:1-1'],
@@ -95,10 +108,13 @@ function readyEnvelope(overrides = {}) {
 }
 
 // Freshly-read live values a genuine readback subagent returns. Default is a healthy
-// post-fire world: Linear is Todo (the loop fired Shaped -> Todo), git HEAD unchanged.
+// post-fire world: Linear is Todo (the loop fired Shaped -> Todo), so its fingerprint is the
+// TODO fingerprint (NOT the Shaped one), git HEAD unchanged. The Todo fingerprint differs from the
+// Shaped fingerprint the envelope originally bound, so the loop MUST have reconciled the bound
+// fingerprint to Todo for this to agree.
 function freshReads(overrides = {}) {
   return {
-    linear_state: 'Todo', linear_fingerprint: 'lfp-1',
+    linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'),
     pr_head: HEAD, branch: BRANCH, git_head: HEAD,
     ...overrides,
   }
@@ -140,34 +156,62 @@ const RESOLVED_REVIEWER_RUNTIME = {
   contract_blob: 'rv-contract-blob', contract_text: '# Code reviewer\ncanonical contract text',
 }
 
-// A full healthy implement script: readback -> ack (Explore) -> mutation (write) each
-// answer with a genuine echo, and a genuine red-before-mutation-then-green proof.
-function implementScript({ fresh = freshReads(), red, green, mutationAck = ackFor('implementer'), fireState = 'Todo' } = {}) {
+// A full healthy implement script: fire (returns post-fire Todo state AND Todo fingerprint) ->
+// readback -> ack (Explore) -> mutation (write, host-gated: committed/pushed false, green at the
+// UNCHANGED starting HEAD, red carries a captured evidence artifact bound to the starting HEAD,
+// liveness fields echoed) -> pre-push readback -> host commit/push (produces the new HEAD).
+function implementScript({
+  fresh = freshReads(), red, green, mutationAck = ackFor('implementer'),
+  fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
+  mutationOverrides = {}, prePush = freshReads(), commitResult,
+  liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
+} = {}) {
   const goodRed = red ?? {
     command: 'node --test tests/', exit_status: 1, outcome: 'FAIL: behavior wrong',
     artifact: `${PR}#c1`, head: HEAD, scenario: 'shaped-member-fires-todo',
+    // Independently-observed evidence artifact bound to the unchanged starting HEAD.
+    evidence: {
+      captured_output: 'AssertionError: expected reconciled fingerprint, got stale\n1 failing',
+      exit_status: 1, head: HEAD,
+    },
   }
+  // Host-gated push: green runs at the UNCHANGED starting HEAD (working-tree mutation, no commit).
   const goodGreen = green ?? {
     command: 'node --test tests/', exit_status: 0, outcome: 'PASS: behavior right',
-    artifact: `${PR}#c2`, head: NEWHEAD, scenario: 'shaped-member-fires-todo',
+    artifact: `${PR}#c2`, head: HEAD, scenario: 'shaped-member-fires-todo',
   }
   return [
-    ['loop-fire:', { command: 'octo-control linear-transition', exit_status: 0, readback_state: fireState }],
+    ['loop-fire:', {
+      command: 'octo-control linear-transition', exit_status: 0,
+      readback_state: fireState, readback_fingerprint: fireFingerprint,
+    }],
     ['implementer-readback:', fresh],
     ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
     ['implementer-ack:', { ack: ackFor('implementer') }],
     ['implementer:', {
-      ack: mutationAck, issue: ISSUE, pr_url: PR, branch: BRANCH, head: NEWHEAD,
+      ack: mutationAck, issue: ISSUE, pr_url: PR, branch: BRANCH, head: HEAD,
       handoff_url: `${PR}#h`, red: goodRed, green: goodGreen, validation: 'suite', blocked: false,
+      // Host-gated push: the worker did NOT commit or push, and echoed its liveness reads.
+      committed: false, pushed: false,
+      linear_state: liveness.linear_state, linear_fingerprint: liveness.linear_fingerprint,
+      ...mutationOverrides,
     }],
     ['workspace-cleanup:', { cleaned: true, head: HEAD, status: '' }],
+    // Pre-push readback: a fresh live read immediately before the host commit.
+    ['implementer-prepush-readback:', prePush],
+    // Host commit/push: the ONLY commit/push seam, run after all verifies; produces the new HEAD.
+    ['host-commit-push:', commitResult ?? { committed: true, pushed: true, head: NEWHEAD }],
   ]
 }
 
-test('P0: a genuine Shaped member fires Todo then REACHES the write-capable mutation spawn without self-rejecting', async () => {
+test('P0: a genuine Shaped member fires Todo, the bound fingerprint is RECONCILED, and it reaches the mutation spawn without self-rejecting', async () => {
   const factory = loadLoop()
   const agent = makeAgent(implementScript())
   const A = readyEnvelope()
+  // The envelope binds the SHAPED fingerprint; the post-fire live read reports the TODO
+  // fingerprint (a different value). Without fingerprint reconciliation the pass self-rejects.
+  assert.equal(A.linear_fingerprint, fingerprintFor('Shaped'))
+  assert.notEqual(fingerprintFor('Shaped'), fingerprintFor('Todo'))
   const result = await factory(agent, JSON.stringify(A), noop)
   assert.equal(result.stage, 'code-review-required')
   assert.equal(result.head, NEWHEAD)
@@ -178,6 +222,72 @@ test('P0: a genuine Shaped member fires Todo then REACHES the write-capable muta
   const mutIdx = labels.findIndex((l) => l === `implementer:${ISSUE}|null`)
   assert.ok(ackIdx >= 0, 'read-only ack (Explore) phase ran')
   assert.ok(mutIdx > ackIdx, 'write-capable mutation phase reached after ack')
+})
+
+test('P0-fingerprint: reusing the STALE Shaped fingerprint after the fire self-rejects (proves reconciliation is real, not a constant)', async () => {
+  const factory = loadLoop()
+  // Model a loop that fired but did NOT reconcile the fingerprint: the fire reports the SHAPED
+  // fingerprint as its post-fire fingerprint (a stale, wrong value). The subsequent live read
+  // reports the true TODO fingerprint, so assertLaunchReadback must reject.
+  const agent = makeAgent(implementScript({ fireFingerprint: fingerprintFor('Shaped') }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /stale envelope: Linear fingerprint disagrees with fresh read/,
+  )
+})
+
+test('stale-race: a live change BEFORE push (Linear fingerprint moved after bind) is REJECTED, nothing pushed', async () => {
+  const factory = loadLoop()
+  // Spawn-start readback is healthy (Todo). But the pre-push readback reports a DIFFERENT live
+  // fingerprint: the issue changed during the intervening resolver/ack/mutation passes.
+  const agent = makeAgent(implementScript({
+    prePush: freshReads({ linear_fingerprint: 'fp-moved-since-bind' }),
+  }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /pre-push readback: Linear fingerprint changed since bind/,
+  )
+  // The host commit/push seam was NEVER reached: nothing was pushed.
+  assert.ok(
+    !agent.calls.some((c) => c.label.startsWith('host-commit-push:')),
+    'host commit/push not reached when a live change is detected before push',
+  )
+})
+
+test('host-gated push: the worker does NOT push; the host pushes ONLY after echo + pre-push readback + TDD verify', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript())
+  const A = readyEnvelope()
+  const result = await factory(agent, JSON.stringify(A), noop)
+  assert.equal(result.stage, 'code-review-required')
+  // The mutation worker asserted committed:false and pushed:false (it did not push).
+  const mut = agent.calls.find((c) => c.label === `implementer:${ISSUE}` && c.agentType === null)
+  assert.ok(mut, 'mutation spawn ran')
+  // The mutation prompt instructed host-gated push (no commit/push) and a red evidence artifact.
+  assert.ok(/HOST-GATED PUSH/.test(mut.prompt), 'mutation prompt instructs host-gated push')
+  assert.ok(/do NOT git commit and do NOT git push/.test(mut.prompt), 'worker told not to commit/push')
+  assert.ok(/evidence/.test(mut.prompt) && /captured/i.test(mut.prompt), 'mutation prompt requires a captured red evidence artifact')
+  // The host commit/push ran AFTER the pre-push readback, which ran AFTER the mutation spawn.
+  const order = agent.calls.map((c) => c.label)
+  const mutIdx = order.findIndex((l) => l === `implementer:${ISSUE}`)
+  const readbackIdx = order.findIndex((l) => l.startsWith('implementer-prepush-readback:'))
+  const pushIdx = order.findIndex((l) => l.startsWith('host-commit-push:'))
+  assert.ok(mutIdx >= 0 && readbackIdx > mutIdx, 'pre-push readback runs after the mutation')
+  assert.ok(pushIdx > readbackIdx, 'host commit/push runs after the pre-push readback')
+  // The delivered HEAD is the HOST commit head, not a worker-produced head.
+  assert.equal(result.head, NEWHEAD)
+})
+
+test('host-gated push: a worker that ALREADY pushed is REJECTED (post-hoc reset cannot undo a push)', async () => {
+  const factory = loadLoop()
+  const agent = makeAgent(implementScript({ mutationOverrides: { committed: true, pushed: true, head: NEWHEAD } }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /worker must not commit|worker must not push/,
+  )
 })
 
 test('P0-negative: an actually-wrong post-fire Linear state STILL rejects (stale gate not weakened)', async () => {
@@ -216,24 +326,54 @@ test('F1-positive: a matching write-worker echo is ACCEPTED with no cleanup', as
   assert.ok(!cleaned, 'no cleanup on a matching echo')
 })
 
-test('TDD gate: a fabricated proof-shaped object (red at post-mutation head) is REJECTED', async () => {
+test('TDD gate: a fabricated proof with NO genuine evidence artifact is REJECTED (independent observation)', async () => {
   const factory = loadLoop()
-  // Fabricated: red claims to have run at the NEW post-mutation head, and green at the
-  // same head. This is proof-shaped (all string/int fields present) but does not prove
-  // red ran at the unchanged starting HEAD before mutation.
+  // Fabricated: proof-shaped strings but NO captured evidence artifact. The gate independently
+  // requires the observed failing-test artifact bound to the starting HEAD, so bare strings fail.
   const fabRed = {
     command: 'node --test tests/', exit_status: 1, outcome: 'FAIL',
-    artifact: `${PR}#c1`, head: NEWHEAD, scenario: 'x',
+    artifact: `${PR}#c1`, head: HEAD, scenario: 'x',
+    // evidence deliberately omitted
   }
-  const fabGreen = {
-    command: 'node --test tests/', exit_status: 0, outcome: 'PASS',
-    artifact: `${PR}#c2`, head: NEWHEAD, scenario: 'x',
-  }
-  const agent = makeAgent(implementScript({ red: fabRed, green: fabGreen }))
+  const agent = makeAgent(implementScript({ red: fabRed }))
   const A = readyEnvelope()
   await assert.rejects(
     () => factory(agent, JSON.stringify(A), noop),
-    /red must run at the unchanged starting HEAD before mutation/,
+    /red evidence artifact required/,
+  )
+})
+
+test('TDD gate: an evidence artifact NOT bound to the starting HEAD is REJECTED', async () => {
+  const factory = loadLoop()
+  // The evidence claims to have run at the NEW post-mutation head, not the unchanged starting
+  // HEAD, so red-before-mutation is not genuinely observed.
+  const fabRed = {
+    command: 'node --test tests/', exit_status: 1, outcome: 'FAIL',
+    artifact: `${PR}#c1`, head: HEAD, scenario: 'x',
+    evidence: { captured_output: '1 failing', exit_status: 1, head: NEWHEAD },
+  }
+  const agent = makeAgent(implementScript({ red: fabRed }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /red evidence must be bound to the unchanged starting HEAD/,
+  )
+})
+
+test('TDD gate: an evidence exit that DISAGREES with the reported red exit is REJECTED', async () => {
+  const factory = loadLoop()
+  // The reported red exit is 1 (fail) but the captured artifact records exit 0: the artifact does
+  // not corroborate the claimed failing run.
+  const fabRed = {
+    command: 'node --test tests/', exit_status: 1, outcome: 'FAIL',
+    artifact: `${PR}#c1`, head: HEAD, scenario: 'x',
+    evidence: { captured_output: 'ok', exit_status: 0, head: HEAD },
+  }
+  const agent = makeAgent(implementScript({ red: fabRed }))
+  const A = readyEnvelope()
+  await assert.rejects(
+    () => factory(agent, JSON.stringify(A), noop),
+    /red evidence must record a genuinely failing run|red evidence exit status must match/,
   )
 })
 
@@ -242,10 +382,11 @@ test('TDD gate: a red/green whose SCENARIO differs is REJECTED (not the same beh
   const red = {
     command: 'node --test tests/', exit_status: 1, outcome: 'FAIL',
     artifact: `${PR}#c1`, head: HEAD, scenario: 'scenario-A',
+    evidence: { captured_output: '1 failing', exit_status: 1, head: HEAD },
   }
   const green = {
     command: 'node --test tests/', exit_status: 0, outcome: 'PASS',
-    artifact: `${PR}#c2`, head: NEWHEAD, scenario: 'scenario-B',
+    artifact: `${PR}#c2`, head: HEAD, scenario: 'scenario-B',
   }
   const agent = makeAgent(implementScript({ red, green }))
   const A = readyEnvelope()
@@ -315,7 +456,8 @@ function boundInputsFor(role, startingHead) {
 function reviewEnvelope(overrides = {}) {
   const base = readyEnvelope()
   const merged = {
-    ...base, mode: 'code-review', head: HEAD, cycle: 1, linear_state: 'Todo', ...overrides,
+    ...base, mode: 'code-review', head: HEAD, cycle: 1,
+    linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), ...overrides,
   }
   merged.launch_revision = launchRevision(boundInputsFor('code-reviewer', HEAD))
   return merged
@@ -328,7 +470,7 @@ function reviewerScript({
   const PAYLOAD = 'REVIEWER FINAL MESSAGE VERBATIM'
   const ack = ackFor(role)
   return [
-    [`${role}-readback:`, freshReads({ linear_state: linearState })],
+    [`${role}-readback:`, freshReads({ linear_state: linearState, linear_fingerprint: fingerprintFor(linearState) })],
     [`${role}-runtime:`, runtime],
     [`${role}-relay:`, {
       claimed_session_id: SESSION, payload: PAYLOAD,

@@ -412,7 +412,49 @@ function assertProof(proof, label) {
   return proof
 }
 
-export function acceptImplementation(expectedHead, result, requireNewHead = true) {
+// TUR-447 cycle2 pass1 TDD independent-observation fix (delivery-lifecycle prompt-tdd-red,
+// prompt-tdd-no-fabrication; and the spec-derived red-green-refactor contract). The prior gate
+// compared only worker-supplied red.head/scenario STRINGS, so a fabricated proof with no genuine
+// failing run was accepted. The red must now carry a captured EVIDENCE ARTIFACT: the actual
+// failing test output the worker observed, the exit status that run produced, and the exact HEAD
+// it ran at. The host validates that artifact (non-empty captured output, a genuinely failing
+// exit that MATCHES the reported red exit, and an evidence HEAD equal to the unchanged starting
+// HEAD) rather than trusting bare strings. A red with no genuine artifact bound to the starting
+// HEAD is REJECTED. This is the workflow-layer stand-in for re-running the target's suite: the
+// gate requires and validates the observed artifact, it does not accept a proof-shaped object.
+function assertRedEvidenceArtifact(red, expectedHead) {
+  const evidence = red.evidence
+  if (typeof evidence !== 'object' || evidence === null) {
+    throw new Error('red evidence artifact required: capture the failing test output at the starting HEAD')
+  }
+  requiredNonEmptyString(evidence.captured_output, 'red evidence captured output')
+  if (!Number.isInteger(evidence.exit_status)) {
+    throw new Error('red evidence exit status required')
+  }
+  if (evidence.exit_status === 0) {
+    throw new Error('red evidence must record a genuinely failing run (nonzero exit)')
+  }
+  if (evidence.exit_status !== red.exit_status) {
+    throw new Error('red evidence exit status must match the reported red exit status')
+  }
+  requiredNonEmptyString(evidence.head, 'red evidence HEAD')
+  if (evidence.head !== expectedHead) {
+    throw new Error('red evidence must be bound to the unchanged starting HEAD')
+  }
+  return evidence
+}
+
+// TUR-447 cycle2 pass1 host-gated push (delivery-lifecycle prompt-tdd-red, prompt-tdd-green;
+// role-runtime launch-identity, launch-receipt; operating-model decision-109-binding). The
+// mutating worker no longer commits or pushes: it produces the mutation in the contained
+// worktree plus its ack echo and red/green evidence, then STOPS. The host commits and pushes
+// only after echo + pre-push readback + TDD verify. So the accepted worker result runs its red
+// AND its green at the UNCHANGED starting HEAD (the mutation lives in the working tree, no
+// commit HEAD exists yet), and it must assert committed:false and pushed:false. A worker that
+// already committed or pushed is rejected, because a post-hoc worktree reset cannot undo an
+// already-pushed mutation. requireNewHead now governs the HOST commit that follows acceptance,
+// so acceptImplementation binds the pre-commit worker result, not a worker-produced new HEAD.
+export function acceptImplementation(expectedHead, result, requireHostGatedPush = true) {
   required(result, 'implementation result')
   if (result.blocked !== false) throw new Error('implementation blocked')
   required(result.head, 'implementation HEAD')
@@ -420,24 +462,89 @@ export function acceptImplementation(expectedHead, result, requireNewHead = true
   assertProof(result.green, 'implementation green evidence')
   if (result.red.exit_status === 0) throw new Error('red must fail before production change')
   if (result.green.exit_status !== 0) throw new Error('green must pass after production change')
-  // TUR-447 TDD-gate fix. The gate no longer accepts arbitrary proof-shaped red/green:
-  // it requires evidence that the red ran at the UNCHANGED starting HEAD (red before any
-  // production mutation) and that the SAME behavior scenario then went green at the new
-  // HEAD. A fabricated proof whose red claims the post-mutation head, or a green whose
-  // scenario differs from the red, is rejected.
+  // The red is proven by an independently-observed captured artifact bound to the unchanged
+  // starting HEAD, not by worker-supplied strings.
+  assertRedEvidenceArtifact(result.red, expectedHead)
   required(result.validation, 'implementation validation')
-  if (requireNewHead && result.head === expectedHead) throw new Error('implementation needs new HEAD')
+  // Host-gated push: the worker must NOT commit or push. Its output is verified BEFORE any
+  // commit/push, so it stops at the working-tree mutation over the unchanged starting HEAD.
+  if (requireHostGatedPush) {
+    if (result.committed !== false) {
+      throw new Error('worker must not commit: host commits only after verification (host-gated push)')
+    }
+    if (result.pushed !== false) {
+      throw new Error('worker must not push: host pushes only after verification (host-gated push)')
+    }
+    if (result.head !== expectedHead) {
+      throw new Error('worker head must equal the unchanged starting HEAD: no worker commit before host verify')
+    }
+    if (result.green.head !== expectedHead) {
+      throw new Error('green must run at the unchanged starting HEAD over the working-tree mutation before host commit')
+    }
+  }
+  // The red must run at the UNCHANGED starting HEAD before mutation; the green must exercise the
+  // SAME behavior scenario as the red.
   if (result.red.head !== expectedHead) {
     throw new Error('red must run at the unchanged starting HEAD before mutation')
-  }
-  if (requireNewHead && result.green.head === expectedHead) {
-    throw new Error('green must run at the post-mutation HEAD')
   }
   if (result.green.head !== result.head) {
     throw new Error('green HEAD must equal the delivered implementation HEAD')
   }
   if (result.green.scenario !== result.red.scenario) {
     throw new Error('green must prove the same scenario as red')
+  }
+  return result
+}
+
+// TUR-447 cycle2 pass1 stale-read-race pre-push readback (role-runtime launch-readback,
+// launch-gates-workflow-layer; delivery-lifecycle delivery-entry-gate). liveReadback runs at
+// spawn start, BEFORE the resolver, ack, and mutation passes. A live change during those
+// intervening passes was undetected before commit/push. The host takes a FRESH readback
+// immediately BEFORE it commits/pushes and rejects if the live Linear state, Linear
+// fingerprint, PR head, branch, or git HEAD changed since bind. bound is the post-fire
+// reconciled envelope (the ground truth the pass bound); freshAfter is the pre-push live read.
+const PRE_PUSH_FIELDS = [
+  ['linear_state', 'Linear state'],
+  ['linear_fingerprint', 'Linear fingerprint'],
+  ['pr_head', 'PR head'],
+  ['branch', 'PR branch'],
+  ['git_head', 'git HEAD'],
+]
+
+export function assertPrePushReadback(bound, freshAfter) {
+  required(bound, 'bound envelope')
+  required(freshAfter, 'pre-push fresh reads')
+  for (const [field, label] of PRE_PUSH_FIELDS) {
+    requiredNonEmptyString(freshAfter[field], `pre-push ${label}`)
+    if (bound[field] !== freshAfter[field]) {
+      throw new Error(`pre-push readback: ${label} changed since bind`)
+    }
+  }
+  return freshAfter
+}
+
+// TUR-447 cycle2 pass1 stale-read-race worker liveness echo (role-runtime launch-readback,
+// launch-identity). The mutating worker's bound echo previously omitted Linear state,
+// fingerprint, and branch, so a change during the intervening passes was undetected before
+// commit/push. The worker must now echo linear_state, linear_fingerprint, and branch as it read
+// them, and the host asserts they equal the bound (post-fire reconciled) ground truth. This is
+// paired with assertPrePushReadback, which then reconfirms those same fields live immediately
+// before the host commit; together they close the window between spawn-start readback and push.
+const LIVENESS_FIELDS = [
+  ['linear_state', 'worker liveness Linear state'],
+  ['linear_fingerprint', 'worker liveness Linear fingerprint'],
+  ['branch', 'worker liveness branch'],
+]
+
+export function assertWorkerLivenessEcho(bound, result) {
+  required(bound, 'bound envelope')
+  required(result, 'worker result')
+  for (const [field, label] of LIVENESS_FIELDS) {
+    requiredNonEmptyString(bound[field], `bound ${field}`)
+    requiredNonEmptyString(result[field], label)
+    if (result[field] !== bound[field]) {
+      throw new Error(`${label} disagrees with the bound ground truth`)
+    }
   }
   return result
 }
