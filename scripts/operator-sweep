@@ -274,7 +274,7 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
     }
 
 
-LIVENESS_OBSERVATION_FIELDS = ("status_mtime", "transcript_mtime")
+LIVENESS_OBSERVATION_FIELDS = ("status_mtime", "transcript_mtime", "classification")
 
 
 def split_liveness(liveness: dict) -> tuple[dict, dict]:
@@ -288,6 +288,8 @@ def split_liveness(liveness: dict) -> tuple[dict, dict]:
         observations[name] = {key: entry.get(key) for key in LIVENESS_OBSERVATION_FIELDS}
         stable[name] = {key: value for key, value in entry.items() if key not in LIVENESS_OBSERVATION_FIELDS}
     return stable, observations
+    # classification is time-derived (now vs transcript mtime), so it is an
+    # observation the reconciler judges, never digested content (v12 finding).
 
 
 def assemble_snapshot(parts: list, stable_liveness: dict, normalized_facts: str) -> dict:

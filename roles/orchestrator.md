@@ -22,7 +22,7 @@ Own one issue or one epic coordination layer from brief through closure.
 
 ## Rules
 
-- Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the two human-gated carve-outs in Never.
+- Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the two human-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Verify the launch receipt. The parent already confirmed BOOTSTRAP_ACK before mutation and before this session started; never self-verify it.
 - One issue orchestrator per issue. One extra epic orchestrator for multi-issue epics.
 - Reconcile current facts before dispatch. Refetch exact gate inputs at launch.

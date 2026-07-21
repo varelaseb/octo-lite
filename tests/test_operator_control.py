@@ -2378,6 +2378,37 @@ class SweepStreamLivenessTests(unittest.TestCase):
             )
             self.assertEqual(["20260721T000001-1-1"], live["undelivered_queue"])
 
+    def test_unchanged_stream_crossing_idle_boundary_keeps_identical_fingerprint(self) -> None:
+        # v12 finding 2 red: classification is time-derived and must therefore
+        # live OUTSIDE the digest with the mtimes; end to end, an unchanged
+        # stream whose wall-clock crosses idle_seconds produces an identical
+        # digested snapshot and fingerprint, while classification (observation)
+        # flips active -> suspected-stuck for the reconciler to judge.
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            projects = base / "projects"
+            stream, transcript = self._stream_with_receipt(base, "tur-7", projects, now)
+            os.utime(transcript, (now - 3599, now - 3599))
+            (stream / "status.md").write_text("# s\n")
+
+            def snapshot_at(current: float):
+                live = module.stream_liveness(
+                    stream, base / "inbox", base / "messages",
+                    idle_seconds=3600, now=current, projects_root=projects,
+                )
+                stable, observations = module.split_liveness({"tur-7": live})
+                assembled = module.assemble_snapshot(["## s\n"], stable, '{"f":1}')
+                return assembled, observations
+
+            before, obs_before = snapshot_at(now)
+            after, obs_after = snapshot_at(now + 7200)
+            self.assertEqual(before["fingerprint"], after["fingerprint"])
+            self.assertNotIn("classification", before["snapshot"])
+            self.assertEqual("active", obs_before["tur-7"]["classification"])
+            self.assertEqual("suspected-stuck", obs_after["tur-7"]["classification"])
+
     def test_digest_covers_stable_semantics_only_and_survives_mtime_churn(self) -> None:
         # v12-scope evidence: volatile transcript mtimes in the digested
         # snapshot make digests unverifiable while streams are active. The
@@ -2393,15 +2424,22 @@ class SweepStreamLivenessTests(unittest.TestCase):
         stable_a, obs_a = module.split_liveness(live_a)
         stable_b, obs_b = module.split_liveness(live_b)
         self.assertEqual(stable_a, stable_b)
-        self.assertEqual({"status_mtime": 90, "transcript_mtime": 100}, obs_a["tur-6"])
+        self.assertEqual(
+            {"status_mtime": 90, "transcript_mtime": 100, "classification": "waiting"},
+            obs_a["tur-6"],
+        )
         first = module.assemble_snapshot(["## s\ntext\n"], stable_a, '{"f":1}')
         second = module.assemble_snapshot(["## s\ntext\n"], stable_b, '{"f":1}')
         self.assertEqual(first["fingerprint"], second["fingerprint"])
         self.assertEqual(_h.sha256(first["snapshot"].encode()).hexdigest(), first["fingerprint"])
         self.assertNotIn("transcript_mtime", first["snapshot"])
-        self.assertIn("waiting", first["snapshot"])
-        # a genuine semantic change (classification flip) IS a digest change.
-        stable_c, _ = module.split_liveness({"tur-6": dict(live_a["tur-6"], classification="suspected-stuck", wait_owner="", open_ask="")})
+        # classification is an observation now, never digested; the stable wait
+        # facts (owner + verbatim ask) are what the digest carries.
+        self.assertNotIn("classification", first["snapshot"])
+        self.assertIn('"wait_owner": "operator"', first["snapshot"])
+        # a genuine stable-fact change (wait cleared) IS a digest change;
+        # classification alone is not digested.
+        stable_c, _ = module.split_liveness({"tur-6": dict(live_a["tur-6"], wait_owner="", open_ask="")})
         third = module.assemble_snapshot(["## s\ntext\n"], stable_c, '{"f":1}')
         self.assertNotEqual(first["fingerprint"], third["fingerprint"])
 
