@@ -7,8 +7,9 @@ import subprocess
 import unittest
 from pathlib import Path
 
+from octo_lite.launch import LaneProvision
 from octo_lite.runtime import GateError
-from octo_lite.stream_envelope import build_stream_envelope
+from octo_lite.stream_envelope import build_stream_envelope, launch_stream_lane
 
 ROOT = Path(__file__).resolve().parents[1]
 GATES_PATH = ROOT / "workflows" / "lib" / "gates.mjs"
@@ -153,18 +154,91 @@ class StreamEnvelopeBuilderTests(unittest.TestCase):
         with self.assertRaises(GateError):
             _build(live_reads=dict(LIVE_READS, pr_head="f" * 40))
 
-    # RED-11 (TUR-488)
-    def test_stream_name_not_raw_flag(self) -> None:
-        envelope = _build()
-        self.assertIsInstance(envelope, dict)
-        serialized = json.dumps(envelope)
-        self.assertEqual(envelope, json.loads(serialized))
+    # REG-6 (code-review finding 6, stream_envelope.py:61): the builder must
+    # fail closed on empty required arrays, on a non-'clear' shaping verdict,
+    # and on a shaping_verdict_head that disagrees with shaping_head, mirroring
+    # assertReadyEnvelope semantics BEFORE the envelope is returned.
+    def test_builder_fails_closed_on_empty_required_arrays_and_bad_verdict(self) -> None:
+        cases = [
+            dict(live_reads=dict(LIVE_READS, spec_blobs=[])),
+            dict(stream=dict(STREAM, acceptance_criteria=[])),
+            dict(shaping_journal=dict(SHAPING_JOURNAL, shaping_verdict_inputs=[])),
+            dict(stream=dict(STREAM, conversation_log_references=[])),
+            dict(shaping_journal=dict(SHAPING_JOURNAL, shaping_verdict="blocking")),
+            dict(shaping_journal=dict(SHAPING_JOURNAL, shaping_verdict_head="f" * 40)),
+        ]
+        for override in cases:
+            with self.assertRaises(GateError, msg=override):
+                _build(**override)
+
+
+class StreamEnvelopeProductionInvocationTests(unittest.TestCase):
+    # REG-7 (code-review finding 7, stream_envelope.py:70): a GENUINE
+    # invocation regression test replacing the weak RED-11: passes a stream
+    # NAME through the REAL production entrypoint (build envelope + start the
+    # loop via run_lane_loop) and asserts the injected runner received
+    # PARSED JSON envelope args (a dict/object), never a raw
+    # `--stream <name>` string (TUR-488).
+
+    def _provision(self) -> LaneProvision:
+        record = {
+            "schema_version": 1,
+            "source": "host-provisioned-worktree",
+            "lane": ENV["OCTO_LANE"],
+            "control_repo": ENV["OCTO_CONTROL_REPO"],
+            "worktree": ENV["OCTO_WORKTREE"],
+            "worktree_root": ENV["OCTO_WORKTREE_ROOT"],
+            "repo_slug": ENV["OCTO_REPO_SLUG"],
+            "branch": STREAM["branch"],
+            "starting_head": ENV["OCTO_STARTING_HEAD"],
+            "resolver_root": ENV["OCTO_WORKTREE"],
+            "install_check": "clean",
+            "provisioned_at": "2026-07-21T00:00:00+00:00",
+        }
+        return LaneProvision(
+            record=record, record_path=Path(ENV["OCTO_PROVISION_RECORD"]), install_check_owner_route=None,
+        )
+
+    def test_stream_name_reaches_runner_as_parsed_json_never_raw_flag(self) -> None:
+        provision = self._provision()
+        calls = []
+
+        def runner(cwd, env, args):
+            calls.append((cwd, env, args))
+            return {"ok": True}
 
         stream_name = "gh8-workspace-admit"
+        output = launch_stream_lane(
+            stream_name, provision=provision, stream=STREAM, live_reads=LIVE_READS,
+            contract_hash=CONTRACT_HASH, shaping_journal=SHAPING_JOURNAL, runner=runner,
+        )
+        self.assertEqual({"ok": True}, output)
+        self.assertEqual(1, len(calls))
+        cwd, env, args = calls[0]
+        self.assertEqual(Path(ENV["OCTO_WORKTREE"]), cwd)
+        self.assertEqual(ENV, env)
+        self.assertIsInstance(args, dict)
+
+        # The runner never receives a raw '--stream <name>' string: a dict
+        # is not a string, and the string form is not even valid JSON.
+        self.assertNotIsInstance(args, str)
         raw_flag = f"--stream {stream_name}"
         with self.assertRaises(json.JSONDecodeError):
             json.loads(raw_flag)
-        self.assertNotEqual(raw_flag, serialized)
+        self.assertNotEqual(raw_flag, json.dumps(args))
+
+        # The built envelope still satisfies the real assertReadyEnvelope.
+        result = _run_node_assert_ready_envelope(args)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_empty_stream_name_fails_closed(self) -> None:
+        provision = self._provision()
+        with self.assertRaises(GateError):
+            launch_stream_lane(
+                "", provision=provision, stream=STREAM, live_reads=LIVE_READS,
+                contract_hash=CONTRACT_HASH, shaping_journal=SHAPING_JOURNAL,
+                runner=lambda cwd, env, args: None,
+            )
 
 
 if __name__ == "__main__":

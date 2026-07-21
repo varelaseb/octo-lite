@@ -5,11 +5,14 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
 from octo_lite.launch import (
     GateError,
+    LaneProvision,
     _prepare_worktree,
     default_install_check,
     lane_invocation_env,
@@ -88,6 +91,103 @@ class LaneProvisionTests(unittest.TestCase):
         self.assertEqual(self.head, _git(self.worktree, "rev-parse", "HEAD"))
         self.assertEqual(self.branch, _git(self.worktree, "branch", "--show-current"))
         self.assertEqual(self.lane, result.record["lane"])
+
+    # REG-1 (code-review finding 1, launch.py:694): an unsanitized lane must
+    # never control the record path. A traversal, nested, or absolute lane is
+    # rejected before any disk mutation, and never escapes .octo-provisions.
+    def test_lane_sanitization_rejects_path_injection(self) -> None:
+        escapees = [
+            ("../sibling-escape", self.worktree_root / "sibling-escape.json"),
+            ("a/nested", self.worktree_root / ".octo-provisions" / "a" / "nested.json"),
+            (str(self.base / "abs-escape"), self.base / "abs-escape.json"),
+            ("..", None),
+        ]
+        for index, (malicious_lane, escape_path) in enumerate(escapees):
+            target = self.worktree_root / f"target-{index}"
+            with self.assertRaises(GateError):
+                self.provision(lane=malicious_lane, worktree=target, branch=f"octo-lite/mal-{index}")
+            if escape_path is not None:
+                self.assertFalse(escape_path.exists(), f"lane {malicious_lane!r} escaped to {escape_path}")
+            self.assertFalse(target.exists(), f"lane {malicious_lane!r} still created a worktree")
+
+    # REG-2 (code-review finding 2, launch.py:590): a malformed or foreign
+    # record already present in the exclusivity scan must FAIL CLOSED, never
+    # be silently skipped.
+    def test_exclusivity_fails_closed_on_malformed_foreign_record(self) -> None:
+        records_dir = self.worktree_root / ".octo-provisions"
+        records_dir.mkdir(parents=True)
+        (records_dir / "other-lane.json").write_text("{not valid json")
+        with self.assertRaises(GateError):
+            self.provision()
+
+    # REG-3 (code-review finding 3, launch.py:696): a lane reservation lock
+    # must prevent concurrent same-lane requests for different worktree
+    # paths/branches from both proceeding: the second request must block
+    # until the first is fully finished, never race ahead concurrently.
+    def test_concurrent_same_lane_requests_are_serialized_by_a_reservation_lock(self) -> None:
+        release_first = threading.Event()
+        second_started = threading.Event()
+        results: dict[str, object] = {}
+
+        def blocking_first_install_check(repo):
+            release_first.wait(timeout=5)
+            return "clean"
+
+        def signal_second_install_check(repo):
+            second_started.set()
+            return "clean"
+
+        other_worktree = self.worktree_root / "lane-1-other"
+        other_branch = "octo-lite/lane-1-other"
+
+        def run_first():
+            try:
+                results["first"] = self.provision(install_check=blocking_first_install_check)
+            except GateError as error:
+                results["first"] = error
+
+        def run_second():
+            try:
+                results["second"] = self.provision(
+                    worktree=other_worktree, branch=other_branch,
+                    install_check=signal_second_install_check,
+                )
+            except GateError as error:
+                results["second"] = error
+
+        first_thread = threading.Thread(target=run_first)
+        first_thread.start()
+        # Give the first request time to reach its (blocked) reservation window.
+        time.sleep(0.2)
+
+        second_thread = threading.Thread(target=run_second)
+        second_thread.start()
+        # The second same-lane request must NOT be able to run concurrently
+        # with the still-in-flight first request.
+        second_ran_concurrently = second_started.wait(timeout=1)
+        release_first.set()
+        first_thread.join(timeout=5)
+        second_thread.join(timeout=5)
+
+        self.assertFalse(
+            second_ran_concurrently,
+            "second same-lane request proceeded concurrently with the first (no reservation lock)",
+        )
+        self.assertIsInstance(results["first"], LaneProvision)
+        self.assertIsInstance(results["second"], GateError)
+        self.assertTrue(self.worktree.exists())
+        self.assertFalse(other_worktree.exists())
+
+    # REG-4 (code-review finding 4, octo-control:959 + launch.py): the frozen
+    # `--starting-commit <ref>` must be RESOLVED to a full sha before it is
+    # compared to the worktree HEAD and recorded, so a branch name or
+    # abbreviated sha provisions correctly instead of creating an orphan
+    # worktree.
+    def test_starting_commit_ref_is_resolved_before_provisioning(self) -> None:
+        short_head = self.head[:10]
+        result = self.provision(head=short_head)
+        self.assertEqual(self.head, result.record["starting_head"])
+        self.assertEqual(self.head, _git(self.worktree, "rev-parse", "HEAD"))
 
     # RED-1b: characterizes the UNCHANGED existing worker-pass behavior; the
     # lane-provision path is a distinct new function, never a behavior change to
@@ -215,6 +315,28 @@ class LaneProvisionTests(unittest.TestCase):
         wrong_type = dict(result.record, schema_version="1")
         with self.assertRaises(GateError):
             validate_provision_record(wrong_type)
+
+    # REG-5 (code-review finding 5, launch.py:548): exact schema validation
+    # must reject a non-SHA starting_head and a date-only or timezone-less
+    # provisioned_at.
+    def test_record_schema_rejects_non_sha_starting_head_and_naive_provisioned_at(self) -> None:
+        result = self.provision()
+
+        non_sha_head = dict(result.record, starting_head="not-a-sha")
+        with self.assertRaises(GateError):
+            validate_provision_record(non_sha_head)
+
+        short_head = dict(result.record, starting_head=self.head[:10])
+        with self.assertRaises(GateError):
+            validate_provision_record(short_head)
+
+        date_only = dict(result.record, provisioned_at="2026-07-21")
+        with self.assertRaises(GateError):
+            validate_provision_record(date_only)
+
+        timezone_less = dict(result.record, provisioned_at="2026-07-21T00:00:00")
+        with self.assertRaises(GateError):
+            validate_provision_record(timezone_less)
 
     # RED-6
     def test_lane_invocation_env_seam_frozen(self) -> None:
