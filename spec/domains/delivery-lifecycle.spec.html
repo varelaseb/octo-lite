@@ -526,6 +526,19 @@
 <p data-anchor="prompt-tdd-lean" id="prompt-tdd-lean">Eval evidence stays a lean one-off scenario record; no eval service or general harness.</p>
 </section>
 
+<section data-anchor="delivery-tdd" id="delivery-tdd">
+<h2>Delivery TDD</h2>
+<p data-anchor="delivery-tdd-committed-red" id="delivery-tdd-committed-red">Code delivery TDD is distinct from prompt TDD, which stays prose only, because a code delivery pass produces durable commits an independent observer re-runs.</p>
+<p data-anchor="delivery-tdd-committed-red-commit" id="delivery-tdd-committed-red-commit">The implementer commits a real failing red, a new or changed test plus unchanged production, that genuinely fails the named test, as a durable commit on an isolated delivery branch.</p>
+<p data-anchor="delivery-tdd-committed-red-not-missing" id="delivery-tdd-committed-red-not-missing">A missing file, module, export, or script is not a valid red.</p>
+<p data-anchor="delivery-tdd-committed-green" id="delivery-tdd-committed-green">The implementer then commits the production change that makes the same named test pass, on the same isolated branch.</p>
+<p data-anchor="delivery-tdd-independent-observer" id="delivery-tdd-independent-observer">A separate Read-restricted observer, never the mutating worker, checks out and runs each committed state and confirms the red commit fails and the green commit passes the same scenario, and worker-authored red or green strings are never proof.</p>
+<p data-anchor="delivery-tdd-independent-observer-isolated" id="delivery-tdd-independent-observer-isolated">The observer checkout and run happen in an isolated worktree that never disturbs the worker branch, main, or the live repository working directory.</p>
+<p data-anchor="delivery-tdd-host-gated-push" id="delivery-tdd-host-gated-push">The mutating worker never pushes, and the host pushes the verified branch only after the independent observer confirmation, the acknowledgment echo, and a fresh pre-push readback, then confirms the pushed HEAD by a live remote read, <code>gh api</code> or <code>git ls-remote</code>, not a local tracking ref.</p>
+<p data-anchor="delivery-tdd-host-gated-push-reject" id="delivery-tdd-host-gated-push-reject">A rejection abandons the unpushed branch.</p>
+<p data-anchor="delivery-tdd-no-forgeable-attestation" id="delivery-tdd-no-forgeable-attestation">Only the observer re-run of the committed states is proof, and worker-controlled command or scenario strings are never interpolated into the observer's verdict so independence cannot be forged.</p>
+</section>
+
 <section data-anchor="diagram-delivery-loop" id="diagram-delivery-loop">
 <h2>Exact-head delivery loop</h2>
 <script type="application/spec+json" data-render="chart" data-lib="echarts">

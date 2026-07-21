@@ -779,6 +779,98 @@ class CutoverConformanceTests(unittest.TestCase):
         for leak in ("zero percent live traffic", "deployed to staging and therefore"):
             self.assertNotIn(leak, text)
 
+    def test_delivery_tdd_reshape_documents_committed_red_green_host_gated_push(self) -> None:
+        # TUR-447 reshape (ruling-50/51): code-delivery TDD is a NEW canonical section
+        # distinct from prompt-tdd (prose only). The implementer commits a real failing
+        # red then a green on an isolated branch and NEVER pushes; a Read-restricted
+        # observer re-runs each committed state in an ISOLATED worktree (ruling-51 note 1);
+        # the host gates the push after observation, echo, and readback, and confirms the
+        # pushed HEAD by a LIVE remote read (gh api / git ls-remote), not a local tracking
+        # ref (ruling-51 note 2). These are structural assertions over stable data-anchors
+        # plus the two load-bearing ruling-51 note phrases.
+        text = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
+        # The new delivery-tdd section exists and is distinct from prompt-tdd.
+        self.assertIn('data-anchor="delivery-tdd"', text)
+        self.assertIn('id="delivery-tdd"', text)
+        for anchor in (
+            "delivery-tdd-committed-red",
+            "delivery-tdd-committed-red-commit",
+            "delivery-tdd-committed-red-not-missing",
+            "delivery-tdd-committed-green",
+            "delivery-tdd-independent-observer",
+            "delivery-tdd-independent-observer-isolated",
+            "delivery-tdd-host-gated-push",
+            "delivery-tdd-host-gated-push-reject",
+            "delivery-tdd-no-forgeable-attestation",
+        ):
+            self.assertIn(f'data-anchor="{anchor}"', text, anchor)
+            self.assertIn(f'id="{anchor}"', text, anchor)
+        # The committed red is a durable commit on an isolated delivery branch, not an
+        # ephemeral tree; a missing file/module/export/script is not a valid red.
+        self.assertIn("durable commit on an isolated delivery branch", text)
+        self.assertIn("A missing file, module, export, or script is not a valid red.", text)
+        # ruling-51 note 1: the observer checkout+run happens in an ISOLATED worktree that
+        # never disturbs the worker branch, main, or the live repository working directory.
+        self.assertIn(
+            "isolated worktree that never disturbs the worker branch, main, or the live repository working directory",
+            text,
+        )
+        # ruling-51 note 2: the pushed HEAD is confirmed by a LIVE remote read (gh api or
+        # git ls-remote), not a local tracking ref.
+        self.assertIn("live remote read", text)
+        self.assertIn("gh api", text)
+        self.assertIn("git ls-remote", text)
+        self.assertIn("not a local tracking ref", text)
+        # The mutating worker never pushes; a rejection abandons the unpushed branch; the
+        # observer re-run is the only proof and worker strings are never interpolated.
+        self.assertIn("The mutating worker never pushes", text)
+        self.assertIn("A rejection abandons the unpushed branch.", text)
+        self.assertIn("so independence cannot be forged", text)
+        # No Markdown counterpart is generated for this spec-chat canonical document.
+        self.assertFalse((ROOT / "spec/domains/delivery-lifecycle.spec.md").exists())
+
+    def test_role_runtime_reconciles_worker_push_and_workspace_cleanup(self) -> None:
+        # TUR-447 reshape (ruling-50/51): the implementer worker commits red+green on an
+        # isolated branch and never pushes; the host gates the push after observation,
+        # echo, and readback. workspace-cleanup RECONCILES the prior contradiction:
+        # committed work on an isolated branch is NOT dirty; a rejected pass leaves its
+        # branch UNPUSHED (host-non-push) instead of a destructive reset; a genuinely
+        # dirty/diverged worktree still stops for inspection. clean-abort and reconcile
+        # anchors are PRESERVED, not deleted.
+        text = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
+        for anchor in (
+            "role-implementer-host-gated-push",
+            "launch-identity-delivery-branch",
+            "workspace-cleanup-committed-not-dirty",
+            "workspace-cleanup-rejected-unpushed",
+            "workspace-cleanup-dirty-still-stops",
+        ):
+            self.assertIn(f'data-anchor="{anchor}"', text, anchor)
+            self.assertIn(f'id="{anchor}"', text, anchor)
+        # The two prior cleanup anchors are PRESERVED, not deleted, so reconcile carries
+        # no contradiction.
+        for preserved in (
+            "workspace-cleanup-clean-abort",
+            "workspace-cleanup-reconcile",
+        ):
+            self.assertIn(f'data-anchor="{preserved}"', text, preserved)
+            self.assertIn(f'id="{preserved}"', text, preserved)
+        # Committed work on an isolated branch is not dirty and reset is the wrong tool;
+        # a rejected pass leaves its branch unpushed as the correct host-non-push abort.
+        self.assertIn("Committed work on an isolated branch is not dirty", text)
+        self.assertIn("reset is the wrong tool", text)
+        self.assertIn("host-non-push abort", text)
+        self.assertIn("rather than a destructive reset", text)
+        # A genuinely dirty or diverged worktree still stops for inspection.
+        self.assertIn(
+            "A genuinely dirty or diverged worktree still stops for inspection", text
+        )
+        # The implementer commits red+green on an isolated branch and never pushes; the
+        # host gates the push after observation, echo, and readback.
+        self.assertIn("commits the red and green on an isolated branch and never pushes", text)
+        # No Markdown counterpart is generated for this spec-chat canonical document.
+        self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
