@@ -653,6 +653,77 @@ class RolloutMessageBindsVerdictTests(unittest.TestCase):
                 self.assertIn(label, str(ctx.exception))
 
 
+# TUR-447 D3 cycle2 F5: the rollout-message binding was LEXICAL not EXACT. The
+# codex gate found two exploits against the anchored-but-loose checks:
+#   (a) issue check `if issue not in text` is SUBSTRING: a rollout that cleared
+#       TUR-10 (or TUR-4470) satisfies TUR-1 (or TUR-447).
+#   (b) verdict marker `re.search(r"\bclear\b")` matches a BLOCKING message that
+#       merely CONTAINS the word clear (e.g. "Not clear to proceed").
+# Additionally the PR token `(?:PR\s*|#)0*<pr>\b` back-boundary only, so a
+# genuine clear for THIS issue/head but for PR 60 could pass the PR check for
+# PR 6 via the missing FRONT boundary. Bind EXACT: whole-token issue, genuine
+# clear verdict assertion that rejects negated/blocking clear, and exact PR
+# token (delivery-lifecycle shaping-operator-approval-binding).
+class RolloutMessageBindsVerdictExactTests(unittest.TestCase):
+
+    def test_issue_substring_of_another_issue_is_rejected(self) -> None:
+        module = _load_module()
+        head = "c" * 40
+        # A real clear rollout for TUR-10 must NOT back a TUR-1 transition.
+        payload = f"SHAPING VERDICT clear for TUR-10 PR 7 at exact head {head}"
+        with self.assertRaises(module.GateError) as ctx:
+            module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+        self.assertIn("issue", str(ctx.exception))
+
+    def test_longer_issue_superstring_does_not_match_shorter_issue(self) -> None:
+        module = _load_module()
+        head = "c" * 40
+        # TUR-447 must NOT be satisfied by a rollout that cleared TUR-4470.
+        payload = f"SHAPING VERDICT clear for TUR-4470 PR 7 at exact head {head}"
+        with self.assertRaises(module.GateError) as ctx:
+            module._verify_rollout_message_binds_verdict(payload, issue="TUR-447", pr=7, head=head)
+        self.assertIn("issue", str(ctx.exception))
+
+    def test_blocking_message_containing_the_word_clear_is_rejected(self) -> None:
+        module = _load_module()
+        head = "c" * 40
+        # A BLOCKING verdict whose prose happens to contain the word "clear".
+        payload = f"SHAPING VERDICT blocking for TUR-1 PR 7 at exact head {head}: Not clear to proceed"
+        with self.assertRaises(module.GateError) as ctx:
+            module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+        self.assertIn("clear-verdict", str(ctx.exception))
+
+    def test_negated_clear_verdict_line_is_rejected(self) -> None:
+        module = _load_module()
+        head = "c" * 40
+        for phrase in ("not clear", "cannot clear", "unclear", "blocking"):
+            with self.subTest(phrase=phrase):
+                payload = (
+                    f"verdict: clear for TUR-1 PR 7 at exact head {head} -- however {phrase}"
+                )
+                with self.assertRaises(module.GateError) as ctx:
+                    module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=7, head=head)
+                self.assertIn("clear-verdict", str(ctx.exception))
+
+    def test_pr_token_front_boundary_rejects_superstring_pr(self) -> None:
+        module = _load_module()
+        head = "c" * 40
+        # A genuine clear for THIS issue/head but naming PR 60 must NOT satisfy
+        # PR 6 (and PR 16 must not either): the PR needs both boundaries.
+        for other_pr in ("60", "16"):
+            with self.subTest(pr=other_pr):
+                payload = f"verdict: clear for TUR-1 PR {other_pr} at exact head {head}"
+                with self.assertRaises(module.GateError) as ctx:
+                    module._verify_rollout_message_binds_verdict(payload, issue="TUR-1", pr=6, head=head)
+                self.assertIn("pr", str(ctx.exception))
+
+    def test_genuine_clear_for_exact_issue_pr_head_is_accepted(self) -> None:
+        module = _load_module()
+        head = "c" * 40
+        payload = f"verdict: clear for TUR-6 PR 6 at exact head {head}"
+        module._verify_rollout_message_binds_verdict(payload, issue="TUR-6", pr=6, head=head)
+
+
 class VerdictPublishRepoSlugTests(unittest.TestCase):
     # Fix 4: verdict-publish uses --repo-slug for gh pr view / gh api (like
     # linear-transition) and keeps --repo as the local git path, closing the

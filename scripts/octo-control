@@ -300,15 +300,46 @@ def _verify_rollout_message_binds_verdict(payload: str, *, issue: str, pr: int, 
     # rollout message must name the issue, the PR (`PR <n>` / `#<n>`), the exact
     # 40-hex HEAD, and a clear-verdict marker; a mis-provisioned pipeline that
     # pointed at an unrelated rollout is rejected fail-closed.
+    #
+    # D3 cycle2 (F5): the shaping-reviewer final message is PROSE (roles/
+    # shaping-reviewer.md: "one exact-revision clear or blocking PR verdict
+    # artifact"), not structured JSON, so this scans anchored lexically. But the
+    # binding must be EXACT, not merely lexical:
+    #   - issue: whole-token match, else `TUR-10` (or `TUR-4470`) backs `TUR-1`
+    #     (or `TUR-447`) via substring, and `PR 60` backs `PR 6`.
+    #   - verdict: a GENUINE clear assertion; a blocking message or negated clear
+    #     (`not clear`, `cannot clear`, `unclear`, `blocking`) is rejected, since
+    #     a bare `\bclear\b` matches "Not clear to proceed".
     text = payload if isinstance(payload, str) else ""
     missing: list[str] = []
-    if issue not in text:
+    # Whole-token identifier: no alphanumeric or hyphen adjacent, so TUR-1 does
+    # not match TUR-10 and TUR-447 does not match TUR-4470.
+    if not re.search(
+        rf"(?<![A-Za-z0-9-]){re.escape(issue)}(?![A-Za-z0-9-])", text
+    ):
         missing.append("issue")
-    if not re.search(rf"(?:PR\s*|#)0*{pr}\b", text):
+    # Exact PR token: the `PR `/`#` prefix anchors the front and the trailing
+    # `(?![0-9])` anchors the back, so PR 6 does not match PR 60 or PR 16.
+    if not re.search(rf"(?:PR\s*|#)0*{pr}(?![0-9])", text):
         missing.append("pr")
     if head not in text:
         missing.append("head")
-    if not re.search(r"\bclear\b", text, re.IGNORECASE):
+    # Genuine clear verdict: an explicit clear assertion AND no blocking/negated
+    # -clear marker. A blocking message that merely contains the word clear (e.g.
+    # "Not clear to proceed") is rejected fail-closed.
+    blocking = re.search(
+        r"\b(?:blocking|blocked|unclear|not\s+clear|cannot\s+clear|can't\s+clear|"
+        r"no[nt]-?\s*clear)\b",
+        text,
+        re.IGNORECASE,
+    )
+    genuine_clear = re.search(
+        r"(?:^|(?<![A-Za-z]))(?:verdict\s*[:=]\s*clear|VERDICT\s+clear)"
+        r"(?![A-Za-z])",
+        text,
+        re.IGNORECASE,
+    )
+    if blocking is not None or genuine_clear is None:
         missing.append("clear-verdict")
     if missing:
         raise GateError(
