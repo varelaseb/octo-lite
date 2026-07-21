@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import uuid
 from pathlib import Path
@@ -165,6 +166,51 @@ def declared_stream_facts(stream_dir: Path) -> dict:
     return facts
 
 
+def stream_liveness(stream_dir: Path, queue_dir: Path, *, idle_seconds: int, now: float | None = None) -> dict:
+    """Per-stream liveness per sweep-stream-liveness and sweep-suspected-stuck
+    (ruling-19): status age, pane activity, wait owner with the verbatim open
+    operator ask, in-flight workflow ids, undelivered queue, classification."""
+    current = time.time() if now is None else now
+    status = stream_dir / "status.md"
+    status_age = current - status.stat().st_mtime if status.is_file() else None
+    pane_file = stream_dir / "pane-activity.txt"
+    pane_activity = (
+        f"{int(current - pane_file.stat().st_mtime)}s" if pane_file.is_file() else "unknown"
+    )
+    wait_owner, open_ask = "", ""
+    waiting_path = stream_dir / "waiting.toml"
+    if waiting_path.is_file():
+        waiting = load_toml(waiting_path)
+        wait_owner = str(waiting.get("owner") or "")
+        open_ask = str(waiting.get("ask") or "")
+    inflight: list[str] = []
+    inflight_path = stream_dir / "inflight.toml"
+    if inflight_path.is_file():
+        raw = load_toml(inflight_path).get("workflows")
+        inflight = [str(item) for item in raw] if isinstance(raw, list) else []
+    undelivered = (
+        sorted(path.name for path in queue_dir.glob(f"*{stream_dir.name}*"))
+        if queue_dir.is_dir()
+        else []
+    )
+    idle = status_age is None or status_age > idle_seconds
+    if wait_owner:
+        classification = "waiting"
+    elif idle:
+        classification = "suspected-stuck"
+    else:
+        classification = "active"
+    return {
+        "status_age_seconds": status_age,
+        "pane_activity": pane_activity,
+        "wait_owner": wait_owner,
+        "open_ask": open_ask,
+        "inflight_workflows": inflight,
+        "undelivered_queue": undelivered,
+        "classification": classification,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compact operator reconciliation sweep")
     parser.add_argument("--control-dir", type=Path, required=True)
@@ -195,6 +241,13 @@ def main() -> int:
     spec_blobs, adr_blobs = canonical_blobs(repo, head)
 
     facts = {"owner_route": owner_route, "control_head": head, "canonical": {"spec_blobs": spec_blobs, "adr_blobs": adr_blobs}}
+    queue_dir = control / "herdr-queue"
+    liveness = {
+        stream_dir.name: stream_liveness(stream_dir, queue_dir, idle_seconds=3600)
+        for stream_dir in stream_dirs
+    }
+    if liveness:
+        facts["stream_liveness"] = liveness
     streams = []
     for stream_dir in stream_dirs:
         stream_facts = declared_stream_facts(stream_dir)
@@ -209,8 +262,12 @@ def main() -> int:
             streams.append(entry)
     normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
 
+    liveness_lines = "\n".join(
+        f"- {name}: {json.dumps(entry, sort_keys=True)}" for name, entry in sorted(liveness.items())
+    )
     snapshot = (
         "# Stream snapshot\n\n" + "\n".join(parts)
+        + "\n## Stream liveness\n\n" + (liveness_lines + "\n" if liveness_lines else "")
         + "\n## Declared facts\n\n" + normalized_facts + "\n"
     )
     fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()

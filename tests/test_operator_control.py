@@ -2198,3 +2198,52 @@ class OperatorControlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SweepStreamLivenessTests(unittest.TestCase):
+    # sweep-stream-liveness and sweep-suspected-stuck (ruling-19): the sweep
+    # reports per-stream status age, pane activity, wait owner with the verbatim
+    # open operator ask, in-flight workflow ids, and the undelivered queue, and
+    # classifies idle-without-wait-owner as suspected-stuck.
+    def test_stream_liveness_reports_wait_owner_verbatim_ask_and_suspected_stuck(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            queue = base / "herdr-queue"
+            queue.mkdir()
+
+            waiting = base / "streams" / "tur-1"
+            waiting.mkdir(parents=True)
+            (waiting / "status.md").write_text("# s\n")
+            os.utime(waiting / "status.md", (now - 7200, now - 7200))
+            (waiting / "waiting.toml").write_text(
+                'owner = "operator"\nask = "Please approve the suite at the served pages."\n'
+            )
+            (waiting / "inflight.toml").write_text('workflows = ["wf_abc123-def"]\n')
+            (queue / "20260720T000001-tur-1.json").write_text("{}")
+
+            stuck = base / "streams" / "tur-2"
+            stuck.mkdir(parents=True)
+            (stuck / "status.md").write_text("# s\n")
+            os.utime(stuck / "status.md", (now - 7200, now - 7200))
+
+            live_waiting = module.stream_liveness(waiting, queue, idle_seconds=3600, now=now)
+            self.assertEqual("waiting", live_waiting["classification"])
+            self.assertEqual("operator", live_waiting["wait_owner"])
+            self.assertEqual(
+                "Please approve the suite at the served pages.", live_waiting["open_ask"]
+            )
+            self.assertEqual(["wf_abc123-def"], live_waiting["inflight_workflows"])
+            self.assertEqual(["20260720T000001-tur-1.json"], live_waiting["undelivered_queue"])
+            self.assertEqual(7200, int(live_waiting["status_age_seconds"]))
+            self.assertIn("pane_activity", live_waiting)
+
+            live_stuck = module.stream_liveness(stuck, queue, idle_seconds=3600, now=now)
+            self.assertEqual("suspected-stuck", live_stuck["classification"])
+            self.assertEqual("", live_stuck["wait_owner"])
+            self.assertEqual([], live_stuck["undelivered_queue"])
+
+    def test_snapshot_includes_the_stream_liveness_section(self) -> None:
+        source = SWEEP.read_text()
+        self.assertIn("## Stream liveness", source)

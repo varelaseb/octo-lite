@@ -956,6 +956,8 @@
 <p data-anchor="supervision-compaction" id="supervision-compaction">Status compacts upward one parent at a time, and leaf workers do not all message Fable.</p>
 <p data-anchor="supervision-timer" id="supervision-timer">One session-durable host timer invokes <code>operator-say sweep</code> throughout the operator lifecycle, including idle periods.</p>
 <p data-anchor="supervision-sweep" id="supervision-sweep">A wake runs deterministic exact checks and may spawn one fresh Sonnet reconciler over the compact normalized snapshot.</p>
+<p data-anchor="sweep-stream-liveness" id="sweep-stream-liveness">The sweep reports per stream: <code>status.md</code> age, pane activity, waiting-on-whom with the verbatim open operator ask, in-flight workflow ids, and the undelivered message queue.</p>
+<p data-anchor="sweep-suspected-stuck" id="sweep-suspected-stuck">An idle stream without a recorded wait-owner is classified <code>suspected-stuck</code>; a recorded wait-owner classifies it <code>waiting</code>, and fresh activity classifies it <code>active</code>.</p>
 <p data-anchor="supervision-noop" id="supervision-noop">A wake with no delta is a cheap no-op and does not remove the timer.</p>
 <p data-anchor="supervision-direct" id="supervision-direct">The human may converse directly with an orchestrator, and stream-local rulings apply after durable status capture while cross-stream effects wait for Fable reconciliation.</p>
 </section>
