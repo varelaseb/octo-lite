@@ -87,10 +87,12 @@ Do not create extra workflow labels unless the operator explicitly asks.
 
 ## Merge And Linear Sync
 
-- Merge to the main branch is a human acceptance carve-out; the agent never
-  merges. But once a merge lands, its tracked issue owes the `In Staging`
-  transition: the merge is not complete until Linear reflects that the
-  merge-sha is genuinely an ancestor of the deployed main branch.
+- Merge to the main branch is an operator carve-out gated on explicit human
+  acceptance and instruction. The operator agent executes the merge. No worker
+  merges, no agent decides acceptance, and no agent merges unaccepted work.
+  Once a merge lands, its tracked issue owes the `In Staging` transition: the
+  merge is not complete until Linear reflects that the merge-sha is genuinely
+  an ancestor of the deployed main branch.
 - Do not rely on a human remembering that move. Where the target repo provides
   a post-merge hook that records `In Staging` from the merge-sha reality check,
   that hook is the enforcement; state the expectation, let the hook fire it, and

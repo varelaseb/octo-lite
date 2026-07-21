@@ -37,7 +37,9 @@ source or fix link.
   operator vetoes by rollback. Lawful stops: operator-held access, legally
   binding irreversible actions without rollback, and the two human-gated
   carve-outs, actual acceptance of delivered work and live traffic shifts.
-  No agent infers human acceptance, approves as the human, or merges.
+  No agent infers, self-authorizes, or decides acceptance or a traffic shift,
+  and no agent merges unaccepted work. On explicit human instruction, the
+  operator agent executes the acceptance record, merge, or traffic shift.
 
 ## Artifacts
 
