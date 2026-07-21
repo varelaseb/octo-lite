@@ -107,5 +107,7 @@ Do not create extra workflow labels unless the operator explicitly asks.
 - Do not create workflow labels beyond `octo-lite:ready` in GitHub-first work
   unless the operator explicitly asks.
 - Do not create extra PRs for the same issue.
-- Do not merge.
-- Do not approve as the human reviewer.
+- No worker or reviewer role merges or approves as the human reviewer.
+- Only the operator or meta-operator agent executes a merge, and only on
+  explicit human acceptance and instruction, per Merge And Linear Sync above;
+  no agent merges unaccepted work or decides acceptance itself.
