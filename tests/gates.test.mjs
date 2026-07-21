@@ -8,8 +8,11 @@ import {
   assertReviewWorktreeImmutable,
   assertAdmission,
   acceptQaReview,
-  acceptImplementation,
-  assertObservedRed,
+  assertCommittedImplementation,
+  assertBoundTest,
+  assertHostJournalledCommits,
+  assertObservedCommittedStates,
+  assertLiveRemotePushReadback,
   INDEPENDENT_OBSERVER_SOURCE,
   acceptPublication,
   assertContainment,
@@ -151,154 +154,145 @@ test('ready envelope rejects wrong lifecycle and incomplete bindings', () => {
   )
 })
 
-// TUR-447 cycle2 pass1 host-gated push + TDD independent observation. The red carries a captured
-// evidence artifact bound to the UNCHANGED starting HEAD ('abc'); the green runs the SAME scenario
-// also at the unchanged starting HEAD (the worker did not commit); the worker reports committed
-// false and pushed false. The host commits/pushes afterward.
+// TUR-447 D1 reshaped delivery loop. The implementer COMMITS a real failing red then a green on an
+// isolated delivery branch and NEVER pushes; the committed result carries distinct red/green/final
+// commit ids and the bound test by path+content digest. The independent tdd-observer replay of the
+// committed states, consumed separately, is the sole proof.
+const START = 'abc'
+const RED = 'red111'
+const GREEN = 'grn222'
+const FINAL = 'fin333'
+const CMD = 'python3 -m unittest tests.test_launch'
+const BTEST = { path: 'tests/test_launch.py', digest: 'sha256:bt' }
+
 function proof(overrides = {}) {
   return {
-    command: 'python3 -m unittest tests.test_launch',
-    exit_status: 1,
-    outcome: 'ModuleNotFoundError: no module named octo_lite.launch',
-    artifact: 'https://example.test/pr/1#issuecomment-1',
-    head: 'abc',
-    scenario: 'delivery-entry-gate',
-    evidence: { captured_output: 'FAILED (errors=1)', exit_status: 1, head: 'abc' },
+    command: CMD, exit_status: 1, outcome: 'FAILED (errors=1)',
+    artifact: 'https://example.test/pr/1#issuecomment-1', head: RED, scenario: 'delivery-entry-gate',
     ...overrides,
   }
 }
 
 function greenProof(overrides = {}) {
   return {
-    command: 'python3 -m unittest tests.test_launch',
-    exit_status: 0, outcome: 'OK', artifact: 'https://example.test/pr/1#issuecomment-2',
-    head: 'abc', scenario: 'delivery-entry-gate', ...overrides,
+    command: CMD, exit_status: 0, outcome: 'OK', artifact: 'https://example.test/pr/1#issuecomment-2',
+    head: FINAL, scenario: 'delivery-entry-gate', ...overrides,
   }
 }
 
 function implFixture(overrides = {}) {
   return {
-    head: 'abc', validation: 'suite', blocked: false, committed: false, pushed: false,
-    red: proof(), green: greenProof(), ...overrides,
-  }
-}
-
-// TUR-447 cycle2 pass1b: the INDEPENDENT read-only observer's result. Distinct from the mutating
-// worker (source stamped independent-tdd-observer, observed_by not the worker); it re-ran the same
-// scenario and saw it fail at the starting HEAD and pass at the mutated tree.
-function observationFixture(overrides = {}) {
-  return {
-    source: INDEPENDENT_OBSERVER_SOURCE, observed_by: 'observer-1', mutating_worker: 'implementer-1',
-    scenario: 'delivery-entry-gate', starting_head: 'abc',
-    red_exit_at_starting_head: 1, red_output: 'FAILED (errors=1)',
-    green_exit_at_mutated_tree: 0, green_output: 'OK',
+    head: FINAL, validation: 'suite', blocked: false, committed: true, pushed: false,
+    red: proof(), green: greenProof(),
+    red_commit: RED, green_commit: GREEN, final_commit: FINAL, bound_test: { ...BTEST },
     ...overrides,
   }
 }
 
-test('implementation requires TDD evidence, validation, and host-gated push (no worker commit)', () => {
+function bindingFixture(overrides = {}) {
+  return {
+    branch: 'octo-lite/tur-443-operating-model',
+    red_commit: RED, green_commit: GREEN, final_commit: FINAL, command: CMD, ...overrides,
+  }
+}
+
+// The INDEPENDENT tdd-observer replay of the committed states. Distinct from the mutating worker
+// (source stamped independent-tdd-observer, observed_by not the worker); it checked out each
+// host-journalled commit and the final HEAD in an isolated worktree, ran the host-sourced command,
+// and saw red fail, green pass, final HEAD pass, with the bound test unchanged at each.
+function observationFixture(overrides = {}) {
+  return {
+    source: INDEPENDENT_OBSERVER_SOURCE, observed_by: 'observer-1', mutating_worker: 'implementer-1',
+    isolated_worktree: '/root/octo-lite-observer-wt', command: CMD,
+    red_commit: RED, red_exit: 1, red_output: 'FAILED (errors=1)', red_test: { ...BTEST },
+    green_commit: GREEN, green_exit: 0, green_output: 'OK', green_test: { ...BTEST },
+    final_commit: FINAL, final_exit: 0, final_output: 'OK', final_test: { ...BTEST },
+    ...overrides,
+  }
+}
+
+test('assertCommittedImplementation requires a committed unpushed red then green on the isolated branch', () => {
   const result = implFixture()
-  const obs = observationFixture()
-  assert.deepEqual(acceptImplementation('abc', result, true, obs), result)
-  assert.throws(() => acceptImplementation('abc', { ...result, red: null }, true, obs), /red/)
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ command: '' }) }, true, obs),
-    /red/,
-  )
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ exit_status: 0 }) }, true, obs),
-    /red must fail/,
-  )
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, green: greenProof({ exit_status: 1 }) }, true, obs),
-    /green must pass/,
-  )
-  // Host-gated push: a worker that committed or pushed is rejected.
-  assert.throws(() => acceptImplementation('abc', { ...result, committed: true }, true, obs), /worker must not commit/)
-  assert.throws(() => acceptImplementation('abc', { ...result, pushed: true }, true, obs), /worker must not push/)
-  // A worker head that already moved off the starting HEAD (a committed HEAD) is rejected.
-  assert.throws(() => acceptImplementation('abc', { ...result, head: 'def' }, true, obs), /unchanged starting HEAD/)
-  assert.throws(() => acceptImplementation('abc', { ...result, blocked: true }, true, obs), /blocked/)
+  const accepted = assertCommittedImplementation(START, result)
+  assert.deepEqual(accepted, { redCommit: RED, greenCommit: GREEN, finalCommit: FINAL, boundTest: BTEST })
+  // A worker that did not commit is rejected.
+  assert.throws(() => assertCommittedImplementation(START, { ...result, committed: false }), /must commit the red then green/)
+  // A worker that pushed is rejected.
+  assert.throws(() => assertCommittedImplementation(START, { ...result, pushed: true }), /must not push/)
+  // Red and green must be distinct commits.
+  assert.throws(() => assertCommittedImplementation(START, { ...result, green_commit: RED }), /distinct commits/)
+  // The red commit must move off the unchanged starting HEAD.
+  assert.throws(() => assertCommittedImplementation(START, { ...result, red_commit: START }), /move off the unchanged starting HEAD/)
+  // The red must fail and the green must pass the named test.
+  assert.throws(() => assertCommittedImplementation(START, { ...result, red: proof({ exit_status: 0 }) }), /red must fail the named test/)
+  assert.throws(() => assertCommittedImplementation(START, { ...result, green: greenProof({ exit_status: 1 }) }), /green must pass the same named test/)
+  // Green and red must prove the same scenario.
+  assert.throws(() => assertCommittedImplementation(START, { ...result, green: greenProof({ scenario: 'other' }) }), /same scenario as red/)
+  // A blocked result is rejected.
+  assert.throws(() => assertCommittedImplementation(START, { ...result, blocked: true }), /blocked/)
 })
 
-test('TDD gate requires a captured red evidence artifact bound to the starting HEAD', () => {
-  const result = implFixture()
-  const obs = observationFixture()
-  // A proof missing head or scenario is rejected at assertProof.
-  assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ head: '' }) }, true, obs), /HEAD/)
-  assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ scenario: '' }) }, true, obs), /scenario/)
-  // A red with NO evidence artifact is rejected.
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ evidence: undefined }) }, true, obs),
-    /red evidence artifact required/,
-  )
-  // An evidence artifact bound to a DIFFERENT head (not the unchanged starting HEAD) is rejected.
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ evidence: { captured_output: 'x', exit_status: 1, head: 'def' } }) }, true, obs),
-    /red evidence must be bound to the unchanged starting HEAD/,
-  )
-  // An evidence exit status disagreeing with the reported red exit is rejected.
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ evidence: { captured_output: 'x', exit_status: 0, head: 'abc' } }) }, true, obs),
-    /red evidence must record a genuinely failing run|red evidence exit status must match/,
-  )
-  // A green whose scenario differs from red is rejected: not the same behavior. The observation
-  // matches the red scenario so the rejection is the green/red mismatch.
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, green: greenProof({ scenario: 'other' }) }, true, observationFixture({ scenario: 'delivery-entry-gate' })),
-    /green must prove the same scenario as red/,
-  )
-  // A green that did not run at the unchanged starting HEAD is rejected under host-gated push.
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, green: greenProof({ head: 'def' }) }, true, obs),
-    /green must run at the unchanged starting HEAD/,
-  )
+test('assertBoundTest binds the failing test by path AND content digest', () => {
+  assert.deepEqual(assertBoundTest(BTEST), { path: BTEST.path, digest: BTEST.digest })
+  assert.throws(() => assertBoundTest({ path: 'p' }), /content digest/)
+  assert.throws(() => assertBoundTest({ digest: 'd' }), /path/)
 })
 
-test('TDD gate binds the red-green chronology to an INDEPENDENT observer, not the worker evidence', () => {
-  const result = implFixture()
-  // A worker result with flawless self-authored evidence but NO independent observation is rejected:
-  // the chronology must come from a separate observer. This fails closed if the observer is dropped.
-  assert.throws(() => acceptImplementation('abc', result, true, undefined), /independent TDD observation/)
-  // An observation the worker forged (source not the independent observer) is rejected.
-  assert.throws(
-    () => acceptImplementation('abc', result, true, observationFixture({ source: 'implementer-1' })),
-    /not from the independent read-only observer/,
+test('assertHostJournalledCommits binds the host journal to the accepted committed ids and host-sourced command', () => {
+  const accepted = { redCommit: RED, greenCommit: GREEN, finalCommit: FINAL, boundTest: BTEST }
+  const branch = 'octo-lite/tur-443-operating-model'
+  assert.deepEqual(
+    assertHostJournalledCommits(bindingFixture(), accepted, CMD, branch),
+    { red_commit: RED, green_commit: GREEN, final_commit: FINAL, command: CMD, branch },
   )
+  // A journalled commit differing from the accepted committed id is rejected (worker-claimed id never enters).
+  assert.throws(() => assertHostJournalledCommits(bindingFixture({ red_commit: 'other' }), accepted, CMD, branch), /journalled red commit differs/)
+  // A worker-authored command differing from the host-sourced command is rejected.
+  assert.throws(() => assertHostJournalledCommits(bindingFixture({ command: 'bad' }), accepted, CMD, branch), /journalled command differs/)
+  // A journalled branch differing from the committed delivery branch is rejected.
+  assert.throws(() => assertHostJournalledCommits(bindingFixture({ branch: 'other' }), accepted, CMD, branch), /journalled branch differs/)
+})
+
+test('assertObservedCommittedStates consumes the observer replay, not any worker string', () => {
+  const journalled = { red_commit: RED, green_commit: GREEN, final_commit: FINAL, command: CMD, branch: 'b' }
+  assert.deepEqual(assertObservedCommittedStates(observationFixture(), journalled, BTEST), observationFixture())
+  // No observation is rejected.
+  assert.throws(() => assertObservedCommittedStates(undefined, journalled, BTEST), /independent observer replay/)
+  // A forged observation (source not the independent observer) is rejected.
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ source: 'implementer-1' }), journalled, BTEST), /not from the independent tdd-observer/)
   // The observer cannot be the mutating worker.
-  assert.throws(
-    () => acceptImplementation('abc', result, true, observationFixture({ observed_by: 'implementer-1' })),
-    /the observer cannot be the mutating worker/,
-  )
-  // The observer must have re-run the red at the UNCHANGED starting HEAD and seen it FAIL.
-  assert.throws(
-    () => acceptImplementation('abc', result, true, observationFixture({ starting_head: 'def' })),
-    /observer did not run the red at the unchanged starting HEAD/,
-  )
-  assert.throws(
-    () => acceptImplementation('abc', result, true, observationFixture({ red_exit_at_starting_head: 0 })),
-    /observer did not see the red FAIL at the starting HEAD/,
-  )
-  // The observer must have re-run the SAME scenario at the mutated tree and seen it PASS.
-  assert.throws(
-    () => acceptImplementation('abc', result, true, observationFixture({ green_exit_at_mutated_tree: 1 })),
-    /observer did not see the scenario PASS at the mutated tree/,
-  )
-  assert.throws(
-    () => acceptImplementation('abc', result, true, observationFixture({ scenario: 'other-scenario' })),
-    /observed scenario differs from the reported red scenario/,
-  )
-  // A genuine independent observation with a matching worker chronology is accepted.
-  assert.deepEqual(acceptImplementation('abc', result, true, observationFixture()), result)
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ observed_by: 'implementer-1' }), journalled, BTEST), /the observer cannot be the mutating worker/)
+  // The replay must run in an isolated worktree.
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ isolated_worktree: '' }), journalled, BTEST), /isolated worktree/)
+  // The observer must check out EXACTLY the host-journalled commits.
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ red_commit: 'wrong' }), journalled, BTEST), /red commit checked out is not the host-journalled/)
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ green_commit: 'wrong' }), journalled, BTEST), /green commit checked out is not the host-journalled/)
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ final_commit: 'wrong' }), journalled, BTEST), /final HEAD checked out is not the host-journalled/)
+  // The observer must run the host-sourced command.
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ command: 'worker-cmd' }), journalled, BTEST), /command run is not the host-sourced/)
+  // Red fail, green pass, final green.
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ red_exit: 0 }), journalled, BTEST), /red commit did not fail/)
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ green_exit: 1 }), journalled, BTEST), /green commit did not pass/)
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ final_exit: 1 }), journalled, BTEST), /final pushed HEAD is not green/)
+  // Bound-test identity present unchanged by path AND digest at each committed state.
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ green_test: { path: BTEST.path, digest: 'weak' } }), journalled, BTEST), /content digest differs at the green commit/)
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ final_test: { path: 'other', digest: BTEST.digest } }), journalled, BTEST), /path absent or changed at the final commit/)
+  assert.throws(() => assertObservedCommittedStates(observationFixture({ red_test: { path: 'other', digest: BTEST.digest } }), journalled, BTEST), /path absent or changed at the red commit/)
 })
 
-test('assertObservedRed rejects a worker-forged or incomplete observation and accepts a genuine one', () => {
-  const red = proof()
-  assert.throws(() => assertObservedRed(undefined, red, 'abc'), /independent TDD observation/)
-  assert.throws(() => assertObservedRed(observationFixture({ source: 'relay' }), red, 'abc'), /not from the independent/)
-  assert.throws(() => assertObservedRed(observationFixture({ red_output: '' }), red, 'abc'), /observed red output/)
-  assert.throws(() => assertObservedRed(observationFixture({ green_output: '' }), red, 'abc'), /observed green output/)
-  assert.deepEqual(assertObservedRed(observationFixture(), red, 'abc'), observationFixture())
+test('assertLiveRemotePushReadback requires a live remote read (gh api or git ls-remote), not a local tracking ref', () => {
+  assert.deepEqual(
+    assertLiveRemotePushReadback({ remote_head: FINAL, remote_source: 'gh-api' }, FINAL),
+    { remote_head: FINAL, remote_source: 'gh-api' },
+  )
+  assert.deepEqual(
+    assertLiveRemotePushReadback({ remote_head: FINAL, remote_source: 'git-ls-remote' }, FINAL),
+    { remote_head: FINAL, remote_source: 'git-ls-remote' },
+  )
+  // A local tracking ref source is rejected.
+  assert.throws(() => assertLiveRemotePushReadback({ remote_head: FINAL, remote_source: 'local-tracking-ref' }, FINAL), /must be confirmed by a live remote read/)
+  // A remote head differing from the expected final HEAD is rejected.
+  assert.throws(() => assertLiveRemotePushReadback({ remote_head: 'other', remote_source: 'gh-api' }, FINAL), /does not match the expected pushed final HEAD/)
 })
 
 const PR = 'https://example.test/pr/1'

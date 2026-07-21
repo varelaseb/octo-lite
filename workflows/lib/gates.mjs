@@ -419,150 +419,175 @@ function assertProof(proof, label) {
   return proof
 }
 
-// TUR-447 cycle2 pass1 TDD independent-observation fix (delivery-lifecycle prompt-tdd-red,
-// prompt-tdd-no-fabrication; and the spec-derived red-green-refactor contract). The prior gate
-// compared only worker-supplied red.head/scenario STRINGS, so a fabricated proof with no genuine
-// failing run was accepted. The red must now carry a captured EVIDENCE ARTIFACT: the actual
-// failing test output the worker observed, the exit status that run produced, and the exact HEAD
-// it ran at. The host validates that artifact (non-empty captured output, a genuinely failing
-// exit that MATCHES the reported red exit, and an evidence HEAD equal to the unchanged starting
-// HEAD) rather than trusting bare strings. A red with no genuine artifact bound to the starting
-// HEAD is REJECTED. This is the workflow-layer stand-in for re-running the target's suite: the
-// gate requires and validates the observed artifact, it does not accept a proof-shaped object.
-function assertRedEvidenceArtifact(red, expectedHead) {
-  const evidence = red.evidence
-  if (typeof evidence !== 'object' || evidence === null) {
-    throw new Error('red evidence artifact required: capture the failing test output at the starting HEAD')
-  }
-  requiredNonEmptyString(evidence.captured_output, 'red evidence captured output')
-  if (!Number.isInteger(evidence.exit_status)) {
-    throw new Error('red evidence exit status required')
-  }
-  if (evidence.exit_status === 0) {
-    throw new Error('red evidence must record a genuinely failing run (nonzero exit)')
-  }
-  if (evidence.exit_status !== red.exit_status) {
-    throw new Error('red evidence exit status must match the reported red exit status')
-  }
-  requiredNonEmptyString(evidence.head, 'red evidence HEAD')
-  if (evidence.head !== expectedHead) {
-    throw new Error('red evidence must be bound to the unchanged starting HEAD')
-  }
-  return evidence
-}
-
-// TUR-447 cycle2 pass1b TDD independent-observer fix (delivery-lifecycle prompt-tdd-red,
-// prompt-tdd-green, prompt-tdd-no-fabrication; and the spec-derived red-green-refactor contract).
-// The prior gate consumed only the MUTATING WORKER's own red evidence: a worker-authored
-// {captured_output, exit_status, head, scenario} object with no corroborating result passed, so a
-// fabricated red chronology could authorize the host push. This gate consumes a SEPARATE read-only
-// OBSERVER's result instead of the worker's evidence. The observer is a DISTINCT subagent from the
-// mutating worker (source stamped, and its identity must not be the worker) that INDEPENDENTLY
-// re-ran the worker's claimed red scenario: it confirmed the scenario FAILS at the unchanged
-// starting HEAD (a separate checkout of the starting HEAD, red_exit nonzero) and PASSES at the
-// worker's mutated tree (green_exit zero), for the SAME scenario the worker reported. A
-// worker-supplied evidence object with no independent observer result is rejected; an observation
-// stamped by the worker (source not the independent observer) is rejected; a red the observer did
-// not see fail at the starting HEAD, or a green it did not see pass at the mutated tree, is
-// rejected. The host consumes THIS result, not result.red.evidence.
-export const INDEPENDENT_OBSERVER_SOURCE = 'independent-tdd-observer'
-
-export function assertObservedRed(observation, expectedRed, expectedHead) {
-  required(observation, 'independent TDD observation')
-  // Provenance: the observation must be stamped by the independent read-only observer, never the
-  // mutating worker. A worker-authored (or unstamped) observation fails closed here.
-  if (observation.source !== INDEPENDENT_OBSERVER_SOURCE) {
-    throw new Error('TDD observation rejected: not from the independent read-only observer')
-  }
-  // The observer must have exercised the SAME scenario the worker reported red/green for.
-  requiredNonEmptyString(observation.scenario, 'observed scenario')
-  if (observation.scenario !== expectedRed.scenario) {
-    throw new Error('TDD observation rejected: observed scenario differs from the reported red scenario')
-  }
-  // The observer independently RE-RAN the red at the unchanged starting HEAD and saw it FAIL.
-  requiredNonEmptyString(observation.starting_head, 'observed starting HEAD')
-  if (observation.starting_head !== expectedHead) {
-    throw new Error('TDD observation rejected: observer did not run the red at the unchanged starting HEAD')
-  }
-  if (!Number.isInteger(observation.red_exit_at_starting_head)) {
-    throw new Error('TDD observation rejected: observed red exit status required')
-  }
-  if (observation.red_exit_at_starting_head === 0) {
-    throw new Error('TDD observation rejected: observer did not see the red FAIL at the starting HEAD')
-  }
-  requiredNonEmptyString(observation.red_output, 'observed red output')
-  // The observer independently RE-RAN the same scenario at the worker's MUTATED tree and saw it PASS.
-  if (!Number.isInteger(observation.green_exit_at_mutated_tree)) {
-    throw new Error('TDD observation rejected: observed green exit status required')
-  }
-  if (observation.green_exit_at_mutated_tree !== 0) {
-    throw new Error('TDD observation rejected: observer did not see the scenario PASS at the mutated tree')
-  }
-  requiredNonEmptyString(observation.green_output, 'observed green output')
-  // The independent observer must not be the mutating worker: an observed_by equal to the worker
-  // identity is rejected, so the observer cannot be the worker.
-  requiredNonEmptyString(observation.observed_by, 'observer identity')
-  if (observation.mutating_worker !== undefined && observation.observed_by === observation.mutating_worker) {
-    throw new Error('TDD observation rejected: the observer cannot be the mutating worker')
-  }
-  return observation
-}
-
-// TUR-447 cycle2 pass1 host-gated push (delivery-lifecycle prompt-tdd-red, prompt-tdd-green;
-// role-runtime launch-identity, launch-receipt; operating-model decision-109-binding). The
-// mutating worker no longer commits or pushes: it produces the mutation in the contained
-// worktree plus its ack echo and red/green evidence, then STOPS. The host commits and pushes
-// only after echo + pre-push readback + TDD verify. So the accepted worker result runs its red
-// AND its green at the UNCHANGED starting HEAD (the mutation lives in the working tree, no
-// commit HEAD exists yet), and it must assert committed:false and pushed:false. A worker that
-// already committed or pushed is rejected, because a post-hoc worktree reset cannot undo an
-// already-pushed mutation. requireNewHead now governs the HOST commit that follows acceptance,
-// so acceptImplementation binds the pre-commit worker result, not a worker-produced new HEAD.
-export function acceptImplementation(expectedHead, result, requireHostGatedPush = true, observation = undefined) {
+// TUR-447 D1 reshaped delivery loop (delivery-lifecycle delivery-tdd-committed-red,
+// delivery-tdd-committed-red-commit, delivery-tdd-committed-green, delivery-tdd-test-identity-binding,
+// delivery-tdd-observer-inputs-host-journal-record; role-runtime role-implementer-host-gated-push,
+// launch-identity-delivery-branch). The reshape REVERSES the prior host-gated-uncommitted model: the
+// implementer worker now COMMITS a real failing red (a new or changed test plus unchanged production)
+// then a GREEN commit (production-only) on an ISOLATED delivery branch, binds the failing test by path
+// and content digest unchanged across red, green, and final HEAD, and NEVER pushes. The HOST records the
+// worker's committed branch and its red, green, and final commit ids in the journal binding; that
+// host-journalled binding, never the worker's claim, is the trust root the observer executes from.
+//
+// assertCommittedImplementation binds the pre-push worker result. It requires committed:true, pushed:false,
+// distinct real red and green commit ids on the isolated delivery branch, a final HEAD (possibly a later
+// refactor commit) equal to the reported delivered head, and a bound-test identity (path plus content
+// digest) the worker reports unchanged red->green->final. It does NOT trust worker-authored red/green
+// verdict strings as proof: the independent tdd-observer replay (assertObservedCommittedStates) is the
+// sole proof and is consumed separately by the host. A worker that did not commit, that pushed, or whose
+// red and green commit ids collapse is rejected here before any host journal binding.
+export function assertCommittedImplementation(startingHead, result) {
   required(result, 'implementation result')
   if (result.blocked !== false) throw new Error('implementation blocked')
-  required(result.head, 'implementation HEAD')
+  required(startingHead, 'starting head')
+  // The worker COMMITS on the isolated delivery branch and NEVER pushes (role-implementer-host-gated-push).
+  if (result.committed !== true) {
+    throw new Error('implementer must commit the red then green on the isolated delivery branch')
+  }
+  if (result.pushed !== false) {
+    throw new Error('implementer must not push: the host pushes only after observer verification')
+  }
+  // Distinct real red and green commit ids, both moving off the unchanged starting HEAD.
+  const redCommit = requiredNonEmptyString(result.red_commit, 'red commit id')
+  const greenCommit = requiredNonEmptyString(result.green_commit, 'green commit id')
+  const finalCommit = requiredNonEmptyString(result.final_commit ?? result.head, 'final commit id')
+  if (redCommit === startingHead) throw new Error('red commit must move off the unchanged starting HEAD')
+  if (redCommit === greenCommit) throw new Error('red and green must be distinct commits')
+  // The delivered head is the final commit (green or a later refactor), never the starting HEAD.
+  if (finalCommit === startingHead) throw new Error('delivered final HEAD must move off the starting HEAD')
+  // Red and green proofs describe the same behavior scenario.
   assertProof(result.red, 'implementation red evidence')
   assertProof(result.green, 'implementation green evidence')
-  if (result.red.exit_status === 0) throw new Error('red must fail before production change')
-  if (result.green.exit_status !== 0) throw new Error('green must pass after production change')
-  // The red carries a captured artifact bound to the unchanged starting HEAD, but a worker-authored
-  // artifact alone proves nothing (the worker could fabricate it). The chronology is bound to an
-  // INDEPENDENT read-only observer's result: assertObservedRed consumes a SEPARATE observer that
-  // re-ran the SAME scenario and saw it fail at the starting HEAD and pass at the mutated tree. A
-  // worker result with no independent observation, or an observation the worker itself authored, is
-  // rejected here before any host commit/push.
-  assertRedEvidenceArtifact(result.red, expectedHead)
-  assertObservedRed(observation, result.red, expectedHead)
-  required(result.validation, 'implementation validation')
-  // Host-gated push: the worker must NOT commit or push. Its output is verified BEFORE any
-  // commit/push, so it stops at the working-tree mutation over the unchanged starting HEAD.
-  if (requireHostGatedPush) {
-    if (result.committed !== false) {
-      throw new Error('worker must not commit: host commits only after verification (host-gated push)')
-    }
-    if (result.pushed !== false) {
-      throw new Error('worker must not push: host pushes only after verification (host-gated push)')
-    }
-    if (result.head !== expectedHead) {
-      throw new Error('worker head must equal the unchanged starting HEAD: no worker commit before host verify')
-    }
-    if (result.green.head !== expectedHead) {
-      throw new Error('green must run at the unchanged starting HEAD over the working-tree mutation before host commit')
-    }
-  }
-  // The red must run at the UNCHANGED starting HEAD before mutation; the green must exercise the
-  // SAME behavior scenario as the red.
-  if (result.red.head !== expectedHead) {
-    throw new Error('red must run at the unchanged starting HEAD before mutation')
-  }
-  if (result.green.head !== result.head) {
-    throw new Error('green HEAD must equal the delivered implementation HEAD')
-  }
+  if (result.red.exit_status === 0) throw new Error('red must fail the named test before the production change')
+  if (result.green.exit_status !== 0) throw new Error('green must pass the same named test after the production change')
   if (result.green.scenario !== result.red.scenario) {
     throw new Error('green must prove the same scenario as red')
   }
-  return result
+  // Bound-test identity: the failing test is bound by path AND content digest, unchanged across red,
+  // green, and the final HEAD (delivery-tdd-test-identity-binding).
+  const boundTest = assertBoundTest(result.bound_test)
+  return { redCommit, greenCommit, finalCommit, boundTest }
+}
+
+// TUR-447 D1 test-identity binding (delivery-lifecycle delivery-tdd-test-identity-binding,
+// delivery-tdd-final-head-test-identity). The failing test is bound by path AND content digest, not by
+// name alone. The same object is threaded to the observer replay so a green or final HEAD that removes,
+// weakens, or edits the bound test by path or digest is rejected even when tests pass.
+export function assertBoundTest(boundTest) {
+  required(boundTest, 'bound test identity')
+  requiredNonEmptyString(boundTest.path, 'bound test path')
+  requiredNonEmptyString(boundTest.digest, 'bound test content digest')
+  return { path: boundTest.path, digest: boundTest.digest }
+}
+
+// TUR-447 D1 host-journalled commit binding (delivery-lifecycle delivery-tdd-observer-inputs-host-sourced,
+// delivery-tdd-observer-inputs-host-journal-record; role-runtime role-tdd-observer-host-sourced-inputs).
+// The HOST records the worker's committed delivery branch, its red, green, and final commit ids, and the
+// canonical validation command from the target AGENTS.md in the journal binding. That binding is the
+// trust root: the observer checks out exactly these host-journalled commits and runs exactly this
+// host-sourced command, never a worker-authored commit id or command string. A worker-claimed commit id
+// that differs from the accepted (host-journalled) commits, or a worker-authored command, is rejected.
+// acceptedCommits is the { redCommit, greenCommit, finalCommit } assertCommittedImplementation returned
+// from the worker's committed result; command is the host's canonical validation command (never worker
+// authored); branch is the worker's committed delivery branch.
+export function assertHostJournalledCommits(binding, acceptedCommits, command, branch) {
+  required(binding, 'host journal commit binding')
+  requiredNonEmptyString(command, 'host-sourced validation command')
+  requiredNonEmptyString(branch, 'committed delivery branch')
+  const red = requiredNonEmptyString(binding.red_commit, 'journalled red commit')
+  const green = requiredNonEmptyString(binding.green_commit, 'journalled green commit')
+  const final = requiredNonEmptyString(binding.final_commit, 'journalled final commit')
+  if (binding.branch !== branch) throw new Error('journalled branch differs from the committed delivery branch')
+  // The journalled commit ids are exactly the accepted worker-committed ids; a divergent worker-claimed
+  // commit id never enters the journal binding.
+  if (red !== acceptedCommits.redCommit) throw new Error('journalled red commit differs from the committed red')
+  if (green !== acceptedCommits.greenCommit) throw new Error('journalled green commit differs from the committed green')
+  if (final !== acceptedCommits.finalCommit) throw new Error('journalled final commit differs from the committed final')
+  // The command is the host-supplied canonical validation command, never a worker-authored string.
+  if (binding.command !== command) throw new Error('journalled command differs from the host-sourced validation command')
+  return { red_commit: red, green_commit: green, final_commit: final, command, branch }
+}
+
+// TUR-447 D1 independent observer replay of the committed states (delivery-lifecycle
+// delivery-tdd-independent-observer, delivery-tdd-independent-observer-isolated,
+// delivery-tdd-trusted-command-source, delivery-tdd-observer-inputs-host-sourced,
+// delivery-tdd-final-head-verification, delivery-tdd-final-head-test-identity,
+// delivery-tdd-no-forgeable-attestation; role-runtime role-tdd-observer, role-tdd-observer-trusted-source,
+// role-tdd-observer-host-sourced-inputs). The dedicated Read-restricted tdd-observer, NEVER the mutating
+// worker, checked out each HOST-JOURNALLED committed state and the final HEAD in an ISOLATED worktree and
+// ran the host-trusted invocation. The host consumes THIS observation, not any worker string.
+//
+// The observation is fail-closed unless: it is stamped by the independent observer (never the worker);
+// the exact commit ids it checked out equal the HOST-JOURNALLED red/green/final commits (a worker-claimed
+// commit id never sources what the observer ran); the command it ran equals the host-sourced canonical
+// validation command; the red commit FAILED, the green commit PASSED, and the final HEAD PASSED; and the
+// bound test is present unchanged by path AND content digest at the red, green, and final commits, so a
+// refactor that weakened, edited, or removed the bound test is rejected even when tests pass.
+export const INDEPENDENT_OBSERVER_SOURCE = 'independent-tdd-observer'
+
+function assertObservedStateDigest(observedTest, boundTest, label) {
+  required(observedTest, `observed ${label} bound test`)
+  if (observedTest.path !== boundTest.path) {
+    throw new Error(`observer replay rejected: bound test path absent or changed at the ${label} commit`)
+  }
+  if (observedTest.digest !== boundTest.digest) {
+    throw new Error(`observer replay rejected: bound test content digest differs at the ${label} commit`)
+  }
+}
+
+export function assertObservedCommittedStates(observation, journalled, boundTest) {
+  required(observation, 'independent observer replay')
+  required(journalled, 'host-journalled commit binding')
+  required(boundTest, 'bound test identity')
+  // Provenance: the replay is stamped by the independent observer, never the mutating worker.
+  if (observation.source !== INDEPENDENT_OBSERVER_SOURCE) {
+    throw new Error('observer replay rejected: not from the independent tdd-observer')
+  }
+  requiredNonEmptyString(observation.observed_by, 'observer identity')
+  if (observation.mutating_worker !== undefined && observation.observed_by === observation.mutating_worker) {
+    throw new Error('observer replay rejected: the observer cannot be the mutating worker')
+  }
+  // Isolated worktree: the replay ran in an isolated worktree, never the worker branch, main, or the
+  // live repository working directory.
+  requiredNonEmptyString(observation.isolated_worktree, 'observer isolated worktree')
+  // The observer checked out EXACTLY the host-journalled commits; a worker-claimed commit id never
+  // sources what the observer executed.
+  if (observation.red_commit !== journalled.red_commit) {
+    throw new Error('observer replay rejected: red commit checked out is not the host-journalled red commit')
+  }
+  if (observation.green_commit !== journalled.green_commit) {
+    throw new Error('observer replay rejected: green commit checked out is not the host-journalled green commit')
+  }
+  if (observation.final_commit !== journalled.final_commit) {
+    throw new Error('observer replay rejected: final HEAD checked out is not the host-journalled final commit')
+  }
+  // The observer ran the host-sourced canonical validation command, never a worker-authored command.
+  if (observation.command !== journalled.command) {
+    throw new Error('observer replay rejected: command run is not the host-sourced validation command')
+  }
+  // Red commit FAILED (a missing file, module, export, or script is not a valid red: the observer must
+  // record a genuine nonzero test exit with captured output, not an unrunnable invocation).
+  if (!Number.isInteger(observation.red_exit)) throw new Error('observer replay rejected: red exit status required')
+  if (observation.red_exit === 0) {
+    throw new Error('observer replay rejected: the red commit did not fail the named test')
+  }
+  requiredNonEmptyString(observation.red_output, 'observed red output')
+  // Green commit PASSED and final HEAD PASSED.
+  if (!Number.isInteger(observation.green_exit)) throw new Error('observer replay rejected: green exit status required')
+  if (observation.green_exit !== 0) {
+    throw new Error('observer replay rejected: the green commit did not pass the named test')
+  }
+  requiredNonEmptyString(observation.green_output, 'observed green output')
+  if (!Number.isInteger(observation.final_exit)) throw new Error('observer replay rejected: final HEAD exit status required')
+  if (observation.final_exit !== 0) {
+    throw new Error('observer replay rejected: the final pushed HEAD is not green')
+  }
+  requiredNonEmptyString(observation.final_output, 'observed final HEAD output')
+  // Bound-test identity present unchanged by path AND content digest at the red, green, and final commits.
+  assertObservedStateDigest(observation.red_test, boundTest, 'red')
+  assertObservedStateDigest(observation.green_test, boundTest, 'green')
+  assertObservedStateDigest(observation.final_test, boundTest, 'final')
+  return observation
 }
 
 // TUR-447 cycle2 pass1 stale-read-race pre-push readback (role-runtime launch-readback,
@@ -616,6 +641,28 @@ export function assertWorkerLivenessEcho(bound, result) {
     }
   }
   return result
+}
+
+// TUR-447 D1 live-remote push readback (delivery-lifecycle delivery-tdd-host-gated-push,
+// delivery-tdd-named-test-live-remote-readback; role-runtime launch-readback). After the host pushes the
+// verified branch, the pushed HEAD is confirmed by a LIVE REMOTE read, gh api or git ls-remote, NOT a
+// local tracking ref, so a stale local ref can never falsely confirm an advance. readback carries the
+// live remote head and its read source; the source must be one of the live-remote reads and the remote
+// head must equal the expected pushed final HEAD.
+const LIVE_REMOTE_SOURCES = new Set(['gh-api', 'git-ls-remote'])
+
+export function assertLiveRemotePushReadback(readback, expectedFinalHead) {
+  required(readback, 'push readback')
+  requiredNonEmptyString(expectedFinalHead, 'expected final HEAD')
+  const source = requiredNonEmptyString(readback.remote_source, 'push readback remote source')
+  if (!LIVE_REMOTE_SOURCES.has(source)) {
+    throw new Error('push readback rejected: pushed HEAD must be confirmed by a live remote read (gh api or git ls-remote), not a local tracking ref')
+  }
+  const remoteHead = requiredNonEmptyString(readback.remote_head, 'push readback remote HEAD')
+  if (remoteHead !== expectedFinalHead) {
+    throw new Error('push readback rejected: live remote HEAD does not match the expected pushed final HEAD')
+  }
+  return { remote_head: remoteHead, remote_source: source }
 }
 
 export function acceptCodeReview(expectedHead, expectedPr, review) {
