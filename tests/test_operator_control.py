@@ -4108,5 +4108,241 @@ class IntentRecordSurfaceForgeryTests(unittest.TestCase):
             self.assertRegex(record["surface_sha256"], r"^[0-9a-f]{64}$")
 
 
+class OperatorGateEdgeTriggerTests(unittest.TestCase):
+    """TUR-489 (ruling-58 / ruling-60): the loud operator-gate block stays on
+    stdout EVERY cycle (sweep-operator-gate-unsuppressible), but the OPERATOR
+    PANE ping via operator-say is EDGE-TRIGGERED - it fires once per new/changed
+    gate SET (sha256 over the sorted gate lines, persisted at
+    <control>/.operator-gate-last), does not re-flood while the set is unchanged,
+    re-arms when the set clears, and (on a hard send failure with rc not in
+    {0,75}) leaves the marker unwritten so the next pass retries rather than
+    silently dropping a NEW gate. These tests retro-cover the emergency hot-fix
+    at 3c8607f that shipped without spec-derived TDD."""
+
+    MARKER_NAME = ".operator-gate-last"
+
+    def _write_owner(self, base: Path, control: Path) -> Path:
+        owner = base / "operator-owner.toml"
+        owner.write_text(
+            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+        )
+        return owner
+
+    def _fake_bins(self, base: Path) -> tuple[Path, Path, dict]:
+        """Fake bin harness whose operator-say (a) appends one 'ping' marker line
+        per 'Operator gate' pane push to CALL_LOG so a test can COUNT pane pings,
+        (b) still echoes the artifact so stdout-delivery assertions hold, and
+        (c) exits with ${OPERATOR_SAY_RC:-0} so a test can force a hard-fail send."""
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        log = base / "calls.jsonl"
+        (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+        (fake_bin / "operator-say").write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
+            'gate=0\n'
+            'for a in "$@"; do if [[ "$a" == "Operator gate" ]]; then gate=1; fi; done\n'
+            # The edge-trigger pane push is the "Operator gate" message; count it
+            # and let a test force ITS rc via GATE_SAY_RC. Every other operator-say
+            # (e.g. the reconcile "Sweep delta ready" delivery) always succeeds so
+            # the CHANGED reconcile path is never wedged by the fault injection.
+            'if [[ "$gate" == "1" ]]; then printf \'gate-pane-ping\\n\' >>"$CALL_LOG"; exit "${GATE_SAY_RC:-0}"; fi\n'
+            'exit 0\n'
+        )
+        (fake_bin / "linear").write_text(FAKE_PER_ISSUE_LINEAR)
+        (fake_bin / "gh").write_text(
+            "#!/usr/bin/env bash\nprintf 'gh %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            "cat <<'JSON'\n"
+            '{"url": "https://github.com/org/repo/pull/6", "headRefOid": "abc123", '
+            '"headRefName": "feature", "baseRefName": "main", '
+            '"state": "OPEN", "reviewDecision": "", "statusCheckRollup": []}\n'
+            "JSON\n"
+        )
+        for name in ("claude", "operator-say", "linear", "gh"):
+            (fake_bin / name).chmod(0o755)
+        env = dict(
+            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+        )
+        return fake_bin, log, env
+
+    def _ping_count(self, log: Path) -> int:
+        if not log.exists():
+            return 0
+        return sum(1 for line in log.read_text().splitlines() if line == "gate-pane-ping")
+
+    def _stream(self, control: Path) -> Path:
+        stream = control / "streams/tf-carrier"
+        stream.mkdir(parents=True)
+        (stream / "status.md").write_text("Outcome: ready\n")
+        (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
+        return stream
+
+    def _sweep_cmd(self, control: Path, owner: Path, repo: Path) -> list[str]:
+        return [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+
+    def _run_to_noop(self, command: list[str], env: dict, *, max_runs: int = 4) -> subprocess.CompletedProcess:
+        """Run the sweep until it reaches the unchanged-fingerprint noop path
+        (changed == False). The FIRST run after any fact change is a CHANGED
+        reconcile whose gate surfaces through the reconcile result push; the
+        edge-triggered _emit_operator_gate pane ping only runs on the noop path,
+        so the tests observe edge behavior from the settled (noop) state."""
+        last = None
+        for _ in range(max_runs):
+            last = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            if not _sweep_stdout_json(last.stdout)["changed"]:
+                return last
+        raise AssertionError(f"sweep never settled to noop:\n{last.stdout if last else ''}")
+
+    def test_edge_unchanged_set_pings_once(self) -> None:
+        # Persistent gate set (TUR-479 In Staging) driven repeatedly on the
+        # unchanged-fingerprint noop path: the pane ping fires EXACTLY ONCE (the
+        # marker suppresses the re-ping on every subsequent pass), while the loud
+        # gate line is on stdout on EVERY run (unsuppressible preserved).
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            self._stream(control)
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = self._sweep_cmd(control, owner, repo)
+
+            outputs = []
+            for _ in range(3):
+                result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+                outputs.append(result.stdout)
+
+            # Unsuppressible: the loud line is on stdout on EVERY run.
+            for stdout in outputs:
+                self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", stdout)
+            # Run 1 is the CHANGED reconcile; runs 2 and 3 hit the noop path.
+            self.assertTrue(_sweep_stdout_json(outputs[0])["changed"])
+            self.assertFalse(_sweep_stdout_json(outputs[1])["changed"])
+            self.assertFalse(_sweep_stdout_json(outputs[2])["changed"])
+            # Edge-triggered: exactly ONE pane ping across the noop passes.
+            self.assertEqual(1, self._ping_count(log))
+            self.assertTrue((control / self.MARKER_NAME).is_file())
+
+    def test_edge_changed_set_repings(self) -> None:
+        # Gate set A (In Staging) settles -> 1 pane ping (marker = fingerprint A);
+        # the set then CHANGES (In Preprod: a different gate line) -> once the new
+        # set settles on the noop path, a NEW ping fires because the marker holds
+        # the stale fingerprint A.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            self._stream(control)
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = self._sweep_cmd(control, owner, repo)
+
+            settled_a = self._run_to_noop(command, env)
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", settled_a.stdout)
+            self.assertEqual(1, self._ping_count(log))
+
+            # The gate SET changes: TUR-479 moves to a different gated state.
+            state_map.write_text(json.dumps({"TUR-479": "In Preprod"}))
+            settled_b = self._run_to_noop(command, env)
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Preprod", settled_b.stdout)
+            # Changed fingerprint -> a NEW (second) pane ping fired.
+            self.assertEqual(2, self._ping_count(log))
+
+    def test_edge_clear_rearms(self) -> None:
+        # Gate present, settled (1 ping, marker written) -> gate set becomes EMPTY
+        # (issue no longer gated): the marker is unlinked (re-arm), no new ping ->
+        # the gate returns and settles -> it re-pings (re-arm proven).
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            self._stream(control)
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = self._sweep_cmd(control, owner, repo)
+            marker = control / self.MARKER_NAME
+
+            self._run_to_noop(command, env)
+            self.assertEqual(1, self._ping_count(log))
+            self.assertTrue(marker.is_file())
+
+            # Gate clears: TUR-479 moves to a non-gated state -> gate_lines empty.
+            state_map.write_text(json.dumps({"TUR-479": "Live"}))
+            cleared = self._run_to_noop(command, env)
+            self.assertNotIn("OPERATOR ACTION NEEDED", cleared.stdout)
+            # Marker unlinked on the empty set (re-arm); no new ping while clear.
+            self.assertFalse(marker.is_file())
+            self.assertEqual(1, self._ping_count(log))
+
+            # Gate returns: a fresh, re-armed pane ping fires.
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            back = self._run_to_noop(command, env)
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", back.stdout)
+            self.assertEqual(2, self._ping_count(log))
+            self.assertTrue(marker.is_file())
+
+    def test_edge_hardfail_retries(self) -> None:
+        # On the noop path a hard send failure (rc not in {0,75}) must NOT write
+        # the marker, so a NEW gate is never silently dropped: the next noop pass
+        # RE-PINGS. Once the send succeeds (rc 0) the marker persists and a repeat
+        # does not re-ping. The fault is injected ONLY on the "Operator gate" pane
+        # push so the CHANGED reconcile delivery still succeeds and the sweep
+        # settles to the noop path where the edge trigger lives.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            self._stream(control)
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = self._sweep_cmd(control, owner, repo)
+            marker = control / self.MARKER_NAME
+
+            # Settle to the noop path with the gate pane push HARD-FAILING (rc 1):
+            # the ping is attempted but the marker is NOT written.
+            fail_env = dict(env, GATE_SAY_RC="1")
+            first = self._run_to_noop(command, fail_env)
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", first.stdout)
+            self.assertEqual(1, self._ping_count(log))
+            self.assertFalse(marker.is_file())
+
+            # Retry (still failing): the unchanged set RE-PINGS because the marker
+            # was never persisted; the gate is not silently dropped.
+            second = subprocess.run(command, env=fail_env, check=True, capture_output=True, text=True)
+            self.assertFalse(_sweep_stdout_json(second.stdout)["changed"])
+            self.assertEqual(2, self._ping_count(log))
+            self.assertFalse(marker.is_file())
+
+            # Send now succeeds (rc 0): the ping fires once more and the marker persists.
+            third = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertFalse(_sweep_stdout_json(third.stdout)["changed"])
+            self.assertEqual(3, self._ping_count(log))
+            self.assertTrue(marker.is_file())
+
+            # Unchanged set with a healthy sender: no re-ping (edge holds).
+            fourth = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
+            self.assertFalse(_sweep_stdout_json(fourth.stdout)["changed"])
+            self.assertEqual(3, self._ping_count(log))
+
+
 if __name__ == "__main__":
     unittest.main()
