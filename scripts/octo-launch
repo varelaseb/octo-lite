@@ -6,7 +6,6 @@ import json
 import subprocess
 import sys
 import tomllib
-import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -14,62 +13,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from octo_lite.launch import (  # noqa: E402
     GateError,
     bootstrap_from_receipt,
-    prepare_launch,
-    run_launch,
     verify_bootstrap,
 )
 
 
-def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--envelope", type=Path, required=True)
-    parser.add_argument("--role", required=True)
-    parser.add_argument("--capability", action="append", default=[])
-    parser.add_argument("--spawn-id", default=None)
-    parser.add_argument("--parent", required=True)
-    parser.add_argument("--reply-route", required=True)
-    parser.add_argument("--repo", type=Path, required=True)
-    parser.add_argument("--worktree-root", type=Path, required=True)
-    parser.add_argument("--worktree", type=Path, required=True)
-    parser.add_argument("--receipt", type=Path, required=True)
-    parser.add_argument("--execution-location", choices=("local", "remote"), required=True)
-    parser.add_argument("--operator-loopback", choices=("true", "false"), required=True)
-    parser.add_argument("--review-delivery", required=True)
-
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Exact foreground role launch")
+    # TUR-447 F4a (decision-109-workflow-native, role-worker-migration): the
+    # worker-pass launcher is retired. The Claude Workflow subagent path is the
+    # sole WORKER spawn mechanism, so octo-launch no longer prepares or runs a
+    # worker pass. Only the persistent-session bootstrap surface remains, binding
+    # the retained generic persistent receipt (Unit K).
+    parser = argparse.ArgumentParser(description="Persistent-session bootstrap for the generic launch receipt")
     commands = parser.add_subparsers(dest="command", required=True)
-    prepare = commands.add_parser("prepare", help="Refetch, validate, provision, and write receipt")
-    add_prepare_arguments(prepare)
-    launch = commands.add_parser("launch", help="Prepare, bootstrap, verify, then run one pass")
-    add_prepare_arguments(launch)
-    bootstrap = commands.add_parser("bootstrap", help="Bootstrap-verify an already-prepared receipt only")
+    bootstrap = commands.add_parser("bootstrap", help="Bootstrap-verify an already-prepared persistent receipt only")
     bootstrap.add_argument("--receipt", type=Path, required=True)
     verify = commands.add_parser("verify", help="Verify a captured BOOTSTRAP_ACK")
     verify.add_argument("--receipt", type=Path, required=True)
     verify.add_argument("--ack", type=Path, required=True)
     return parser
-
-
-def prepared(args: argparse.Namespace):
-    with args.envelope.open("rb") as handle:
-        envelope = tomllib.load(handle)
-    return prepare_launch(
-        root=Path(__file__).resolve().parents[1],
-        envelope=envelope,
-        role_name=args.role,
-        capabilities=set(args.capability),
-        spawn_id=args.spawn_id or str(uuid.uuid4()),
-        parent=args.parent,
-        reply_route=args.reply_route,
-        repo=args.repo,
-        worktree_root=args.worktree_root,
-        worktree=args.worktree,
-        receipt_path=args.receipt,
-        execution_location=args.execution_location,
-        operator_loopback=args.operator_loopback == "true",
-        review_delivery=args.review_delivery,
-    )
 
 
 def main() -> int:
@@ -85,35 +46,7 @@ def main() -> int:
             provider_session_id = bootstrap_from_receipt(args.receipt)
             print(json.dumps({"verified": True, "provider_session_id": provider_session_id}))
             return 0
-        plan = prepared(args)
-        if args.command == "prepare":
-            print(
-                json.dumps(
-                    {
-                        "receipt": str(plan.receipt_path),
-                        "bootstrap_argv": plan.bootstrap_argv,
-                        "mutation_argv": plan.mutation_argv,
-                        "ready": False,
-                    },
-                    sort_keys=True,
-                )
-            )
-            return 0
-        pass_result = run_launch(plan)
-        with plan.receipt_path.open("rb") as handle:
-            receipt_content = tomllib.load(handle)
-        print(
-            json.dumps(
-                {
-                    "receipt_path": str(plan.receipt_path),
-                    "receipt": receipt_content,
-                    "pass_result": pass_result,
-                },
-                sort_keys=True,
-                ensure_ascii=False,
-            )
-        )
-        return 0
+        raise GateError(f"unknown command: {args.command}")
     except (
         GateError,
         OSError,

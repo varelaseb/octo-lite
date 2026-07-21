@@ -17,7 +17,6 @@ from urllib.parse import urlparse
 from octo_lite.runtime import (
     GateError,
     admit_workspace,
-    bind_pass_result,
     exact_fingerprint,
     launch_revision as _receipt_launch_revision,
     normalize_launch_access,
@@ -678,19 +677,23 @@ def revalidate_launch_receipt(receipt: Mapping[str, Any]) -> None:
     reconcile tables, so a stale, malformed, role-substituted, or
     purpose-injected persistent receipt starts no provider."""
     manifest_type = str(receipt.get("manifest_type") or "")
-    if manifest_type not in {"", "octo-lite-pass"}:
+    # TUR-447 F4a: the octo-launch worker-pass launcher is retired, so the
+    # durable "octo-lite-pass" receipt shape it wrote is no longer an admitted
+    # manifest_type (decision-109-workflow-native, launch-receipt-manifest-shapes).
+    # Only the generic persistent receipt (empty manifest_type) remains admitted,
+    # preserving the persistent-session bootstrap (Unit K).
+    if manifest_type != "":
         raise GateError(f"unknown launch receipt manifest type: {manifest_type}")
-    if not manifest_type:
-        role = receipt.get("role")
-        name = role.get("name") if isinstance(role, Mapping) else None
-        if name not in PERSISTENT_RECEIPT_ROLES:
-            raise GateError("persistent receipt requires role meta-operator or orchestrator")
-        if "purpose" in receipt or "pass" in receipt:
-            raise GateError("persistent receipt carries no pass purpose")
-        if "shaping" in receipt:
-            raise GateError("persistent receipt carries no retired shaping table")
-        if "reconcile" in receipt:
-            raise GateError("persistent receipt carries no retired reconcile table")
+    role = receipt.get("role")
+    name = role.get("name") if isinstance(role, Mapping) else None
+    if name not in PERSISTENT_RECEIPT_ROLES:
+        raise GateError("persistent receipt requires role meta-operator or orchestrator")
+    if "purpose" in receipt or "pass" in receipt:
+        raise GateError("persistent receipt carries no pass purpose")
+    if "shaping" in receipt:
+        raise GateError("persistent receipt carries no retired shaping table")
+    if "reconcile" in receipt:
+        raise GateError("persistent receipt carries no retired reconcile table")
     if receipt.get("launch_revision") != _launch_revision(receipt):
         raise GateError("launch receipt revision mismatch")
 
@@ -713,147 +716,6 @@ class PreparedLaunch:
 def prepared_from_receipt(receipt: Mapping[str, Any], receipt_path: Path, contract_text: str) -> PreparedLaunch:
     bootstrap, mutation = _provider_argv(receipt)
     return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, contract_text)
-
-
-def prepare_launch(
-    *,
-    root: Path,
-    envelope: Mapping[str, Any],
-    role_name: str,
-    capabilities: set[str],
-    spawn_id: str,
-    parent: str,
-    reply_route: str,
-    repo: Path,
-    worktree_root: Path,
-    worktree: Path,
-    receipt_path: Path,
-    execution_location: str,
-    operator_loopback: bool,
-    review_delivery: str,
-    read_linear: ReadLinear = read_linear,
-    read_pr: ReadPullRequest = read_pull_request,
-) -> PreparedLaunch:
-    root = root.resolve()
-    repo = repo.resolve()
-    worktree_root = worktree_root.resolve()
-    worktree = worktree.resolve()
-    _validate_envelope_shape(envelope)
-    normalize_launch_access(
-        {
-            "execution_location": execution_location,
-            "operator_loopback_access": operator_loopback,
-            "review_delivery": review_delivery,
-        }
-    )
-    if execution_location not in {"local", "remote"}:
-        raise GateError("execution_location must be local or remote")
-    registry = load_registry(root)
-    resolved = resolve_role(registry, role_name, capabilities)
-    if Path(_git(repo, "rev-parse", "--show-toplevel")).resolve() != repo:
-        raise GateError("repo must be control git root")
-    origin = _git(repo, "remote", "get-url", "origin")
-    if _remote_repo_identity(origin).lower() != str(envelope["repo"]).lower():
-        raise GateError("repo identity mismatch")
-
-    linear = dict(read_linear(str(envelope["issue"])))
-    state = linear.get("state")
-    if isinstance(state, Mapping):
-        linear["state"] = state.get("name")
-    number = _pull_number(envelope["pr"])
-    pull = dict(read_pr(str(envelope["repo"]), number))
-    _verify_sources(repo, envelope, linear, pull)
-    read_only = role_name in READ_ONLY_WORKTREE_ROLES
-    branch = str(envelope["branch"])
-    _prepare_worktree(
-        repo,
-        worktree_root,
-        worktree,
-        str(envelope["starting_head"]),
-        branch,
-        read_only=read_only,
-        minimum_free_bytes=int(envelope["minimum_free_bytes"]),
-        conflicts=list(envelope["resource_conflicts"]),
-        provider_overloaded=bool(envelope["provider_overloaded"]),
-    )
-    try:
-        child_workspace = _child_workspace_check(
-            repo,
-            worktree_root,
-            worktree,
-            str(envelope["starting_head"]),
-            None if read_only else branch,
-        )
-
-        receipt = build_launch_receipt(
-            root,
-            resolved,
-            spawn_id=spawn_id,
-            parent=parent,
-            reply_route=reply_route,
-            repo=repo,
-            worktree=worktree,
-            execution_location=execution_location,
-            operator_loopback=operator_loopback,
-            review_delivery=review_delivery,
-        )
-        receipt["ready"] = False
-        receipt["manifest_type"] = "octo-lite-pass"
-        receipt["purpose"] = str(envelope["purpose"])
-        receipt["workspace"]["remote"] = origin
-        receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
-        receipt["issue"] = {
-            "identifier": linear["identifier"],
-            "revision": _issue_revision(linear),
-            "fingerprint": exact_fingerprint(linear),
-            "state": linear["state"],
-        }
-        receipt["spec"] = {
-            "revision": str(envelope["spec_revision"]),
-            "blobs": list(envelope["spec_blobs"]),
-            "adr_blobs": list(envelope["adr_blobs"]),
-            "conversation_cutoff": str(envelope["conversation_cutoff"]),
-            "conversation_log_references": list(envelope["conversation_log_references"]),
-        }
-        receipt["pull_request"] = {
-            "repo": str(envelope["repo"]),
-            "number": number,
-            "url": str(pull["url"]),
-            "branch": str(pull["headRefName"]),
-            "base": str(pull["baseRefName"]),
-            "head": str(pull["headRefOid"]),
-            "shaping_head": str(envelope["shaping_head"]),
-        }
-        receipt["topology"] = {"revision": int(envelope["topology_revision"])}
-        receipt["resources"] = dict(envelope["resource_claims"])
-        is_delivery = envelope["purpose"] == "delivery"
-        receipt["prior_gates"] = {
-            "shaping_verdict": "clear" if is_delivery else "none",
-            "shaping_verdict_head": str(envelope["shaping_verdict_head"]) if is_delivery else "",
-            "shaping_verdict_inputs": list(envelope["shaping_verdict_inputs"]) if is_delivery else [],
-            "shaping_reviewer_receipt": str(envelope["shaping_reviewer_receipt"]) if is_delivery else "",
-            "acceptance_criteria": list(envelope["acceptance_criteria"]),
-        }
-        receipt["bootstrap"] = {"verified": False, "provider_session_id": ""}
-        receipt["pass"] = {
-            "instruction": str(envelope["pass_instruction"]),
-            "context_json": json.dumps(dict(envelope.get("pass_context") or {}), sort_keys=True, ensure_ascii=False),
-        }
-        # Only an orchestrator's own shaping-review pass may carry authority to drive a
-        # Shaped transition; every other role or purpose gets no [shaping] table at all.
-        if role_name == "orchestrator" and receipt["purpose"] == "shaping-review":
-            receipt["shaping"] = {"repo": str(envelope["repo"]), "pr": number, "head": str(envelope["starting_head"])}
-        receipt["launch_revision"] = _launch_revision(receipt)
-        _atomic_write(receipt_path, render_receipt(receipt))
-        bootstrap, mutation = _provider_argv(receipt)
-    except BaseException:
-        # workspace-cleanup-clean-abort: this pass failed after provisioning
-        # its worktree but before any acknowledgment echo could be verified,
-        # so remove the worktree only while pristine at the exact starting
-        # head; a dirty or diverged worktree stays for inspection.
-        cleanup_clean_abort(repo, worktree, str(envelope["starting_head"]))
-        raise
-    return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
 
 
 def _assert_reconcile_admission(role: str, purpose: str, read_restricted: bool) -> None:
@@ -1152,22 +1014,6 @@ def bootstrap_prompt(prepared: PreparedLaunch) -> str:
     )
 
 
-def mutation_prompt(prepared: PreparedLaunch) -> str:
-    with prepared.receipt_path.open("rb") as handle:
-        receipt = tomllib.load(handle)
-    if receipt.get("ready") is not True or receipt.get("bootstrap", {}).get("verified") is not True:
-        raise GateError("verified BOOTSTRAP_ACK required before mutation")
-    skills = ", ".join(receipt["skills"]["resolved"])
-    pass_block = receipt.get("pass") or {}
-    instruction = str(pass_block.get("instruction") or "")
-    context = str(pass_block.get("context_json") or "{}")
-    return (
-        f"Bootstrap verified. Execute one {receipt['role']['name']} pass from {prepared.receipt_path}. "
-        f"Load resolved skills: {skills}. Use pinned sources. {instruction} "
-        f"Pass context: {context}. Return only the exact JSON result object. No prose, no code fences."
-    )
-
-
 def _extract_json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -1439,25 +1285,6 @@ def run_mutation(
         raise GateError("provider pass session mismatch")
     _verify_review_worktree_unmutated(receipt, "resumed pass")
     return mutation_session, message
-
-
-def run_launch(
-    prepared: PreparedLaunch,
-    *,
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> dict[str, Any]:
-    session = run_bootstrap(prepared, runner=runner)
-    with prepared.receipt_path.open("rb") as handle:
-        receipt = tomllib.load(handle)
-    _, message = run_mutation(prepared, session, mutation_prompt(prepared), runner=runner)
-    role = receipt["role"]["name"]
-    result = _extract_json_object(message)
-    result.pop("result_binding", None)
-    binding = bind_pass_result(prepared.receipt_path, role, result)
-    result["result_binding"] = binding
-    result.setdefault("receipt", receipt["spawn_id"])
-    result.setdefault("launch_revision", receipt["launch_revision"])
-    return result
 
 
 def _cleanup_reconcile_worktree(journal_path: Path) -> None:
