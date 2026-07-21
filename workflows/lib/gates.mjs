@@ -394,12 +394,21 @@ export function verifyAckThenUpgrade(journalled, phase) {
   return { upgrade: 'write-capable' }
 }
 
+// TUR-447 TDD-gate fix (delivery-lifecycle prompt-tdd-red, prompt-tdd-green,
+// prompt-tdd-no-fabrication; and the spec-derived red-green-refactor contract). A proof
+// object must carry not only the command/outcome/artifact/exit-status the caller reports
+// but the exact HEAD the proof RAN at and the behavior SCENARIO it exercised, so the
+// acceptance gate can bind the red to the unchanged starting HEAD (red-before-mutation)
+// and prove the SAME scenario went green. Without the head and scenario an arbitrary
+// proof-shaped object could satisfy the gate.
 function assertProof(proof, label) {
   if (typeof proof !== 'object' || proof === null) throw new Error(`${label} required`)
   requiredNonEmptyString(proof.command, `${label} command`)
   requiredNonEmptyString(proof.outcome, `${label} outcome`)
   requiredNonEmptyString(proof.artifact, `${label} artifact`)
   if (!Number.isInteger(proof.exit_status)) throw new Error(`${label} exit status required`)
+  requiredNonEmptyString(proof.head, `${label} HEAD`)
+  requiredNonEmptyString(proof.scenario, `${label} scenario`)
   return proof
 }
 
@@ -411,8 +420,25 @@ export function acceptImplementation(expectedHead, result, requireNewHead = true
   assertProof(result.green, 'implementation green evidence')
   if (result.red.exit_status === 0) throw new Error('red must fail before production change')
   if (result.green.exit_status !== 0) throw new Error('green must pass after production change')
+  // TUR-447 TDD-gate fix. The gate no longer accepts arbitrary proof-shaped red/green:
+  // it requires evidence that the red ran at the UNCHANGED starting HEAD (red before any
+  // production mutation) and that the SAME behavior scenario then went green at the new
+  // HEAD. A fabricated proof whose red claims the post-mutation head, or a green whose
+  // scenario differs from the red, is rejected.
   required(result.validation, 'implementation validation')
   if (requireNewHead && result.head === expectedHead) throw new Error('implementation needs new HEAD')
+  if (result.red.head !== expectedHead) {
+    throw new Error('red must run at the unchanged starting HEAD before mutation')
+  }
+  if (requireNewHead && result.green.head === expectedHead) {
+    throw new Error('green must run at the post-mutation HEAD')
+  }
+  if (result.green.head !== result.head) {
+    throw new Error('green HEAD must equal the delivered implementation HEAD')
+  }
+  if (result.green.scenario !== result.red.scenario) {
+    throw new Error('green must prove the same scenario as red')
+  }
   return result
 }
 

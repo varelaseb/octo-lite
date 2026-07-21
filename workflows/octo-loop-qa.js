@@ -422,12 +422,21 @@ function verifyAckThenUpgrade(journalled, phase) {
   return { upgrade: 'write-capable' }
 }
 
+// TUR-447 TDD-gate fix (delivery-lifecycle prompt-tdd-red, prompt-tdd-green,
+// prompt-tdd-no-fabrication; and the spec-derived red-green-refactor contract). A proof
+// object must carry not only the command/outcome/artifact/exit-status the caller reports
+// but the exact HEAD the proof RAN at and the behavior SCENARIO it exercised, so the
+// acceptance gate can bind the red to the unchanged starting HEAD (red-before-mutation)
+// and prove the SAME scenario went green. Without the head and scenario an arbitrary
+// proof-shaped object could satisfy the gate.
 function assertProof(proof, label) {
   if (typeof proof !== 'object' || proof === null) throw new Error(`${label} required`)
   requiredNonEmptyString(proof.command, `${label} command`)
   requiredNonEmptyString(proof.outcome, `${label} outcome`)
   requiredNonEmptyString(proof.artifact, `${label} artifact`)
   if (!Number.isInteger(proof.exit_status)) throw new Error(`${label} exit status required`)
+  requiredNonEmptyString(proof.head, `${label} HEAD`)
+  requiredNonEmptyString(proof.scenario, `${label} scenario`)
   return proof
 }
 
@@ -439,8 +448,25 @@ function acceptImplementation(expectedHead, result, requireNewHead = true) {
   assertProof(result.green, 'implementation green evidence')
   if (result.red.exit_status === 0) throw new Error('red must fail before production change')
   if (result.green.exit_status !== 0) throw new Error('green must pass after production change')
+  // TUR-447 TDD-gate fix. The gate no longer accepts arbitrary proof-shaped red/green:
+  // it requires evidence that the red ran at the UNCHANGED starting HEAD (red before any
+  // production mutation) and that the SAME behavior scenario then went green at the new
+  // HEAD. A fabricated proof whose red claims the post-mutation head, or a green whose
+  // scenario differs from the red, is rejected.
   required(result.validation, 'implementation validation')
   if (requireNewHead && result.head === expectedHead) throw new Error('implementation needs new HEAD')
+  if (result.red.head !== expectedHead) {
+    throw new Error('red must run at the unchanged starting HEAD before mutation')
+  }
+  if (requireNewHead && result.green.head === expectedHead) {
+    throw new Error('green must run at the post-mutation HEAD')
+  }
+  if (result.green.head !== result.head) {
+    throw new Error('green HEAD must equal the delivered implementation HEAD')
+  }
+  if (result.green.scenario !== result.red.scenario) {
+    throw new Error('green must prove the same scenario as red')
+  }
   return result
 }
 
@@ -754,14 +780,21 @@ function acceptOpenaiReviewRelay(role, resolvedRuntime, relay, rollout) {
 
 const A = typeof args === 'string' ? JSON.parse(args) : (args ?? {})
 const mode = A.mode ?? 'implement'
+// TUR-447 TDD-gate fix: red/green proofs are schema-forced to carry the exact HEAD the
+// proof ran at and the behavior scenario it exercised, so acceptImplementation can bind
+// the red to the unchanged starting HEAD (red before mutation) and prove the same
+// scenario went green. An arbitrary proof-shaped object missing head or scenario is
+// rejected at the schema and again at the gate.
 const PROOF_SCHEMA = {
   type: 'object',
-  required: ['command', 'exit_status', 'outcome', 'artifact'],
+  required: ['command', 'exit_status', 'outcome', 'artifact', 'head', 'scenario'],
   properties: {
     command: { type: 'string' },
     exit_status: { type: 'integer' },
     outcome: { type: 'string' },
     artifact: { type: 'string' },
+    head: { type: 'string' },
+    scenario: { type: 'string' },
   },
 }
 
@@ -1193,16 +1226,68 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     'BOUND INPUTS: verify each against your own reads, echo them verbatim as the ack',
     'object in your structured result, and stop before any mutation on any mismatch:',
     JSON.stringify(bound, null, 2),
+    // TUR-447 TDD-gate fix: the red must run at the UNCHANGED starting HEAD before any
+    // production change, and the green must run the SAME scenario at the post-change HEAD.
+    'TDD: run the spec-derived red scenario FIRST against the unchanged starting HEAD',
+    `(${bound.starting_head}); report red with its head set to that starting HEAD and a`,
+    'scenario name. Only then mutate. Run the SAME scenario for green and report green with',
+    'its head set to the new post-change HEAD and the identical scenario name. A red that',
+    'did not run before the change, or a green whose scenario differs from red, is rejected.',
     brief,
   ].join('\n\n')
   const result = await agent(prompt, {
     label: `${role}:${bound.issue}`, phase: phaseTitle, schema,
   })
   if (result === null) throw new Error(`${role} pass returned no result`)
-  assertWorkerAckEcho(bound, result.ack)
+  // TUR-447 F1 fix (role-runtime launch-identity, launch-receipt; operating-model
+  // decision-109-binding; workspace-cleanup). agent() is atomic with no mid-turn host
+  // gate, so the write-capable worker may already have mutated the worktree by the time
+  // it returns. The achievable pre-acceptance boundary: the mutating worker's bound-input
+  // echo is verified against the SAME journalled inputs the read-only ack phase bound,
+  // and on ANY mismatch its output is REJECTED and the worktree changes are DISCARDED
+  // through a workspace-cleanup spawn, so no mutation under an unverified or mismatched
+  // identity is ever ACCEPTED (nothing is committed or pushed). Only a matching echo is
+  // accepted. A HEAD, role, repo, issue, or PR substitution rejects here exactly as the
+  // read-only ack gate would.
+  await acceptWorkerEchoOrDiscard(role, phaseTitle, bound, result, worktree)
   // Launch-revision revalidation again before any mutation-phase advance.
   assertLaunchRevision(revision, bound)
   return result
+}
+
+// TUR-447 F1: verify the mutating worker's echo against the journalled bound inputs and,
+// on ANY mismatch, discard the worktree changes so an unverified mutation is never
+// accepted. The cleanup runs in a spawned subagent because the loop cannot touch the
+// filesystem; it resets the contained worktree to the bound starting HEAD and clears any
+// working-tree changes (workspace-cleanup), then this rethrows so no result advances.
+async function acceptWorkerEchoOrDiscard(role, phaseTitle, bound, result, worktree) {
+  let echoError = null
+  try {
+    assertWorkerAckEcho(bound, result.ack)
+  } catch (error) {
+    echoError = error
+  }
+  if (echoError === null) return result
+  const cleaned = await agent([
+    `You are a fresh octo-lite workspace-cleanup subagent for a REJECTED ${role} pass. One pass only.`,
+    'The mutating worker returned an ack echo that does NOT match its journalled bound inputs, so its',
+    'mutation must be DISCARDED and nothing committed or pushed. In the contained worktree below, reset',
+    'the working tree to the exact bound starting HEAD and clear every uncommitted change:',
+    `  worktree: ${worktree}`,
+    `  starting_head: ${bound.starting_head}`,
+    'Run the reset (git reset --hard to the starting HEAD and git clean of untracked changes), then read',
+    'back and return the resulting HEAD and `git status --porcelain` (empty status proves a clean tree).',
+  ].join('\n'), {
+    label: `workspace-cleanup:${bound.issue}`, phase: phaseTitle,
+    schema: {
+      type: 'object', required: ['cleaned', 'head', 'status'],
+      properties: { cleaned: { type: 'boolean' }, head: { type: 'string' }, status: { type: 'string' } },
+    },
+  })
+  if (cleaned === null || cleaned.cleaned !== true || cleaned.head !== bound.starting_head || cleaned.status !== '') {
+    throw new Error(`${role} unverified mutation discard failed: worktree not clean at starting HEAD`)
+  }
+  throw echoError
 }
 
 // OpenAI-reviewer relay spawn path (TUR-447 F2b Unit G; role-runtime role-openai-relay,
@@ -1400,6 +1485,19 @@ if (mode === 'implement') {
     if (fired.readback_state !== 'Todo') {
       throw new Error('delivery spawn at Shaped rejected: Todo readback missing after loop fire')
     }
+    // TUR-447 P0 self-rejection fix (delivery-lifecycle linear-loop-fire-transition,
+    // delivery-entry-gate; role-runtime launch-readback). The loop just performed and
+    // confirmed the Shaped -> Todo fire, so the true live Linear state is now Todo. The
+    // subsequent liveReadback fetches that FRESH Todo state and assertLaunchReadback
+    // compares it against A.linear_state; if the bound expected state stayed the stale
+    // pre-fire Shaped, EVERY delivery self-rejects and no worker ever spawns. Reconcile
+    // the bound expected state to the CONFIRMED post-fire truth (Todo, proven by the
+    // Todo readback above) so a genuine Shaped member proceeds to spawn. This does NOT
+    // weaken the stale-envelope gate: the gate still rejects any fresh read that
+    // disagrees with the post-fire truth (a wrong live state such as Backlog still
+    // rejects), and the launch revision is unaffected because linear_state is not a
+    // bound-input fingerprint field.
+    A.linear_state = fired.readback_state
   }
   const implementation = await spawnWorker('implementer', 'Implement', A.shaping_head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'implement', implementation }

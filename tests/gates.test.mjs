@@ -138,15 +138,26 @@ function proof(overrides = {}) {
     exit_status: 1,
     outcome: 'ModuleNotFoundError: no module named octo_lite.launch',
     artifact: 'https://example.test/pr/1#issuecomment-1',
+    head: 'abc',
+    scenario: 'delivery-entry-gate',
     ...overrides,
   }
+}
+
+// TUR-447 TDD-gate fix: red runs at the unchanged starting HEAD ('abc'), green runs the
+// SAME scenario at the new post-change HEAD ('def' = result.head).
+function greenProof(overrides = {}) {
+  return proof({
+    exit_status: 0, outcome: 'OK', artifact: 'https://example.test/pr/1#issuecomment-2',
+    head: 'def', ...overrides,
+  })
 }
 
 test('implementation requires TDD evidence, validation, and a new fix head', () => {
   const result = {
     head: 'def', validation: 'suite', blocked: false,
     red: proof(),
-    green: proof({ exit_status: 0, outcome: 'OK', artifact: 'https://example.test/pr/1#issuecomment-2' }),
+    green: greenProof(),
   }
   assert.deepEqual(acceptImplementation('abc', result, true), result)
   assert.throws(() => acceptImplementation('abc', { ...result, red: null }, true), /red/)
@@ -159,11 +170,38 @@ test('implementation requires TDD evidence, validation, and a new fix head', () 
     /red must fail/,
   )
   assert.throws(
-    () => acceptImplementation('abc', { ...result, green: proof({ exit_status: 1 }) }, true),
+    () => acceptImplementation('abc', { ...result, green: greenProof({ exit_status: 1 }) }, true),
     /green must pass/,
   )
   assert.throws(() => acceptImplementation('abc', { ...result, head: 'abc' }, true), /new HEAD/)
   assert.throws(() => acceptImplementation('abc', { ...result, blocked: true }, true), /blocked/)
+})
+
+test('TDD gate binds red to the unchanged starting HEAD and green to the same scenario', () => {
+  const result = {
+    head: 'def', validation: 'suite', blocked: false,
+    red: proof(),
+    green: greenProof(),
+  }
+  // A proof missing head or scenario is rejected at assertProof.
+  assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ head: '' }) }, true), /HEAD/)
+  assert.throws(() => acceptImplementation('abc', { ...result, red: proof({ scenario: '' }) }, true), /scenario/)
+  // A fabricated red that claims the post-mutation head (not the unchanged starting HEAD)
+  // is rejected: red-before-mutation is not proven.
+  assert.throws(
+    () => acceptImplementation('abc', { ...result, red: proof({ head: 'def' }) }, true),
+    /red must run at the unchanged starting HEAD before mutation/,
+  )
+  // A green whose scenario differs from red is rejected: not the same behavior.
+  assert.throws(
+    () => acceptImplementation('abc', { ...result, green: greenProof({ scenario: 'other' }) }, true),
+    /green must prove the same scenario as red/,
+  )
+  // A green that did not run at the post-mutation HEAD is rejected.
+  assert.throws(
+    () => acceptImplementation('abc', { ...result, green: greenProof({ head: 'abc' }) }, true),
+    /green must run at the post-mutation HEAD/,
+  )
 })
 
 const PR = 'https://example.test/pr/1'
