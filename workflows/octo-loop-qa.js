@@ -3,17 +3,16 @@ import {
   acceptImplementation,
   acceptPublication,
   acceptQaReview,
-  assertBoundPassResult,
-  assertPassReceipt,
+  assertAdmission,
   assertReadyEnvelope,
-  assertSchema,
+  assertWorkerAckEcho,
   evidenceMode,
 } from './lib/gates.mjs'
 
 export const meta = {
   name: 'octo-loop-qa',
-  description: 'Deterministic gating for one fresh exact-head delivery pass per invocation',
-  whenToUse: 'Shaped Linear work with a resolver-produced pass receipt and a completed octo-launch pass_result',
+  description: 'Native workflow-subagent delivery loop: gate, spawn, and bind one fresh exact-head worker pass per invocation',
+  whenToUse: 'Shaped or Todo Linear work with a clear exact-head shaping verdict, journalled bound inputs, and a per-pass brief',
   phases: [
     { title: 'Implement' },
     { title: 'Code Review' },
@@ -24,11 +23,15 @@ export const meta = {
   ],
 }
 
-// This module performs deterministic gating only. octo-launch launch is the sole LLM
-// execution: it bootstraps the exact role, resumes that same verified provider session
-// to run the pass, parses the structured result, and binds it to the receipt. The
-// caller runs octo-launch first, then invokes this Workflow with the receipt and the
-// exact pass_result it printed. This module never spawns a worker session itself.
+// Decision 109 (operating-model decision-109-workflow-native and decision-109-binding;
+// role-runtime launch-correctness-path and role-worker-migration): this Workflow spawns
+// every worker role pass natively as a fresh subagent. The retired CLI pass launcher
+// and its completed-pass result consumption model are gone. Worker binding proof is
+// the workflow journal entry for the spawn plus the schema-forced acknowledgment echo
+// of the exact bound inputs, verified before any mutation-phase advance. No worker
+// TOML receipt exists. An OpenAI review role runs through a codex relay subagent brief;
+// the spawn primitive is the same. Roles resolve through roles.toml; raw adapter files
+// are never spawn inputs.
 
 const A = typeof args === 'string' ? JSON.parse(args) : (args ?? {})
 const mode = A.mode ?? 'implement'
@@ -44,13 +47,30 @@ const PROOF_SCHEMA = {
   },
 }
 
+// Schema-forced acknowledgment echo of the exact journalled bound inputs
+// (role-runtime launch-identity, launch-receipt; operating-model decision-109-binding).
+const ACK_SCHEMA = {
+  type: 'object',
+  required: ['role', 'repo', 'issue', 'pr', 'starting_head', 'spec_blobs', 'contract_hash'],
+  properties: {
+    role: { type: 'string' },
+    repo: { type: 'string' },
+    issue: { type: 'string' },
+    pr: { type: 'string' },
+    starting_head: { type: 'string' },
+    spec_blobs: { type: 'array', items: { type: 'string' } },
+    contract_hash: { type: 'string' },
+  },
+}
+
 const IMPLEMENT_SCHEMA = {
   type: 'object',
   required: [
-    'issue', 'pr_url', 'branch', 'head', 'handoff_url', 'red', 'green',
-    'validation', 'blocked', 'receipt', 'launch_revision', 'result_binding',
+    'ack', 'issue', 'pr_url', 'branch', 'head', 'handoff_url', 'red', 'green',
+    'validation', 'blocked',
   ],
   properties: {
+    ack: ACK_SCHEMA,
     issue: { type: 'string' },
     pr_url: { type: 'string' },
     branch: { type: 'string' },
@@ -62,43 +82,32 @@ const IMPLEMENT_SCHEMA = {
     summary: { type: 'string' },
     blocked: { type: 'boolean' },
     blocker: { type: 'string' },
-    receipt: { type: 'string' },
-    launch_revision: { type: 'string' },
-    result_binding: { type: 'string' },
   },
 }
 
 const REVIEW_SCHEMA = {
   type: 'object',
-  required: [
-    'head', 'verdict', 'findings', 'receipt', 'comment_url', 'bound_inputs',
-    'launch_revision', 'result_binding',
-  ],
+  required: ['ack', 'head', 'verdict', 'findings', 'comment_url'],
   properties: {
+    ack: ACK_SCHEMA,
     head: { type: 'string' },
     verdict: { enum: ['clear', 'blocking', 'ambiguous'] },
     findings: { type: 'array', items: { type: 'string' } },
-    receipt: { type: 'string' },
     comment_url: { type: 'string' },
-    bound_inputs: { type: 'array', items: { type: 'string' } },
-    launch_revision: { type: 'string' },
-    result_binding: { type: 'string' },
   },
 }
 
 const CAPTURE_SCHEMA = {
   type: 'object',
-  required: ['head', 'plan', 'manifest', 'artifacts', 'receipt', 'blocked', 'launch_revision', 'result_binding'],
+  required: ['ack', 'head', 'plan', 'manifest', 'artifacts', 'blocked'],
   properties: {
+    ack: ACK_SCHEMA,
     head: { type: 'string' },
     plan: { type: 'array', items: { type: 'object' } },
     manifest: { type: 'string' },
     artifacts: { type: 'array', items: { type: 'string' } },
-    receipt: { type: 'string' },
     blocked: { type: 'boolean' },
     blocker: { type: 'string' },
-    launch_revision: { type: 'string' },
-    result_binding: { type: 'string' },
   },
 }
 
@@ -116,21 +125,26 @@ const CRITERION_SCHEMA = {
 
 const QA_REVIEW_SCHEMA = {
   type: 'object',
-  required: [
-    'head', 'verdict', 'issue', 'pr', 'manifest', 'criteria', 'receipt', 'packet_url',
-    'launch_revision', 'result_binding',
-  ],
+  required: ['ack', 'head', 'verdict', 'issue', 'pr', 'manifest', 'criteria', 'packet_url'],
   properties: {
+    ack: ACK_SCHEMA,
     head: { type: 'string' },
     verdict: { enum: ['satisfied', 'blocking', 'ambiguous'] },
     issue: { type: 'string' },
     pr: { type: 'string' },
     manifest: { type: 'string' },
     criteria: { type: 'array', items: CRITERION_SCHEMA },
-    receipt: { type: 'string' },
     packet_url: { type: 'string' },
-    launch_revision: { type: 'string' },
-    result_binding: { type: 'string' },
+  },
+}
+
+const FIRE_SCHEMA = {
+  type: 'object',
+  required: ['command', 'exit_status', 'readback_state'],
+  properties: {
+    command: { type: 'string' },
+    exit_status: { type: 'integer' },
+    readback_state: { type: 'string' },
   },
 }
 
@@ -145,24 +159,84 @@ function cycle() {
   return value
 }
 
-// Deterministic gate shared by every mode: validate the fresh-pass receipt, validate
-// the mode-specific shape of the already-completed pass_result, independently
-// recompute and cross-check its launcher-owned binding, and require the exact
-// launch_revision and receipt echo before any per-mode acceptance logic runs.
-function boundPass(role, startingHead, schema) {
-  const receipt = assertPassReceipt(A.role_receipt, role, startingHead)
-  const passResult = assertSchema(schema, required(A.pass_result, 'pass result'), 'pass_result')
-  assertBoundPassResult(receipt, passResult)
-  if (passResult.launch_revision !== receipt.launch_revision) throw new Error('pass result launch revision mismatch')
-  if (passResult.receipt !== receipt.spawn_id) throw new Error('pass result receipt mismatch')
-  return { receipt, passResult }
+function specBlobs() {
+  if (!Array.isArray(A.spec_blobs) || A.spec_blobs.length === 0) throw new Error('spec blobs required')
+  return A.spec_blobs
+}
+
+// The exact bound inputs for one worker pass. The workflow journal records this
+// object at spawn time; the worker must echo it verbatim in its structured result.
+function journalledBoundInputs(role, startingHead) {
+  return {
+    role,
+    repo: required(A.repo, 'repo'),
+    issue: required(A.issue, 'issue'),
+    pr: required(A.pr, 'pr'),
+    starting_head: required(startingHead, 'starting head'),
+    spec_blobs: specBlobs(),
+    contract_hash: required(A.contract_hash, 'contract hash'),
+  }
+}
+
+// Shared native spawn path for every worker pass: the admission matrix gate runs
+// before the subagent spawns, the journal records the exact bound inputs, and the
+// schema-forced acknowledgment echo is verified before any mutation-phase advance.
+// Every pass is a fresh subagent; a worker session is never resumed.
+async function spawnWorker(role, phaseTitle, startingHead, schema) {
+  assertAdmission({ purpose: 'delivery', role })
+  const bound = journalledBoundInputs(role, startingHead)
+  log(`journal spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash}`)
+  const brief = required(A.brief, 'pass brief')
+  const prompt = [
+    `You are a fresh octo-lite ${role}. One pass only. Never reuse a worker session.`,
+    'BOUND INPUTS: verify each against your own reads, echo them verbatim as the ack',
+    'object in your structured result, and stop before any mutation on any mismatch:',
+    JSON.stringify(bound, null, 2),
+    brief,
+  ].join('\n\n')
+  const result = await agent(prompt, { label: `${role}:${bound.issue}`, phase: phaseTitle, schema })
+  if (result === null) throw new Error(`${role} pass returned no result`)
+  assertWorkerAckEcho(bound, result.ack)
+  return result
+}
+
+// Loop fire (delivery-lifecycle linear-loop-fire-transition, delivery-entry-gate):
+// the one mechanical Shaped -> Todo transition, performed by this loop through
+// octo-control linear-transition before any delivery worker spawns. The runner is
+// the owning orchestrator's mechanical helper invocation, not a worker role pass,
+// so the role-purpose admission matrix and ack echo do not apply; octo-control
+// itself verifies caller authority with compare, mutate, readback, notify.
+async function loopFire() {
+  const issue = required(A.issue, 'issue')
+  const controlArgs = required(A.loop_fire_args, 'loop fire control args')
+  const fire = await agent([
+    'Run exactly this command from the owning orchestrator context, then report it:',
+    `octo-control linear-transition ${issue} --expected Shaped --target Todo ${controlArgs}`,
+    'Return command, exit_status, and readback_state (the Linear state read back).',
+    'Never substitute a different transition, target, or issue.',
+  ].join('\n'), { label: `loop-fire:${issue}`, phase: 'Implement', schema: FIRE_SCHEMA, effort: 'low' })
+  if (fire === null || fire.exit_status !== 0) {
+    throw new Error('delivery spawn at Shaped rejected: Shaped -> Todo loop fire failed')
+  }
+  return fire
 }
 
 if (mode === 'implement') {
   assertReadyEnvelope(A)
-  const { receipt, passResult: implementation } = boundPass('implementer', A.shaping_head, IMPLEMENT_SCHEMA)
+  // Delivery entry: at Shaped this loop performs the Shaped -> Todo loop fire and
+  // verifies the Todo readback before the implementer spawns; there is no path to a
+  // delivery worker spawn at Shaped without that prior fire. The single ruling-15
+  // orchestrator-performed manual Shaped -> Todo for TUR-447 is the one recorded
+  // non-recurring exception; every later member fires through this gate.
+  if (A.linear_state === 'Shaped') {
+    const fired = await loopFire()
+    if (fired.readback_state !== 'Todo') {
+      throw new Error('delivery spawn at Shaped rejected: Todo readback missing after loop fire')
+    }
+  }
+  const implementation = await spawnWorker('implementer', 'Implement', A.shaping_head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'implement', implementation }
-  acceptImplementation(A.shaping_head, implementation, receipt.spawn_id, true)
+  acceptImplementation(A.shaping_head, implementation, true)
   return {
     stage: 'code-review-required', issue: A.issue, pr: A.pr, head: implementation.head,
     cycle: 1, implementation,
@@ -172,7 +246,9 @@ if (mode === 'implement') {
 if (mode === 'code-review') {
   const head = required(A.head, 'head')
   const reviewCycle = cycle()
-  const { receipt, passResult: review } = boundPass('code-reviewer', head, REVIEW_SCHEMA)
+  // An OpenAI code reviewer runs through the codex relay subagent brief
+  // (role-runtime role-openai-relay); the native spawn and gates are identical.
+  const review = await spawnWorker('code-reviewer', 'Code Review', head, REVIEW_SCHEMA)
   if (review.verdict === 'ambiguous') {
     return { stage: 'return-to-shaping', issue: A.issue, head, review }
   }
@@ -189,9 +265,9 @@ if (mode === 'fix') {
   const reviewCycle = cycle()
   if (reviewCycle >= 3) return { stage: 'return-to-shaping', issue: A.issue, head }
   if (!Array.isArray(A.findings) || A.findings.length === 0) throw new Error('blocking findings required')
-  const { receipt, passResult: implementation } = boundPass('implementer', head, IMPLEMENT_SCHEMA)
+  const implementation = await spawnWorker('implementer', 'Fix', head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'fix', implementation }
-  acceptImplementation(head, implementation, receipt.spawn_id, true)
+  acceptImplementation(head, implementation, true)
   return {
     stage: 'code-review-required', issue: A.issue, pr: A.pr, head: implementation.head,
     cycle: reviewCycle + 1, implementation,
@@ -210,7 +286,7 @@ if (mode === 'evidence') {
       next: 'Publish and read back the exact backend card, then run qa-review.',
     }
   }
-  const { passResult: capture } = boundPass('qa-capture', head, CAPTURE_SCHEMA)
+  const capture = await spawnWorker('qa-capture', 'QA Capture', head, CAPTURE_SCHEMA)
   if (capture.blocked) return { stage: 'blocked', gate: 'qa-capture', capture }
   if (capture.head !== head) throw new Error('QA capture head mismatch')
   return {
@@ -227,7 +303,7 @@ if (mode === 'qa-review') {
   ) {
     throw new Error('exact served publication readback required')
   }
-  const { passResult: qaReview } = boundPass('qa-reviewer', head, QA_REVIEW_SCHEMA)
+  const qaReview = await spawnWorker('qa-reviewer', 'QA Review', head, QA_REVIEW_SCHEMA)
   if (qaReview.verdict === 'ambiguous') return { stage: 'return-to-shaping', issue: A.issue, head, qa_review: qaReview }
   const gate = acceptQaReview(head, { issue: A.issue, pr: A.pr, manifest: A.publication.manifest }, qaReview)
   return gate.advance

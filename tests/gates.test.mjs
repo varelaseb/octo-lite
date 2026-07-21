@@ -7,13 +7,9 @@ import {
   acceptQaReview,
   acceptImplementation,
   acceptPublication,
-  assertBoundPassResult,
-  assertPassReceipt,
   assertReadyEnvelope,
-  assertSchema,
   assertWorkerAckEcho,
   evidenceMode,
-  exactFingerprint,
 } from '../workflows/lib/gates.mjs'
 
 // Spec: role-runtime launch-role-purpose-capability, launch-purpose-shaping-roles,
@@ -104,7 +100,6 @@ const ready = {
   adr_blobs: [],
   conversation_cutoff: 'session.jsonl:6824',
   conversation_log_references: ['session.jsonl:1-6824'],
-  role_receipts: { implementer: 'r1', code_reviewer: 'r2', qa_reviewer: 'r3' },
   acceptance_criteria: ['works'],
 }
 
@@ -125,114 +120,6 @@ test('ready envelope rejects wrong lifecycle and incomplete bindings', () => {
   )
 })
 
-function fullReceipt() {
-  return {
-    spawn_id: 'spawn-1',
-    parent: 'issue-orchestrator',
-    reply_route: 'herdr:issue-orchestrator',
-    ready: true,
-    purpose: 'delivery',
-    launch_revision: 'rev-1',
-    role: { name: 'implementer', contract_blob: 'blob-1', mapping_revision: 'map-1' },
-    runtime: { provider: 'anthropic', model: 'claude-sonnet-5' },
-    skills: { resolved: ['tdd', 'commit'], blobs: ['sblob-1', 'sblob-2'] },
-    workspace: { starting_head: 'abc', repo: '/repo', instructions_blob: 'iblob-1' },
-    issue: { identifier: 'TUR-1', fingerprint: 'fp-1' },
-    spec: { revision: 'spec-1', blobs: ['spec/domain.spec.html:spec-1'] },
-    pull_request: { url: 'https://example.test/pr/1', head: 'abc' },
-    topology: { revision: 2 },
-    prior_gates: { shaping_verdict: 'clear', acceptance_criteria: ['works'] },
-    access: { execution_location: 'remote', operator_loopback: false },
-    resources: { branch: 'feature' },
-    bootstrap: { verified: true, provider_session_id: 'provider-session-1' },
-  }
-}
-
-test('pass receipt binds fresh role and exact starting head', () => {
-  const receipt = fullReceipt()
-  assert.deepEqual(assertPassReceipt(receipt, 'implementer', 'abc'), receipt)
-  assert.throws(() => assertPassReceipt(receipt, 'code-reviewer', 'abc'), /role/)
-  assert.throws(() => assertPassReceipt(receipt, 'implementer', 'old'), /starting HEAD/)
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, bootstrap: { verified: false } }, 'implementer', 'abc'),
-    /bootstrap/,
-  )
-})
-
-test('an exact registry-resolved empty skill set is a valid qa-reviewer receipt, not a gate failure', () => {
-  const receipt = { ...fullReceipt(), role: { name: 'qa-reviewer', contract_blob: 'blob-1', mapping_revision: 'map-1' }, skills: { resolved: [], blobs: [] } }
-  assert.deepEqual(assertPassReceipt(receipt, 'qa-reviewer', 'abc'), receipt)
-})
-
-test('a nonempty skill list still requires exactly one blob per resolved skill', () => {
-  const receipt = { ...fullReceipt(), skills: { resolved: ['tdd'], blobs: [] } }
-  assert.throws(() => assertPassReceipt(receipt, 'implementer', 'abc'), /skill blobs/)
-  const missingField = { ...fullReceipt(), skills: {} }
-  assert.throws(() => assertPassReceipt(missingField, 'implementer', 'abc'), /resolved skills/)
-})
-
-test('pass receipt requires the complete bound-input set, not a decorative subset', () => {
-  const receipt = fullReceipt()
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, bootstrap: { verified: true, provider_session_id: '' } }, 'implementer', 'abc'),
-    /provider session/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, skills: { resolved: ['tdd'], blobs: [] } }, 'implementer', 'abc'),
-    /skill blobs/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, issue: {} }, 'implementer', 'abc'),
-    /issue/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, spec: { revision: '', blobs: [] } }, 'implementer', 'abc'),
-    /spec/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, pull_request: { url: '', head: 'abc' } }, 'implementer', 'abc'),
-    /pull request/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, topology: {} }, 'implementer', 'abc'),
-    /topology/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, prior_gates: {} }, 'implementer', 'abc'),
-    /prior gates/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, access: {} }, 'implementer', 'abc'),
-    /access/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, resources: {} }, 'implementer', 'abc'),
-    /resources/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, launch_revision: '' }, 'implementer', 'abc'),
-    /launch revision/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, parent: '' }, 'implementer', 'abc'),
-    /parent/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, reply_route: '' }, 'implementer', 'abc'),
-    /reply route/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, workspace: { starting_head: 'abc', repo: '/repo', instructions_blob: '' } }, 'implementer', 'abc'),
-    /instructions blob/,
-  )
-  assert.throws(
-    () => assertPassReceipt({ ...receipt, role: { name: 'implementer', contract_blob: '', mapping_revision: 'map-1' } }, 'implementer', 'abc'),
-    /contract blob/,
-  )
-})
-
-const BINDING = 'a'.repeat(64)
-
 function proof(overrides = {}) {
   return {
     command: 'python3 -m unittest tests.test_launch',
@@ -243,57 +130,43 @@ function proof(overrides = {}) {
   }
 }
 
-test('implementation requires TDD evidence, exact receipt, new fix head, and exact output binding', () => {
+test('implementation requires TDD evidence, validation, and a new fix head', () => {
   const result = {
-    head: 'def', receipt: 'spawn-1', validation: 'suite', blocked: false,
+    head: 'def', validation: 'suite', blocked: false,
     red: proof(),
     green: proof({ exit_status: 0, outcome: 'OK', artifact: 'https://example.test/pr/1#issuecomment-2' }),
-    result_binding: BINDING,
   }
-  assert.deepEqual(acceptImplementation('abc', result, 'spawn-1', true), result)
-  assert.throws(() => acceptImplementation('abc', { ...result, red: null }, 'spawn-1', true), /red/)
+  assert.deepEqual(acceptImplementation('abc', result, true), result)
+  assert.throws(() => acceptImplementation('abc', { ...result, red: null }, true), /red/)
   assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ command: '' }) }, 'spawn-1', true),
+    () => acceptImplementation('abc', { ...result, red: proof({ command: '' }) }, true),
     /red/,
   )
   assert.throws(
-    () => acceptImplementation('abc', { ...result, red: proof({ exit_status: 0 }) }, 'spawn-1', true),
+    () => acceptImplementation('abc', { ...result, red: proof({ exit_status: 0 }) }, true),
     /red must fail/,
   )
   assert.throws(
-    () => acceptImplementation('abc', { ...result, green: proof({ exit_status: 1 }) }, 'spawn-1', true),
+    () => acceptImplementation('abc', { ...result, green: proof({ exit_status: 1 }) }, true),
     /green must pass/,
   )
-  assert.throws(() => acceptImplementation('abc', { ...result, receipt: 'old' }, 'spawn-1', true), /receipt/)
-  assert.throws(() => acceptImplementation('abc', { ...result, head: 'abc' }, 'spawn-1', true), /new HEAD/)
-  assert.throws(
-    () => acceptImplementation('abc', { ...result, result_binding: 'not-a-hash' }, 'spawn-1', true),
-    /result binding/,
-  )
+  assert.throws(() => acceptImplementation('abc', { ...result, head: 'abc' }, true), /new HEAD/)
+  assert.throws(() => acceptImplementation('abc', { ...result, blocked: true }, true), /blocked/)
 })
 
 const PR = 'https://example.test/pr/1'
 
 function reviewFixture(overrides = {}) {
   return {
-    head: 'abc', verdict: 'clear', receipt: 'x', comment_url: `${PR}#issuecomment-1`,
-    bound_inputs: ['spec:blob1', 'implementer-receipt:spawn-1'], result_binding: BINDING,
+    head: 'abc', verdict: 'clear', comment_url: `${PR}#issuecomment-1`,
     ...overrides,
   }
 }
 
-test('code review rejects wrong head, ambiguous, missing receipt, and unbound output', () => {
+test('code review rejects wrong head, ambiguous verdict, and a foreign comment URL', () => {
   assert.throws(() => acceptCodeReview('abc', PR, reviewFixture({ head: 'old' })), /HEAD/)
   assert.throws(() => acceptCodeReview('abc', PR, reviewFixture({ verdict: 'ambiguous' })), /ambiguous/)
-  assert.throws(() => acceptCodeReview('abc', PR, reviewFixture({ receipt: undefined })), /receipt/)
-  assert.throws(
-    () => acceptCodeReview('abc', PR, reviewFixture({ result_binding: undefined })),
-    /result binding/,
-  )
-  assert.throws(
-    () => acceptCodeReview('abc', PR, reviewFixture({ bound_inputs: [] })),
-    /bound inputs/,
-  )
+  assert.throws(() => acceptCodeReview('abc', PR, reviewFixture({ comment_url: undefined })), /comment/)
   assert.throws(
     () => acceptCodeReview('abc', PR, reviewFixture({ comment_url: 'https://example.test/pr/9#issuecomment-1' })),
     /comment URL/,
@@ -319,27 +192,11 @@ function qaExpected(overrides = {}) {
 
 function qaFixture(overrides = {}) {
   return {
-    head: 'abc', verdict: 'satisfied', receipt: 'qa-1', packet_url: 'https://evidence.test/1',
-    issue: 'TUR-1', pr: PR, manifest: MANIFEST, criteria: [criterion()], result_binding: BINDING,
+    head: 'abc', verdict: 'satisfied', packet_url: 'https://evidence.test/1',
+    issue: 'TUR-1', pr: PR, manifest: MANIFEST, criteria: [criterion()],
     ...overrides,
   }
 }
-
-test('qa-reviewer pass with the exact registry-declared empty skill set grades end to end', () => {
-  const passResult = qaFixture()
-  const { result_binding, ...unbound } = passResult
-  const binding = exactFingerprint(unbound)
-  const bound = { ...unbound, result_binding: binding }
-  const receipt = {
-    ...fullReceipt(),
-    role: { name: 'qa-reviewer', contract_blob: 'blob-qa', mapping_revision: 'map-1' },
-    skills: { resolved: [], blobs: [] },
-    result: { bound: true, binding },
-  }
-  assertPassReceipt(receipt, 'qa-reviewer', 'abc')
-  assertBoundPassResult(receipt, bound)
-  assert.deepEqual(acceptQaReview('abc', qaExpected(), bound), { advance: true, packet_url: 'https://evidence.test/1' })
-})
 
 test('backend work still requires fresh qa review', () => {
   assert.equal(evidenceMode(false), 'nonvisual')
@@ -349,13 +206,9 @@ test('backend work still requires fresh qa review', () => {
   )
 })
 
-test('qa review rejects wrong head, missing served packet, and unbound output', () => {
+test('qa review rejects wrong head, missing served packet, and identity mismatch', () => {
   assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ head: 'old' })), /HEAD/)
   assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ packet_url: undefined })), /served packet/)
-  assert.throws(
-    () => acceptQaReview('abc', qaExpected(), qaFixture({ result_binding: undefined })),
-    /result binding/,
-  )
   assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ issue: 'TUR-9' })), /issue/)
   assert.throws(() => acceptQaReview('abc', qaExpected(), qaFixture({ manifest: 'other' })), /manifest/)
 })
@@ -405,50 +258,6 @@ test('final publication readback binds the complete acceptance card', () => {
   assert.throws(
     () => acceptPublication({ issue: 'TUR-1', pr: publication.pr, head: 'abc', story_ids: publication.story_ids, acceptance_criteria: ['works', 'missing'] }, publication),
     /criterion coverage/,
-  )
-})
-
-test('exact fingerprint matches octo_lite.runtime.exact_fingerprint for the same payload', () => {
-  // Cross-checked against python3 -c "from octo_lite.runtime import exact_fingerprint; print(exact_fingerprint(...))"
-  assert.equal(
-    exactFingerprint({ a: 1, b: [1, 2, 3], c: { z: 'y', a: 'b' } }),
-    'c36bd36cb7d15bf8bc503f812c71ed02f9340466699c0b55a449c8a39a5c48aa',
-  )
-  assert.equal(
-    exactFingerprint({ command: 'pytest', exit_status: 0, outcome: 'pass', artifact: 'a/b.txt' }),
-    '3800bd8b93cc5789beecf634f9627d9c370a8132c9b3f2ef3b0ff475b8e2e5db',
-  )
-})
-
-test('the workflow independently recomputes and cross-checks the launcher-owned binding', () => {
-  const passResult = { head: 'def', receipt: 'spawn-1' }
-  const binding = exactFingerprint(passResult)
-  const bound = { ...passResult, result_binding: binding }
-  const receipt = { result: { bound: true, binding } }
-  assert.equal(assertBoundPassResult(receipt, bound), binding)
-
-  // A role cannot self-author its own binding: a claim that does not match its own content fails.
-  assert.throws(
-    () => assertBoundPassResult(receipt, { ...bound, result_binding: 'f'.repeat(64) }),
-    /does not match its own content/,
-  )
-  // The receipt itself must record the launcher's binding as bound.
-  assert.throws(
-    () => assertBoundPassResult({ result: { bound: false, binding } }, bound),
-    /receipt result not bound/,
-  )
-  // A tampered field after binding fails self-consistency immediately (the claimed
-  // binding no longer matches the tampered content).
-  assert.throws(
-    () => assertBoundPassResult(receipt, { ...bound, head: 'tampered' }),
-    /does not match its own content/,
-  )
-  // A self-consistent result bound to a different receipt's stored binding is rejected:
-  // the launcher bound this receipt to a different pass result.
-  const otherReceipt = { result: { bound: true, binding: exactFingerprint({ head: 'other' }) } }
-  assert.throws(
-    () => assertBoundPassResult(otherReceipt, bound),
-    /does not match receipt/,
   )
 })
 
@@ -556,25 +365,4 @@ test('a missing bound input in the worker ack echo is rejected before any mutati
   delete noBlobs.spec_blobs
   assert.throws(() => assertWorkerAckEcho(journalled, noBlobs), /spec blobs required/)
   assert.throws(() => assertWorkerAckEcho(journalled, undefined), /required/)
-})
-
-test('schema assertion enforces required fields, types, enums, and nested items', () => {
-  const schema = {
-    type: 'object',
-    required: ['head', 'verdict'],
-    properties: {
-      head: { type: 'string' },
-      verdict: { enum: ['clear', 'blocking'] },
-      findings: { type: 'array', items: { type: 'string' } },
-    },
-  }
-  assert.deepEqual(assertSchema(schema, { head: 'abc', verdict: 'clear', findings: ['x'] }, 'result'), {
-    head: 'abc', verdict: 'clear', findings: ['x'],
-  })
-  assert.throws(() => assertSchema(schema, { verdict: 'clear' }, 'result'), /result\.head required/)
-  assert.throws(() => assertSchema(schema, { head: 'abc', verdict: 'maybe' }, 'result'), /must be one of/)
-  assert.throws(
-    () => assertSchema(schema, { head: 'abc', verdict: 'clear', findings: [1] }, 'result'),
-    /result\.findings\[0\] must be string/,
-  )
 })

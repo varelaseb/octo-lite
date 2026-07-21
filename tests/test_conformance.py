@@ -47,16 +47,54 @@ class CutoverConformanceTests(unittest.TestCase):
         lines = (ROOT / "skills/octo-lite-issue-shaper/SKILL.md").read_text().splitlines()
         self.assertLessEqual(len(lines), 160)
 
-    def test_workflow_gates_generated_role_names_and_never_calls_agent(self) -> None:
+    def test_workflow_spawns_workers_natively_through_admission_and_ack_echo_gates(self) -> None:
+        # Decision 109 (role-runtime launch-correctness-path, role-worker-migration):
+        # the Workflow spawns every worker pass natively through agent(); the retired
+        # launcher's completed pass_result consumption path must not return, and raw
+        # adapter files (agents/*.md) are never spawn inputs.
         text = (ROOT / "workflows/octo-loop-qa.js").read_text()
         for role in ("implementer", "code-reviewer", "qa-capture", "qa-reviewer"):
             self.assertIn(f"'{role}'", text)
         for stale in ("octo-lite-implementer", "octo-lite-reviewer", "octo-lite-code-reviewer"):
             self.assertNotIn(stale, text)
-        # octo-launch launch is the sole LLM execution; this Workflow only gates its
-        # already-completed, receipt-bound pass_result. It must never spawn a second worker.
-        self.assertNotIn("agent(", text)
-        self.assertIn("assertBoundPassResult", text)
+        self.assertIn("await agent(", text)
+        for retired in ("pass_result", "assertPassReceipt", "assertBoundPassResult", "octo-launch"):
+            self.assertNotIn(retired, text)
+        self.assertNotIn("agents/", text)
+        # The shared spawn path admits the role before agent() runs and verifies the
+        # schema-forced ack echo before any mutation-phase advance, in that order.
+        spawn = text[text.index("async function spawnWorker"):text.index("if (mode ===")]
+        self.assertLess(spawn.index("assertAdmission("), spawn.index("await agent("))
+        self.assertLess(spawn.index("await agent("), spawn.index("assertWorkerAckEcho("))
+
+    def test_workflow_loop_fires_shaped_to_todo_before_any_delivery_spawn(self) -> None:
+        # delivery-lifecycle delivery-entry-gate and linear-loop-fire-transition: at
+        # Shaped the loop itself performs the one mechanical Shaped -> Todo fire through
+        # octo-control linear-transition and verifies the Todo readback before spawning
+        # any delivery worker; a delivery spawn attempted at Shaped without that prior
+        # fire is rejected, and Shaped never moves directly to In Progress.
+        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        self.assertIn("octo-control linear-transition", text)
+        self.assertIn("--expected Shaped --target Todo", text)
+        self.assertNotIn("--target In Progress", text)
+        implement = text[text.index("if (mode === 'implement')"):text.index("if (mode === 'code-review')")]
+        self.assertIn("=== 'Shaped'", implement)
+        self.assertLess(implement.index("loopFire("), implement.index("spawnWorker('implementer'"))
+        self.assertIn("delivery spawn at Shaped rejected", text)
+        # The single ruling-15 orchestrator-performed manual Shaped -> Todo for TUR-447
+        # is the one recorded non-recurring exception, held in a comment, never in code.
+        self.assertIn("ruling-15", text)
+        self.assertIn("TUR-447", text)
+
+    def test_loop_skill_directs_journal_based_gating_with_no_worker_receipt(self) -> None:
+        # Deterministic wiring check only (prompt-tdd-deterministic): the installed
+        # loop skill directs journal-plus-ack-echo gating and keeps the retired
+        # launcher binding surfaces retired.
+        text = " ".join((ROOT / "skills/octo-lite-loop/SKILL.md").read_text().split())
+        self.assertIn("workflow journal plus a schema-forced acknowledgment echo", text)
+        self.assertIn("no worker TOML receipt", text)
+        self.assertIn("No worker TOML receipt exists to pass anywhere", text)
+        self.assertNotIn("recomputes the result binding", text)
 
     def test_install_is_symlink_only_and_checkable(self) -> None:
         installer = ROOT / "scripts/install-octo-lite"

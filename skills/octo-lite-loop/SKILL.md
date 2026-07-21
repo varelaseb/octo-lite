@@ -42,11 +42,11 @@ subagent, or a codex relay subagent for an OpenAI role, after the workflow-layer
 gates admit it. It refetches exact sources, resolves the role, and binds the
 result by the workflow journal plus a schema-forced acknowledgment echo of the
 bound inputs verified before mutation. There is no octo-launch CLI pass and no
-worker TOML receipt; the pass produces a machine-readable `pass_result`.
+worker TOML receipt; the pass produces a machine-readable structured result.
 
 The same workflow then gates that pass deterministically from the journal: it
-independently recomputes the result binding, checks it against the journalled
-bound inputs and acknowledgment echo, checks role, exact HEAD, and mode-specific
+checks the schema-forced acknowledgment echo against the journalled bound
+inputs, checks role, exact HEAD, and mode-specific
 schema, then advances or returns a fix or blocked stage. No worker TOML receipt
 exists to pass anywhere. Read back the exact gate output before resolving the
 next pass. Never precompute bindings for future unknown HEADs. Never run a
@@ -54,7 +54,7 @@ second worker for the same pass.
 
 1. Fresh exact Sonnet 5 xhigh implementer.
 2. Require spec-derived intended red, smallest green, refactor, validation,
-   exact HEAD, receipt, and durable PR handoff.
+   exact HEAD, and durable PR handoff.
 3. Fresh GPT-5.6 Sol high code reviewer on that HEAD.
 4. Publish one exact-head verdict comment through `octo-control
    verdict-publish`. No formal GitHub Review API gate.
