@@ -151,11 +151,29 @@ class CutoverConformanceTests(unittest.TestCase):
         for retired in ("pass_result", "assertPassReceipt", "assertBoundPassResult", "octo-launch"):
             self.assertNotIn(retired, text)
         self.assertNotIn("agents/", text)
-        # The shared spawn path admits the role before agent() runs and verifies the
-        # schema-forced ack echo before any mutation-phase advance, in that order.
+        # Unit B (TUR-447 F1) observable pre-mutation boundary: the shared spawn path
+        # admits the role, then runs an OBSERVABLE read-only acknowledgment spawn
+        # (write tools withheld) that produces ONLY the ack echo, then the host
+        # verifies that echo against the journalled bound inputs, and ONLY THEN spawns
+        # the write-capable mutation phase, in that exact order. A worker that would
+        # mutate before verification cannot, because no write-capable spawn exists
+        # until the read-only echo verifies.
         spawn = text[text.index("async function spawnWorker"):text.index("if (mode ===")]
+        # Admission runs before any spawn.
         self.assertLess(spawn.index("assertAdmission("), spawn.index("await agent("))
-        self.assertLess(spawn.index("await agent("), spawn.index("assertWorkerAckEcho("))
+        # The FIRST agent() spawn is the read-only ack phase: it withholds write tools.
+        first_spawn = spawn.index("await agent(")
+        self.assertIn("writeCapable: false", spawn)
+        self.assertLess(spawn.index("writeCapable: false"), spawn.index("verifyAckThenUpgrade("))
+        # The echo is verified through the read-only-ack-then-upgrade gate before the
+        # write-capable spawn is reached.
+        self.assertLess(spawn.index("verifyAckThenUpgrade("), spawn.rindex("await agent("))
+        # The read-only ack spawn precedes the write-capable spawn (two distinct spawns).
+        self.assertLess(first_spawn, spawn.rindex("await agent("))
+        self.assertNotEqual(first_spawn, spawn.rindex("await agent("))
+        # The write-capable spawn declares itself write-capable, and only it does so.
+        self.assertIn("writeCapable: true", spawn)
+        self.assertLess(spawn.index("verifyAckThenUpgrade("), spawn.index("writeCapable: true"))
 
     def test_loop_is_genuinely_loadable_as_a_workflow_script(self) -> None:
         # TUR-488 (role-runtime launch-gates-workflow-layer): the Workflow tool

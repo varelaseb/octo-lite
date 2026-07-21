@@ -358,6 +358,30 @@ export function assertWorkerAckEcho(journalled, ack) {
   return ack
 }
 
+// Observable read-only acknowledgment phase then capability upgrade (role-runtime
+// launch-identity, launch-receipt, launch-gates-workflow-layer; operating-model
+// decision-109-binding). A worker first runs in a read-only acknowledgment spawn with
+// write tools withheld that produces ONLY the schema-forced ack echo of the exact
+// journalled bound inputs. The owning host verifies that echo against the journalled
+// bound inputs and ONLY THEN authorizes the write-capable mutation phase. A worker that
+// would mutate before verification cannot, rather than being rejected after a prohibited
+// mutation: no write-capable phase exists until the read-only echo verifies. A role,
+// repo, issue, or PR substitution blocks the mutation phase exactly as a HEAD mismatch
+// does, because the same echo gate decides both.
+export function assertReadOnlyAckPhase(phase) {
+  required(phase, 'ack phase')
+  if (phase.writeCapable !== false) {
+    throw new Error('ack phase must run read-only: write tools withheld until the echo verifies')
+  }
+  return phase
+}
+
+export function verifyAckThenUpgrade(journalled, phase) {
+  assertReadOnlyAckPhase(phase)
+  assertWorkerAckEcho(journalled, phase.ack)
+  return { upgrade: 'write-capable' }
+}
+
 function assertProof(proof, label) {
   if (typeof proof !== 'object' || proof === null) throw new Error(`${label} required`)
   requiredNonEmptyString(proof.command, `${label} command`)

@@ -11,10 +11,12 @@ import {
   assertLaunchReadback,
   assertLaunchRevision,
   assertManifestShape,
+  assertReadOnlyAckPhase,
   assertReadyEnvelope,
   assertWorkerAckEcho,
   evidenceMode,
   launchRevision,
+  verifyAckThenUpgrade,
 } from '../workflows/lib/gates.mjs'
 
 // Spec: role-runtime launch-role-purpose-capability, launch-purpose-shaping-roles,
@@ -370,6 +372,90 @@ test('a missing bound input in the worker ack echo is rejected before any mutati
   delete noBlobs.spec_blobs
   assert.throws(() => assertWorkerAckEcho(journalled, noBlobs), /spec blobs required/)
   assert.throws(() => assertWorkerAckEcho(journalled, undefined), /required/)
+})
+
+// Unit B (TUR-447 F1). Spec: role-runtime launch-identity, launch-receipt,
+// launch-gates-workflow-layer
+// (blob spec/domains/role-runtime.spec.html:e1265b3c5d0a464ed416de283e11069e4796b01a);
+// operating-model decision-109-binding
+// (blob spec/domains/operating-model.spec.html:30c64f92a7085bd85609f238f7ed3891fe729b1a).
+// The bound-input echo is verified in an OBSERVABLE read-only acknowledgment phase
+// (write tools withheld) that produces ONLY the ack echo; the write-capable mutation
+// phase is unreachable until that echo verifies. A worker that would mutate before
+// verification cannot, rather than being rejected after a prohibited mutation.
+
+test('the read-only ack phase must run with write tools withheld', () => {
+  const journalled = journalledBoundInputs()
+  const ack = journalledBoundInputs()
+  assert.deepEqual(
+    assertReadOnlyAckPhase({ writeCapable: false, ack }),
+    { writeCapable: false, ack },
+  )
+  // A write-capable ack phase is rejected: mutation could precede verification.
+  assert.throws(() => assertReadOnlyAckPhase({ writeCapable: true, ack }), /read-only/)
+  assert.throws(() => assertReadOnlyAckPhase({ ack }), /read-only/)
+  assert.throws(() => assertReadOnlyAckPhase(undefined), /ack phase required/)
+})
+
+test('the write-capable mutation phase is unreachable until the ack echo verifies', () => {
+  const journalled = journalledBoundInputs()
+  const ack = journalledBoundInputs()
+  // The read-only ack phase echo verifies, so and only so the write phase is authorized.
+  assert.deepEqual(
+    verifyAckThenUpgrade(journalled, { writeCapable: false, ack }),
+    { upgrade: 'write-capable' },
+  )
+  // A write-capable ack phase never reaches the upgrade: it cannot mutate before verify.
+  assert.throws(
+    () => verifyAckThenUpgrade(journalled, { writeCapable: true, ack }),
+    /read-only/,
+  )
+})
+
+test('a substituted bound input blocks the mutation phase exactly as a HEAD mismatch does', () => {
+  const journalled = journalledBoundInputs()
+  const headError = (() => {
+    try {
+      verifyAckThenUpgrade(journalled, {
+        writeCapable: false,
+        ack: { ...journalledBoundInputs(), starting_head: 'other' },
+      })
+    } catch (error) {
+      return error
+    }
+    throw new Error('HEAD mismatch must block the mutation phase')
+  })()
+  assert.equal(headError.constructor, Error)
+  assert.match(headError.message, /mismatch$/)
+  // Explicit role, repo, issue, and PR substitution reds: each blocks the write phase
+  // exactly as a HEAD mismatch does.
+  const substitutions = [
+    ['role', 'code-reviewer'],
+    ['repo', 'varelaseb/other-repo'],
+    ['issue', 'TUR-9'],
+    ['pr', 'https://example.test/pr/9'],
+  ]
+  for (const [field, substituted] of substitutions) {
+    const error = (() => {
+      try {
+        verifyAckThenUpgrade(journalled, {
+          writeCapable: false,
+          ack: { ...journalledBoundInputs(), [field]: substituted },
+        })
+      } catch (caught) {
+        return caught
+      }
+      throw new Error(`${field} substitution must block the mutation phase`)
+    })()
+    assert.equal(error.constructor, headError.constructor)
+    assert.match(error.message, /mismatch$/)
+  }
+  // A missing bound input in the ack echo also blocks the mutation phase.
+  for (const field of ['role', 'repo', 'issue', 'pr', 'starting_head', 'contract_hash']) {
+    const ack = journalledBoundInputs()
+    delete ack[field]
+    assert.throws(() => verifyAckThenUpgrade(journalled, { writeCapable: false, ack }), /required|mismatch/)
+  }
 })
 
 // Unit H. Spec: role-runtime launch-gates-workflow-layer, launch-linear-state-gate,

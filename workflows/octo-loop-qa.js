@@ -385,6 +385,30 @@ function assertWorkerAckEcho(journalled, ack) {
   return ack
 }
 
+// Observable read-only acknowledgment phase then capability upgrade (role-runtime
+// launch-identity, launch-receipt, launch-gates-workflow-layer; operating-model
+// decision-109-binding). A worker first runs in a read-only acknowledgment spawn with
+// write tools withheld that produces ONLY the schema-forced ack echo of the exact
+// journalled bound inputs. The owning host verifies that echo against the journalled
+// bound inputs and ONLY THEN authorizes the write-capable mutation phase. A worker that
+// would mutate before verification cannot, rather than being rejected after a prohibited
+// mutation: no write-capable phase exists until the read-only echo verifies. A role,
+// repo, issue, or PR substitution blocks the mutation phase exactly as a HEAD mismatch
+// does, because the same echo gate decides both.
+function assertReadOnlyAckPhase(phase) {
+  required(phase, 'ack phase')
+  if (phase.writeCapable !== false) {
+    throw new Error('ack phase must run read-only: write tools withheld until the echo verifies')
+  }
+  return phase
+}
+
+function verifyAckThenUpgrade(journalled, phase) {
+  assertReadOnlyAckPhase(phase)
+  assertWorkerAckEcho(journalled, phase.ack)
+  return { upgrade: 'write-capable' }
+}
+
 function assertProof(proof, label) {
   if (typeof proof !== 'object' || proof === null) throw new Error(`${label} required`)
   requiredNonEmptyString(proof.command, `${label} command`)
@@ -526,6 +550,17 @@ const ACK_SCHEMA = {
   },
 }
 
+// The read-only acknowledgment phase (Unit B, TUR-447 F1) returns ONLY the ack echo:
+// its schema forces the ack object and nothing mutation-related, so the read-only spawn
+// cannot smuggle a result that advances work before the echo is host-verified.
+const ACK_ONLY_SCHEMA = {
+  type: 'object',
+  required: ['ack'],
+  properties: {
+    ack: ACK_SCHEMA,
+  },
+}
+
 const IMPLEMENT_SCHEMA = {
   type: 'object',
   required: [
@@ -640,12 +675,17 @@ function journalledBoundInputs(role, startingHead) {
   }
 }
 
-// Shared native spawn path for every worker pass: the admission matrix plus
-// Linear-state gate, worktree containment, and launch-revision revalidation run
-// before the subagent spawns, the journal records the exact bound inputs, and the
-// schema-forced acknowledgment echo plus launch-revision revalidation are verified
-// before any mutation-phase advance. Every pass is a fresh subagent; a worker
-// session is never resumed.
+// Shared native spawn path for every worker pass (Unit B, TUR-447 F1): the admission
+// matrix plus Linear-state gate, worktree containment, and launch-revision revalidation
+// run before any subagent spawns, the journal records the exact bound inputs, and the
+// worker binding is proven through an OBSERVABLE read-only acknowledgment phase before
+// any mutation-capable spawn exists. The worker first runs in a read-only acknowledgment
+// spawn (write tools withheld, writeCapable: false) that produces ONLY the schema-forced
+// ack echo. The host verifies that echo against the journalled bound inputs through
+// verifyAckThenUpgrade, and ONLY THEN spawns the write-capable mutation phase. A worker
+// that would mutate before verification cannot, because no write-capable spawn is issued
+// until the read-only echo verifies. Every pass is a fresh subagent; a worker session is
+// never resumed.
 async function spawnWorker(role, phaseTitle, startingHead, schema) {
   assertAdmission({ purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') })
   // Containment at admission (launch-containment).
@@ -660,6 +700,31 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
   assertLaunchRevision(revision, bound)
   log(`journal spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash} ${revision}`)
   const brief = required(A.brief, 'pass brief')
+  // Containment again at each child subagent spawn (launch-containment).
+  assertContainment(A.worktree_root, worktree)
+  // Phase 1: read-only acknowledgment spawn. Write tools are withheld, so the worker
+  // physically cannot mutate; it returns ONLY the schema-forced ack echo of the exact
+  // bound inputs. This is the observable pre-mutation boundary.
+  const ackPrompt = [
+    `You are a fresh octo-lite ${role} in the read-only acknowledgment phase. Write tools`,
+    'are withheld: you cannot mutate anything now. One pass only; never reuse a session.',
+    'BOUND INPUTS: verify each against your own reads and echo them verbatim as the ack',
+    'object in your structured result. Return ONLY the ack; do not attempt any change:',
+    JSON.stringify(bound, null, 2),
+  ].join('\n\n')
+  const acknowledged = await agent(ackPrompt, {
+    label: `${role}-ack:${bound.issue}`, phase: phaseTitle, schema: ACK_ONLY_SCHEMA,
+    writeCapable: false, readOnly: true,
+  })
+  if (acknowledged === null) throw new Error(`${role} read-only ack phase returned no result`)
+  // Host verifies the read-only echo against the journalled bound inputs and only then
+  // authorizes the write-capable phase. A role, repo, issue, or PR substitution blocks
+  // here exactly as a HEAD mismatch does.
+  verifyAckThenUpgrade(bound, { writeCapable: false, ack: acknowledged.ack })
+  // Launch-revision revalidation again before the mutation-phase advance.
+  assertLaunchRevision(revision, bound)
+  // Phase 2: write-capable mutation spawn, reached ONLY after the echo verified.
+  assertContainment(A.worktree_root, worktree)
   const prompt = [
     `You are a fresh octo-lite ${role}. One pass only. Never reuse a worker session.`,
     'BOUND INPUTS: verify each against your own reads, echo them verbatim as the ack',
@@ -667,9 +732,9 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     JSON.stringify(bound, null, 2),
     brief,
   ].join('\n\n')
-  // Containment again at child subagent spawn (launch-containment).
-  assertContainment(A.worktree_root, worktree)
-  const result = await agent(prompt, { label: `${role}:${bound.issue}`, phase: phaseTitle, schema })
+  const result = await agent(prompt, {
+    label: `${role}:${bound.issue}`, phase: phaseTitle, schema, writeCapable: true,
+  })
   if (result === null) throw new Error(`${role} pass returned no result`)
   assertWorkerAckEcho(bound, result.ack)
   // Launch-revision revalidation again before any mutation-phase advance.
