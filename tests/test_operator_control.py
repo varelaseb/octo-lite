@@ -2201,17 +2201,14 @@ if __name__ == "__main__":
 
 
 class SweepStreamLivenessTests(unittest.TestCase):
-    # sweep-stream-liveness and sweep-suspected-stuck (ruling-19, refined +
-    # transcript-path repair): liveness derives from the SESSION transcript at
-    # <projects_root>/<sanitized-cwd>/<session_id>.jsonl resolved from the
-    # stream receipt, plus pane state, never status-file age alone; an ask
-    # older than subsequent session activity is presumed consumed; outputs are
-    # stable mtimes so unchanged stays no-op.
+    # sweep-stream-liveness law after ruling-22 reality alignment: liveness
+    # derives ONLY from surfaces that exist in production: the receipt-derived
+    # session transcript mtime, status gate lines, and the XDG inbox; never
+    # status-file age alone; an ask older than subsequent session activity is
+    # presumed consumed; outputs are stable file facts.
     def _stream_with_receipt(self, base: Path, name: str, projects: Path, now: float) -> tuple[Path, Path]:
         stream = base / "streams" / name
         stream.mkdir(parents=True)
-        (stream / "status.md").write_text("# s\n")
-        os.utime(stream / "status.md", (now - 9000, now - 9000))
         worktree = base / "wt" / name
         worktree.mkdir(parents=True)
         session_id = f"sess-{name}"
@@ -2226,57 +2223,80 @@ class SweepStreamLivenessTests(unittest.TestCase):
         transcript.write_text("{}\n")
         return stream, transcript
 
-    def test_stream_liveness_uses_the_receipt_derived_session_transcript(self) -> None:
+    def test_liveness_derives_from_transcript_status_gate_lines_and_inbox(self) -> None:
         module = _load_operator_sweep_module()
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             now = 1_000_000.0
-            queue = base / "herdr-queue"
-            queue.mkdir()
             projects = base / "projects"
+            inbox_root = base / "inbox"
             stream, transcript = self._stream_with_receipt(base, "tur-1", projects, now)
             os.utime(transcript, (now - 600, now - 600))
-            (stream / "waiting.toml").write_text(
-                'owner = "operator"\nask = "Please approve the suite at the served pages."\n'
+            (stream / "status.md").write_text(
+                "# Stream status\n\n"
+                "- waiting-on: operator: Please approve the suite at the served pages.\n"
+                "- In flight: workflow wf_abc123-def (task x).\n"
             )
-            os.utime(stream / "waiting.toml", (now - 300, now - 300))
-            (stream / "inflight.toml").write_text('workflows = ["wf_abc123-def"]\n')
-            (queue / "20260720T000001-tur-1.json").write_text("{}")
+            os.utime(stream / "status.md", (now - 300, now - 300))
+            target_inbox = inbox_root / "tur-1"
+            target_inbox.mkdir(parents=True)
+            (target_inbox / "20260720T000001-msg").write_text("id\n")
 
             live = module.stream_liveness(
-                stream, queue, idle_seconds=3600, now=now, projects_root=projects
+                stream, inbox_root, idle_seconds=3600, now=now, projects_root=projects
             )
-            # transcript mtime comes from the derived session transcript.
+            # transcript mtime from the receipt-derived session transcript.
             self.assertEqual(int(now - 600), live["transcript_mtime"])
-            # ask recorded AFTER the last session activity: open wait, verbatim ask.
+            # status gate line recorded AFTER the last session activity: open wait.
             self.assertEqual("waiting", live["classification"])
             self.assertEqual("operator", live["wait_owner"])
-            self.assertEqual("Please approve the suite at the served pages.", live["open_ask"])
+            self.assertEqual(
+                "Please approve the suite at the served pages.", live["open_ask"]
+            )
             self.assertFalse(live["ask_consumed"])
+            # in-flight ids parsed from status content, undelivered from the XDG inbox.
             self.assertEqual(["wf_abc123-def"], live["inflight_workflows"])
-            self.assertEqual(["20260720T000001-tur-1.json"], live["undelivered_queue"])
+            self.assertEqual(["20260720T000001-msg"], live["undelivered_queue"])
 
-            # session activity AFTER the recorded ask: presumed consumed, active.
+            # session activity AFTER the status-recorded ask: presumed consumed;
+            # fresh transcript keeps the stream active.
             os.utime(transcript, (now - 60, now - 60))
             consumed = module.stream_liveness(
-                stream, queue, idle_seconds=3600, now=now, projects_root=projects
+                stream, inbox_root, idle_seconds=3600, now=now, projects_root=projects
             )
             self.assertTrue(consumed["ask_consumed"])
             self.assertEqual("", consumed["wait_owner"])
             self.assertEqual("active", consumed["classification"])
+
+    def test_recent_status_alone_never_counts_as_activity(self) -> None:
+        # Classifier defect red: a freshly rewritten status file with an idle
+        # (or absent) transcript must NOT classify the stream active.
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            projects = base / "projects"
+            inbox_root = base / "inbox"
+            stream, transcript = self._stream_with_receipt(base, "tur-2", projects, now)
+            os.utime(transcript, (now - 9000, now - 9000))
+            (stream / "status.md").write_text("# fresh status, no gate lines\n")
+            os.utime(stream / "status.md", (now - 5, now - 5))
+            live = module.stream_liveness(
+                stream, inbox_root, idle_seconds=3600, now=now, projects_root=projects
+            )
+            self.assertEqual("suspected-stuck", live["classification"])
 
     def test_stream_without_receipt_or_transcript_goes_suspected_stuck_when_idle(self) -> None:
         module = _load_operator_sweep_module()
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             now = 1_000_000.0
-            queue = base / "herdr-queue"
-            stuck = base / "streams" / "tur-2"
+            stuck = base / "streams" / "tur-3"
             stuck.mkdir(parents=True)
             (stuck / "status.md").write_text("# s\n")
             os.utime(stuck / "status.md", (now - 9000, now - 9000))
             live = module.stream_liveness(
-                stuck, queue, idle_seconds=3600, now=now, projects_root=base / "projects"
+                stuck, base / "inbox", idle_seconds=3600, now=now, projects_root=base / "p"
             )
             self.assertEqual("suspected-stuck", live["classification"])
             self.assertIsNone(live["transcript_mtime"])
@@ -2286,21 +2306,19 @@ class SweepStreamLivenessTests(unittest.TestCase):
         module = _load_operator_sweep_module()
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            queue = base / "herdr-queue"
-            stream = base / "streams" / "tur-3"
+            stream = base / "streams" / "tur-4"
             stream.mkdir(parents=True)
             (stream / "status.md").write_text("# s\n")
             first = module.stream_liveness(
-                stream, queue, idle_seconds=3600, now=2_000_000.0, projects_root=base / "p"
+                stream, base / "inbox", idle_seconds=3600, now=2_000_000.0, projects_root=base / "p"
             )
             second = module.stream_liveness(
-                stream, queue, idle_seconds=3600, now=2_000_005.0, projects_root=base / "p"
+                stream, base / "inbox", idle_seconds=3600, now=2_000_005.0, projects_root=base / "p"
             )
             self.assertEqual(first, second)
 
-    def test_snapshot_includes_the_stream_liveness_section(self) -> None:
+    def test_snapshot_includes_the_stream_liveness_section_and_no_phantom_sources(self) -> None:
         source = SWEEP.read_text()
         self.assertIn("## Stream liveness", source)
-        # The repaired path derivation is used; the never-existing local
-        # transcript.jsonl path is gone.
-        self.assertNotIn('stream_dir / "transcript.jsonl"', source)
+        for phantom in ("waiting.toml", "inflight.toml", "pane-activity.txt", "herdr-queue"):
+            self.assertNotIn(phantom, source)

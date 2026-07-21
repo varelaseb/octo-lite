@@ -191,62 +191,65 @@ def _stream_transcript_path(stream_dir: Path, projects_root: Path) -> Path | Non
     return projects_root / sanitize_project_dir(worktree) / f"{session_id}.jsonl"
 
 
-def stream_liveness(stream_dir: Path, queue_dir: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None) -> dict:
-    """Per-stream liveness per sweep-stream-liveness and sweep-suspected-stuck
-    (ruling-19, refined): liveness derives from session transcript mtime plus
-    pane state, never status-file age alone; a recorded operator ask older than
-    subsequent session activity is presumed consumed and is not an open wait.
-    Outputs are stable file mtimes so an unchanged control dir stays a no-op."""
+def stream_liveness(stream_dir: Path, inbox_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None) -> dict:
+    """Per-stream liveness per sweep-stream-liveness law (ruling-22 reality
+    alignment): liveness derives ONLY from surfaces that exist in production:
+    the receipt-derived session transcript mtime, status gate lines, and the
+    XDG inbox; never status-file age alone. A status-recorded ask older than
+    subsequent session activity is presumed consumed. Outputs are stable file
+    facts so an unchanged control dir stays a no-op."""
     current = time.time() if now is None else now
 
     def mtime(path: Path) -> int | None:
         return int(path.stat().st_mtime) if path.is_file() else None
 
-    status_mtime = mtime(stream_dir / "status.md")
+    status_path = stream_dir / "status.md"
+    status_mtime = mtime(status_path)
+    status_text = status_path.read_text() if status_path.is_file() else ""
+
     projects = projects_root if projects_root is not None else Path.home() / ".claude" / "projects"
     transcript_path = _stream_transcript_path(stream_dir, projects)
     transcript_mtime = mtime(transcript_path) if transcript_path is not None else None
-    pane_mtime = mtime(stream_dir / "pane-activity.txt")
-    activity_candidates = [value for value in (transcript_mtime, pane_mtime) if value is not None]
-    activity_mtime = max(activity_candidates) if activity_candidates else None
 
+    # Status gate lines are the real, child-written wait surface: the first
+    # waiting-on line names the owner and carries the verbatim open ask.
     wait_owner, open_ask, ask_consumed = "", "", False
-    waiting_path = stream_dir / "waiting.toml"
-    waiting_mtime = mtime(waiting_path)
-    if waiting_path.is_file():
-        waiting = load_toml(waiting_path)
-        recorded_owner = str(waiting.get("owner") or "")
-        recorded_ask = str(waiting.get("ask") or "")
-        if activity_mtime is not None and waiting_mtime is not None and waiting_mtime < activity_mtime:
+    match = re.search(r"^\s*[-*]?\s*waiting-on:\s*([^:\n]+):\s*(.+)$", status_text, re.MULTILINE | re.IGNORECASE)
+    if match:
+        recorded_owner = match.group(1).strip()
+        recorded_ask = match.group(2).strip()
+        if (
+            transcript_mtime is not None
+            and status_mtime is not None
+            and transcript_mtime > status_mtime
+        ):
             ask_consumed = True
         elif recorded_owner:
             wait_owner, open_ask = recorded_owner, recorded_ask
 
-    inflight: list[str] = []
-    inflight_path = stream_dir / "inflight.toml"
-    if inflight_path.is_file():
-        raw = load_toml(inflight_path).get("workflows")
-        inflight = [str(item) for item in raw] if isinstance(raw, list) else []
+    # In-flight workflow ids are parsed from status content, the surface the
+    # owning session already maintains.
+    inflight = sorted(set(re.findall(r"\bwf_[a-z0-9]+-[a-z0-9]+\b", status_text)))
+
+    # Undelivered messages come from the real Herdr XDG inbox for this target.
+    target_inbox = inbox_root / stream_dir.name
     undelivered = (
-        sorted(path.name for path in queue_dir.glob(f"*{stream_dir.name}*"))
-        if queue_dir.is_dir()
+        sorted(path.name for path in target_inbox.iterdir() if path.is_file() and not path.name.endswith(".lock"))
+        if target_inbox.is_dir()
         else []
     )
 
-    newest = max(
-        [value for value in (activity_mtime, status_mtime, waiting_mtime) if value is not None],
-        default=None,
-    )
+    # Activity is session-transcript activity ONLY; status or gate-line age
+    # never counts (sweep-suspected-stuck law).
     if wait_owner:
         classification = "waiting"
-    elif newest is None or (current - newest) > idle_seconds:
+    elif transcript_mtime is None or (current - transcript_mtime) > idle_seconds:
         classification = "suspected-stuck"
     else:
         classification = "active"
     return {
         "status_mtime": status_mtime,
         "transcript_mtime": transcript_mtime,
-        "pane_activity": f"mtime:{pane_mtime}" if pane_mtime is not None else "unknown",
         "wait_owner": wait_owner,
         "open_ask": open_ask,
         "ask_consumed": ask_consumed,
@@ -286,9 +289,9 @@ def main() -> int:
     spec_blobs, adr_blobs = canonical_blobs(repo, head)
 
     facts = {"owner_route": owner_route, "control_head": head, "canonical": {"spec_blobs": spec_blobs, "adr_blobs": adr_blobs}}
-    queue_dir = control / "herdr-queue"
+    inbox_root = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "octo-lite" / "inbox"
     liveness = {
-        stream_dir.name: stream_liveness(stream_dir, queue_dir, idle_seconds=3600)
+        stream_dir.name: stream_liveness(stream_dir, inbox_root, idle_seconds=3600)
         for stream_dir in stream_dirs
     }
     if liveness:
