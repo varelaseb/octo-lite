@@ -7,9 +7,14 @@ import {
   acceptQaReview,
   acceptImplementation,
   acceptPublication,
+  assertContainment,
+  assertLaunchReadback,
+  assertLaunchRevision,
+  assertManifestShape,
   assertReadyEnvelope,
   assertWorkerAckEcho,
   evidenceMode,
+  launchRevision,
 } from '../workflows/lib/gates.mjs'
 
 // Spec: role-runtime launch-role-purpose-capability, launch-purpose-shaping-roles,
@@ -17,11 +22,11 @@ import {
 // (blob spec/domains/role-runtime.spec.html:e1265b3c5d0a464ed416de283e11069e4796b01a).
 test('shaping-review admits only shaping-reviewer or orchestrator with resolved shaping capability', () => {
   assert.deepEqual(
-    assertAdmission({ purpose: 'shaping-review', role: 'shaping-reviewer' }),
+    assertAdmission({ purpose: 'shaping-review', role: 'shaping-reviewer', linearState: 'Ideas' }),
     { purpose: 'shaping-review', role: 'shaping-reviewer' },
   )
   assert.deepEqual(
-    assertAdmission({ purpose: 'shaping-review', role: 'orchestrator', capabilities: ['shaping', 'grill'] }),
+    assertAdmission({ purpose: 'shaping-review', role: 'orchestrator', capabilities: ['shaping', 'grill'], linearState: 'Ideas' }),
     { purpose: 'shaping-review', role: 'orchestrator' },
   )
   assert.throws(
@@ -42,7 +47,7 @@ test('shaping-review admits only shaping-reviewer or orchestrator with resolved 
 
 test('delivery admits only implementer, code-reviewer, qa-capture, and qa-reviewer', () => {
   for (const role of ['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer']) {
-    assert.deepEqual(assertAdmission({ purpose: 'delivery', role }), { purpose: 'delivery', role })
+    assert.deepEqual(assertAdmission({ purpose: 'delivery', role, linearState: 'Todo' }), { purpose: 'delivery', role })
   }
   for (const role of ['shaping-reviewer', 'orchestrator', 'reconciler', 'meta-operator']) {
     assert.throws(
@@ -365,4 +370,189 @@ test('a missing bound input in the worker ack echo is rejected before any mutati
   delete noBlobs.spec_blobs
   assert.throws(() => assertWorkerAckEcho(journalled, noBlobs), /spec blobs required/)
   assert.throws(() => assertWorkerAckEcho(journalled, undefined), /required/)
+})
+
+// Unit H. Spec: role-runtime launch-gates-workflow-layer, launch-linear-state-gate,
+// launch-receipt-manifest-shapes, launch-entrypoint-revalidation, launch-readback,
+// launch-containment
+// (blob spec/domains/role-runtime.spec.html:e1265b3c5d0a464ed416de283e11069e4796b01a).
+
+test('linear-state gate admits shaping-review only from Ideas, Todo, Shaped, or In Progress', () => {
+  for (const linearState of ['Ideas', 'Todo', 'Shaped', 'In Progress']) {
+    assert.deepEqual(
+      assertAdmission({ purpose: 'shaping-review', role: 'shaping-reviewer', linearState }),
+      { purpose: 'shaping-review', role: 'shaping-reviewer' },
+    )
+  }
+  for (const linearState of ['Awaiting Accept', 'Done', 'Canceled', 'Duplicate', 'Backlog', 'nonsense']) {
+    assert.throws(
+      () => assertAdmission({ purpose: 'shaping-review', role: 'shaping-reviewer', linearState }),
+      /Linear state/,
+    )
+  }
+  assert.throws(
+    () => assertAdmission({ purpose: 'shaping-review', role: 'shaping-reviewer' }),
+    /Linear state/,
+  )
+})
+
+test('linear-state gate admits delivery only from Shaped, Todo, or In Progress', () => {
+  for (const linearState of ['Shaped', 'Todo', 'In Progress']) {
+    assert.deepEqual(
+      assertAdmission({ purpose: 'delivery', role: 'implementer', linearState }),
+      { purpose: 'delivery', role: 'implementer' },
+    )
+  }
+  for (const linearState of ['Ideas', 'Awaiting Accept', 'Done', 'Canceled', 'Duplicate', 'nonsense']) {
+    assert.throws(
+      () => assertAdmission({ purpose: 'delivery', role: 'implementer', linearState }),
+      /Linear state/,
+    )
+  }
+  assert.throws(() => assertAdmission({ purpose: 'delivery', role: 'implementer' }), /Linear state/)
+})
+
+test('manifest-shape admission keeps exactly one durable persistent receipt shape', () => {
+  for (const role of ['meta-operator', 'orchestrator']) {
+    assert.deepEqual(assertManifestShape({ shape: 'persistent', role }), { shape: 'persistent', role })
+  }
+  assert.deepEqual(
+    assertManifestShape({ shape: 'worker-journal', role: 'implementer', purpose: 'delivery', linearState: 'Todo' }),
+    { shape: 'worker-journal', role: 'implementer', purpose: 'delivery' },
+  )
+  assert.deepEqual(
+    assertManifestShape({ shape: 'worker-journal', role: 'reconciler', purpose: 'reconcile', readRestricted: true }),
+    { shape: 'worker-journal', role: 'reconciler', purpose: 'reconcile' },
+  )
+})
+
+test('a pass purpose injected onto a persistent shape is rejected', () => {
+  for (const purpose of ['delivery', 'shaping-review', 'reconcile']) {
+    assert.throws(
+      () => assertManifestShape({ shape: 'persistent', role: 'meta-operator', purpose }),
+      /pass purpose/,
+    )
+  }
+})
+
+test('a role substituted for its manifest shape is rejected', () => {
+  for (const role of ['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer', 'shaping-reviewer', 'reconciler']) {
+    assert.throws(() => assertManifestShape({ shape: 'persistent', role }), /persistent/)
+  }
+  assert.throws(
+    () => assertManifestShape({ shape: 'worker-journal', role: 'meta-operator', purpose: 'delivery', linearState: 'Todo' }),
+    /delivery/,
+  )
+  assert.throws(
+    () => assertManifestShape({ shape: 'worker-journal', role: 'implementer' }),
+    /purpose/,
+  )
+})
+
+test('an unknown manifest shape is rejected', () => {
+  for (const shape of ['worker-receipt', 'reconcile-receipt', 'pass', 'nonsense']) {
+    assert.throws(
+      () => assertManifestShape({ shape, role: 'meta-operator' }),
+      /unknown manifest shape/,
+    )
+  }
+  assert.throws(() => assertManifestShape({ role: 'meta-operator' }), /manifest shape required/)
+  assert.throws(() => assertManifestShape({ shape: 'persistent' }), /manifest role required/)
+})
+
+test('launch revision fingerprints the exact bound inputs deterministically', () => {
+  const bound = journalledBoundInputs()
+  const revision = launchRevision(bound)
+  assert.match(revision, /^[0-9a-f]{64}$/)
+  assert.equal(assertLaunchRevision(revision, journalledBoundInputs()), revision)
+  const reordered = {}
+  for (const key of Object.keys(bound).sort().reverse()) reordered[key] = bound[key]
+  assert.equal(launchRevision(reordered), revision)
+})
+
+test('a launch-revision mismatch from any altered combination is rejected with no spawn', () => {
+  const revision = launchRevision(journalledBoundInputs())
+  const alterations = [
+    ['role', 'code-reviewer'],
+    ['repo', 'varelaseb/other-repo'],
+    ['issue', 'TUR-9'],
+    ['pr', 'https://example.test/pr/9'],
+    ['starting_head', 'other'],
+    ['contract_hash', 'd'.repeat(64)],
+    ['spec_blobs', ['spec/domains/role-runtime.spec.html:tampered']],
+  ]
+  for (const [field, altered] of alterations) {
+    assert.throws(
+      () => assertLaunchRevision(revision, { ...journalledBoundInputs(), [field]: altered }),
+      /launch revision mismatch/,
+    )
+  }
+  assert.throws(() => assertLaunchRevision(undefined, journalledBoundInputs()), /launch revision required/)
+  assert.throws(() => assertLaunchRevision(revision, undefined), /bound inputs required/)
+})
+
+function freshReads(overrides = {}) {
+  return {
+    linear_state: ready.linear_state,
+    linear_fingerprint: ready.linear_fingerprint,
+    pr_head: ready.pr_head,
+    branch: ready.branch,
+    ...overrides,
+  }
+}
+
+test('launch readback accepts an envelope agreeing with the explicit fresh reads', () => {
+  const fresh = freshReads()
+  assert.deepEqual(assertLaunchReadback(ready, fresh), fresh)
+})
+
+test('a stale self-consistent envelope disagreeing with fresh reads never spawns', () => {
+  // The envelope is internally consistent and passes its own shape gate; only the
+  // live refetch immediately before dispatch exposes it as stale (launch-readback).
+  assertReadyEnvelope(ready)
+  const staleness = [
+    ['linear_state', 'In Progress'],
+    ['linear_fingerprint', 'lfp-2'],
+    ['pr_head', 'bbb'],
+    ['branch', 'octo-lite/tur-9'],
+  ]
+  for (const [field, fresh] of staleness) {
+    assert.throws(
+      () => assertLaunchReadback(ready, freshReads({ [field]: fresh })),
+      /stale envelope/,
+    )
+  }
+  for (const field of ['linear_state', 'linear_fingerprint', 'pr_head', 'branch']) {
+    const fresh = freshReads()
+    delete fresh[field]
+    assert.throws(() => assertLaunchReadback(ready, fresh), /required/)
+  }
+  assert.throws(() => assertLaunchReadback(ready, undefined), /fresh reads required/)
+})
+
+test('containment admits only worktrees under the declared worktree root', () => {
+  assert.equal(
+    assertContainment('/work/worktrees', '/work/worktrees/tur-1'),
+    '/work/worktrees/tur-1',
+  )
+  assert.equal(assertContainment('/work/worktrees', 'tur-1'), '/work/worktrees/tur-1')
+  assert.equal(
+    assertContainment('/work/worktrees/', '/work/worktrees/tur-1/nested'),
+    '/work/worktrees/tur-1/nested',
+  )
+})
+
+test('an escaping or wrong worktree path never spawns', () => {
+  for (const escaping of [
+    '../outside',
+    'tur-1/../../outside',
+    '/etc/passwd',
+    '/work/worktrees/../evil',
+    '/work/worktrees-evil/tur-1',
+    '/work/worktrees',
+  ]) {
+    assert.throws(() => assertContainment('/work/worktrees', escaping), /escapes/)
+  }
+  assert.throws(() => assertContainment('', '/work/worktrees/tur-1'), /worktree root required/)
+  assert.throws(() => assertContainment('/work/worktrees', ''), /worker worktree required/)
 })

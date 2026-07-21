@@ -4,9 +4,13 @@ import {
   acceptPublication,
   acceptQaReview,
   assertAdmission,
+  assertContainment,
+  assertLaunchReadback,
+  assertLaunchRevision,
   assertReadyEnvelope,
   assertWorkerAckEcho,
   evidenceMode,
+  launchRevision,
 } from './lib/gates.mjs'
 
 export const meta = {
@@ -178,14 +182,25 @@ function journalledBoundInputs(role, startingHead) {
   }
 }
 
-// Shared native spawn path for every worker pass: the admission matrix gate runs
+// Shared native spawn path for every worker pass: the admission matrix plus
+// Linear-state gate, worktree containment, and launch-revision revalidation run
 // before the subagent spawns, the journal records the exact bound inputs, and the
-// schema-forced acknowledgment echo is verified before any mutation-phase advance.
-// Every pass is a fresh subagent; a worker session is never resumed.
+// schema-forced acknowledgment echo plus launch-revision revalidation are verified
+// before any mutation-phase advance. Every pass is a fresh subagent; a worker
+// session is never resumed.
 async function spawnWorker(role, phaseTitle, startingHead, schema) {
-  assertAdmission({ purpose: 'delivery', role })
+  assertAdmission({ purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') })
+  // Containment at admission (launch-containment).
+  const worktree = assertContainment(
+    required(A.worktree_root, 'worktree root'),
+    required(A.worktree, 'worker worktree'),
+  )
   const bound = journalledBoundInputs(role, startingHead)
-  log(`journal spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash}`)
+  // Launch-revision revalidation before spawn (launch-entrypoint-revalidation):
+  // a journalled revision that mismatches the exact bound inputs spawns nothing.
+  const revision = A.launch_revision ?? launchRevision(bound)
+  assertLaunchRevision(revision, bound)
+  log(`journal spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash} ${revision}`)
   const brief = required(A.brief, 'pass brief')
   const prompt = [
     `You are a fresh octo-lite ${role}. One pass only. Never reuse a worker session.`,
@@ -194,9 +209,13 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
     JSON.stringify(bound, null, 2),
     brief,
   ].join('\n\n')
+  // Containment again at child subagent spawn (launch-containment).
+  assertContainment(A.worktree_root, worktree)
   const result = await agent(prompt, { label: `${role}:${bound.issue}`, phase: phaseTitle, schema })
   if (result === null) throw new Error(`${role} pass returned no result`)
   assertWorkerAckEcho(bound, result.ack)
+  // Launch-revision revalidation again before any mutation-phase advance.
+  assertLaunchRevision(revision, bound)
   return result
 }
 
@@ -223,6 +242,10 @@ async function loopFire() {
 
 if (mode === 'implement') {
   assertReadyEnvelope(A)
+  // Final exact Linear and PR readback before dispatch (launch-readback): fresh reads
+  // taken immediately before this invocation are explicit arguments, so a stale
+  // self-consistent envelope disagreeing with them never spawns.
+  assertLaunchReadback(A, required(A.fresh_reads, 'fresh reads'))
   // Delivery entry: at Shaped this loop performs the Shaped -> Todo loop fire and
   // verifies the Todo readback before the implementer spawns; there is no path to a
   // delivery worker spawn at Shaped without that prior fire. The single ruling-15

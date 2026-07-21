@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto'
+import { resolve, sep } from 'node:path'
+
 function required(value, label) {
   if (value === undefined || value === null || value === '') {
     throw new Error(`${label} required`)
@@ -7,11 +10,26 @@ function required(value, label) {
 
 const DELIVERY_ROLES = new Set(['implementer', 'code-reviewer', 'qa-capture', 'qa-reviewer'])
 
-// Workflow-layer admission matrix (role-runtime launch-role-purpose-capability,
-// launch-purpose-shaping-roles, launch-purpose-delivery-roles, launch-purpose-reconcile,
+// Linear-state gate (role-runtime launch-linear-state-gate): shaping-review launches
+// only from Ideas, Todo, Shaped, or In Progress; delivery only from Shaped, Todo, or
+// In Progress; every other state, including Awaiting Accept and terminal states, is
+// rejected for both purposes.
+const SHAPING_REVIEW_STATES = new Set(['Ideas', 'Todo', 'Shaped', 'In Progress'])
+const DELIVERY_STATES = new Set(['Shaped', 'Todo', 'In Progress'])
+
+function assertLinearState(purpose, linearState, admitted) {
+  required(linearState, `${purpose} Linear state`)
+  if (!admitted.has(linearState)) {
+    throw new Error(`Linear state ${linearState} rejected for ${purpose} purpose`)
+  }
+}
+
+// Workflow-layer admission matrix plus Linear-state gate (role-runtime
+// launch-role-purpose-capability, launch-purpose-shaping-roles,
+// launch-purpose-delivery-roles, launch-purpose-reconcile, launch-linear-state-gate,
 // launch-gates-workflow-layer). Called before each subagent spawn; an invalid
 // combination fails closed with no spawn.
-export function assertAdmission({ purpose, role, capabilities = [], readRestricted = false } = {}) {
+export function assertAdmission({ purpose, role, capabilities = [], readRestricted = false, linearState } = {}) {
   required(purpose, 'admission purpose')
   required(role, 'admission role')
   if (purpose === 'shaping-review') {
@@ -19,8 +37,10 @@ export function assertAdmission({ purpose, role, capabilities = [], readRestrict
     if (role !== 'shaping-reviewer' && !orchestratorWithShaping) {
       throw new Error(`role ${role} not admitted for shaping-review purpose`)
     }
+    assertLinearState(purpose, linearState, SHAPING_REVIEW_STATES)
   } else if (purpose === 'delivery') {
     if (!DELIVERY_ROLES.has(role)) throw new Error(`role ${role} not admitted for delivery purpose`)
+    assertLinearState(purpose, linearState, DELIVERY_STATES)
   } else if (purpose === 'reconcile') {
     if (role !== 'reconciler') throw new Error(`role ${role} not admitted for reconcile purpose`)
     if (readRestricted !== true) {
@@ -30,6 +50,101 @@ export function assertAdmission({ purpose, role, capabilities = [], readRestrict
     throw new Error(`unknown admission purpose ${purpose}`)
   }
   return { purpose, role }
+}
+
+// Manifest-shape admission (role-runtime launch-receipt-manifest-shapes,
+// launch-receipt-persistent): exactly one durable receipt shape remains, the generic
+// persistent launch receipt for role meta-operator or orchestrator carrying no pass
+// purpose; every worker pass, including reconcile, binds through the workflow journal
+// under the role-purpose-capability matrix. A pass purpose injected onto a persistent
+// shape, a role substituted for its shape, or an unknown shape is rejected.
+const PERSISTENT_ROLES = new Set(['meta-operator', 'orchestrator'])
+
+export function assertManifestShape(manifest = {}) {
+  const shape = required(manifest.shape, 'manifest shape')
+  const role = required(manifest.role, 'manifest role')
+  if (shape === 'persistent') {
+    if (manifest.purpose !== undefined && manifest.purpose !== null && manifest.purpose !== '') {
+      throw new Error('pass purpose rejected on the persistent receipt shape')
+    }
+    if (!PERSISTENT_ROLES.has(role)) {
+      throw new Error(`role ${role} rejected for the persistent receipt shape`)
+    }
+    return { shape, role }
+  }
+  if (shape === 'worker-journal') {
+    assertAdmission({
+      purpose: manifest.purpose,
+      role,
+      capabilities: manifest.capabilities ?? [],
+      readRestricted: manifest.readRestricted ?? false,
+      linearState: manifest.linearState,
+    })
+    return { shape, role, purpose: manifest.purpose }
+  }
+  throw new Error(`unknown manifest shape ${shape}`)
+}
+
+// Launch-revision revalidation (role-runtime launch-entrypoint-revalidation,
+// launch-gates-workflow-layer): the worker equivalent of the persistent receipt
+// launch revision is an exact fingerprint of the journalled bound inputs, revalidated
+// before spawn and again before any mutation-phase advance, so an altered combination
+// or a revision mismatch is rejected with no subagent spawned.
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
+    return `{${entries.join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+export function launchRevision(boundInputs) {
+  required(boundInputs, 'bound inputs')
+  return createHash('sha256').update(canonical(boundInputs)).digest('hex')
+}
+
+export function assertLaunchRevision(revision, boundInputs) {
+  required(revision, 'launch revision')
+  if (launchRevision(boundInputs) !== revision) throw new Error('launch revision mismatch')
+  return revision
+}
+
+// Live-refetch readback (role-runtime launch-readback): the workflow takes fresh
+// Linear and PR reads immediately before dispatch and passes them here as explicit
+// arguments; a stale self-consistent envelope whose bound fields disagree with the
+// fresh reads is rejected with no spawn.
+const READBACK_FIELDS = [
+  ['linear_state', 'Linear state'],
+  ['linear_fingerprint', 'Linear fingerprint'],
+  ['pr_head', 'PR head'],
+  ['branch', 'PR branch'],
+]
+
+export function assertLaunchReadback(envelope, fresh) {
+  required(envelope, 'launch envelope')
+  required(fresh, 'fresh reads')
+  for (const [field, label] of READBACK_FIELDS) {
+    required(fresh[field], `fresh ${label}`)
+    if (envelope[field] !== fresh[field]) {
+      throw new Error(`stale envelope: ${label} disagrees with fresh read`)
+    }
+  }
+  return fresh
+}
+
+// Worktree containment (role-runtime launch-containment): checked exactly at
+// admission and at child subagent spawn; a wrong or escaping worktree path never
+// spawns.
+export function assertContainment(worktreeRoot, worktreePath) {
+  required(worktreeRoot, 'worktree root')
+  required(worktreePath, 'worker worktree')
+  const root = resolve(worktreeRoot)
+  const resolved = resolve(root, worktreePath)
+  if (!resolved.startsWith(root + sep)) {
+    throw new Error(`worktree ${worktreePath} escapes worktree root ${worktreeRoot}`)
+  }
+  return resolved
 }
 
 export function assertReadyEnvelope(envelope) {
