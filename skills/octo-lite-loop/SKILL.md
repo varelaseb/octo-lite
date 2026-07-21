@@ -85,7 +85,8 @@ QA starts only from a clear code verdict for the same HEAD.
   `Awaiting Accept`.
 
 Actual operator acceptance is explicit, exact-head bound, and gated on human
-instruction. No agent infers, self-authorizes, or decides acceptance or a
+instruction. No agent infers, self-authorizes, or decides acceptance, a
+preproduction promotion, or a
 traffic shift, and no agent merges unaccepted work. On explicit human
 instruction, the operator agent executes the acceptance record, merge,
 promote, or traffic shift. Worker delivery roles never accept, approve as the

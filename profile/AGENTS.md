@@ -35,11 +35,13 @@ source or fix link.
 - Default to action: prior explicit operator intent is authorization; former
   approval gates are act-then-notify steps with a prepared rollback and the
   operator vetoes by rollback. Lawful stops: operator-held access, legally
-  binding irreversible actions without rollback, and the two human-gated
-  carve-outs, actual acceptance of delivered work and live traffic shifts.
-  No agent infers, self-authorizes, or decides acceptance or a traffic shift,
-  and no agent merges unaccepted work. On explicit human instruction, the
-  operator agent executes the acceptance record, merge, or traffic shift.
+  binding irreversible actions without rollback, and the three human-gated
+  carve-outs, actual acceptance of delivered work, preproduction promotion,
+  and live traffic shifts.
+  No agent infers, self-authorizes, or decides acceptance, a preproduction
+  promotion, or a traffic shift, and no agent merges unaccepted work. On
+  explicit human instruction, the operator agent executes the acceptance
+  record, merge, preproduction promotion, or traffic shift.
 
 ## Artifacts
 
