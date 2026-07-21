@@ -889,6 +889,46 @@ class LaunchBoundaryTests(unittest.TestCase):
         readback = tomllib.loads(prepared.receipt_path.read_text())
         self.assertNotIn("result", readback)
 
+    def _failing_provider_runner(self, argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="provider crashed")
+
+    def test_pre_ack_failure_removes_pristine_worktree_and_unblocks_the_path(self) -> None:
+        # workspace-cleanup-clean-abort: a pass failing before its acknowledgment
+        # echo is verified removes its worktree when it has zero dirty lines and
+        # unchanged HEAD, so the abandoned clean worktree never blocks the next
+        # fresh pass at the same path (evidence: sweep reconciler worktree
+        # da86292, dirty_lines=0, removed manually).
+        prepared = self.prepare()
+        with self.assertRaisesRegex(GateError, "bootstrap provider failed"):
+            run_bootstrap(prepared, runner=self._failing_provider_runner)
+        self.assertFalse(self.worktree.exists())
+        self.assertNotIn(str(self.worktree.resolve()), self.git("worktree", "list", "--porcelain"))
+        fresh_add = subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "add", str(self.worktree), "feature"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(0, fresh_add.returncode, fresh_add.stderr)
+
+    def test_pre_ack_failure_preserves_a_dirty_worktree_for_inspection(self) -> None:
+        prepared = self.prepare()
+        (self.worktree / "stray.txt").write_text("uncommitted diagnostic residue\n")
+        with self.assertRaisesRegex(GateError, "bootstrap provider failed"):
+            run_bootstrap(prepared, runner=self._failing_provider_runner)
+        self.assertTrue(self.worktree.exists())
+        self.assertTrue((self.worktree / "stray.txt").is_file())
+        self.assertIn(str(self.worktree.resolve()), self.git("worktree", "list", "--porcelain"))
+
+    def test_pre_ack_failure_preserves_a_diverged_worktree_for_inspection(self) -> None:
+        prepared = self.prepare()
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "commit", "--allow-empty", "-qm", "diverge"],
+            check=True, capture_output=True, text=True,
+        )
+        with self.assertRaisesRegex(GateError, "bootstrap provider failed"):
+            run_bootstrap(prepared, runner=self._failing_provider_runner)
+        self.assertTrue(self.worktree.exists())
+        self.assertIn(str(self.worktree.resolve()), self.git("worktree", "list", "--porcelain"))
+
 
 class ReconcileLaunchBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:

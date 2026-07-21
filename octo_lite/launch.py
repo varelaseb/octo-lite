@@ -453,6 +453,36 @@ def _prepare_worktree(
         raise GateError("target AGENTS.md missing")
 
 
+def cleanup_clean_abort(repo: Path, worktree: Path, expected_head: str) -> None:
+    """workspace-cleanup-clean-abort: a pass failing before its acknowledgment
+    echo is verified removes its worktree on the error path only when that
+    worktree is pristine, meaning zero dirty lines and HEAD equal to the exact
+    expected starting head, so an abandoned clean worktree never blocks the
+    next fresh pass at the same path. A dirty or diverged worktree, or one
+    that is not a genuine worktree of the exact bound repo, is preserved for
+    inspection instead of being force-removed."""
+    repo = Path(repo)
+    worktree = Path(worktree)
+    if worktree == repo or not worktree.is_dir():
+        return
+    try:
+        if _worktree_common_dir(worktree) != _worktree_common_dir(repo):
+            return
+        if _git(worktree, "rev-parse", "HEAD") != str(expected_head):
+            return
+        if _git(worktree, "status", "--porcelain"):
+            return
+    except subprocess.CalledProcessError:
+        return
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", str(worktree)],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError:
+        return
+
+
 def _child_workspace_check(
     repo: Path, root: Path, worktree: Path, head: str, branch: str | None
 ) -> dict[str, Any]:
@@ -715,75 +745,83 @@ def prepare_launch(
         conflicts=list(envelope["resource_conflicts"]),
         provider_overloaded=bool(envelope["provider_overloaded"]),
     )
-    child_workspace = _child_workspace_check(
-        repo,
-        worktree_root,
-        worktree,
-        str(envelope["starting_head"]),
-        None if read_only else branch,
-    )
+    try:
+        child_workspace = _child_workspace_check(
+            repo,
+            worktree_root,
+            worktree,
+            str(envelope["starting_head"]),
+            None if read_only else branch,
+        )
 
-    receipt = build_launch_receipt(
-        root,
-        resolved,
-        spawn_id=spawn_id,
-        parent=parent,
-        reply_route=reply_route,
-        repo=repo,
-        worktree=worktree,
-        execution_location=execution_location,
-        operator_loopback=operator_loopback,
-        review_delivery=review_delivery,
-    )
-    receipt["ready"] = False
-    receipt["manifest_type"] = "octo-lite-pass"
-    receipt["purpose"] = str(envelope["purpose"])
-    receipt["workspace"]["remote"] = origin
-    receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
-    receipt["issue"] = {
-        "identifier": linear["identifier"],
-        "revision": _issue_revision(linear),
-        "fingerprint": exact_fingerprint(linear),
-        "state": linear["state"],
-    }
-    receipt["spec"] = {
-        "revision": str(envelope["spec_revision"]),
-        "blobs": list(envelope["spec_blobs"]),
-        "adr_blobs": list(envelope["adr_blobs"]),
-        "conversation_cutoff": str(envelope["conversation_cutoff"]),
-        "conversation_log_references": list(envelope["conversation_log_references"]),
-    }
-    receipt["pull_request"] = {
-        "repo": str(envelope["repo"]),
-        "number": number,
-        "url": str(pull["url"]),
-        "branch": str(pull["headRefName"]),
-        "base": str(pull["baseRefName"]),
-        "head": str(pull["headRefOid"]),
-        "shaping_head": str(envelope["shaping_head"]),
-    }
-    receipt["topology"] = {"revision": int(envelope["topology_revision"])}
-    receipt["resources"] = dict(envelope["resource_claims"])
-    is_delivery = envelope["purpose"] == "delivery"
-    receipt["prior_gates"] = {
-        "shaping_verdict": "clear" if is_delivery else "none",
-        "shaping_verdict_head": str(envelope["shaping_verdict_head"]) if is_delivery else "",
-        "shaping_verdict_inputs": list(envelope["shaping_verdict_inputs"]) if is_delivery else [],
-        "shaping_reviewer_receipt": str(envelope["shaping_reviewer_receipt"]) if is_delivery else "",
-        "acceptance_criteria": list(envelope["acceptance_criteria"]),
-    }
-    receipt["bootstrap"] = {"verified": False, "provider_session_id": ""}
-    receipt["pass"] = {
-        "instruction": str(envelope["pass_instruction"]),
-        "context_json": json.dumps(dict(envelope.get("pass_context") or {}), sort_keys=True, ensure_ascii=False),
-    }
-    # Only an orchestrator's own shaping-review pass may carry authority to drive a
-    # Shaped transition; every other role or purpose gets no [shaping] table at all.
-    if role_name == "orchestrator" and receipt["purpose"] == "shaping-review":
-        receipt["shaping"] = {"repo": str(envelope["repo"]), "pr": number, "head": str(envelope["starting_head"])}
-    receipt["launch_revision"] = _launch_revision(receipt)
-    _atomic_write(receipt_path, render_receipt(receipt))
-    bootstrap, mutation = _provider_argv(receipt)
+        receipt = build_launch_receipt(
+            root,
+            resolved,
+            spawn_id=spawn_id,
+            parent=parent,
+            reply_route=reply_route,
+            repo=repo,
+            worktree=worktree,
+            execution_location=execution_location,
+            operator_loopback=operator_loopback,
+            review_delivery=review_delivery,
+        )
+        receipt["ready"] = False
+        receipt["manifest_type"] = "octo-lite-pass"
+        receipt["purpose"] = str(envelope["purpose"])
+        receipt["workspace"]["remote"] = origin
+        receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
+        receipt["issue"] = {
+            "identifier": linear["identifier"],
+            "revision": _issue_revision(linear),
+            "fingerprint": exact_fingerprint(linear),
+            "state": linear["state"],
+        }
+        receipt["spec"] = {
+            "revision": str(envelope["spec_revision"]),
+            "blobs": list(envelope["spec_blobs"]),
+            "adr_blobs": list(envelope["adr_blobs"]),
+            "conversation_cutoff": str(envelope["conversation_cutoff"]),
+            "conversation_log_references": list(envelope["conversation_log_references"]),
+        }
+        receipt["pull_request"] = {
+            "repo": str(envelope["repo"]),
+            "number": number,
+            "url": str(pull["url"]),
+            "branch": str(pull["headRefName"]),
+            "base": str(pull["baseRefName"]),
+            "head": str(pull["headRefOid"]),
+            "shaping_head": str(envelope["shaping_head"]),
+        }
+        receipt["topology"] = {"revision": int(envelope["topology_revision"])}
+        receipt["resources"] = dict(envelope["resource_claims"])
+        is_delivery = envelope["purpose"] == "delivery"
+        receipt["prior_gates"] = {
+            "shaping_verdict": "clear" if is_delivery else "none",
+            "shaping_verdict_head": str(envelope["shaping_verdict_head"]) if is_delivery else "",
+            "shaping_verdict_inputs": list(envelope["shaping_verdict_inputs"]) if is_delivery else [],
+            "shaping_reviewer_receipt": str(envelope["shaping_reviewer_receipt"]) if is_delivery else "",
+            "acceptance_criteria": list(envelope["acceptance_criteria"]),
+        }
+        receipt["bootstrap"] = {"verified": False, "provider_session_id": ""}
+        receipt["pass"] = {
+            "instruction": str(envelope["pass_instruction"]),
+            "context_json": json.dumps(dict(envelope.get("pass_context") or {}), sort_keys=True, ensure_ascii=False),
+        }
+        # Only an orchestrator's own shaping-review pass may carry authority to drive a
+        # Shaped transition; every other role or purpose gets no [shaping] table at all.
+        if role_name == "orchestrator" and receipt["purpose"] == "shaping-review":
+            receipt["shaping"] = {"repo": str(envelope["repo"]), "pr": number, "head": str(envelope["starting_head"])}
+        receipt["launch_revision"] = _launch_revision(receipt)
+        _atomic_write(receipt_path, render_receipt(receipt))
+        bootstrap, mutation = _provider_argv(receipt)
+    except BaseException:
+        # workspace-cleanup-clean-abort: this pass failed after provisioning
+        # its worktree but before any acknowledgment echo could be verified,
+        # so remove the worktree only while pristine at the exact starting
+        # head; a dirty or diverged worktree stays for inspection.
+        cleanup_clean_abort(repo, worktree, str(envelope["starting_head"]))
+        raise
     return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
 
 
@@ -878,50 +916,58 @@ def prepare_reconcile_launch(
         conflicts=list(resource_conflicts or []),
         provider_overloaded=provider_overloaded,
     )
-    child_workspace = _child_workspace_check(repo, worktree_root, worktree, control_head, None)
-
-    receipt = build_launch_receipt(
-        root,
-        resolved,
-        spawn_id=spawn_id,
-        parent=parent,
-        reply_route=reply_route,
-        repo=repo,
-        worktree=worktree,
-        execution_location=execution_location,
-        operator_loopback=operator_loopback,
-        review_delivery=review_delivery,
-    )
-    receipt["ready"] = False
-    receipt["manifest_type"] = "octo-lite-reconcile"
-    receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
-    persisted_snapshot_path = receipt_path.parent / "snapshot.md"
     try:
-        _atomic_write(persisted_snapshot_path, snapshot_bytes.decode("utf-8"))
-        receipt["reconcile"] = {
-            "snapshot_path": str(persisted_snapshot_path),
-            "snapshot_digest": str(snapshot_digest),
-            "control_head": control_head,
-            "spec_blobs": list(spec_blobs),
-            "adr_blobs": list(adr_blobs),
-            "conversation_state_refs": list(conversation_state_refs or []),
-            "streams_json": json.dumps(verified_streams, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
-        }
-        receipt["launch_revision"] = _launch_revision(receipt)
-        _atomic_write(receipt_path, render_receipt(receipt))
-        bootstrap, mutation = _provider_argv(receipt)
-    except BaseException:
-        # A caught failure anywhere after the final snapshot is written, most
-        # notably a receipt persistence failure, must not leave the final
-        # snapshot, receipt, or sweep directory behind; rmdir only removes the
-        # directory this call itself populated, since it no-ops on leftover
-        # unrelated content instead of masking that state.
-        persisted_snapshot_path.unlink(missing_ok=True)
-        receipt_path.unlink(missing_ok=True)
+        child_workspace = _child_workspace_check(repo, worktree_root, worktree, control_head, None)
+
+        receipt = build_launch_receipt(
+            root,
+            resolved,
+            spawn_id=spawn_id,
+            parent=parent,
+            reply_route=reply_route,
+            repo=repo,
+            worktree=worktree,
+            execution_location=execution_location,
+            operator_loopback=operator_loopback,
+            review_delivery=review_delivery,
+        )
+        receipt["ready"] = False
+        receipt["manifest_type"] = "octo-lite-reconcile"
+        receipt["workspace"]["child_containment_verified"] = child_workspace["contained"]
+        persisted_snapshot_path = receipt_path.parent / "snapshot.md"
         try:
-            receipt_path.parent.rmdir()
-        except OSError:
-            pass
+            _atomic_write(persisted_snapshot_path, snapshot_bytes.decode("utf-8"))
+            receipt["reconcile"] = {
+                "snapshot_path": str(persisted_snapshot_path),
+                "snapshot_digest": str(snapshot_digest),
+                "control_head": control_head,
+                "spec_blobs": list(spec_blobs),
+                "adr_blobs": list(adr_blobs),
+                "conversation_state_refs": list(conversation_state_refs or []),
+                "streams_json": json.dumps(verified_streams, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+            }
+            receipt["launch_revision"] = _launch_revision(receipt)
+            _atomic_write(receipt_path, render_receipt(receipt))
+            bootstrap, mutation = _provider_argv(receipt)
+        except BaseException:
+            # A caught failure anywhere after the final snapshot is written, most
+            # notably a receipt persistence failure, must not leave the final
+            # snapshot, receipt, or sweep directory behind; rmdir only removes the
+            # directory this call itself populated, since it no-ops on leftover
+            # unrelated content instead of masking that state.
+            persisted_snapshot_path.unlink(missing_ok=True)
+            receipt_path.unlink(missing_ok=True)
+            try:
+                receipt_path.parent.rmdir()
+            except OSError:
+                pass
+            raise
+    except BaseException:
+        # workspace-cleanup-clean-abort: this reconcile pass failed after
+        # provisioning its worktree but before any acknowledgment echo could be
+        # verified, so remove the worktree only while pristine at the exact
+        # control head; a dirty or diverged worktree stays for inspection.
+        cleanup_clean_abort(repo, worktree, control_head)
         raise
     return PreparedLaunch(receipt_path.resolve(), bootstrap, mutation, resolved.contract_text)
 
@@ -1153,26 +1199,38 @@ def run_bootstrap(
     with prepared.receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
     worktree = receipt["workspace"]["worktree"]
-    bootstrap = runner(
-        prepared.bootstrap_argv,
-        cwd=worktree,
-        input=bootstrap_prompt(prepared),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if bootstrap.returncode != 0:
-        raise GateError(f"bootstrap provider failed: {bootstrap.stderr.strip()}")
-    provider = receipt["runtime"]["provider"]
-    session, acknowledgment = parse_bootstrap_output(provider, bootstrap.stdout)
-    claimed_session = acknowledgment.get("provider_session_id")
-    if claimed_session not in {None, "", session}:
-        raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
-    acknowledgment["provider_session_id"] = session
-    if provider == "openai":
-        verify_codex_effective_identity(receipt, session)
-    _verify_review_worktree_unmutated(receipt, "bootstrap")
-    verify_bootstrap(prepared.receipt_path, acknowledgment)
+    try:
+        bootstrap = runner(
+            prepared.bootstrap_argv,
+            cwd=worktree,
+            input=bootstrap_prompt(prepared),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if bootstrap.returncode != 0:
+            raise GateError(f"bootstrap provider failed: {bootstrap.stderr.strip()}")
+        provider = receipt["runtime"]["provider"]
+        session, acknowledgment = parse_bootstrap_output(provider, bootstrap.stdout)
+        claimed_session = acknowledgment.get("provider_session_id")
+        if claimed_session not in {None, "", session}:
+            raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
+        acknowledgment["provider_session_id"] = session
+        if provider == "openai":
+            verify_codex_effective_identity(receipt, session)
+        _verify_review_worktree_unmutated(receipt, "bootstrap")
+        verify_bootstrap(prepared.receipt_path, acknowledgment)
+    except BaseException:
+        # workspace-cleanup-clean-abort: everything above runs before the
+        # acknowledgment echo is verified, so a failure here removes the
+        # worktree only when it is still pristine at the exact starting head
+        # and preserves a dirty or diverged one for inspection.
+        cleanup_clean_abort(
+            Path(receipt["workspace"]["repo"]),
+            Path(worktree),
+            str(receipt["workspace"]["starting_head"]),
+        )
+        raise
     return session
 
 
@@ -1246,30 +1304,16 @@ def run_launch(
 
 def _cleanup_reconcile_worktree(receipt: Mapping[str, Any]) -> None:
     """Remove a completed, read-only reconcile worktree only after its result is
-    already bound and durably persisted. A worktree that is not a genuine detached
-    worktree of the exact bound control repo, has moved off its starting HEAD, or
-    is dirty is preserved for inspection instead of being force-removed."""
+    already bound and durably persisted. Same pristine-only removal law as
+    cleanup_clean_abort: a worktree that is not a genuine detached worktree of
+    the exact bound control repo, has moved off its starting HEAD, or is dirty
+    is preserved for inspection instead of being force-removed."""
     workspace = receipt["workspace"]
-    repo = Path(workspace["repo"])
-    worktree = Path(workspace["worktree"])
-    if worktree == repo or not worktree.is_dir():
-        return
-    try:
-        if _worktree_common_dir(worktree) != _worktree_common_dir(repo):
-            return
-        if _git(worktree, "rev-parse", "HEAD") != str(workspace["starting_head"]):
-            return
-        if _git(worktree, "status", "--porcelain"):
-            return
-    except subprocess.CalledProcessError:
-        return
-    try:
-        subprocess.run(
-            ["git", "-C", str(repo), "worktree", "remove", str(worktree)],
-            check=True, capture_output=True, text=True,
-        )
-    except subprocess.CalledProcessError:
-        return
+    cleanup_clean_abort(
+        Path(workspace["repo"]),
+        Path(workspace["worktree"]),
+        str(workspace["starting_head"]),
+    )
 
 
 def run_reconcile_launch(
