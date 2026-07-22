@@ -880,3 +880,162 @@ test('push-pin: the source-wide bare-git scanner catches a bare backtick git pus
   assert.ok(m && m[1] === 'push', 'a bare git push must be caught by the bare-git scanner')
   assert.notEqual(m[1], 'rev-list', 'git push is not the sanctioned rev-list exemption')
 })
+
+// === TUR-447 ruling-66: the native OpenAI-reviewer relay stage must be RESILIENT to a codex
+// external-timeout cut. The pre-ruling relay prompt told the relay subagent to "Run exactly one
+// `codex exec` relay..." as a SINGLE FOREGROUND exec; a foreground external-timeout cut kills that
+// exec and the whole review pass restarts, losing the in-progress rollout. The resilient shape keeps
+// CODEX as the engine but the WORKFLOW owns the stage: the relay runs codex exec in the BACKGROUND,
+// detached, RUN-TO-COMPLETION (nohup ... & then poll), and on ANY cut before the codex final
+// assistant message exists it RESUMES THE SAME session via `codex exec resume <claimed_session_id>`
+// (sandbox still selected ONLY via -c sandbox_mode, never top-level -s), never restarting and never
+// spawning a NEW session, until the final assistant message is produced. The claimed_session_id is
+// STABLE across resumes, so the SAME rollout record and the UNCHANGED verifyRelayVerbatim /
+// assertResumeSandboxConfig provenance path apply to the resumed-to-completion session. These are
+// SOURCE assertions over the real production relay prompt text (source-scanner style), so they FAIL
+// against the current foreground code and pass only after the prompt is reshaped.
+function reviewerRelayPromptRegion() {
+  const start = LOOP_SRC.indexOf('You are a fresh octo-lite codex relay subagent')
+  assert.ok(start >= 0, 'reviewer relay prompt anchor missing from loop source')
+  // The relay prompt array joins into a single agent() call; 2600 chars covers the whole prompt body
+  // (bound inputs, runtime, worktree pin, contract, brief, and the run/resume/capture/return block).
+  return LOOP_SRC.slice(start, start + 2600)
+}
+
+test('ruling66-resilient-relay: the reviewer relay prompt instructs a BACKGROUND, detached, run-to-completion codex exec (nohup ... & then poll), not a foreground exec', () => {
+  const region = reviewerRelayPromptRegion()
+  // The codex exec must run detached in the background and be polled to completion.
+  assert.match(
+    region, /\bnohup\b[^]*codex exec[^]*&/,
+    'the relay prompt must run codex exec detached in the background via nohup ... &',
+  )
+  assert.match(
+    region, /background|detached/i,
+    'the relay prompt must describe the codex exec as background/detached',
+  )
+  assert.match(
+    region, /run[- ]to[- ]completion|to completion/i,
+    'the relay prompt must instruct running codex exec to completion',
+  )
+  assert.match(
+    region, /\bpoll\b/i,
+    'the relay prompt must instruct polling the background codex exec',
+  )
+})
+
+test('ruling66-resilient-relay: the reviewer relay prompt instructs `codex exec resume` of the SAME session on any cut', () => {
+  const region = reviewerRelayPromptRegion()
+  // On a cut the relay must resume the SAME session, not start over.
+  assert.match(
+    region, /codex exec resume/,
+    'the relay prompt must instruct `codex exec resume` on a cut',
+  )
+  assert.match(
+    region, /same session|SAME session/,
+    'the relay prompt must resume the SAME session on a cut',
+  )
+  // The resume must target the claimed_session_id and keep it stable across resumes.
+  assert.match(
+    region, /claimed_session_id/,
+    'the relay prompt must resume by claimed_session_id',
+  )
+})
+
+test('ruling66-resilient-relay: the reviewer relay prompt FORBIDS restart-from-scratch and forbids spawning a NEW session on a cut', () => {
+  const region = reviewerRelayPromptRegion()
+  // A restart loses progress and creates provenance ambiguity; both are forbidden.
+  assert.match(
+    region, /NEVER restart|never restart|do NOT restart|not restart/i,
+    'the relay prompt must forbid restarting from scratch on a cut',
+  )
+  assert.match(
+    region, /NEVER (spawn|start) a NEW session|never (spawn|start) a new session|do NOT (spawn|start) a new session/i,
+    'the relay prompt must forbid spawning a new session on a cut',
+  )
+})
+
+test('ruling66-resilient-relay: the reviewer relay prompt does NOT instruct a single foreground timeout-bound codex exec', () => {
+  const region = reviewerRelayPromptRegion()
+  // The pre-ruling foreground instruction "Run exactly one `codex exec` relay" is a single
+  // foreground timeout-bound call and must be gone; nothing may frame the exec as one foreground run.
+  assert.doesNotMatch(
+    region, /Run exactly one `codex exec`/,
+    'the relay prompt must not instruct running exactly one foreground codex exec',
+  )
+  assert.doesNotMatch(
+    region, /foreground/i,
+    'the relay prompt must not run codex exec in the foreground',
+  )
+})
+
+test('ruling66-resilient-relay: the resumed-to-completion session keeps the SAME provenance standing (stable claimed_session_id -> unchanged verifyRelayVerbatim + assertResumeSandboxConfig)', () => {
+  const region = reviewerRelayPromptRegion()
+  // The claimed_session_id is STABLE across resumes, so the SAME rollout record backs the final
+  // message and the unchanged provenance path still applies. The prompt must state this stability.
+  assert.match(
+    region, /STABLE across resumes|stable across resumes/,
+    'the relay prompt must state the claimed_session_id is stable across resumes',
+  )
+  // The resume must keep the existing resume-sandbox law: sandbox via -c sandbox_mode, never the
+  // top-level -s flag on resume (assertResumeSandboxConfig is unchanged and still applies).
+  assert.match(
+    region, /-c sandbox_mode/,
+    'the relay resume must still select the sandbox via -c sandbox_mode',
+  )
+  assert.match(
+    region, /never (use )?the top-level -s|NEVER (use )?the top-level -s/,
+    'the relay resume must never use the top-level -s flag',
+  )
+  // The UNCHANGED provenance path (verifyRelayVerbatim + assertResumeSandboxConfig) is still wired in
+  // the loop source and still applies to the resumed-to-completion session.
+  assert.match(
+    LOOP_SRC, /assertResumeSandboxConfig\(relay\.resume_argv/,
+    'assertResumeSandboxConfig must still gate the relay resume argv on the provenance path',
+  )
+  assert.match(
+    LOOP_SRC, /verifyRelayVerbatim\(/,
+    'verifyRelayVerbatim must still gate the relay payload against the rollout record',
+  )
+})
+
+// === TUR-447 ruling-66 (clean fix): the relay BOOTSTRAP must stay top-level `-s read-only`.
+// Per spec launch-resume-sandbox-config the top-level `codex exec` BOOTSTRAP still ACCEPTS `-s`
+// (only `resume` rejects it), and the UNCHANGED live gate assertReadOnlyFirstBootstrap scans
+// bootstrap_argv for `-s read-only` and rejects the pass if it is absent. A prior resilience
+// attempt wrongly changed the BOOTSTRAP wording to `-c sandbox_mode="read-only"`, which would make
+// every OpenAI review pass fail closed against that unchanged gate. This guard pins the bootstrap
+// instruction to `-s read-only` and forbids `-c sandbox_mode` on the BOOTSTRAP clause; `-c
+// sandbox_mode` is reserved for RESUME only. It PASSES at base and after the fix, and FAILS against
+// the `-c`-on-bootstrap wording of the prior green.
+function reviewerBootstrapClause() {
+  const region = reviewerRelayPromptRegion()
+  // The bootstrap instruction is the sentence beginning "Bootstrap read-only first"; slice up to the
+  // next sentence boundary that introduces the resume path ("If the pass needs" or "if the pass needs").
+  const start = region.indexOf('Bootstrap read-only first')
+  assert.ok(start >= 0, 'the relay prompt must instruct a read-only bootstrap first')
+  const rest = region.slice(start)
+  const end = rest.search(/[Ii]f the pass needs/)
+  assert.ok(end > 0, 'the bootstrap clause must precede the resume ("if the pass needs...") clause')
+  return rest.slice(0, end)
+}
+
+test('ruling66-bootstrap-guard: the relay BOOTSTRAP instruction uses top-level `-s read-only` and NOT `-c sandbox_mode` (only resume uses -c sandbox_mode)', () => {
+  const bootstrapClause = reviewerBootstrapClause()
+  // The bootstrap must use the top-level -s read-only flag (exec bootstrap accepts it; the unchanged
+  // assertReadOnlyFirstBootstrap requires it in bootstrap_argv).
+  assert.match(
+    bootstrapClause, /-s read-only/,
+    'the relay bootstrap must use the top-level `-s read-only` flag',
+  )
+  // The bootstrap clause must NOT select the sandbox via -c sandbox_mode; that is a resume-only law.
+  assert.doesNotMatch(
+    bootstrapClause, /-c sandbox_mode/,
+    'the relay bootstrap must not use `-c sandbox_mode`; that is reserved for resume',
+  )
+  // And the resume path (elsewhere in the prompt) still selects the sandbox via -c sandbox_mode.
+  const region = reviewerRelayPromptRegion()
+  assert.match(
+    region, /-c sandbox_mode/,
+    'the relay resume path must still select the sandbox via `-c sandbox_mode`',
+  )
+})
