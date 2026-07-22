@@ -36,7 +36,7 @@ class ProviderProbeTests(unittest.TestCase):
             lines = log.read_text().splitlines()
             self.assertIn("codex exec -m gpt-5.6-sol", lines[0])
             self.assertNotIn("--last", lines[0])
-            self.assertIn("claude -p --model claude-sonnet-5", lines[1])
+            self.assertIn("claude -p --model claude-opus-4-8[1m] --effort xhigh", lines[1])
             self.assertFalse(json.loads(review.stdout)["fleet_outage"])
             self.assertEqual("lane_or_session", json.loads(build.stdout)["classification"])
 
