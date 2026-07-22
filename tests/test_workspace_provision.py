@@ -538,6 +538,72 @@ class CleanupProvisionRecordGuardTests(unittest.TestCase):
 
         self.assertFalse(owned.exists(), "provision-record-owned pristine worktree must still be removed")
 
+    def test_stale_record_path_reuse_does_not_authorize_removal(self) -> None:
+        # TUR-447 cycle-2 P1-2b (workspace-cleanup-clean-abort): ownership is
+        # bound to the provision INSTANCE, not the pathname. A stale provision
+        # record for path X plus a hand-recreated worktree at the SAME
+        # conventional path X (the exact live tur-326 deletion shape) proves
+        # nothing: the foreign worktree is PRESERVED.
+        owned = self.worktree_root / "lane-1"
+        result = self.provision(owned, "lane-1", "octo-lite/lane-1")
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "remove", str(owned)],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertTrue(result.record_path.is_file(), "stale-record precondition")
+
+        # Hand-recreated at the SAME path on a DIFFERENT branch: real foreign
+        # work, clean and at the exact expected HEAD.
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "add", "-b", "tur-326", str(owned), self.head],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(self.head, _git(owned, "rev-parse", "HEAD"))
+        self.assertEqual("", _git(owned, "status", "--porcelain"))
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertTrue(owned.is_dir(), "stale record re-authorized removing a hand-recreated worktree")
+
+        # A DETACHED hand-recreated worktree at the same path proves no branch
+        # identity at all: equally preserved.
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "remove", str(owned)],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "add", "--detach", str(owned), self.head],
+            check=True, capture_output=True, text=True,
+        )
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertTrue(owned.is_dir(), "stale record re-authorized removing a detached hand-created worktree")
+
+    def test_cleanup_retires_provision_record(self) -> None:
+        # TUR-447 cycle-2 P1-2a (workspace-cleanup-clean-abort): a successful
+        # provisioned clean-abort removal RETIRES the provision record, so the
+        # record can never authorize a future deletion at the same path.
+        owned = self.worktree_root / "lane-1"
+        result = self.provision(owned, "lane-1", "octo-lite/lane-1")
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertFalse(owned.exists(), "owned pristine worktree is still removed")
+        self.assertFalse(result.record_path.exists(), "provision record survived its worktree removal")
+
+        # With the record retired, a NEW hand-created worktree at the same
+        # conventional path, even on the SAME branch, is foreign: preserved.
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "add", str(owned), "octo-lite/lane-1"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(self.head, _git(owned, "rev-parse", "HEAD"))
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertTrue(owned.is_dir(), "foreign worktree removed after record retirement")
+
 
 class InstallCheckOwnerRoutingTests(unittest.TestCase):
     # RED-8 (owner-routing half; the record-state half lives in

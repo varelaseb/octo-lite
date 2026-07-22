@@ -520,6 +520,202 @@ class BootstrapReverifyTests(unittest.TestCase):
         self.assertEqual(before, self.receipt_path.read_text())
 
 
+class BootstrapInconsistentStateTests(unittest.TestCase):
+    # TUR-447 cycle-2 P1-1 (launch-bootstrap-reverify-idempotent,
+    # workspace-cleanup-clean-abort): a receipt claiming bootstrap.verified=true
+    # with a MISSING or BLANK provider_session_id is INCONSISTENT, the exact
+    # partially-written shape a crashed prior run leaves behind. It must be
+    # rejected fail-closed BEFORE any provider invocation, never misclassified
+    # as FRESH into a duplicate-refused new session, and a verified=true
+    # receipt's previously-verified worktree is NEVER clean-abort-removed on a
+    # later failed attempt, even though a matching host-provision record owns it.
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name).resolve()
+        self.repo = base / "repo"
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        (self.repo / "AGENTS.md").write_text("# Target\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
+        self.head = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        # The session's PREVIOUSLY-VERIFIED worktree: a genuine worktree of the
+        # bound repo, pristine at the exact starting head, with a fully matching
+        # host-provision record beside it, so the clean-abort path WOULD remove
+        # it if (wrongly) authorized.
+        self.worktree_root = base / "worktrees"
+        self.worktree_root.mkdir()
+        self.worktree = self.worktree_root / "lane-1"
+        subprocess.run(
+            [
+                "git", "-C", str(self.repo), "worktree", "add", "-q",
+                "-b", "octo-lite/lane-1", str(self.worktree), self.head,
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        records_dir = self.worktree_root / ".octo-provisions"
+        records_dir.mkdir()
+        self.record_path = records_dir / "lane-1.json"
+        self.record_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source": "host-provisioned-worktree",
+                    "lane": "lane-1",
+                    "control_repo": str(self.repo),
+                    "worktree": str(self.worktree),
+                    "worktree_root": str(self.worktree_root),
+                    "repo_slug": "acme/target",
+                    "branch": "octo-lite/lane-1",
+                    "starting_head": self.head,
+                    "resolver_root": str(self.worktree),
+                    "install_check": "clean",
+                    "provisioned_at": "2026-07-21T00:00:00+00:00",
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        env_patch = mock.patch.dict(os.environ)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        os.environ.pop("OCTO_PROVISION_RECORD", None)
+        self.role_repo = base / "role-src"
+        subprocess.run(["git", "init", "-q", str(self.role_repo)], check=True)
+        (self.role_repo / "roles").mkdir()
+        (self.role_repo / "roles" / "orchestrator.md").write_text("# orchestrator\nContract.\n")
+        self.receipt_path = base / "persistent.toml"
+        self.spawn_id = str(uuid.uuid4())
+
+    def _receipt(self, bootstrap: dict) -> dict:
+        contract_path = "roles/orchestrator.md"
+        blob = subprocess.run(
+            ["git", "-C", str(self.role_repo), "hash-object", "--no-filters", contract_path],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        instructions_blob = subprocess.run(
+            ["git", "-C", str(self.repo), "hash-object", "AGENTS.md"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        receipt = {
+            "schema_version": 1,
+            "spawn_id": self.spawn_id,
+            "parent": "meta-operator",
+            "reply_route": "herdr:meta-operator",
+            "ready": True,
+            "role": {
+                "name": "orchestrator",
+                "root": str(self.role_repo),
+                "contract_path": contract_path,
+                "contract_blob": blob,
+                "mapping_revision": "map-1",
+            },
+            "runtime": {
+                "provider": "anthropic", "model": "claude-sonnet-5", "effort": "xhigh",
+                "mode": "auto", "session": "persistent", "service_tier": "default",
+                "tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"],
+            },
+            "skills": {"resolved": [], "matched_capabilities": [], "paths": [], "blobs": []},
+            "workspace": {
+                "repo": str(self.repo), "worktree": str(self.worktree),
+                "starting_head": self.head, "instructions_path": "AGENTS.md",
+                "instructions_blob": instructions_blob,
+            },
+            "access": {
+                "execution_location": "remote", "operator_loopback": False,
+                "review_delivery": "reachable_url_required",
+            },
+            "bootstrap": dict(bootstrap),
+        }
+        receipt["launch_revision"] = launch_revision(receipt)
+        return receipt
+
+    def _write(self, receipt: dict) -> None:
+        self.receipt_path.write_text(render_receipt(receipt))
+
+    def _duplicate_refusal_runner(self):
+        # Emulates the REAL provider refusing a fresh create for an existing
+        # session: the exact duplicate-refusal the misclassified FRESH path hits.
+        calls: list[list[str]] = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="",
+                stderr=f"Error: Session ID {self.spawn_id} is already in use.",
+            )
+
+        return runner, calls
+
+    def _worktree_listed(self) -> bool:
+        listing = subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "list", "--porcelain"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        return f"worktree {self.worktree}" in listing
+
+    def test_inconsistent_verified_blank_session_rejected_before_provider(self) -> None:
+        # P1-1a: verified=true with a BLANK provider_session_id is rejected
+        # fail-closed BEFORE any provider argv runs: no fresh-session attempt,
+        # no duplicate refusal, and no cleanup removal.
+        receipt = self._receipt({"verified": True, "provider_session_id": ""})
+        self._write(receipt)
+        runner, calls = self._duplicate_refusal_runner()
+        with self.assertRaisesRegex(GateError, "inconsistent bootstrap state"):
+            bootstrap_from_receipt(self.receipt_path, runner=runner)
+        self.assertEqual([], calls, "provider was invoked despite inconsistent bootstrap state")
+        self.assertTrue(self.worktree.is_dir(), "previously-verified worktree was removed")
+        self.assertTrue(self._worktree_listed(), "previously-verified worktree unregistered")
+
+    def test_prior_verified_receipt_never_clean_abort_removed(self) -> None:
+        # P1-1b: ANY failure path on a receipt claiming prior verification
+        # preserves the worktree for inspection. First the missing-key
+        # crashed-run shape: provider_session_id absent entirely.
+        receipt = self._receipt({"verified": True})
+        self._write(receipt)
+        runner, calls = self._duplicate_refusal_runner()
+        with self.assertRaises(GateError):
+            bootstrap_from_receipt(self.receipt_path, runner=runner)
+        self.assertTrue(
+            self.worktree.is_dir(),
+            "previously-verified worktree clean-abort-removed (missing session key)",
+        )
+        self.assertTrue(self._worktree_listed(), "previously-verified worktree unregistered")
+
+        # Then a genuine re-verify FAILURE (recorded session, acknowledgment
+        # fact mismatch after the provider answered) also preserves it.
+        receipt = self._receipt({"verified": True, "provider_session_id": self.spawn_id})
+        self._write(receipt)
+        ack = {
+            "schema_version": 1,
+            "spawn_id": receipt["spawn_id"],
+            "provider_session_id": self.spawn_id,
+            "launch_revision": receipt["launch_revision"],
+            "role": "orchestrator",
+            "worktree": str(self.worktree),
+            "starting_head": "f" * 40,
+            "ready": True,
+            "blocker": "",
+        }
+
+        def reverify_runner(argv, **kwargs):
+            output = {"session_id": self.spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        with self.assertRaises(GateError):
+            bootstrap_from_receipt(self.receipt_path, runner=reverify_runner)
+        self.assertTrue(
+            self.worktree.is_dir(),
+            "re-verify failure removed the previously-verified worktree",
+        )
+
+
 class RetiredWorkerPassLauncherTests(unittest.TestCase):
     # TUR-447 F4a (decision-109-workflow-native, role-worker-migration,
     # launch-correctness-path): the octo-launch worker-pass launcher is retired.
