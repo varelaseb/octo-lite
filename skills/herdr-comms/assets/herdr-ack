@@ -24,6 +24,37 @@ root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/messages"
 state="$root/$id.toml"
 [[ -f "$state" ]] || { echo "herdr-ack: unknown message $id" >&2; exit 66; }
 
+# TUR-505 ruling-77 (drain fire race): herdr-drain holds a per-inbox-item
+# flock on "$inbox/$id.lock" (fd 9) around its locked status reread and the
+# atomic prompt fire. Pre-fix herdr-ack wrote message state WITHOUT that lock,
+# so a terminal ack could land between drain's reread and the fire, letting
+# drain duplicate delivery of a terminal message. Contract: herdr-ack takes
+# the SAME lock (same file, same flock semantics, derived from the message's
+# durable target + id exactly as drain derives it) around its whole
+# read-validate-write, making ack and drain's check-then-fire mutually
+# exclusive. Ack-before: drain's locked reread sees terminal and skips.
+# Ack-after: ack blocks here until drain releases, then acknowledges the
+# delivered message. Never write state unlocked; on bounded-wait timeout exit
+# non-zero without touching state.
+# The target field is immutable for a message's lifetime, so one unlocked
+# read of it to derive the lock path is safe; status is reread under the lock.
+lock_target="$(python3 - "$state" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    print(tomllib.load(f).get('target', ''))
+PY
+)"
+inbox="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/inbox/$lock_target"
+# No drain may ever have run for this target (absent inbox dir): create the
+# directory so the lock path exists exactly where drain would create it.
+mkdir -p "$inbox"
+lock="$inbox/$id.lock"
+exec 9>"$lock"
+flock -w "${HERDR_ACK_LOCK_WAIT:-10}" 9 || {
+  echo "herdr-ack: timed out waiting for inbox lock $lock" >&2
+  exit 70
+}
+
 # TUR-505: a message body may be multi-line (herdr 0.7.5 atomic prompt sends
 # arbitrary multi-line text). A positional readarray over line-delimited fields
 # would let a message line masquerade as the status field. Read each field into

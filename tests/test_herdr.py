@@ -627,6 +627,85 @@ exec {real_mv} "$@"
             self.assertIn("prompt", log.read_text().splitlines())
             self.assertFalse(inbox_item.exists())
 
+    def test_ack_blocks_on_the_drain_inbox_lock_and_never_writes_state_while_held(self):
+        # TUR-505 ruling-77 completion (round-4 residual): herdr-drain holds the
+        # per-inbox-item flock ($inbox/$id.lock, fd 9) around its locked status
+        # reread and the atomic prompt fire, but a lock-less herdr-ack could
+        # still write terminal state INSIDE that window -> duplicate delivery.
+        # herdr-ack must acquire the SAME lock before its read-validate-write:
+        # while the lock is held elsewhere a short-wait ack must exit non-zero
+        # WITHOUT writing state, and the same ack must succeed once released.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
+            state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
+            inbox_dir = Path(td) / "state/octo-lite/inbox/agent1"
+            lock_path = inbox_dir / f"{message_id}.lock"
+
+            # Hold the exact drain-side lock in a background subprocess. flock
+            # forks the held command, so the holder runs in its own session and
+            # the whole process group is killed to actually release the lock.
+            holder = subprocess.Popen(
+                ["flock", str(lock_path), "sleep", "30"], start_new_session=True
+            )
+            try:
+                for _ in range(50):
+                    if lock_path.exists():
+                        break
+                    __import__("time").sleep(0.1)
+                self.assertTrue(lock_path.exists())
+                blocked = subprocess.run(
+                    ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
+                    env=dict(env, HERDR_ACK_LOCK_WAIT="1"),
+                    capture_output=True, text=True,
+                )
+                # Bounded wait expired: non-zero, clear error, NO unlocked write.
+                self.assertNotEqual(0, blocked.returncode)
+                self.assertIn("lock", blocked.stderr)
+                with state.open("rb") as handle:
+                    self.assertEqual("pending", tomllib.load(handle)["status"])
+            finally:
+                os.killpg(holder.pid, __import__("signal").SIGTERM)
+                holder.wait()
+
+            # Lock released: the same ack now acquires it and acknowledges.
+            released = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
+                env=dict(env, HERDR_ACK_LOCK_WAIT="1"),
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, released.returncode, released.stderr)
+            with state.open("rb") as handle:
+                self.assertEqual("acknowledged", tomllib.load(handle)["status"])
+
+    def test_ack_without_contention_still_acknowledges_and_clears_operator_waits(self):
+        # No-contention regression for the shared per-message inbox lock: with
+        # nobody holding the lock a normal ack must acquire it, transition the
+        # state, and still clear the matching operator-wait stamp.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["OCTO_STREAM"] = "lane-a"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "question", "agent1", "proceed?"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
+            stamp = Path(td) / "state/octo-lite/operator-waits/lane-a.toml"
+            self.assertTrue(stamp.is_file())
+            acked = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, acked.returncode, acked.stderr)
+            state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
+            with state.open("rb") as handle:
+                self.assertEqual("acknowledged", tomllib.load(handle)["status"])
+            self.assertFalse(stamp.exists())
+
     # --- ack lifecycle -------------------------------------------------------
 
     def test_safe_prompt_marks_pending_then_requires_ack(self):
