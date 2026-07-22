@@ -454,17 +454,65 @@ def _prepare_worktree(
         raise GateError("target AGENTS.md missing")
 
 
-def cleanup_clean_abort(repo: Path, worktree: Path, expected_head: str) -> None:
+def _provision_record_owns_worktree(worktree: Path) -> bool:
+    """provision-record-guard (TUR-447 d1, workspace-cleanup-clean-abort,
+    launch-provision-record-schema): prove workspace-admit created and owns THIS
+    exact worktree before any error-path removal. Ownership is proven only by a
+    host-provision record at a host-known location, the OCTO_PROVISION_RECORD
+    seam path or a workspace-admit-written .octo-provisions record beside the
+    worktree, that passes the frozen schema validation (source
+    host-provisioned-worktree, schema_version 1, via validate_provision_record)
+    and whose record.worktree is this worktree. Anything unreadable, malformed,
+    or bound to a different worktree proves nothing, so the answer stays False
+    and the worktree is preserved."""
+    resolved = Path(worktree).resolve()
+    target = str(resolved)
+    candidates: list[Path] = []
+    env_path = os.environ.get("OCTO_PROVISION_RECORD", "")
+    if env_path:
+        candidates.append(Path(env_path))
+    for ancestor in resolved.parents:
+        records_dir = ancestor / ".octo-provisions"
+        if records_dir.is_dir():
+            candidates.extend(sorted(records_dir.glob("*.json")))
+    for path in candidates:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        try:
+            validate_provision_record(record)
+        except GateError:
+            continue
+        if str(record["worktree"]) == target:
+            return True
+    return False
+
+
+def cleanup_clean_abort(
+    repo: Path, worktree: Path, expected_head: str, *, gateway_provisioned: bool = False
+) -> None:
     """workspace-cleanup-clean-abort: a pass failing before its acknowledgment
     echo is verified removes its worktree on the error path only when that
     worktree is pristine, meaning zero dirty lines and HEAD equal to the exact
     expected starting head, so an abandoned clean worktree never blocks the
     next fresh pass at the same path. A dirty or diverged worktree, or one
     that is not a genuine worktree of the exact bound repo, is preserved for
-    inspection instead of being force-removed."""
+    inspection instead of being force-removed.
+
+    provision-record-guard (TUR-447 d1): removal is additionally gated on proven
+    host-provision ownership. The caller either provisioned this exact worktree
+    itself in the failing flow (gateway_provisioned=True, the reconcile gateway
+    whose prepare creates its worktree at a required-absent path), or a matching
+    host-provision record must prove workspace-admit created and owns it. A
+    foreign or hand-created worktree with no such matching record is PRESERVED,
+    never force-removed, even when clean and at the exact expected head; the
+    pristine-only checks below stay as additional guards, never the sole basis."""
     repo = Path(repo)
     worktree = Path(worktree)
     if worktree == repo or not worktree.is_dir():
+        return
+    if not gateway_provisioned and not _provision_record_owns_worktree(worktree):
         return
     try:
         if _worktree_common_dir(worktree) != _worktree_common_dir(repo):
@@ -1379,7 +1427,9 @@ def prepare_reconcile_launch(
         # provisioning its worktree but before any acknowledgment echo could be
         # verified, so remove the worktree only while pristine at the exact
         # control head; a dirty or diverged worktree stays for inspection.
-        cleanup_clean_abort(repo, worktree, control_head)
+        # gateway_provisioned: THIS call created the worktree just above via
+        # _prepare_worktree at a required-absent path (provision-record-guard).
+        cleanup_clean_abort(repo, worktree, control_head, gateway_provisioned=True)
         raise
     return PreparedReconcile(journal_path, bootstrap, mutation, resolved.contract_text)
 
@@ -1587,12 +1637,36 @@ def verify_codex_effective_identity(receipt: Mapping[str, Any], session_id: str)
         raise GateError(f"codex effective identity mismatch: {', '.join(mismatches)}")
 
 
+def _reverify_argv(prepared: PreparedLaunch, provider: str, recorded_session: str) -> list[str]:
+    """launch-bootstrap-reverify-idempotent (TUR-447 d2): resume the exact
+    recorded provider session for a re-verify pass instead of creating a fresh
+    session the provider refuses as a duplicate. Anthropic keeps the bootstrap
+    call's restricted safe-tool surface and swaps the fresh --session-id create
+    for --resume of the recorded session; OpenAI uses the standard resume argv
+    bound to the recorded thread."""
+    if provider == "anthropic":
+        argv = list(prepared.bootstrap_argv)
+        index = argv.index("--session-id")
+        argv[index] = "--resume"
+        argv[index + 1] = recorded_session
+        return argv
+    return prepared.mutation_argv_for(recorded_session)
+
+
 def run_bootstrap(
     prepared: PreparedLaunch,
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> str:
-    """Run the read-only bootstrap phase and verify BOOTSTRAP_ACK. Returns the verified provider session ID."""
+    """Run the read-only bootstrap phase and verify BOOTSTRAP_ACK. Returns the verified provider session ID.
+
+    launch-bootstrap-reverify-idempotent (TUR-447 d2): a receipt already marked
+    bootstrap-verified with a recorded provider session is accepted idempotently
+    on the re-verify path. It re-confirms the SAME recorded session by resume,
+    under the full receipt revalidation and the same acknowledgment-fact checks,
+    instead of being forced through a fresh --session-id create the provider
+    refuses as a duplicate session; nothing about revalidation or the ack and
+    session re-checks is weakened."""
     with prepared.receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
     # Pre-provider boundary: revalidate manifest shape and launch revision
@@ -1600,9 +1674,14 @@ def run_bootstrap(
     # (launch-entrypoint-revalidation).
     revalidate_launch_receipt(receipt)
     worktree = receipt["workspace"]["worktree"]
+    provider = receipt["runtime"]["provider"]
+    bootstrap_state = receipt.get("bootstrap") or {}
+    recorded_session = str(bootstrap_state.get("provider_session_id") or "")
+    reverify = bootstrap_state.get("verified") is True and bool(recorded_session)
+    argv = _reverify_argv(prepared, provider, recorded_session) if reverify else prepared.bootstrap_argv
     try:
         bootstrap = runner(
-            prepared.bootstrap_argv,
+            argv,
             cwd=worktree,
             input=bootstrap_prompt(prepared),
             capture_output=True,
@@ -1611,8 +1690,9 @@ def run_bootstrap(
         )
         if bootstrap.returncode != 0:
             raise GateError(f"bootstrap provider failed: {bootstrap.stderr.strip()}")
-        provider = receipt["runtime"]["provider"]
         session, acknowledgment = parse_bootstrap_output(provider, bootstrap.stdout)
+        if reverify and session != recorded_session:
+            raise GateError("bootstrap re-verify session mismatch")
         claimed_session = acknowledgment.get("provider_session_id")
         if claimed_session not in {None, "", session}:
             raise GateError("bootstrap acknowledgment mismatch: provider_session_id")
@@ -1623,14 +1703,19 @@ def run_bootstrap(
         verify_bootstrap(prepared.receipt_path, acknowledgment)
     except BaseException:
         # workspace-cleanup-clean-abort: everything above runs before the
-        # acknowledgment echo is verified, so a failure here removes the
-        # worktree only when it is still pristine at the exact starting head
-        # and preserves a dirty or diverged one for inspection.
-        cleanup_clean_abort(
-            Path(receipt["workspace"]["repo"]),
-            Path(worktree),
-            str(receipt["workspace"]["starting_head"]),
-        )
+        # acknowledgment echo is verified, so a fresh-bootstrap failure removes
+        # the worktree only when it is still pristine at the exact starting head
+        # AND host-provision ownership is proven (provision-record-guard); a
+        # foreign or hand-created worktree is preserved. A RE-VERIFY failure
+        # happens after a previously verified acknowledgment, so it never
+        # removes the session's worktree at all
+        # (launch-bootstrap-reverify-idempotent).
+        if not reverify:
+            cleanup_clean_abort(
+                Path(receipt["workspace"]["repo"]),
+                Path(worktree),
+                str(receipt["workspace"]["starting_head"]),
+            )
         raise
     return session
 
@@ -1701,10 +1786,14 @@ def _cleanup_reconcile_worktree(journal_path: Path) -> None:
     if journal.get("result", {}).get("bound") is not True:
         raise GateError("reconcile cleanup requires a journal-bound result")
     workspace = journal["workspace"]
+    # gateway_provisioned: the reconcile gateway itself created this worktree at
+    # a required-absent path and bound it into the durable journal entry
+    # (provision-record-guard).
     cleanup_clean_abort(
         Path(workspace["repo"]),
         Path(workspace["worktree"]),
         str(workspace["starting_head"]),
+        gateway_provisioned=True,
     )
 
 
@@ -1763,10 +1852,13 @@ def run_reconcile_launch(
         # acknowledgment echo is verified, so a failure here removes the
         # worktree only when it is still pristine at the exact starting head
         # and preserves a dirty or diverged one for inspection.
+        # gateway_provisioned: the reconcile gateway created this journal-bound
+        # worktree at a required-absent path (provision-record-guard).
         cleanup_clean_abort(
             Path(journal["workspace"]["repo"]),
             Path(worktree),
             str(journal["workspace"]["starting_head"]),
+            gateway_provisioned=True,
         )
         raise
     mutation = runner(
