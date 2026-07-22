@@ -100,16 +100,42 @@ elif [[ "$sub" == "pane read" ]]; then
 elif [[ "$sub" == "agent prompt" ]]; then
   # agent prompt <target> <text>: $3 is the target, $4 is the literal text.
   # Atomic: capture the full literal text argument for a round-trip assertion.
-  [[ -n "${FAKE_PROMPT_CAPTURE:-}" ]] && printf '%s' "$4" >"$FAKE_PROMPT_CAPTURE"
+  [[ -n "${FAKE_PROMPT_CAPTURE:-}" ]] && printf '%s\n' "$4" >>"$FAKE_PROMPT_CAPTURE"
+  # T13 hook: snapshot the caller's durable message states at the exact fire
+  # instant, so a test can assert state-before-transport (order law).
+  if [[ -n "${FAKE_STATE_SNAPSHOT_DIR:-}" && -n "${FAKE_MSG_ROOT:-}" ]]; then
+    mkdir -p "$FAKE_STATE_SNAPSHOT_DIR"
+    cp "$FAKE_MSG_ROOT"/*.toml "$FAKE_STATE_SNAPSHOT_DIR"/ 2>/dev/null || true
+  fi
+  # T-L4 hook: prove the caller holds the permanent message lock DURING the
+  # fire: parse the [msg:<id>] suffix and try the lock non-blocking.
+  if [[ -n "${FAKE_LOCK_ASSERT_FILE:-}" && -n "${FAKE_LOCKS_DIR:-}" ]]; then
+    lock_id="$(printf '%s' "$4" | grep -oE 'msg:[0-9]{8}T[0-9]{6}-[0-9]+-[0-9]+' | head -1 | cut -d: -f2)"
+    if [[ -n "$lock_id" ]] && ! flock -n "$FAKE_LOCKS_DIR/$lock_id.lock" true 2>/dev/null; then
+      echo held >>"$FAKE_LOCK_ASSERT_FILE"
+    else
+      echo free >>"$FAKE_LOCK_ASSERT_FILE"
+    fi
+  fi
   if [[ -n "${FAKE_PROMPT_MODAL:-}" ]]; then
     echo prompt-blocked >>"$FAKE_LOG"
+    echo 'herdr: prompt blocked by open dialog' >&2
     exit 1
   fi
   if [[ -n "${FAKE_PROMPT_FAIL:-}" ]]; then
     echo prompt-failed >>"$FAKE_LOG"
+    echo 'herdr: agent_prompt_stalled' >&2
     exit 1
   fi
   echo prompt >>"$FAKE_LOG"
+  # T20 / T-R87b hook: the transport is accepted server-side, then the CALLER
+  # dies before its post-transport transition (crash-mid-fire). Close the
+  # inherited lock fd first so the caller's death releases its flock.
+  if [[ -n "${FAKE_PROMPT_KILL:-}" ]]; then
+    exec 9>&- 2>/dev/null || true
+    kill -9 "$PPID"
+    sleep 1
+  fi
 elif [[ "$sub" == "agent send-keys" ]]; then
   echo send-keys >>"$FAKE_LOG"
 else
@@ -595,6 +621,8 @@ exec {real_mv} "$@"
             self.assertIn("stale_retry_removed=1", result.stdout)
 
     def test_drain_locks_each_queued_item_to_prevent_duplicate_delivery(self):
+        # TUR-505 phase-1 L1: the message lock is the PERMANENT sidecar
+        # locks/<id>.lock, never an inbox-adjacent lock file.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             queue = subprocess.run(
@@ -606,35 +634,39 @@ exec {real_mv} "$@"
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
             message_id = states[0].stem
             inbox_item = Path(td) / "state/octo-lite/inbox/agent1" / message_id
-            lock_path = Path(f"{inbox_item}.lock")
+            lock_path = Path(td) / "state/octo-lite/locks" / f"{message_id}.lock"
 
-            holder = subprocess.Popen(["flock", str(lock_path), "sleep", "3"])
+            holder = subprocess.Popen(
+                ["flock", str(lock_path), "sleep", "30"], start_new_session=True
+            )
             try:
-                for _ in range(20):
+                for _ in range(50):
                     if lock_path.exists():
-                        break
+                        probe = subprocess.run(["flock", "-n", str(lock_path), "true"], capture_output=True)
+                        if probe.returncode != 0:
+                            break
                     __import__("time").sleep(0.1)
                 result = subprocess.run(["bash", str(DRAIN), "agent1"], env=env, capture_output=True, text=True)
                 self.assertEqual(0, result.returncode)
                 self.assertNotIn("prompt", (log.read_text().splitlines() if log.exists() else []))
                 self.assertTrue(inbox_item.is_file())
             finally:
-                holder.terminate()
+                os.killpg(holder.pid, __import__("signal").SIGTERM)
                 holder.wait()
 
             second = subprocess.run(["bash", str(DRAIN), "agent1"], env=env, capture_output=True, text=True)
             self.assertEqual(0, second.returncode)
             self.assertIn("prompt", log.read_text().splitlines())
             self.assertFalse(inbox_item.exists())
+            # L1 permanence: delivery never unlinks the lock sidecar.
+            self.assertTrue(lock_path.exists())
 
-    def test_ack_blocks_on_the_drain_inbox_lock_and_never_writes_state_while_held(self):
-        # TUR-505 ruling-77 completion (round-4 residual): herdr-drain holds the
-        # per-inbox-item flock ($inbox/$id.lock, fd 9) around its locked status
-        # reread and the atomic prompt fire, but a lock-less herdr-ack could
-        # still write terminal state INSIDE that window -> duplicate delivery.
-        # herdr-ack must acquire the SAME lock before its read-validate-write:
-        # while the lock is held elsewhere a short-wait ack must exit non-zero
-        # WITHOUT writing state, and the same ack must succeed once released.
+    def test_ack_blocks_on_the_message_lock_and_never_writes_state_while_held(self):
+        # TUR-505 phase-1 T1: herdr-ack shares the PERMANENT message lock
+        # locks/<id>.lock with drain's check-then-fire, so an ack can never
+        # write terminal state inside a fire window. While the lock is held
+        # elsewhere a short-wait ack must exit non-zero WITHOUT writing state,
+        # and the same ack must succeed once released.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             result = subprocess.run(
@@ -643,8 +675,7 @@ exec {real_mv} "$@"
             )
             message_id = result.stdout.split("message_id=", 1)[1].split()[0]
             state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
-            inbox_dir = Path(td) / "state/octo-lite/inbox/agent1"
-            lock_path = inbox_dir / f"{message_id}.lock"
+            lock_path = Path(td) / "state/octo-lite/locks" / f"{message_id}.lock"
 
             # Hold the exact drain-side lock in a background subprocess. flock
             # forks the held command, so the holder runs in its own session and
@@ -812,20 +843,29 @@ exec {real_mv} "$@"
             )
             self.assertEqual(0, right.returncode)
 
-    def test_info_kind_never_carries_an_ack_instruction_or_claims_acknowledged(self):
+    def test_info_kind_completes_on_confirmed_submit_and_carries_id_without_ack_instruction(self):
+        # TUR-505 phase-1 S2b + state machine: a confirmed info submit is a
+        # completed transport (pending->completed under the lock), and the
+        # transported body carries the [msg:<id>] suffix with NO ack
+        # instruction, so every duplicate is id-correlated (T29).
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
+            capture = Path(td) / "prompt-capture"
+            env["FAKE_PROMPT_CAPTURE"] = str(capture)
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "info", "agent1", "fyi status update"],
                 env=env, check=True, capture_output=True, text=True,
             )
-            self.assertIn("status=pending", result.stdout)
+            self.assertIn("status=completed", result.stdout)
             message_id = result.stdout.split("message_id=", 1)[1].split()[0]
             state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
             with state.open("rb") as handle:
                 stored = tomllib.load(handle)
-            self.assertEqual("pending", stored["status"])
+            self.assertEqual("completed", stored["status"])
             self.assertNotIn("Acknowledge with", stored["message"])
+            sent = capture.read_text()
+            self.assertIn(f"[msg:{message_id}]", sent)
+            self.assertNotIn("Acknowledge with", sent)
 
     def test_send_defers_to_pending_and_stays_retryable_on_hard_transport_failure(self):
         # A hard atomic-prompt failure (not a modal) is still an attempted
@@ -868,6 +908,7 @@ exec {real_mv} "$@"
             with states[0].open("rb") as handle:
                 stored = tomllib.load(handle)
             self.assertEqual("agent1", stored["target"])
+            # A ruling is non-info: confirmed transport stays pending (ACK-WAIT).
             self.assertEqual("pending", stored["status"])
 
     # --- Source B operator-wait stamp + D5 pending-write scope ---------------
@@ -1506,6 +1547,934 @@ exec {real_mv} "$@"
             self.assertFalse(log.exists())
             readback = tomllib.loads(receipt_path.read_text())
             self.assertFalse(readback["bootstrap"]["verified"])
+
+
+class MessageLockProtocolTests(unittest.TestCase):
+    """TUR-505 phase-1 shaped contract (rulings 83/86/87): permanent message
+    locks (L1-L4), retry cap (S2/S2a), universal [msg:id] suffix (S2b), the
+    provisional-then-promote state machine, identity grammar, and crash seams.
+    Test names carry the contract T-numbers."""
+
+    ID_1 = "20260722T000000-11-111"
+    ID_2 = "20260722T000001-22-222"
+
+    def _env(self, td, pane_text="ready"):
+        root = Path(td)
+        fake_bin = root / "bin"
+        fake_bin.mkdir(exist_ok=True)
+        fake = fake_bin / "herdr"
+        fake.write_text(FAKE_HERDR_075)
+        fake.chmod(0o755)
+        log = root / "herdr.log"
+        env = dict(os.environ)
+        env.update(
+            PATH=f"{fake_bin}:{env['PATH']}",
+            XDG_STATE_HOME=str(root / "state"),
+            FAKE_PANE_TEXT=pane_text,
+            FAKE_LOG=str(log),
+        )
+        for stale in ("OCTO_STREAM", "OCTO_TRANSPORT_ATTEMPT_CAP"):
+            env.pop(stale, None)
+        return env, log
+
+    def _base(self, td):
+        return Path(td) / "state/octo-lite"
+
+    def _load(self, path):
+        with path.open("rb") as handle:
+            return tomllib.load(handle)
+
+    def _seed(self, td, id_, *, target="agent1", status="pending", kind="command",
+              path="deferred", attempts=None, message="do work", item=True):
+        base = self._base(td)
+        messages = base / "messages"
+        messages.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "schema_version = 1",
+            f'message_id = "{id_}"',
+            f'target = "{target}"',
+            f'kind = "{kind}"',
+            f'status = "{status}"',
+        ]
+        if path is not None:
+            lines.append(f'delivery_path = "{path}"')
+        if attempts is not None:
+            lines.append(f"transport_attempts = {attempts}")
+        lines += [
+            'artifact = ""',
+            f'message = "{message}"',
+            'created_at = "2026-07-22T00:00:00Z"',
+        ]
+        state = messages / f"{id_}.toml"
+        state.write_text("\n".join(lines) + "\n")
+        if item:
+            inbox = base / "inbox" / target
+            inbox.mkdir(parents=True, exist_ok=True)
+            (inbox / id_).write_text(id_ + "\n")
+        return state
+
+    def _drain(self, env, target="agent1"):
+        return subprocess.run(["bash", str(DRAIN), target], env=env, capture_output=True, text=True)
+
+    def _ack(self, env, id_, status, by="agent1", extra=()):
+        return subprocess.run(
+            ["bash", str(ACK), id_, status, "--by", by, *extra],
+            env=env, capture_output=True, text=True,
+        )
+
+    def _hold_lock(self, lock_path):
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder = subprocess.Popen(
+            ["flock", str(lock_path), "sleep", "30"], start_new_session=True
+        )
+        for _ in range(50):
+            if lock_path.exists():
+                probe = subprocess.run(["flock", "-n", str(lock_path), "true"], capture_output=True)
+                if probe.returncode != 0:
+                    return holder
+            __import__("time").sleep(0.1)
+        raise AssertionError("holder never acquired the lock")
+
+    def _release(self, holder):
+        os.killpg(holder.pid, __import__("signal").SIGTERM)
+        holder.wait()
+
+    # --- locks and exclusion (T2, T3, T5, T7, T9, T10, T-L4, T-L4b) ---------
+
+    def test_t2_drain_during_ack_hold_skips_item_and_never_treats_a_lock_as_an_item(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            self._seed(td, self.ID_1)
+            base = self._base(td)
+            lock_path = base / "locks" / f"{self.ID_1}.lock"
+            item = base / "inbox/agent1" / self.ID_1
+            # Drop an old-scheme lock file INSIDE the inbox: never an item.
+            legacy_lock = base / "inbox/agent1" / f"{self.ID_1}.lock"
+            legacy_lock.write_text("")
+            holder = self._hold_lock(lock_path)
+            try:
+                result = self._drain(env)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse(log.exists() and "prompt" in log.read_text())
+                self.assertTrue(item.is_file())
+                self.assertTrue(legacy_lock.is_file())
+                self.assertTrue(lock_path.is_file())
+            finally:
+                self._release(holder)
+            fired = self._drain(env)
+            self.assertEqual(0, fired.returncode, fired.stderr)
+            self.assertIn("prompt", log.read_text().splitlines())
+            self.assertFalse(item.exists())
+            self.assertTrue(legacy_lock.is_file())
+
+    def test_t3_double_drain_delivers_exactly_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            self._seed(td, self.ID_1)
+            first = subprocess.Popen(["bash", str(DRAIN), "agent1"], env=env,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            second = subprocess.Popen(["bash", str(DRAIN), "agent1"], env=env,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            first.wait()
+            second.wait()
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+
+    def test_t5_lock_is_permanent_across_the_full_lifecycle(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            say = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=dict(env, FAKE_PROMPT_FAIL="1"), capture_output=True, text=True,
+            )
+            self.assertEqual(75, say.returncode)
+            base = self._base(td)
+            message_id = next(iter((base / "messages").glob("*.toml"))).stem
+            lock_path = base / "locks" / f"{message_id}.lock"
+            self.assertTrue(lock_path.is_file())
+            inode = lock_path.stat().st_ino
+            drained = self._drain(env)
+            self.assertEqual(0, drained.returncode, drained.stderr)
+            self.assertTrue(lock_path.is_file())
+            acked = self._ack(env, message_id, "acknowledged")
+            self.assertEqual(0, acked.returncode, acked.stderr)
+            done = self._ack(env, message_id, "completed", extra=("--artifact", "ref/1"))
+            self.assertEqual(0, done.returncode, done.stderr)
+            # A lingering stale item for the terminal state is removed too.
+            (base / "inbox/agent1").mkdir(parents=True, exist_ok=True)
+            (base / "inbox/agent1" / message_id).write_text(message_id + "\n")
+            removed = self._drain(env)
+            self.assertEqual(0, removed.returncode, removed.stderr)
+            self.assertTrue(lock_path.is_file())
+            self.assertEqual(inode, lock_path.stat().st_ino)
+
+    def test_t7_flock_semantics_hold_across_bash_and_python_runtimes(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as td:
+            lock_path = Path(td) / "locks" / "x.lock"
+            lock_path.parent.mkdir()
+            # bash flock(1) holds -> python fcntl.flock non-blocking fails
+            holder = self._hold_lock(lock_path)
+            try:
+                with lock_path.open("a") as handle:
+                    with self.assertRaises(OSError):
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                self._release(holder)
+            # Wait until the bash holder's process group fully releases.
+            for _ in range(50):
+                probe = subprocess.run(["flock", "-n", str(lock_path), "true"], capture_output=True)
+                if probe.returncode == 0:
+                    break
+                __import__("time").sleep(0.1)
+            # python fcntl.flock holds -> bash flock -n fails
+            with lock_path.open("a") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                probe = subprocess.run(["flock", "-n", str(lock_path), "true"], capture_output=True)
+                self.assertNotEqual(0, probe.returncode)
+
+    def test_t8_ack_vs_ack_repeat_is_idempotent_and_conflict_is_illegal(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            self._seed(td, self.ID_1)
+            first = self._ack(env, self.ID_1, "acknowledged")
+            self.assertEqual(0, first.returncode, first.stderr)
+            # Same-status re-ack: exit 0 idempotent no-op.
+            repeat = self._ack(env, self.ID_1, "acknowledged")
+            self.assertEqual(0, repeat.returncode, repeat.stderr)
+            # Different-status on a terminal state: illegal-transition error
+            # (except acknowledged->completed).
+            conflict = self._ack(env, self.ID_1, "rejected")
+            self.assertNotEqual(0, conflict.returncode)
+            self.assertIn("illegal transition", conflict.stderr)
+            state = self._base(td) / "messages" / f"{self.ID_1}.toml"
+            self.assertEqual("acknowledged", self._load(state)["status"])
+
+    def test_t9_first_use_creates_the_locks_namespace_race_safely(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            self._seed(td, self.ID_1)
+            base = self._base(td)
+            self.assertFalse((base / "locks").exists())
+            procs = [
+                subprocess.Popen(["bash", str(DRAIN), "agent1"], env=env,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                for _ in range(2)
+            ]
+            acker = subprocess.Popen(["bash", str(ACK), self.ID_1, "acknowledged", "--by", "agent1"],
+                                     env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for proc in procs:
+                proc.wait()
+            acker.wait()
+            self.assertTrue((base / "locks" / f"{self.ID_1}.lock").is_file())
+
+    def test_t10_three_actor_split_one_fire_one_ack_same_lock_inode(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            self._seed(td, self.ID_1)
+            base = self._base(td)
+            lock_path = base / "locks" / f"{self.ID_1}.lock"
+            item = base / "inbox/agent1" / self.ID_1
+            # Actor A (modelled by the external holder) holds the lock pre-fire.
+            holder = self._hold_lock(lock_path)
+            inode = lock_path.stat().st_ino
+            try:
+                # Ack blocks (bounded) while the lock is held: no write.
+                blocked = subprocess.run(
+                    ["bash", str(ACK), self.ID_1, "acknowledged", "--by", "agent1"],
+                    env=dict(env, HERDR_ACK_LOCK_WAIT="1"), capture_output=True, text=True,
+                )
+                self.assertNotEqual(0, blocked.returncode)
+                # Drain-B skips the held item, unlinking nothing.
+                drain_b = self._drain(env)
+                self.assertEqual(0, drain_b.returncode)
+                self.assertTrue(item.is_file())
+                self.assertEqual(inode, lock_path.stat().st_ino)
+                self.assertFalse(log.exists() and "prompt" in log.read_text())
+            finally:
+                self._release(holder)
+            # A releases; the retry fires exactly once; ack then acknowledges.
+            fired = self._drain(env)
+            self.assertEqual(0, fired.returncode, fired.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+            acked = self._ack(env, self.ID_1, "acknowledged")
+            self.assertEqual(0, acked.returncode, acked.stderr)
+            state = self._base(td) / "messages" / f"{self.ID_1}.toml"
+            self.assertEqual("acknowledged", self._load(state)["status"])
+            self.assertEqual(inode, lock_path.stat().st_ino)
+
+    def test_tl4_every_fire_happens_while_holding_the_message_lock(self):
+        # T-L4: the fake herdr probes locks/<id>.lock non-blocking AT FIRE TIME
+        # for both say's initial fire and drain's retry fire; both must hold it.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            base = self._base(td)
+            assert_file = Path(td) / "lock-assert"
+            env["FAKE_LOCKS_DIR"] = str(base / "locks")
+            env["FAKE_LOCK_ASSERT_FILE"] = str(assert_file)
+            say = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=dict(env, FAKE_PROMPT_FAIL="1"), capture_output=True, text=True,
+            )
+            self.assertEqual(75, say.returncode)
+            drained = self._drain(env)
+            self.assertEqual(0, drained.returncode, drained.stderr)
+            self.assertEqual(["held", "held"], assert_file.read_text().splitlines())
+
+    def test_tl4_resume_and_lockholders_are_bounded_when_the_lock_is_held(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            self._seed(td, self.ID_1, status="stalled", attempts=3, item=False)
+            lock_path = self._base(td) / "locks" / f"{self.ID_1}.lock"
+            holder = self._hold_lock(lock_path)
+            try:
+                resumed = subprocess.run(
+                    ["bash", str(DRAIN), "--resume", self.ID_1],
+                    env=dict(env, HERDR_DRAIN_LOCK_WAIT="1"), capture_output=True, text=True,
+                )
+                self.assertNotEqual(0, resumed.returncode)
+                state = self._base(td) / "messages" / f"{self.ID_1}.toml"
+                self.assertEqual("stalled", self._load(state)["status"])
+            finally:
+                self._release(holder)
+            resumed = subprocess.run(
+                ["bash", str(DRAIN), "--resume", self.ID_1],
+                env=dict(env, HERDR_DRAIN_LOCK_WAIT="1"), capture_output=True, text=True,
+            )
+            self.assertEqual(0, resumed.returncode, resumed.stderr)
+
+    def test_tl4b_say_vs_drain_at_cap_one_fires_exactly_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["OCTO_TRANSPORT_ATTEMPT_CAP"] = "1"
+            say = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, say.returncode, say.stderr)
+            # Drain immediately after: the confirmed direct message is ACK-WAIT
+            # (path=direct), so no second fire ever happens at cap 1.
+            drained = self._drain(env)
+            self.assertEqual(0, drained.returncode, drained.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+
+    # --- state machine (T4, T6, T13, T13b, T15, T24) -------------------------
+
+    def test_t4_non_fireable_item_removed_without_transport_or_rewrite(self):
+        cases = {
+            "stalled": {"status": "stalled", "attempts": 3},
+            "acknowledged": {"status": "acknowledged"},
+            "rejected": {"status": "rejected"},
+            "completed": {"status": "completed"},
+            "ack-wait-direct": {"status": "pending", "path": "direct"},
+            "ack-wait-unresolved": {"status": "pending", "path": "unresolved-ask"},
+        }
+        for name, spec in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as td:
+                env, log = self._env(td)
+                state = self._seed(
+                    td, self.ID_1,
+                    status=spec["status"],
+                    path=spec.get("path", "deferred"),
+                    attempts=spec.get("attempts"),
+                )
+                before = state.read_text()
+                item = self._base(td) / "inbox/agent1" / self.ID_1
+                result = self._drain(env)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertFalse(log.exists() and "prompt" in log.read_text())
+                self.assertFalse(item.exists())
+                self.assertEqual(before, state.read_text())
+
+    def test_t6_delivery_path_matrix(self):
+        with self.subTest("direct-info-completed"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "fyi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("completed", stored["status"])
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
+        with self.subTest("direct-non-info-pending"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
+        with self.subTest("modal-queued-then-drain-fires"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td, "Quick safety check: trust this folder")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("queued", stored["status"])
+            self.assertEqual("modal-queued", stored["delivery_path"])
+            self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
+            drained = self._drain(dict(env, FAKE_PANE_TEXT="ready"))
+            self.assertEqual(0, drained.returncode, drained.stderr)
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
+        with self.subTest("deferred-pending-retry"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do"],
+                env=dict(env, FAKE_PROMPT_FAIL="1"), capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("deferred", stored["delivery_path"])
+            self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
+        with self.subTest("unresolved-operator-ask"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            fake = Path(td) / "bin/herdr"
+            fake.write_text(
+                "#!/usr/bin/env bash\nset -eu\n"
+                'if [[ "$1 $2" == "agent get" ]]; then echo \'{"result":{"agent":{}}}\'; else exit 0; fi\n'
+            )
+            env["OCTO_STREAM"] = "lane-a"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "question", "operator-1", "ok?"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(66, result.returncode, result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("unresolved-ask", stored["delivery_path"])
+            self.assertFalse(log.exists())
+        with self.subTest("unresolved-other-no-state"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            fake = Path(td) / "bin/herdr"
+            fake.write_text(
+                "#!/usr/bin/env bash\nset -eu\n"
+                'if [[ "$1 $2" == "agent get" ]]; then echo \'{"result":{"agent":{}}}\'; else exit 0; fi\n'
+            )
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(66, result.returncode)
+            msg_dir = self._base(td) / "messages"
+            self.assertEqual([], list(msg_dir.glob("*.toml")) if msg_dir.exists() else [])
+
+    def test_t13_state_exists_with_correct_status_before_any_transport(self):
+        # State-before-transport order law: at fire time the durable state file
+        # is already present at status pending (snapshot by the fake herdr).
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            snapshot = Path(td) / "at-fire"
+            env["FAKE_MSG_ROOT"] = str(self._base(td) / "messages")
+            env["FAKE_STATE_SNAPSHOT_DIR"] = str(snapshot)
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            states = list(snapshot.glob("*.toml"))
+            self.assertEqual(1, len(states), "no durable state existed at fire time")
+            self.assertEqual("pending", self._load(states[0])["status"])
+
+    def test_t13b_publication_seam_state_is_durable_before_the_item_is_visible(self):
+        # At the instant the inbox item becomes visible (its atomic publish
+        # rename), the state file already exists with the correct status.
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td, "Quick safety check: trust this folder")
+            fail_bin = Path(td) / "seambin"
+            fail_bin.mkdir()
+            seam_log = Path(td) / "seam-log"
+            real_mv = shutil.which("mv")
+            (fail_bin / "mv").write_text(
+                f"""#!/usr/bin/env bash
+set -eu
+dest="${{@: -1}}"
+if [[ "$dest" == */inbox/* ]]; then
+  if ls "$SEAM_STATE_GLOB_DIR"/*.toml >/dev/null 2>&1; then
+    echo state-present >>"$SEAM_LOG"
+  else
+    echo state-missing >>"$SEAM_LOG"
+  fi
+fi
+exec {real_mv} "$@"
+"""
+            )
+            (fail_bin / "mv").chmod(0o755)
+            env["PATH"] = f"{fail_bin}:{env['PATH']}"
+            env["SEAM_LOG"] = str(seam_log)
+            env["SEAM_STATE_GLOB_DIR"] = str(self._base(td) / "messages")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode)
+            self.assertEqual(["state-present"], seam_log.read_text().splitlines())
+
+    def test_t15_illegal_transition_set_is_rejected_without_a_write(self):
+        illegal = [
+            ("queued", "acknowledged", ()),      # never-transported law
+            ("acknowledged", "rejected", ()),
+            ("rejected", "acknowledged", ()),
+            ("rejected", "completed", ("--artifact", "ref/1")),
+            ("completed", "acknowledged", ()),
+            ("completed", "rejected", ()),
+        ]
+        for current, requested, extra in illegal:
+            with self.subTest(f"{current}->{requested}"), tempfile.TemporaryDirectory() as td:
+                env, _ = self._env(td)
+                path = "modal-queued" if current == "queued" else "deferred"
+                state = self._seed(td, self.ID_1, status=current, path=path, item=False)
+                before = state.read_text()
+                result = self._ack(env, self.ID_1, requested, extra=extra)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(before, state.read_text())
+        # Legal-completeness spot-checks.
+        for requested, extra in (("acknowledged", ()), ("rejected", ()), ("completed", ("--artifact", "r"))):
+            with self.subTest(f"stalled->{requested}"), tempfile.TemporaryDirectory() as td:
+                env, _ = self._env(td)
+                self._seed(td, self.ID_1, status="stalled", attempts=3, item=False)
+                result = self._ack(env, self.ID_1, requested, extra=extra)
+                self.assertEqual(0, result.returncode, result.stderr)
+        with self.subTest("t15b-same-terminal-repeat"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            self._seed(td, self.ID_1, status="rejected", item=False)
+            repeat = self._ack(env, self.ID_1, "rejected")
+            self.assertEqual(0, repeat.returncode, repeat.stderr)
+        with self.subTest("acknowledged->completed-legal"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            self._seed(td, self.ID_1, status="acknowledged", item=False)
+            done = self._ack(env, self.ID_1, "completed", extra=("--artifact", "ref/1"))
+            self.assertEqual(0, done.returncode, done.stderr)
+
+    def test_t24_completion_rules(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            self._seed(td, self.ID_1, item=False)
+            artifactless = self._ack(env, self.ID_1, "completed")
+            self.assertNotEqual(0, artifactless.returncode)
+            wrong = self._ack(env, self.ID_1, "acknowledged", by="intruder")
+            self.assertNotEqual(0, wrong.returncode)
+            acked = self._ack(env, self.ID_1, "acknowledged")
+            self.assertEqual(0, acked.returncode, acked.stderr)
+            done = self._ack(env, self.ID_1, "completed", extra=("--artifact", "ref/1"))
+            self.assertEqual(0, done.returncode, done.stderr)
+            state = self._base(td) / "messages" / f"{self.ID_1}.toml"
+            self.assertEqual("ref/1", self._load(state)["artifact"])
+
+    # --- retry cap (T22 family) ---------------------------------------------
+
+    def test_t22_fires_equal_cap_then_stalls(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["OCTO_TRANSPORT_ATTEMPT_CAP"] = "2"
+            env["FAKE_PROMPT_FAIL"] = "1"
+            say = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, say.returncode)
+            message_id = next(iter((self._base(td) / "messages").glob("*.toml"))).stem
+            second = self._drain(env)
+            self.assertEqual(0, second.returncode, second.stderr)
+            third = self._drain(env)
+            self.assertEqual(0, third.returncode, third.stderr)
+            self.assertIn("status=stalled", third.stdout)
+            # Exactly cap fires happened for the epoch that stayed unconfirmed.
+            self.assertEqual(["prompt-failed", "prompt-failed"], log.read_text().splitlines())
+            state = self._base(td) / "messages" / f"{message_id}.toml"
+            stored = self._load(state)
+            self.assertEqual("stalled", stored["status"])
+            self.assertEqual(2, stored["transport_attempts"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / message_id).exists())
+            # Stalled never auto-fires (T15: stalled auto-fire illegal).
+            fourth = self._drain(env)
+            self.assertEqual(0, fourth.returncode)
+            self.assertEqual(["prompt-failed", "prompt-failed"], log.read_text().splitlines())
+
+    def test_t22e_crash_between_increment_and_fire_burns_the_attempt_without_a_fire(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["OCTO_TRANSPORT_ATTEMPT_CAP"] = "1"
+            state = self._seed(td, self.ID_1)
+            kill_bin = Path(td) / "killbin"
+            kill_bin.mkdir()
+            real_mv = shutil.which("mv")
+            (kill_bin / "mv").write_text(
+                f"""#!/usr/bin/env bash
+set -eu
+dest="${{@: -1}}"
+src="$1"
+match=""
+if [[ "$dest" == "$FAKE_MV_KILL_DEST" ]] && grep -q "$FAKE_MV_KILL_MATCH" "$src" 2>/dev/null; then
+  match=1
+fi
+{real_mv} "$@"
+if [[ -n "$match" ]]; then
+  kill -9 "$PPID"
+  sleep 1
+fi
+"""
+            )
+            (kill_bin / "mv").chmod(0o755)
+            crash_env = dict(env)
+            crash_env["PATH"] = f"{kill_bin}:{crash_env['PATH']}"
+            crash_env["FAKE_MV_KILL_DEST"] = str(state)
+            crash_env["FAKE_MV_KILL_MATCH"] = "transport_attempts = 1"
+            crashed = self._drain(crash_env)
+            self.assertNotEqual(0, crashed.returncode)
+            # The attempt persisted, the fire never happened.
+            self.assertFalse(log.exists())
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual(1, stored["transport_attempts"])
+            # Next drain: attempts == cap -> stalled, total fires < cap.
+            stalled = self._drain(env)
+            self.assertEqual(0, stalled.returncode, stalled.stderr)
+            self.assertIn("status=stalled", stalled.stdout)
+            self.assertFalse(log.exists())
+
+    def test_t22b_resume_starts_a_new_epoch_and_refires(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            self._seed(td, self.ID_1, status="stalled", attempts=3, item=False)
+            resumed = subprocess.run(
+                ["bash", str(DRAIN), "--resume", self.ID_1], env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, resumed.returncode, resumed.stderr)
+            state = self._base(td) / "messages" / f"{self.ID_1}.toml"
+            stored = self._load(state)
+            # New epoch fired: attempts reset to 0 then incremented to 1.
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+            self.assertEqual(1, stored["transport_attempts"])
+            self.assertEqual("pending", stored["status"])
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            self._seed(td, self.ID_1, status="pending", item=False)
+            not_stalled = subprocess.run(
+                ["bash", str(DRAIN), "--resume", self.ID_1], env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, not_stalled.returncode)
+            malformed = subprocess.run(
+                ["bash", str(DRAIN), "--resume", "../../etc/passwd"], env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(64, malformed.returncode)
+
+    def test_t22c_legacy_state_without_attempts_reads_zero_and_first_increment_writes_it(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_PROMPT_FAIL"] = "1"
+            state = self._seed(td, self.ID_1, attempts=None)
+            drained = self._drain(env)
+            self.assertEqual(0, drained.returncode, drained.stderr)
+            stored = self._load(state)
+            self.assertEqual(1, stored["transport_attempts"])
+            self.assertEqual("pending", stored["status"])
+
+    def test_t22d_invalid_cap_env_falls_back_to_default_with_a_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["OCTO_TRANSPORT_ATTEMPT_CAP"] = "banana"
+            env["FAKE_PROMPT_FAIL"] = "1"
+            self._seed(td, self.ID_1, attempts=2)
+            drained = self._drain(env)
+            self.assertEqual(0, drained.returncode, drained.stderr)
+            self.assertIn("OCTO_TRANSPORT_ATTEMPT_CAP", drained.stderr)
+            # Default cap 3 admits the third attempt.
+            self.assertEqual(["prompt-failed"], log.read_text().splitlines())
+
+    # --- ruling-87 pins (T-R87b, T-R87c) ------------------------------------
+
+    def test_tr87b_queued_first_fire_order_both_crash_seams(self):
+        with self.subTest("kill-post-transition-pre-fire"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            state = self._seed(td, self.ID_1, status="queued", path="modal-queued")
+            kill_bin = Path(td) / "killbin"
+            kill_bin.mkdir()
+            real_mv = shutil.which("mv")
+            (kill_bin / "mv").write_text(
+                f"""#!/usr/bin/env bash
+set -eu
+dest="${{@: -1}}"
+src="$1"
+match=""
+if [[ "$dest" == "$FAKE_MV_KILL_DEST" ]] && grep -q 'status = "pending"' "$src" 2>/dev/null; then
+  match=1
+fi
+{real_mv} "$@"
+if [[ -n "$match" ]]; then
+  kill -9 "$PPID"
+  sleep 1
+fi
+"""
+            )
+            (kill_bin / "mv").chmod(0o755)
+            crash_env = dict(env)
+            crash_env["PATH"] = f"{kill_bin}:{crash_env['PATH']}"
+            crash_env["FAKE_MV_KILL_DEST"] = str(state)
+            crashed = self._drain(crash_env)
+            self.assertNotEqual(0, crashed.returncode)
+            stored = self._load(state)
+            # Death pre-fire leaves pending (legal stall path), never a
+            # queued state carrying burned attempts, and the item survives.
+            self.assertEqual("pending", stored["status"])
+            self.assertFalse(log.exists())
+            self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
+            refired = self._drain(env)
+            self.assertEqual(0, refired.returncode, refired.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+        with self.subTest("transported-never-queued"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_PROMPT_KILL"] = "1"
+            self._seed(td, self.ID_1, status="queued", path="modal-queued")
+            crashed = self._drain(env)
+            self.assertNotEqual(0, crashed.returncode)
+            state = self._base(td) / "messages" / f"{self.ID_1}.toml"
+            # A transported message can never still be queued.
+            self.assertIn("prompt", log.read_text().splitlines())
+            self.assertNotEqual("queued", self._load(state)["status"])
+
+    def test_tr87c_target_containment_rejects_the_escape_exemplar_everywhere(self):
+        escape = "../../escape:p1"
+        with self.subTest("say"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", escape, "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(64, result.returncode)
+            self.assertFalse(log.exists())
+            # No path was ever derived outside the inbox root.
+            self.assertFalse((Path(td) / "escape").exists())
+            state_root = self._base(td)
+            self.assertFalse((state_root / "inbox").exists())
+            self.assertFalse((state_root.parent.parent / "escape").exists())
+        with self.subTest("drain"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            result = subprocess.run(
+                ["bash", str(DRAIN), escape], env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(64, result.returncode)
+        with self.subTest("resume"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            # A stalled state whose durable target field is the traversal
+            # exemplar must be rejected before any path derivation.
+            self._seed(td, self.ID_1, target=escape, status="stalled", attempts=3, item=False)
+            result = subprocess.run(
+                ["bash", str(DRAIN), "--resume", self.ID_1], env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse((self._base(td).parent.parent / "escape").exists())
+
+    # --- identity (T14, T16, T17, T17b) -------------------------------------
+
+    def test_t14_malformed_or_alias_ids_are_rejected_untouched(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            for bad in ("../../etc/passwd", "abc", "20260722T000000-1-1x", "20260722T0000001-1"):
+                with self.subTest(bad):
+                    result = self._ack(env, bad, "acknowledged")
+                    self.assertEqual(64, result.returncode)
+            # Drain: malformed basenames and foreign files are never touched.
+            self._seed(td, self.ID_1)
+            inbox = self._base(td) / "inbox/agent1"
+            (inbox / "notes.txt").write_text("foreign\n")
+            (inbox / "m1").write_text("m1\n")
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue((inbox / "notes.txt").is_file())
+            self.assertTrue((inbox / "m1").is_file())
+
+    def test_t16_basename_content_mismatch_is_rejected_untouched(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            self._seed(td, self.ID_1)
+            item = self._base(td) / "inbox/agent1" / self.ID_1
+            item.write_text(self.ID_2 + "\n")
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertFalse(log.exists() and "prompt" in log.read_text())
+            self.assertTrue(item.is_file())
+            self.assertEqual(self.ID_2 + "\n", item.read_text())
+
+    def test_t17_collision_regenerates_the_id_and_keeps_both_states_intact(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            fail_bin = Path(td) / "lnbin"
+            fail_bin.mkdir()
+            real_ln = shutil.which("ln")
+            counter = Path(td) / "ln-count"
+            counter.write_text("0")
+            (fail_bin / "ln").write_text(
+                f"""#!/usr/bin/env bash
+set -eu
+n="$(cat "$LN_COUNT")"
+n=$((n + 1))
+echo "$n" >"$LN_COUNT"
+if (( n <= ${{LN_FAIL_FIRST:-0}} )); then
+  exit 1
+fi
+exec {real_ln} "$@"
+"""
+            )
+            (fail_bin / "ln").chmod(0o755)
+            env["PATH"] = f"{fail_bin}:{env['PATH']}"
+            env["LN_COUNT"] = str(counter)
+            env["LN_FAIL_FIRST"] = "2"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            messages = self._base(td) / "messages"
+            states = list(messages.glob("*.toml"))
+            self.assertEqual(1, len(states))
+            # No partial temporary left behind.
+            self.assertEqual([], list(messages.glob("*.tmp")))
+
+    def test_t17b_collision_exhaustion_exits_nonzero_with_no_partial_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            fail_bin = Path(td) / "lnbin"
+            fail_bin.mkdir()
+            (fail_bin / "ln").write_text("#!/usr/bin/env bash\nexit 1\n")
+            (fail_bin / "ln").chmod(0o755)
+            env["PATH"] = f"{fail_bin}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            messages = self._base(td) / "messages"
+            self.assertEqual([], list(messages.glob("*")) if messages.exists() else [])
+
+    # --- crash seams (T20, T23b, T26) ---------------------------------------
+
+    def test_t20_crash_mid_fire_refires_with_the_same_msg_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            capture = Path(td) / "capture"
+            env["FAKE_PROMPT_CAPTURE"] = str(capture)
+            self._seed(td, self.ID_1)
+            crashed = self._drain(dict(env, FAKE_PROMPT_KILL="1"))
+            self.assertNotEqual(0, crashed.returncode)
+            state = self._base(td) / "messages" / f"{self.ID_1}.toml"
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("deferred", stored["delivery_path"])
+            self.assertEqual(1, stored["transport_attempts"])
+            item = self._base(td) / "inbox/agent1" / self.ID_1
+            self.assertTrue(item.is_file())
+            refired = self._drain(env)
+            self.assertEqual(0, refired.returncode, refired.stderr)
+            sends = capture.read_text().splitlines()
+            self.assertEqual(2, len(sends))
+            self.assertEqual(sends[0], sends[1])
+            self.assertIn(f"[msg:{self.ID_1}", sends[0])
+            stored = self._load(state)
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertFalse(item.exists())
+
+    def test_t23b_legacy_item_without_delivery_path_is_promoted_and_fired(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            state = self._seed(td, self.ID_1, path=None)
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+            stored = self._load(state)
+            # Promoted (deferred) then confirmed-direct on success.
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertEqual("pending", stored["status"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / self.ID_1).exists())
+
+    def test_t26_ack_crash_pre_write_leaves_pending_and_reack_succeeds(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            state = self._seed(td, self.ID_1, item=False)
+            fail_bin = Path(td) / "failbin"
+            fail_bin.mkdir()
+            real_mv = shutil.which("mv")
+            (fail_bin / "mv").write_text(
+                f"""#!/usr/bin/env bash
+set -eu
+if [[ "${{@: -1}}" == "${{FAKE_MV_FAIL_DEST:-}}" ]]; then
+  exit 1
+fi
+exec {real_mv} "$@"
+"""
+            )
+            (fail_bin / "mv").chmod(0o755)
+            crash_env = dict(env)
+            crash_env["PATH"] = f"{fail_bin}:{crash_env['PATH']}"
+            crash_env["FAKE_MV_FAIL_DEST"] = str(state)
+            crashed = self._ack(crash_env, self.ID_1, "acknowledged")
+            self.assertNotEqual(0, crashed.returncode)
+            self.assertEqual("pending", self._load(state)["status"])
+            retried = self._ack(env, self.ID_1, "acknowledged")
+            self.assertEqual(0, retried.returncode, retried.stderr)
+            self.assertEqual("acknowledged", self._load(state)["status"])
+
+    # --- litter (T11, T12, T29) ---------------------------------------------
+
+    def test_t11_foreign_and_malformed_entries_are_untouched_by_drain(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            inbox = self._base(td) / "inbox/agent1"
+            inbox.mkdir(parents=True)
+            (inbox / "README").write_text("foreign\n")
+            (inbox / f"{self.ID_1}.lock").write_text("")
+            (inbox / ".partial.tmp").write_text("x\n")
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertFalse(log.exists())
+            self.assertTrue((inbox / "README").is_file())
+            self.assertTrue((inbox / f"{self.ID_1}.lock").is_file())
+            self.assertTrue((inbox / ".partial.tmp").is_file())
+
+    def test_t12_dot_temporary_is_invisible_until_published_then_drains(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            self._seed(td, self.ID_1, item=False)
+            inbox = self._base(td) / "inbox/agent1"
+            inbox.mkdir(parents=True, exist_ok=True)
+            temp = inbox / f".{self.ID_1}.tmp"
+            temp.write_text(self.ID_1 + "\n")
+            first = self._drain(env)
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertFalse(log.exists())
+            self.assertTrue(temp.is_file())
+            temp.rename(inbox / self.ID_1)
+            second = self._drain(env)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+
+    def test_t29_info_bodies_carry_the_msg_id_with_no_ack_instruction_on_retry_too(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            capture = Path(td) / "capture"
+            env["FAKE_PROMPT_CAPTURE"] = str(capture)
+            self._seed(td, self.ID_1, kind="info", message="fyi update")
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            sent = capture.read_text()
+            self.assertIn(f"[msg:{self.ID_1}]", sent)
+            self.assertNotIn("Acknowledge with", sent)
+            state = self._base(td) / "messages" / f"{self.ID_1}.toml"
+            self.assertEqual("completed", self._load(state)["status"])
 
 
 if __name__ == "__main__":

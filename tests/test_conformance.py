@@ -116,6 +116,52 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertIn("re-fires the same atomic prompt", text)
         self.assertIn("same message id", text)
         self.assertIn("never double-submits", text)
+        # TUR-505 phase-1 strengthened pending-law wording: retry cap, stalled
+        # surfacing, manual resume epoch, permanent locks.
+        self.assertIn("OCTO_TRANSPORT_ATTEMPT_CAP", text)
+        self.assertIn("stalled", text)
+        self.assertIn("--resume", text)
+        self.assertIn("locks/", text)
+        self.assertIn("[msg:", text)
+
+    def test_t28_transport_class_wording_on_every_enumerated_surface(self) -> None:
+        # TUR-505 T28 + T-R87a (ruling-87 fold, S1): every enumerated doc
+        # surface carries the transport-class wording (bounded duplicate-prone,
+        # no delivery guarantee, zero-delivery possible, retry cap) and no
+        # active surface claims an exactly-once or at-least-once guarantee.
+        surfaces = [
+            ROOT / "spec/domains/operator-control.spec.html",
+            ROOT / "spec/adr/0001-operating-model-boundaries.spec.html",
+            ROOT / "skills/herdr-comms/SKILL.md",
+            ROOT / "docs/runbooks/herdr-comms-lock-reclamation.md",
+        ]
+        for path in surfaces:
+            # Markdown wraps sentences across lines: collapse whitespace so a
+            # wrapped phrase still matches.
+            text = re.sub(r"\s+", " ", path.read_text())
+            self.assertIn("bounded duplicate-prone", text, path.name)
+            self.assertIn("no delivery guarantee", text, path.name)
+            self.assertIn("zero times", text, path.name)
+            self.assertRegex(text, r"(retry cap|attempt cap|OCTO_TRANSPORT_ATTEMPT_CAP)", path.name)
+            # Anchor identifiers are stable names, not claims: strip attribute
+            # values before scanning prose for forbidden guarantee claims.
+            prose = re.sub(r'(data-anchor|id|href)="[^"]*"', "", text).lower()
+            for forbidden in ("exactly-once", "exactly once", "at-least-once", "at least once"):
+                self.assertNotIn(forbidden, prose, path.name)
+
+    def test_t30b_no_helper_references_the_retired_inbox_lock_scheme(self) -> None:
+        # TUR-505 phase-1 L1: the message lock lives ONLY at locks/<id>.lock;
+        # no helper derives a lock path inside an inbox directory.
+        for name in ("herdr-say", "herdr-drain", "herdr-ack"):
+            text = (ROOT / "skills/herdr-comms/assets" / name).read_text()
+            self.assertNotIn('inbox/$target/$id.lock', text, name)
+            self.assertNotIn('$inbox/$id.lock', text, name)
+            self.assertNotIn('"$queued.lock"', text, name)
+        drain = (ROOT / "skills/herdr-comms/assets/herdr-drain").read_text()
+        say = (ROOT / "skills/herdr-comms/assets/herdr-say").read_text()
+        ack = (ROOT / "skills/herdr-comms/assets/herdr-ack").read_text()
+        for text, name in ((drain, "herdr-drain"), (say, "herdr-say"), (ack, "herdr-ack")):
+            self.assertIn("locks/", text, name)
 
     def test_qa_evidence_capture_skill_states_screenshot_default_wiring(self) -> None:
         text = (ROOT / "skills/qa-evidence-capture/SKILL.md").read_text()

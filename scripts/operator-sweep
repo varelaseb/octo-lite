@@ -23,6 +23,194 @@ from octo_lite.runtime import GateError  # noqa: E402
 CANONICAL_SPEC_SIGNAL = "Canonical spec paths:"
 CANONICAL_ADR_SIGNAL = "Canonical ADR paths:"
 
+# ---- TUR-505 phase-1 message transport laws (E1/P1/S3/G2-lite) ----
+#
+# Transport class: bounded duplicate-prone transport with NO delivery
+# guarantee; a message may be delivered zero times, once, or up to the attempt
+# cap per epoch. The sweep's stalled/undelivered surfacing is the no-delivery
+# detection path.
+MESSAGE_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}-[0-9]+-[0-9]+$")
+MESSAGE_TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(:[A-Za-z0-9]+)?$")
+RETRYABLE_PATHS = {"modal-queued", "deferred"}
+ACK_WAIT_PATHS = {"direct", "unresolved-ask"}
+_LEGACY_NOTE_CAP = 20
+
+
+def _positive_int_env(name: str, default: int) -> tuple[int, str]:
+    """Positive-int env knob: invalid value degrades to the default with a
+    distinct warning note (OCTO_TRANSPORT_ATTEMPT_CAP / OCTO_PUBLICATION_REPAIR_SECONDS)."""
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default, ""
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw), ""
+    return default, f"SWEEP NOTE (invalid env): {name}='{raw}' invalid, using default {default}"
+
+
+def _load_message_state(path: Path) -> dict | None:
+    try:
+        with path.open("rb") as stream:
+            state = tomllib.load(stream)
+    except Exception:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def transport_message_report(messages_root: Path, inbox_root: Path, locks_root: Path, *, now: float | None = None) -> dict:
+    """S3 stalled surfacing + P1 publication repair over the durable message
+    states. Stalled messages emit a loud transport-stalled line EVERY cycle
+    (unsuppressible family) until resumed or acked. A RETRYABLE state
+    (queued|pending with delivery_path modal-queued|deferred) with no inbox
+    item whose state-file mtime is older than OCTO_PUBLICATION_REPAIR_SECONDS
+    gets its item recreated (content = id) under the permanent message lock.
+    delivery_path direct or unresolved-ask is NEVER repaired; legacy states
+    without delivery_path are never guess-repaired, only noted
+    undelivered-unknown-legacy (capped)."""
+    import fcntl
+
+    current = time.time() if now is None else now
+    repair_seconds, repair_warn = _positive_int_env("OCTO_PUBLICATION_REPAIR_SECONDS", 180)
+    stalled_lines: list[str] = []
+    repair_notes: list[str] = []
+    legacy_notes: list[str] = []
+    warnings: list[str] = [repair_warn] if repair_warn else []
+    if not messages_root.is_dir():
+        return {"stalled_lines": [], "repair_notes": [], "legacy_notes": [], "warnings": warnings}
+    for state_path in sorted(messages_root.glob("*.toml")):
+        if not MESSAGE_ID_RE.match(state_path.stem):
+            continue
+        state = _load_message_state(state_path)
+        if state is None:
+            continue
+        message_id = state_path.stem
+        status = str(state.get("status") or "")
+        target = str(state.get("target") or "")
+        path = str(state.get("delivery_path") or "")
+        if status == "stalled":
+            attempts = state.get("transport_attempts", 0)
+            stalled_lines.append(
+                f"TRANSPORT STALLED: message {message_id} target={target} "
+                f"attempts={attempts} - resume with herdr-drain --resume {message_id} or ack"
+            )
+            continue
+        if status not in {"queued", "pending"}:
+            continue
+        if path in ACK_WAIT_PATHS:
+            continue  # ACK-WAIT by construction: never repaired.
+        if not path:
+            # Legacy state without delivery_path: no guess-repair for itemless
+            # ones; drain's legacy promotion keeps live items firing.
+            if MESSAGE_TARGET_RE.match(target):
+                item = inbox_root / target / message_id
+                if item.is_file():
+                    continue
+            if len(legacy_notes) < _LEGACY_NOTE_CAP:
+                legacy_notes.append(
+                    f"SWEEP NOTE (undelivered-unknown-legacy): message {message_id} "
+                    "has no delivery_path and no inbox item, not repaired"
+                )
+            elif len(legacy_notes) == _LEGACY_NOTE_CAP:
+                legacy_notes.append("SWEEP NOTE (undelivered-unknown-legacy): further legacy messages elided")
+            continue
+        if path not in RETRYABLE_PATHS:
+            continue
+        # L3 target grammar (ruling-87 fold): validated BEFORE deriving any
+        # path, so ../../escape:p1 can never traverse out of the inbox root.
+        if not MESSAGE_TARGET_RE.match(target):
+            repair_notes.append(
+                f"SWEEP NOTE (invalid target): message {message_id} target rejected, not repaired"
+            )
+            continue
+        item = inbox_root / target / message_id
+        if item.is_file():
+            continue
+        try:
+            mtime = state_path.stat().st_mtime
+        except OSError:
+            continue
+        if (current - mtime) <= repair_seconds:
+            continue  # Fresh publication window: not repaired yet.
+        # P1 repair under the permanent message lock (skip when held; the next
+        # cycle retries, bounded by construction).
+        locks_root.mkdir(parents=True, exist_ok=True)
+        lock_path = locks_root / f"{message_id}.lock"
+        try:
+            with lock_path.open("a") as lock_handle:
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    continue
+                # Re-verify under the lock before recreating the item.
+                state = _load_message_state(state_path)
+                if not isinstance(state, dict):
+                    continue
+                if str(state.get("status") or "") not in {"queued", "pending"}:
+                    continue
+                if str(state.get("delivery_path") or "") not in RETRYABLE_PATHS:
+                    continue
+                if item.is_file():
+                    continue
+                item.parent.mkdir(parents=True, exist_ok=True)
+                temporary = item.parent / f".{message_id}.tmp"
+                temporary.write_text(message_id + "\n")
+                temporary.replace(item)
+                repair_notes.append(
+                    f"SWEEP NOTE (publication repair): recreated inbox item {target}/{message_id}"
+                )
+        except OSError:
+            continue
+    return {
+        "stalled_lines": stalled_lines,
+        "repair_notes": repair_notes,
+        "legacy_notes": legacy_notes,
+        "warnings": warnings,
+    }
+
+
+def registry_lite_advisories(control: Path, owner_route: str) -> list[str]:
+    """G2-lite (ruling-86 second split): one `herdr agent list` call per sweep;
+    each live agent lacking streams/<name>/stream.toml gets an ADVISORY-marked
+    note. Explicitly NEVER an OPERATOR ACTION line and exempt from the
+    nothing-suppresses-gates law in both directions. owner_route and
+    OCTO_REGISTRY_EXEMPT names are exempt. Degrades gracefully to no
+    advisories on any failure."""
+    herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
+    if not herdr:
+        return []
+    try:
+        result = subprocess.run(
+            [herdr, "agent", "list"], capture_output=True, text=True, timeout=3,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        payload = json.loads(result.stdout) if result.stdout.strip() else {}
+    except ValueError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    result_obj = payload.get("result")
+    agents = result_obj.get("agents") if isinstance(result_obj, dict) else None
+    if not isinstance(agents, list):
+        return []
+    exempt = {owner_route}
+    exempt.update(name.strip() for name in os.environ.get("OCTO_REGISTRY_EXEMPT", "").split(",") if name.strip())
+    advisories: list[str] = []
+    for entry in agents:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or entry.get("agent_name") or "")
+        if not name or name in exempt:
+            continue
+        if (control / "streams" / name / "stream.toml").is_file():
+            continue
+        advisories.append(
+            f"ADVISORY (registry-lite): live agent {name} lacks streams/{name}/stream.toml"
+        )
+    return advisories
+
 
 def atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -553,22 +741,46 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
     # owning session already maintains.
     inflight = sorted(set(re.findall(r"\bwf_[a-z0-9]+-[a-z0-9]+\b", status_text)))
 
-    # Undelivered messages come from the real Herdr XDG surfaces: queued inbox
-    # entries AND pending message state, because a successful herdr-say leaves
-    # messages/<id>.toml at status pending with no inbox entry until the
-    # recipient acknowledges (v11 finding).
+    # Undelivered derivation (TUR-505 phase-1 E1): id-shaped fully-published
+    # inbox entries only; locks, dot-temporaries, and foreign files are never
+    # items. An item whose state is NON-RETRYABLE (any terminal, stalled, or
+    # ACK-WAIT residue such as promoted-direct where death preceded item
+    # removal) is NOT undelivered: it is residue for drain's uniform removal
+    # rule, noted once. A missing or malformed state is noted
+    # undelivered-unknown, never a crash. Itemless states stay surfaced:
+    # retryable itemless (crash window, P1 repairs), plus legacy no-path
+    # states (undelivered-unknown-legacy); ACK-WAIT states (path direct or
+    # unresolved-ask) are awaiting ack, not undelivered.
     target_inbox = inbox_root / stream_dir.name
-    undelivered_set = set(
-        path.name for path in target_inbox.iterdir() if path.is_file() and not path.name.endswith(".lock")
-    ) if target_inbox.is_dir() else set()
+    undelivered_set: set[str] = set()
+    message_notes: list[str] = []
+    if target_inbox.is_dir():
+        for path in target_inbox.iterdir():
+            if not path.is_file() or not MESSAGE_ID_RE.match(path.name):
+                continue
+            state_path = messages_root / f"{path.name}.toml"
+            state = _load_message_state(state_path) if state_path.is_file() else None
+            if state is None:
+                message_notes.append(f"undelivered-unknown: item {path.name} has no readable state")
+                continue
+            status = str(state.get("status") or "")
+            delivery_path = str(state.get("delivery_path") or "")
+            if status in {"queued", "pending"} and (not delivery_path or delivery_path in RETRYABLE_PATHS):
+                undelivered_set.add(path.name)
+            else:
+                message_notes.append(f"residue: item {path.name} state {status or 'unknown'} awaits removal")
     if messages_root.is_dir():
         for state_path in messages_root.glob("*.toml"):
-            try:
-                state = load_toml(state_path)
-            except Exception:
+            state = _load_message_state(state_path)
+            if state is None:
                 continue
-            if str(state.get("target") or "") == stream_dir.name and str(state.get("status") or "") in {"pending", "queued"}:
-                undelivered_set.add(str(state.get("message_id") or state_path.stem))
+            if str(state.get("target") or "") != stream_dir.name:
+                continue
+            if str(state.get("status") or "") not in {"pending", "queued"}:
+                continue
+            if str(state.get("delivery_path") or "") in ACK_WAIT_PATHS:
+                continue
+            undelivered_set.add(str(state.get("message_id") or state_path.stem))
     undelivered = sorted(undelivered_set)
 
     # Closed-stream class (sweep-closed-stream): a status.md anchored
@@ -634,6 +846,7 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
         "ask_consumed": ask_consumed,
         "inflight_workflows": inflight,
         "undelivered_queue": undelivered,
+        "message_notes": message_notes,
         "agent_running": agent_running,
         "agent_status": agent_status,
         "watchdog_error": watchdog_error,
@@ -750,6 +963,23 @@ def main() -> int:
 
     gate_lines = operator_gate_lines(stream_dirs, facts, waits_root)
     degraded_notes = degraded_read_notes(stream_dirs, facts)
+
+    # TUR-505 phase-1: S3 stalled surfacing + P1 publication repair every
+    # cycle (loud lines below are unsuppressible-family, emitted on the
+    # changed, unchanged, and deferred paths alike), plus the G2-lite
+    # registry advisory (one agent-list call per sweep, stderr note, never an
+    # OPERATOR ACTION line).
+    locks_root = xdg_state / "locks"
+    transport = transport_message_report(messages_root, inbox_root, locks_root)
+    transport_lines = transport["stalled_lines"] + transport["repair_notes"] + transport["warnings"]
+    registry_advisories = registry_lite_advisories(control, owner_route)
+
+    def emit_transport_surfaces() -> None:
+        for line in transport_lines:
+            print(line)
+        for advisory in registry_advisories:
+            print(advisory, file=sys.stderr)
+
     normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
 
     snapshot = (
@@ -771,7 +1001,15 @@ def main() -> int:
         _emit_operator_gate(gate_lines, root, owner_file, owner_route, control)
         for note in degraded_notes:
             print(note)
-        print(json.dumps({"changed": False, "fingerprint": fingerprint, "owner": owner_route, "liveness": liveness, "operator_gate": gate_lines, "degraded_reads": degraded_notes}))
+        emit_transport_surfaces()
+        print(json.dumps({
+            "changed": False, "fingerprint": fingerprint, "owner": owner_route,
+            "liveness": liveness, "operator_gate": gate_lines, "degraded_reads": degraded_notes,
+            "transport_stalled": transport["stalled_lines"],
+            "transport_repairs": transport["repair_notes"],
+            "transport_legacy": transport["legacy_notes"],
+            "registry_advisories": registry_advisories,
+        }))
         return 0
 
     sweep_dir = control / "sweeps" / fingerprint
@@ -860,6 +1098,7 @@ def main() -> int:
         _emit_operator_gate(gate_lines, root, owner_file, owner_route, control)
         for note in degraded_notes:
             print(note)
+        emit_transport_surfaces()
         deferred_note = (
             "SWEEP NOTE (deferred reconcile): target HEAD changed mid-run - "
             "operator-gates surfaced, reconcile retried next pass"
@@ -908,6 +1147,7 @@ def main() -> int:
     # gate lines (sweep-graceful-degradation).
     for note in degraded_notes:
         print(note)
+    emit_transport_surfaces()
 
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
     # systemd user services run with a bare PATH (live FileNotFoundError
@@ -933,7 +1173,14 @@ def main() -> int:
         f"journal = {json.dumps(str(journal_path))}\n"
         f"result = {json.dumps(str(result_path))}\n",
     )
-    print(json.dumps({"changed": True, "fingerprint": fingerprint, "owner": owner_route, "result": str(result_path), "degraded_reads": degraded_notes}))
+    print(json.dumps({
+        "changed": True, "fingerprint": fingerprint, "owner": owner_route,
+        "result": str(result_path), "degraded_reads": degraded_notes,
+        "transport_stalled": transport["stalled_lines"],
+        "transport_repairs": transport["repair_notes"],
+        "transport_legacy": transport["legacy_notes"],
+        "registry_advisories": registry_advisories,
+    }))
     return 0
 
 

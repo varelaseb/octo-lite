@@ -57,6 +57,14 @@ setenv_args=(
 if [[ -n "$linear_api_key" ]]; then
   setenv_args+=(--setenv="LINEAR_API_KEY=$linear_api_key")
 fi
+# TUR-505 phase-1 (ruling-87 fold): the transient sweep unit does not inherit
+# the installing shell environment, so the transport knobs are propagated via
+# --setenv, same mechanism as the LINEAR_API_KEY propagation above.
+for transport_var in OCTO_REGISTRY_EXEMPT OCTO_PUBLICATION_REPAIR_SECONDS OCTO_TRANSPORT_ATTEMPT_CAP; do
+  if [[ -n "${!transport_var:-}" ]]; then
+    setenv_args+=(--setenv="$transport_var=${!transport_var}")
+  fi
+done
 
 # The timer runs the deterministic sweep directly; only a changed sweep
 # messages the operator (operator-sweep's own delta path), so no periodic wake

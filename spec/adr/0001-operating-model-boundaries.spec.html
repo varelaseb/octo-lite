@@ -52,13 +52,14 @@
 <p data-anchor="decision-no-transcript-inference">herdr-say and herdr-drain never read pane transcript text to infer composer state, consumption, or delivery.</p>
 <p data-anchor="decision-pending">Superseded 2026-07-22 by the herdr 0.7.5 atomic-prompt amendment in the sibling anchor below.
 Historical rule as originally signed: a send or Enter transport attempt leaves a message <code>pending</code>; only the tool call's own exit status decides retry, never a text match.</p>
-<p data-anchor="decision-pending-supersession">Since herdr 0.7.5 the transport attempt is one server-owned atomic prompt, and an atomic prompt transport attempt leaves a message <code>pending</code>; only the tool call's own exit status decides retry, never a text match.</p>
+<p data-anchor="decision-pending-supersession">Since herdr 0.7.5 the transport attempt is one server-owned atomic prompt, and an atomic prompt transport attempt leaves a message <code>pending</code>; only the tool call's own exit status decides retry, never a text match.
+Amended 2026-07-22 (TUR-505 phase-1): the transport class is a bounded duplicate-prone transport with no delivery guarantee; a message may be delivered zero times, once, or up to the retry cap <code>OCTO_TRANSPORT_ATTEMPT_CAP</code> times per epoch, retries stop at the cap by a pending to stalled transition, and only a manual resume starts a new epoch.</p>
 <p data-anchor="decision-ack-only">Only an explicit herdr-ack from the exact recipient proves delivery for a correctness-bearing message.</p>
 <p data-anchor="decision-retry-same-id">Superseded 2026-07-22 by the herdr 0.7.5 atomic-prompt amendment in the sibling anchor below.
 Historical rule as originally signed: retry reuses the same message ID, presses Enter or retries transport only, and never re-pastes text that already landed.</p>
 <p data-anchor="decision-retry-same-id-supersession">Since herdr 0.7.5 transport is one server-owned atomic prompt with no separate paste and Enter step.
 Retry reuses the same message ID and re-fires the same atomic prompt, which never double-submits partially-pasted text.</p>
-<p data-anchor="decision-info-best-effort">An info-kind message stays best-effort and never claims acknowledged delivery.</p>
+<p data-anchor="decision-info-best-effort">Superseded 2026-07-22 (TUR-505 phase-1): an info-kind message stays best-effort and never claims acknowledged delivery, and a confirmed info submit now transitions the message to completed under the message lock with the transported body carrying its message id and no ack instruction.</p>
 </section>
 
 <section data-anchor="decision-owner">
@@ -97,7 +98,8 @@ Retry reuses the same message ID and re-fires the same atomic prompt, which neve
 <h2>Consequences</h2>
 <p data-anchor="consequence-codex-surface">Codex custom-agent discovery, <code>skills.config</code> paths, and per-role generated <code>.toml</code> diagnostics are removed load-bearing surfaces; only Claude Markdown adapters remain generated.</p>
 <p data-anchor="consequence-identity-proof">OpenAI role identity is provable from Codex's own session record instead of assumed from CLI exit status alone.</p>
-<p data-anchor="consequence-herdr-honesty">Herdr delivery status can no longer silently misreport a successful send as unsubmitted, or an unconfirmed one as submitted; a pending message stays honestly unconfirmed until acknowledged.</p>
+<p data-anchor="consequence-herdr-honesty">Herdr delivery status can no longer silently misreport a successful send as unsubmitted, or an unconfirmed one as submitted; a pending message stays honestly unconfirmed until acknowledged.
+Amended 2026-07-22 (TUR-505 phase-1): honesty extends to duplication and loss, because the surfaces state the bounded duplicate-prone no-delivery-guarantee transport class, a stalled message is surfaced loudly until resumed or acknowledged, and no surface overstates delivery.</p>
 <p data-anchor="consequence-owner-availability">A dead or ambiguous owner record is a hard stop that trades availability for removing self-asserted agent authority.</p>
 <p data-anchor="consequence-spec-closed">The spec decision-log reference and this ADR agree, closing the conflict the review found blocking.</p>
 </section>

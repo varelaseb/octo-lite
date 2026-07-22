@@ -29,9 +29,22 @@ composer state, consumption, or delivery. Modal-safe: an open dialog defers,
 queues immediately, returns 75, never force-submits.
 Queued and pending are not acknowledged or completed.
 
+Transport class: bounded duplicate-prone transport with no delivery
+guarantee. A message may arrive zero times, once, or up to the retry cap per
+epoch. Every transported body carries `[msg:<id>]`, info included, so
+duplicates are id-correlated. Only herdr-ack proves delivery; a confirmed
+info submit completes on its own.
+
 On every wake, run `herdr-drain <own-agent-name>`. It fires only when the
 prompt is safe, and a pending retry re-fires the same atomic prompt with the
-same message id, which never double-submits partially-pasted text.
+same message id, which never double-submits partially-pasted text. Retries
+are capped by `OCTO_TRANSPORT_ATTEMPT_CAP` (default 3, per epoch): at the cap
+the message goes stalled, never auto-fires again, and the operator sweep
+surfaces it loudly every cycle. `herdr-drain --resume <id>` starts a new
+epoch (stalled to pending, attempts reset to 0). State reads, attempt
+increments, and fires all run under the permanent per-message flock
+`locks/<id>.lock`; nothing ever unlinks a lock. Reclamation is runbook-only:
+`docs/runbooks/herdr-comms-lock-reclamation.md`.
 
 Commands, rulings, ownership transfers, and blocking questions require:
 

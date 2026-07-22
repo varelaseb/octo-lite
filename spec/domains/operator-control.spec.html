@@ -253,234 +253,26 @@
 </section>
 
 <section data-anchor="diagram-message-lifecycle" id="diagram-message-lifecycle">
-<h2>Acknowledged message lifecycle</h2>
-<script type="application/spec+json" data-render="chart" data-lib="echarts">
-{
-  "aria": {
-    "enabled": true,
-    "description": "A message is identified before transport. Safe prompts permit one transport attempt and pending state. Modals queue the same message. Only explicit acknowledgment completes delivery."
-  },
-  "tooltip": {
-    "trigger": "item"
-  },
-  "animation": false,
-  "series": [
-    {
-      "type": "graph",
-      "layout": "none",
-      "roam": true,
-      "symbol": "roundRect",
-      "symbolSize": [
-        142,
-        54
-      ],
-      "edgeSymbol": [
-        "none",
-        "arrow"
-      ],
-      "edgeSymbolSize": 9,
-      "label": {
-        "show": true,
-        "position": "inside",
-        "fontSize": 11,
-        "fontWeight": 600,
-        "overflow": "break",
-        "width": 126
-      },
-      "edgeLabel": {
-        "show": true,
-        "formatter": "{c}",
-        "fontSize": 9,
-        "color": "#475569",
-        "backgroundColor": "rgba(255,255,255,0.86)",
-        "padding": [
-          2,
-          4
-        ],
-        "borderRadius": 3
-      },
-      "lineStyle": {
-        "color": "#64748b",
-        "width": 2,
-        "opacity": 0.82
-      },
-      "emphasis": {
-        "focus": "adjacency"
-      },
-      "data": [
-        {
-          "name": "Message ID",
-          "x": 100,
-          "y": 250,
-          "symbolSize": [
-            142,
-            54
-          ],
-          "itemStyle": {
-            "color": "#2563eb"
-          }
-        },
-        {
-          "name": "Safe prompt check",
-          "x": 400,
-          "y": 250,
-          "symbolSize": [
-            170,
-            58
-          ],
-          "itemStyle": {
-            "color": "#059669"
-          }
-        },
-        {
-          "name": "Transport attempt",
-          "x": 700,
-          "y": 80,
-          "symbolSize": [
-            170,
-            58
-          ],
-          "itemStyle": {
-            "color": "#0891b2"
-          }
-        },
-        {
-          "name": "Durable queue",
-          "x": 700,
-          "y": 460,
-          "symbolSize": [
-            142,
-            54
-          ],
-          "itemStyle": {
-            "color": "#475569"
-          }
-        },
-        {
-          "name": "Pending",
-          "x": 1000,
-          "y": 80,
-          "symbolSize": [
-            142,
-            54
-          ],
-          "itemStyle": {
-            "color": "#d97706"
-          }
-        },
-        {
-          "name": "Drain",
-          "x": 1000,
-          "y": 460,
-          "symbolSize": [
-            142,
-            54
-          ],
-          "itemStyle": {
-            "color": "#0891b2"
-          }
-        },
-        {
-          "name": "Acknowledgment",
-          "x": 1000,
-          "y": 270,
-          "symbolSize": [
-            170,
-            58
-          ],
-          "itemStyle": {
-            "color": "#059669"
-          }
-        },
-        {
-          "name": "Delivered",
-          "x": 700,
-          "y": 270,
-          "symbolSize": [
-            142,
-            54
-          ],
-          "itemStyle": {
-            "color": "#059669"
-          }
-        }
-      ],
-      "links": [
-        {
-          "source": "Message ID",
-          "target": "Safe prompt check",
-          "value": "herdr-say",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "Safe prompt check",
-          "target": "Transport attempt",
-          "value": "safe",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "Safe prompt check",
-          "target": "Durable queue",
-          "value": "modal or unsafe",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "Transport attempt",
-          "target": "Pending",
-          "value": "not delivered yet",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "Durable queue",
-          "target": "Drain",
-          "value": "same ID",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "Drain",
-          "target": "Pending",
-          "value": "transport only",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "Pending",
-          "target": "Acknowledgment",
-          "value": "explicit ack",
-          "lineStyle": {
-            "curveness": 0
-          }
-        },
-        {
-          "source": "Acknowledgment",
-          "target": "Delivered",
-          "value": "delivered",
-          "lineStyle": {
-            "curveness": 0
-          }
-        }
-      ],
-      "left": 75,
-      "right": 75,
-      "top": 35,
-      "bottom": 35,
-      "zoom": 0.82
-    }
-  ]
-}
-</script>
-<div data-render-target="chart" style="min-height: 520px"></div>
+<h2>Message lifecycle state table</h2>
+<p data-anchor="message-state-table-note" id="message-state-table-note">The table below is the normative state machine for TUR-505 phase-1: every transition except INIT runs under the permanent per-message flock, and anything not listed as legal is an illegal transition with a nonzero exit and no write.</p>
+<table data-anchor="message-state-table" id="message-state-table">
+<thead>
+<tr><th>From</th><th>To</th><th>Actor</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td>(none)</td><td>queued (modal-queued)</td><td>herdr-say</td><td>INIT at an open modal: exclusive state creation, then the inbox item, exit 75, no transport.</td></tr>
+<tr><td>(none)</td><td>pending (unresolved-ask)</td><td>herdr-say</td><td>INIT for an unresolved operator ask (question with OCTO_STREAM): no transport, exit 66; other unresolved kinds write no state.</td></tr>
+<tr><td>(none)</td><td>pending (deferred)</td><td>herdr-say</td><td>INIT for every transport-attempting send: state, then item, then transport (order law).</td></tr>
+<tr><td>queued</td><td>pending</td><td>herdr-drain</td><td>First-fire order: the transition persists under the lock before the attempts-increment and before any transport, so a transported message can never still be queued.</td></tr>
+<tr><td>pending (deferred)</td><td>pending (direct)</td><td>herdr-say or herdr-drain</td><td>Confirmed non-info transport promotes delivery_path to direct (ACK-WAIT, itemless by design, never repaired, never drain-fired), then removes the item.</td></tr>
+<tr><td>pending</td><td>completed</td><td>herdr-say or herdr-drain</td><td>Confirmed info submit completes under the lock; the body still carried its message id.</td></tr>
+<tr><td>pending</td><td>stalled</td><td>herdr-say or herdr-drain</td><td>Attempt cap reached: no fire; the sweep surfaces the stall loudly every cycle.</td></tr>
+<tr><td>stalled</td><td>pending</td><td>herdr-drain --resume</td><td>Manual resume only: a new operator-initiated epoch resets transport_attempts to 0 under the lock.</td></tr>
+<tr><td>pending or stalled</td><td>acknowledged, rejected, or completed</td><td>herdr-ack</td><td>Recipient-exact; completion requires a nonempty artifact; a re-ack with the same status is an idempotent no-op.</td></tr>
+<tr><td>acknowledged</td><td>completed</td><td>herdr-ack</td><td>Ack completion with the named artifact stays legal exactly as before.</td></tr>
+</tbody>
+</table>
+<p data-anchor="message-illegal-set" id="message-illegal-set">Illegal by enumeration: any ack of a never-transported queued message, any stalled auto-fire, any terminal state returning to pending, acknowledged to rejected, rejected to acknowledged, rejected to completed, completed to acknowledged, and completed to rejected.</p>
 </section>
 
 <section data-anchor="messaging" id="messaging">
@@ -490,13 +282,17 @@
 <p data-anchor="message-multi-line-literal" id="message-multi-line-literal">Because the atomic prompt preserves bracketed paste literally, a message body carries arbitrary multi-line and special-character text verbatim, and the earlier single-line, no-single-quote workaround is retired.</p>
 <p data-anchor="message-modal-safe-atomic" id="message-modal-safe-atomic">The atomic prompt is still modal-safe: a detected trust or safety dialog defers to a durable queue rather than submitting, and a reported stall, refusal, or dialog defers to pending, so an open modal is never bulldozed.</p>
 <p data-anchor="message-no-composer-inference" id="message-no-composer-inference"><code>herdr-say</code> and <code>herdr-drain</code> never infer composer state, consumption, or delivery from pane transcript text.</p>
-<p data-anchor="message-pending" id="message-pending">An atomic prompt transport attempt leaves a message pending; retry reuses the same message ID and re-fires the same atomic prompt, which never double-submits partially-pasted text.</p>
-<p data-anchor="message-pending-persist-before-clear" id="message-pending-persist-before-clear">A successful queued transport persists the pending durable status before removing its inbox retry item; a persistence failure retains the retry item and the queued status.</p>
+<p data-anchor="message-pending" id="message-pending">An atomic prompt transport attempt leaves a message pending; retry reuses the same message ID and re-fires the same atomic prompt, which never double-submits partially-pasted text, and the retry count is bounded by the per-epoch attempt cap.</p>
+<p data-anchor="message-pending-persist-before-clear" id="message-pending-persist-before-clear">Every state transition persists before its inbox item is removed (state-transition precedes item removal), and a queued first fire persists queued to pending before the attempts-increment and before any transport; a persistence failure retains the retry item and the prior status.</p>
 <p data-anchor="message-visible" id="message-visible">Visible, injected, pending, or queued TUI text is not acknowledgment.</p>
 <p data-anchor="message-ack" id="message-ack">Commands, operator rulings, ownership transfers, and blocking questions require explicit recipient acknowledgment before dependent action.</p>
 <p data-anchor="message-no-timeout" id="message-no-timeout">Acknowledgment has no arbitrary timeout because dependency, not duration, determines blocking.</p>
 <p data-anchor="message-complete" id="message-complete">Completion requires the named durable artifact or observable outcome, not acknowledgment alone.</p>
-<p data-anchor="message-info-best-effort" id="message-info-best-effort">An info-kind message stays best-effort transport and never claims acknowledged delivery.</p>
+<p data-anchor="message-info-best-effort" id="message-info-best-effort">An info-kind message stays best-effort transport and never claims acknowledged delivery; a confirmed info submit transitions the message to completed under the lock, and the transported body carries the message id with no ack instruction.</p>
+<p data-anchor="message-lock-law" id="message-lock-law">Every status read-decide-write, attempts-increment, and check-then-fire runs under the permanent per-message flock at <code>locks/&lt;id&gt;.lock</code>, including herdr-say's own first transport sequence after INIT; only the INIT exclusive creation itself is exempt, no helper ever holds two locks, nothing ever unlinks a lock, and reclamation is runbook-only.</p>
+<p data-anchor="message-state-before-transport" id="message-state-before-transport">Message state is persisted atomically before any transport, with the delivery path resolved provisional-then-promote: modal-open publishes queued (modal-queued) with an item, an unresolved operator ask persists pending (unresolved-ask) with no transport, every transport-attempting send persists pending (deferred) and its item first, and only a confirmed transport promotes the path to direct.</p>
+<p data-anchor="message-at-least-once" id="message-at-least-once">Transport is a bounded duplicate-prone transport with no delivery guarantee: a message may be delivered zero times (a crash can burn an attempt before the fire, and a cap stall can leave no fire), once, or up to the attempt cap per epoch, so no surface claims a delivery guarantee and the sweep's stalled and undelivered surfacing is the no-delivery detection path; every transported body carries the <code>[msg:&lt;id&gt;]</code> suffix so every duplicate is id-correlated.</p>
+<p data-anchor="message-retry-cap" id="message-retry-cap">The retry cap <code>OCTO_TRANSPORT_ATTEMPT_CAP</code> (positive integer, default 3, invalid values degrade to the default with a warning) bounds fires per epoch from above: a fire first increments and persists <code>transport_attempts</code> under the lock, a message at the cap transitions pending to stalled with no fire, and only the manual <code>herdr-drain --resume</code> starts a new epoch with the counter reset to zero.</p>
 </section>
 
 <section data-anchor="diagram-status-compaction" id="diagram-status-compaction">
@@ -963,6 +759,7 @@
 <p data-anchor="supervision-timer" id="supervision-timer">One session-durable host timer runs the deterministic sweep directly throughout the operator lifecycle, including idle periods, primed to fire without a manual first start; only a changed sweep messages the operator, so no periodic wake message ever enters the operator context.</p>
 <p data-anchor="supervision-sweep" id="supervision-sweep">A wake runs deterministic exact checks and may spawn one fresh Sonnet reconciler over the compact normalized snapshot.</p>
 <p data-anchor="sweep-stream-liveness" id="sweep-stream-liveness">The sweep reports per stream, from real surfaces only (receipt-derived session transcript mtimes, status gate lines, the Herdr inbox and message state, the herdr agent probe, and the status.md anchored <code>Outcome:</code> closed marker): waiting-on-whom with the verbatim open ask, in-flight workflow ids, the undelivered message queue, and an advisory classification.</p>
+<p data-anchor="sweep-undelivered-derivation" id="sweep-undelivered-derivation">Undelivered derivation admits only id-shaped fully-published inbox entries, never lock files, dot-temporaries, or foreign files; an item whose state is non-retryable (any terminal, stalled, or an ACK-WAIT path such as promoted-direct residue) is not undelivered and is noted once as residue awaiting drain's uniform removal; a missing or malformed state is noted undelivered-unknown without crashing; and itemless retryable or legacy no-path states stay surfaced while ACK-WAIT states awaiting acknowledgment do not.</p>
 <p data-anchor="sweep-liveness-probe-input" id="sweep-liveness-probe-input">The herdr agent probe input is the grammar-stable non-blocking <code>agent get</code> of the delivery-lifecycle sweep-dead-agent law, bounded per stream, and a probe failure degrades gracefully to the time-based classification with a noted error per sweep-watchdog-degrade.</p>
 <p data-anchor="sweep-classification-order" id="sweep-classification-order">Classification precedence is <code>waiting-on-operator</code> over <code>closed</code> over <code>dead</code> over <code>waiting</code> over <code>suspected-stuck</code> over <code>active</code>, with <code>closed</code> and <code>dead</code> defined by the delivery-lifecycle sweep-closed-stream and sweep-dead-agent laws.</p>
 <p data-anchor="sweep-suspected-stuck" id="sweep-suspected-stuck">Activity means session-transcript activity only and status-file age never counts; an idle stream without a recorded wait-owner is <code>suspected-stuck</code> only when it is neither <code>closed</code> nor <code>dead</code>, and an ask older than later session activity is presumed consumed.</p>

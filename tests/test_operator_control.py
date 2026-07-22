@@ -3903,6 +3903,363 @@ class TimerLinearAuthTests(unittest.TestCase):
             self.assertIn("--setenv=OCTO_OPERATOR_OWNER=", call)
 
 
+class TransportLifecycleSweepTests(unittest.TestCase):
+    """TUR-505 phase-1 reader/repair laws: E1 undelivered derivation, P1
+    publication repair, S3 stalled surfacing, G2-lite registry advisories,
+    and the operator-timer env propagation (ruling-87 folds)."""
+
+    MSG = "20260722T000000-11-111"
+
+    def _seed_message(self, messages: Path, id_: str, *, target="tur-1", status="pending",
+                      kind="command", path="deferred", attempts=None):
+        messages.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "schema_version = 1",
+            f'message_id = "{id_}"',
+            f'target = "{target}"',
+            f'kind = "{kind}"',
+            f'status = "{status}"',
+        ]
+        if path is not None:
+            lines.append(f'delivery_path = "{path}"')
+        if attempts is not None:
+            lines.append(f"transport_attempts = {attempts}")
+        lines += ['artifact = ""', 'message = "do work"', 'created_at = "2026-07-22T00:00:00Z"']
+        state = messages / f"{id_}.toml"
+        state.write_text("\n".join(lines) + "\n")
+        return state
+
+    # --- T21: E1 undelivered derivation matrix ------------------------------
+
+    def test_t21_e1_matrix_filters_locks_residue_and_notes_unknown(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            projects = base / "projects"
+            projects.mkdir()
+            inbox_root = base / "inbox"
+            messages = base / "messages"
+            stream = base / "streams" / "tur-1"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: working\n")
+            target_inbox = inbox_root / "tur-1"
+            target_inbox.mkdir(parents=True)
+
+            retryable = "20260722T000001-1-1"
+            self._seed_message(messages, retryable, status="pending", path="deferred")
+            (target_inbox / retryable).write_text(retryable + "\n")
+
+            orphan = "20260722T000002-2-2"
+            (target_inbox / orphan).write_text(orphan + "\n")  # no state: unknown
+
+            residue = "20260722T000003-3-3"
+            self._seed_message(messages, residue, status="pending", path="direct")
+            (target_inbox / residue).write_text(residue + "\n")  # ACK-WAIT residue
+
+            terminal = "20260722T000004-4-4"
+            self._seed_message(messages, terminal, status="acknowledged", path="deferred")
+            (target_inbox / terminal).write_text(terminal + "\n")
+
+            stalled = "20260722T000005-5-5"
+            self._seed_message(messages, stalled, status="stalled", path="deferred", attempts=3)
+            (target_inbox / stalled).write_text(stalled + "\n")
+
+            # Never items: locks, dot-temporaries, foreign files.
+            (target_inbox / f"{retryable}.lock").write_text("")
+            (target_inbox / ".partial.tmp").write_text("x")
+            (target_inbox / "README").write_text("foreign")
+
+            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
+                live = module.stream_liveness(
+                    stream, inbox_root, messages, idle_seconds=3600, now=now, projects_root=projects
+                )
+            self.assertIn(retryable, live["undelivered_queue"])
+            for excluded in (orphan, residue, terminal, stalled, f"{retryable}.lock"):
+                self.assertNotIn(excluded, live["undelivered_queue"])
+            notes = "\n".join(live["message_notes"])
+            self.assertIn("undelivered-unknown", notes)
+            self.assertIn(orphan, notes)
+            self.assertIn("residue", notes)
+            self.assertIn(residue, notes)
+
+    def test_t21_ack_wait_and_legacy_itemless_states(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            projects = base / "projects"
+            projects.mkdir()
+            messages = base / "messages"
+            stream = base / "streams" / "tur-1"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: working\n")
+            # ACK-WAIT (path=direct, itemless by design): NOT undelivered.
+            self._seed_message(messages, "20260722T000006-6-6", status="pending", path="direct")
+            # Legacy no-path itemless (pre-contract live state): still surfaced.
+            self._seed_message(messages, "20260722T000007-7-7", status="pending", path=None)
+            # Crash-window retryable itemless: undelivered (P1 will repair).
+            self._seed_message(messages, "20260722T000008-8-8", status="pending", path="deferred")
+            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
+                live = module.stream_liveness(
+                    stream, base / "inbox", messages, idle_seconds=3600, now=1_000_000.0, projects_root=projects
+                )
+            self.assertNotIn("20260722T000006-6-6", live["undelivered_queue"])
+            self.assertIn("20260722T000007-7-7", live["undelivered_queue"])
+            self.assertIn("20260722T000008-8-8", live["undelivered_queue"])
+
+    # --- T23 / T-R87c / T-L4: P1 publication repair -------------------------
+
+    def test_t23_publication_repair_matrix(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            messages = base / "messages"
+            inbox_root = base / "inbox"
+            locks = base / "locks"
+            now = 1_000_000.0
+
+            old = "20260722T000010-1-1"
+            self._seed_message(messages, old, status="pending", path="deferred")
+            os.utime(messages / f"{old}.toml", (now - 600, now - 600))
+
+            fresh = "20260722T000011-2-2"
+            self._seed_message(messages, fresh, status="pending", path="modal-queued")
+            os.utime(messages / f"{fresh}.toml", (now - 5, now - 5))
+
+            direct = "20260722T000012-3-3"
+            self._seed_message(messages, direct, status="pending", path="direct")
+            os.utime(messages / f"{direct}.toml", (now - 600, now - 600))
+
+            ask = "20260722T000013-4-4"
+            self._seed_message(messages, ask, status="pending", path="unresolved-ask")
+            os.utime(messages / f"{ask}.toml", (now - 600, now - 600))
+
+            legacy = "20260722T000014-5-5"
+            self._seed_message(messages, legacy, status="pending", path=None)
+            os.utime(messages / f"{legacy}.toml", (now - 600, now - 600))
+
+            report = module.transport_message_report(messages, inbox_root, locks, now=now)
+            # Old retryable itemless: repaired, item content = id.
+            repaired_item = inbox_root / "tur-1" / old
+            self.assertTrue(repaired_item.is_file())
+            self.assertEqual(old, repaired_item.read_text().strip())
+            self.assertTrue(any(old in note for note in report["repair_notes"]))
+            # Fresh mtime: not yet (boundary case both sides).
+            self.assertFalse((inbox_root / "tur-1" / fresh).exists())
+            # direct and unresolved-ask: never repaired.
+            self.assertFalse((inbox_root / "tur-1" / direct).exists())
+            self.assertFalse((inbox_root / "tur-1" / ask).exists())
+            # Legacy: never guess-repaired, noted undelivered-unknown-legacy.
+            self.assertFalse((inbox_root / "tur-1" / legacy).exists())
+            self.assertTrue(any("undelivered-unknown-legacy" in note and legacy in note
+                                for note in report["legacy_notes"]))
+
+    def test_tr87c_p1_rejects_the_escape_target_and_derives_no_path(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            messages = base / "messages"
+            inbox_root = base / "inbox"
+            inbox_root.mkdir()
+            locks = base / "locks"
+            now = 1_000_000.0
+            bad = "20260722T000015-6-6"
+            self._seed_message(messages, bad, target="../../escape:p1", status="pending", path="deferred")
+            os.utime(messages / f"{bad}.toml", (now - 600, now - 600))
+            report = module.transport_message_report(messages, inbox_root, locks, now=now)
+            # Containment: nothing outside the inbox root is ever derived.
+            self.assertEqual([], [p for p in inbox_root.rglob("*")])
+            self.assertFalse((base / "escape").exists())
+            self.assertFalse((base.parent / "escape").exists())
+            self.assertTrue(any("target" in note and bad in note for note in report["repair_notes"] + report["legacy_notes"]))
+
+    def test_tl4_p1_repair_respects_a_held_message_lock(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            messages = base / "messages"
+            inbox_root = base / "inbox"
+            locks = base / "locks"
+            locks.mkdir()
+            now = 1_000_000.0
+            old = "20260722T000016-7-7"
+            self._seed_message(messages, old, status="pending", path="deferred")
+            os.utime(messages / f"{old}.toml", (now - 600, now - 600))
+            lock_path = locks / f"{old}.lock"
+            holder = subprocess.Popen(["flock", str(lock_path), "sleep", "30"], start_new_session=True)
+            try:
+                for _ in range(50):
+                    if lock_path.exists():
+                        probe = subprocess.run(["flock", "-n", str(lock_path), "true"], capture_output=True)
+                        if probe.returncode != 0:
+                            break
+                    __import__("time").sleep(0.1)
+                module.transport_message_report(messages, inbox_root, locks, now=now)
+                self.assertFalse((inbox_root / "tur-1" / old).exists())
+            finally:
+                os.killpg(holder.pid, __import__("signal").SIGTERM)
+                holder.wait()
+            module.transport_message_report(messages, inbox_root, locks, now=now)
+            self.assertTrue((inbox_root / "tur-1" / old).is_file())
+
+    # --- T22f / S3: loud stalled line every cycle ---------------------------
+
+    def test_t22f_stalled_line_persists_across_consecutive_sweep_cycles(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tur-1"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: working\n")
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+                f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            log = base / "calls.jsonl"
+            (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+            (fake_bin / "operator-say").write_text("#!/usr/bin/env bash\nexit 0\n")
+            for name in ("claude", "operator-say"):
+                (fake_bin / name).chmod(0o755)
+            xdg = base / "xdg"
+            messages = xdg / "octo-lite" / "messages"
+            self._seed_message(messages, self.MSG, target="tur-1", status="stalled",
+                               path="deferred", attempts=3)
+            env = dict(
+                os.environ,
+                PATH=f"{fake_bin}:{os.environ['PATH']}",
+                CALL_LOG=str(log),
+                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+                XDG_STATE_HOME=str(xdg),
+                OCTO_HERDR=str(base / "no-such-herdr"),
+            )
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            first = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, first.returncode, first.stderr)
+            self.assertIn("TRANSPORT STALLED", first.stdout)
+            self.assertIn(self.MSG, first.stdout)
+            # Second cycle (unchanged fingerprint noop path): still loud.
+            second = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, second.returncode, second.stderr)
+            self.assertIn("TRANSPORT STALLED", second.stdout)
+            self.assertIn(self.MSG, second.stdout)
+
+    # --- T22g: invalid repair-seconds env -----------------------------------
+
+    def test_t22g_invalid_publication_repair_seconds_defaults_with_warning(self) -> None:
+        module = _load_operator_sweep_module()
+        with mock.patch.dict(os.environ, {"OCTO_PUBLICATION_REPAIR_SECONDS": "soon"}):
+            value, warning = module._positive_int_env("OCTO_PUBLICATION_REPAIR_SECONDS", 180)
+        self.assertEqual(180, value)
+        self.assertIn("OCTO_PUBLICATION_REPAIR_SECONDS", warning)
+        with mock.patch.dict(os.environ, {"OCTO_PUBLICATION_REPAIR_SECONDS": "240"}):
+            value, warning = module._positive_int_env("OCTO_PUBLICATION_REPAIR_SECONDS", 180)
+        self.assertEqual(240, value)
+        self.assertEqual("", warning)
+
+    # --- T31-lite: G2-lite registry advisories ------------------------------
+
+    def _fake_agent_list_herdr(self, base: Path, payload: str) -> Path:
+        fake = base / "fake-herdr"
+        fake.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$*\" >>\"$HERDR_CALL_LOG\"\n"
+            'if [[ "$1 $2" == "agent list" ]]; then\n'
+            f"  cat <<'JSON'\n{payload}\nJSON\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        fake.chmod(0o755)
+        return fake
+
+    def test_t31_lite_advisory_for_unregistered_live_agents(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            control = base / "control"
+            registered = control / "streams" / "tur-1"
+            registered.mkdir(parents=True)
+            (registered / "stream.toml").write_text("schema_version = 1\n")
+            call_log = base / "herdr-calls"
+            payload = json.dumps({"result": {"agents": [
+                {"name": "tur-1"}, {"name": "rogue-agent"},
+                {"name": "operator-1"}, {"name": "exempt-agent"},
+            ]}})
+            fake = self._fake_agent_list_herdr(base, payload)
+            with mock.patch.dict(os.environ, {
+                "OCTO_HERDR": str(fake),
+                "HERDR_CALL_LOG": str(call_log),
+                "OCTO_REGISTRY_EXEMPT": "exempt-agent",
+            }):
+                advisories = module.registry_lite_advisories(control, "operator-1")
+            self.assertEqual(1, len(advisories), advisories)
+            self.assertTrue(advisories[0].startswith("ADVISORY (registry-lite):"), advisories)
+            self.assertIn("rogue-agent", advisories[0])
+            # NEVER an operator-action line (exempt from the gate law).
+            self.assertNotIn("OPERATOR ACTION", advisories[0])
+            # Exactly one agent-list call per sweep.
+            self.assertEqual(["agent list"], call_log.read_text().splitlines())
+
+    def test_t31_lite_degrades_gracefully_when_agent_list_fails(self) -> None:
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            control = base / "control"
+            (control / "streams").mkdir(parents=True)
+            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
+                advisories = module.registry_lite_advisories(control, "operator-1")
+            self.assertEqual([], advisories)
+
+    # --- T-R87d: operator-timer env propagation -----------------------------
+
+    def test_tr87d_timer_propagates_transport_env_into_the_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            control = base / "control"
+            repo = base / "repo"
+            control.mkdir()
+            repo.mkdir()
+            owner = base / "operator-owner.toml"
+            owner.write_text(
+                f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+                f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+            )
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            call_log = base / "systemd-run.txt"
+            runner = fake_bin / "systemd-run"
+            runner.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >"$CALL_LOG"\n')
+            runner.chmod(0o755)
+            env = dict(
+                os.environ,
+                PATH=f"{fake_bin}:{os.environ['PATH']}",
+                CALL_LOG=str(call_log),
+                OCTO_REGISTRY_EXEMPT="exempt-agent,other",
+                OCTO_PUBLICATION_REPAIR_SECONDS="240",
+                OCTO_TRANSPORT_ATTEMPT_CAP="5",
+            )
+            result = subprocess.run(
+                [
+                    str(TIMER), "install", "--name", "operator-1",
+                    "--control-dir", str(control), "--owner-file", str(owner),
+                    "--repo", str(repo),
+                ],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            call = call_log.read_text()
+            # Same --setenv mechanism as the LINEAR_API_KEY propagation.
+            self.assertIn("--setenv=OCTO_REGISTRY_EXEMPT=exempt-agent,other", call)
+            self.assertIn("--setenv=OCTO_PUBLICATION_REPAIR_SECONDS=240", call)
+            self.assertIn("--setenv=OCTO_TRANSPORT_ATTEMPT_CAP=5", call)
+            self.assertIn("--setenv=PATH=", call)
+
+
 class IntentRecordSurfaceForgeryTests(unittest.TestCase):
     # TUR-447 F5 (Units J and L, code-review finding F5): Shaped authority
     # could not distinguish a command-produced operator-intent record from
