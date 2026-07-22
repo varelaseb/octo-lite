@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import tempfile
 import tomllib
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
@@ -480,6 +482,405 @@ def cleanup_clean_abort(repo: Path, worktree: Path, expected_head: str) -> None:
         )
     except subprocess.CalledProcessError:
         return
+
+
+# gh#8 host-provisioned isolated worktree (spec launch-provisioning-trust-root,
+# workspace-admission-provisions). Provisioning REUSES the existing create+verify
+# path in _prepare_worktree (workspace-provision-shares-create-verify) and ADDS the
+# origin-slug reality check, the same-lane idempotent-reuse disposition, the
+# control-repository-path-itself refusal, and an own-CLAUDE.md wiring check the
+# generic worker-pass path never needed.
+
+PROVISION_RECORD_SOURCE = "host-provisioned-worktree"
+
+# launch-provision-record-schema: the RFC3339 date-time profile (structural
+# shape only; calendar-date and tz-aware confirmation stay with
+# datetime.fromisoformat below). `datetime.fromisoformat` alone is NOT
+# sufficient (re-review finding 2): it also accepts non-RFC3339 forms such as
+# ISO week dates ("2026-W30-2...") and compact/basic timestamps
+# ("20260721T000000+0000"), which this pattern rejects while still accepting
+# the Z form and the numeric-offset form. The seconds field is captured
+# separately (re-review finding, leap seconds) because RFC3339 section 5.6
+# permits the value 60 there, which `datetime.fromisoformat` rejects.
+#
+# Every numeric component below is explicitly range-bound (re-review finding,
+# offset-bounds regression): month 01-12, day 01-31, hour 00-23, minute
+# 00-59, second 00-60 (60 = leap second, handled separately below), and the
+# offset hour 00-23 / offset minute 00-59. A loose `[+-]\d{2}:\d{2}` offset
+# previously let an out-of-range offset such as "+00:60" or "+24:00" match
+# the regex, after which `datetime.fromisoformat` silently NORMALIZES the
+# out-of-range offset instead of rejecting it, so the structural pattern
+# alone must reject those values before fromisoformat ever sees them.
+_RFC3339_DATE_TIME_RE = re.compile(
+    r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])"
+    r"[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?P<seconds>[0-5]\d|60)(\.\d+)?"
+    r"([Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
+)
+
+# launch-provision-record-schema: exactly these keys, no more, no fewer.
+PROVISION_RECORD_KEYS = frozenset(
+    {
+        "schema_version",
+        "source",
+        "lane",
+        "control_repo",
+        "worktree",
+        "worktree_root",
+        "repo_slug",
+        "branch",
+        "starting_head",
+        "resolver_root",
+        "install_check",
+        "provisioned_at",
+    }
+)
+PROVISION_RECORD_ABSOLUTE_PATH_KEYS = ("control_repo", "worktree", "worktree_root", "resolver_root")
+PROVISION_RECORD_INSTALL_CHECK_VALUES = frozenset({"clean", "drifted"})
+
+# launch-provision-wiring-liveness: a genuine install drift is recorded truthfully
+# and ROUTED to the installed-surface owner, never silently repaired in place (the
+# installer itself refuses to replace a nonmatching target).
+INSTALLED_SURFACE_OWNER = "installed-surface-owner"
+
+# launch-provision-env-seam: the frozen stable seam names, in the frozen order.
+LANE_ENV_KEYS = (
+    "OCTO_WORKTREE",
+    "OCTO_WORKTREE_ROOT",
+    "OCTO_CONTROL_REPO",
+    "OCTO_REPO_SLUG",
+    "OCTO_STARTING_HEAD",
+    "OCTO_LANE",
+    "OCTO_PROVISION_RECORD",
+)
+
+
+def validate_provision_record(record: Mapping[str, Any]) -> None:
+    """launch-provision-record-schema: any extra key, missing key, wrong type, or
+    wrong source value fails closed."""
+    if not isinstance(record, Mapping):
+        raise GateError("provision record must be an object")
+    keys = set(record)
+    extra = keys - PROVISION_RECORD_KEYS
+    missing = PROVISION_RECORD_KEYS - keys
+    if extra or missing:
+        raise GateError(f"provision record keys invalid: extra={sorted(extra)} missing={sorted(missing)}")
+    if not isinstance(record["schema_version"], int) or isinstance(record["schema_version"], bool):
+        raise GateError("provision record schema_version must be an integer")
+    if record["schema_version"] != 1:
+        raise GateError("provision record schema_version must be 1")
+    if record["source"] != PROVISION_RECORD_SOURCE:
+        raise GateError("provision record source must be host-provisioned-worktree")
+    for key in PROVISION_RECORD_KEYS - {"schema_version"}:
+        value = record[key]
+        if not isinstance(value, str) or not value:
+            raise GateError(f"provision record field must be a nonempty string: {key}")
+    for key in PROVISION_RECORD_ABSOLUTE_PATH_KEYS:
+        if not os.path.isabs(record[key]):
+            raise GateError(f"provision record {key} must be an absolute path")
+    if record["resolver_root"] != record["worktree"]:
+        raise GateError("provision record resolver_root must equal worktree")
+    slug_parts = record["repo_slug"].split("/")
+    if len(slug_parts) != 2 or not all(slug_parts):
+        raise GateError("provision record repo_slug must be an owner/repo slug")
+    if record["install_check"] not in PROVISION_RECORD_INSTALL_CHECK_VALUES:
+        raise GateError("provision record install_check must be clean or drifted")
+    if not re.fullmatch(r"[0-9a-f]{40}", record["starting_head"]):
+        raise GateError("provision record starting_head must be a resolved commit sha")
+    raw_provisioned_at = record["provisioned_at"]
+    match = _RFC3339_DATE_TIME_RE.fullmatch(raw_provisioned_at)
+    if not match:
+        raise GateError("provision record provisioned_at must be an RFC3339 timestamp")
+    normalized = raw_provisioned_at.replace("Z", "+00:00").replace("z", "+00:00")
+    if match.group("seconds") == "60":
+        # RFC3339 section 5.6 permits a leap-second value (seconds field 60),
+        # but `datetime.fromisoformat` raises on second=60, so this case
+        # cannot depend on it succeeding. Probe with the seconds field
+        # substituted to 59 to confirm the surrounding date/time components
+        # and the tz-aware offset are genuinely valid, without accepting the
+        # leap second through fromisoformat itself.
+        probe = normalized[: match.start("seconds")] + "59" + normalized[match.end("seconds"):]
+        try:
+            probed = datetime.fromisoformat(probe)
+        except ValueError as error:
+            raise GateError("provision record provisioned_at must be an RFC3339 timestamp") from error
+        if probed.tzinfo is None:
+            raise GateError("provision record provisioned_at must be an RFC3339 timestamp")
+        return
+    try:
+        provisioned_at = datetime.fromisoformat(normalized)
+    except ValueError as error:
+        raise GateError("provision record provisioned_at must be an RFC3339 timestamp") from error
+    if provisioned_at.tzinfo is None:
+        # A date-only or timezone-less value parses successfully as a naive
+        # datetime; RFC3339 requires an explicit offset, so a naive result is
+        # rejected here.
+        raise GateError("provision record provisioned_at must be an RFC3339 timestamp")
+
+
+def default_install_check(control_repo: Path, *, prefix: Path | None = None) -> str:
+    """launch-provision-wiring-liveness: run the real installer's read-only
+    --check and report clean or drifted. Never repairs; the installer itself
+    refuses to replace a nonmatching target."""
+    installer = Path(control_repo) / "scripts" / "install-octo-lite"
+    argv = [str(installer), "--check"]
+    if prefix is not None:
+        argv += ["--prefix", str(prefix)]
+    result = subprocess.run(argv, capture_output=True, text=True)
+    return "clean" if result.returncode == 0 else "drifted"
+
+
+def _find_foreign_lane_record(records_dir: Path, worktree: Path, lane: str, *, exclude: Path) -> str | None:
+    """launch-provision-exclusivity: a path already bound to a DIFFERENT lane is
+    refused. Returns the foreign lane name, or None if the path is unclaimed or
+    claimed by this same lane. A malformed or foreign (non-schema) record found
+    during the scan FAILS CLOSED rather than being silently skipped, so it can
+    never weaken record-backed exclusivity."""
+    if not records_dir.is_dir():
+        return None
+    target = str(worktree.resolve())
+    for path in sorted(records_dir.glob("*.json")):
+        if path == exclude:
+            continue
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            raise GateError(f"malformed provision record: {path}") from error
+        try:
+            validate_provision_record(record)
+        except GateError as error:
+            raise GateError(f"foreign provision record: {path}: {error}") from error
+        if record.get("worktree") == target and record.get("lane") != lane:
+            return str(record.get("lane"))
+    return None
+
+
+def verify_lane_worktree_reality(
+    control_repo: Path, worktree: Path, head: str, branch: str, repo_slug: str
+) -> None:
+    """launch-provision-verify + workspace-provision-shares-create-verify: verify
+    the worktree by reality (top-level, common-dir, HEAD, branch, clean tree),
+    plus the ADDED origin-slug reality check and the own-CLAUDE.md wiring check
+    (launch-provision-wiring-liveness)."""
+    control_repo = Path(control_repo)
+    worktree = Path(worktree)
+    try:
+        top = Path(_git(worktree, "rev-parse", "--show-toplevel")).resolve()
+    except subprocess.CalledProcessError as error:
+        raise GateError("worktree validation failed") from error
+    if top != worktree.resolve():
+        raise GateError("worktree must be git root")
+    if _worktree_common_dir(worktree) != _worktree_common_dir(control_repo):
+        raise GateError("worktree belongs to another repo")
+    try:
+        actual_head = _git(worktree, "rev-parse", "HEAD")
+        actual_branch = _git(worktree, "branch", "--show-current")
+        dirty = _git(worktree, "status", "--porcelain")
+    except subprocess.CalledProcessError as error:
+        raise GateError("worktree validation failed") from error
+    if actual_head != head:
+        raise GateError("worktree starting HEAD mismatch")
+    if actual_branch != branch:
+        raise GateError("worktree branch mismatch")
+    if dirty:
+        raise GateError("fresh worktree is dirty")
+    try:
+        origin = _git(worktree, "remote", "get-url", "origin")
+    except subprocess.CalledProcessError as error:
+        raise GateError("worktree origin remote unreadable") from error
+    if _remote_repo_identity(origin) != repo_slug:
+        raise GateError("worktree origin does not resolve to the expected repo slug")
+    if not (worktree / "AGENTS.md").is_file():
+        raise GateError("target AGENTS.md missing")
+    if not (worktree / "CLAUDE.md").is_file():
+        raise GateError("target CLAUDE.md missing")
+
+
+@dataclass(frozen=True)
+class LaneProvision:
+    record: dict[str, Any]
+    record_path: Path
+    install_check_owner_route: str | None
+
+
+def provision_lane_worktree(
+    *,
+    control_repo: Path,
+    worktree_root: Path,
+    worktree: Path,
+    lane: str,
+    branch: str,
+    head: str,
+    repo_slug: str,
+    minimum_free_bytes: int = 1,
+    conflicts: list[str] | None = None,
+    provider_overloaded: bool = False,
+    install_check: Callable[[Path], str] = default_install_check,
+    now: Callable[[], str] | None = None,
+) -> LaneProvision:
+    """workspace-admission-provisions, launch-provision-exclusivity,
+    workspace-provision-idempotent: provision the exclusive per-lane worktree,
+    reusing an already-provisioned worktree for the SAME lane at the expected
+    repo/branch/head without error, and refusing the control repository path
+    itself and any path already bound to a different lane or branch. Emits the
+    host-authored provisioning record OUT of the worktree tree
+    (launch-provision-record-out-of-tree)."""
+    control_repo = Path(control_repo).resolve()
+    worktree_root = Path(worktree_root).resolve()
+    worktree = Path(worktree).resolve()
+    if not lane or not lane.strip():
+        raise GateError("lane identity required")
+    # Sanitize the lane before it ever controls a filesystem path (code-review
+    # finding 1): a lane carrying a path separator, a bare "..", or an
+    # absolute-path shape could otherwise escape .octo-provisions/ when the
+    # record path is built from it below.
+    if "/" in lane or "\\" in lane or lane in {"..", "."} or os.path.isabs(lane):
+        raise GateError("lane identity invalid")
+    if worktree == control_repo:
+        raise GateError("provisioning refuses the control repository path itself")
+    try:
+        control_top = Path(_git(control_repo, "rev-parse", "--show-toplevel")).resolve()
+    except subprocess.CalledProcessError as error:
+        raise GateError("control repo must be a git root") from error
+    if control_top != control_repo:
+        raise GateError("control repo must be a git root")
+
+    # Resolve the starting commit ref to a full PEELED COMMIT sha BEFORE any
+    # comparison or recording (code-review finding 4; re-review finding 1): a
+    # branch name or abbreviated sha must provision correctly rather than
+    # mismatch against the worktree's own resolved HEAD after worktree
+    # creation, and an ANNOTATED TAG must be peeled to the commit it points
+    # at (plain `rev-parse <ref>` returns the tag OBJECT sha, but
+    # `git worktree add` checks out the peeled commit).
+    try:
+        head = _git(control_repo, "rev-parse", "--verify", f"{head}^{{commit}}")
+    except subprocess.CalledProcessError as error:
+        raise GateError(f"starting commit unresolvable: {head}") from error
+
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    admit_workspace(
+        worktree,
+        worktree_root,
+        disk_free_bytes=shutil.disk_usage(worktree_root).free,
+        minimum_free_bytes=minimum_free_bytes,
+        conflicts=list(conflicts or []),
+        provider_overloaded=provider_overloaded,
+    )
+
+    records_dir = worktree_root / ".octo-provisions"
+    records_dir.mkdir(parents=True, exist_ok=True)
+    lane_record_path = records_dir / f"{lane}.json"
+    lock_path = records_dir / f"{lane}.lock"
+
+    # Lane reservation lock (code-review finding 3): reserve+create+record runs
+    # under an exclusive fcntl lock keyed to this lane, so concurrent same-lane
+    # requests for different paths/branches can never both create worktrees and
+    # last-write the single lane record; the second request blocks here until
+    # the first has fully finished.
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+
+        foreign_lane = _find_foreign_lane_record(records_dir, worktree, lane, exclude=lane_record_path)
+        if foreign_lane is not None:
+            raise GateError(f"worktree already bound to a different lane: {foreign_lane}")
+
+        existing_lane_record: dict[str, Any] | None = None
+        if lane_record_path.is_file():
+            existing_lane_record = json.loads(lane_record_path.read_text())
+            validate_provision_record(existing_lane_record)
+
+        if worktree.exists():
+            if existing_lane_record is None:
+                raise GateError("worktree path exists but is not provisioned for this lane")
+            if existing_lane_record["worktree"] != str(worktree):
+                raise GateError("lane already provisioned at a different worktree path")
+            if existing_lane_record["branch"] != branch:
+                raise GateError("lane already provisioned on a different branch")
+            # Idempotent reuse: skip worktree creation and fall through to the same
+            # reality verification the fresh-create path runs.
+        else:
+            if existing_lane_record is not None:
+                raise GateError("lane record exists but its provisioned worktree is missing")
+            _prepare_worktree(
+                control_repo,
+                worktree_root,
+                worktree,
+                head,
+                branch,
+                read_only=False,
+                minimum_free_bytes=minimum_free_bytes,
+                conflicts=list(conflicts or []),
+                provider_overloaded=provider_overloaded,
+            )
+
+        verify_lane_worktree_reality(control_repo, worktree, head, branch, repo_slug)
+
+        resolver_root = load_registry(worktree).root
+        if resolver_root != worktree:
+            raise GateError("role resolver root must be the provisioned worktree")
+
+        check_state = install_check(control_repo)
+        if check_state not in PROVISION_RECORD_INSTALL_CHECK_VALUES:
+            raise GateError("install check must report clean or drifted")
+        owner_route = INSTALLED_SURFACE_OWNER if check_state == "drifted" else None
+
+        provisioned_at = now() if now is not None else datetime.now(timezone.utc).isoformat()
+        record = {
+            "schema_version": 1,
+            "source": PROVISION_RECORD_SOURCE,
+            "lane": lane,
+            "control_repo": str(control_repo),
+            "worktree": str(worktree),
+            "worktree_root": str(worktree_root),
+            "repo_slug": repo_slug,
+            "branch": branch,
+            "starting_head": head,
+            "resolver_root": str(resolver_root),
+            "install_check": check_state,
+            "provisioned_at": provisioned_at,
+        }
+        validate_provision_record(record)
+
+        _atomic_write(lane_record_path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+        # launch-provision-record-out-of-tree: the record lives outside the worktree
+        # tree, so the verified-clean tree stays clean.
+        if _git(worktree, "status", "--porcelain"):
+            raise GateError("worktree unexpectedly dirty after provisioning")
+
+        return LaneProvision(record=record, record_path=lane_record_path, install_check_owner_route=owner_route)
+
+
+def lane_invocation_env(provision: LaneProvision) -> tuple[Path, dict[str, str]]:
+    """launch-provision-env-seam: cwd is the provisioned worktree; env carries
+    exactly the 7 frozen OCTO_* names, without importing or editing
+    octo-loop-qa.js."""
+    record = provision.record
+    cwd = Path(record["worktree"])
+    values = {
+        "OCTO_WORKTREE": record["worktree"],
+        "OCTO_WORKTREE_ROOT": record["worktree_root"],
+        "OCTO_CONTROL_REPO": record["control_repo"],
+        "OCTO_REPO_SLUG": record["repo_slug"],
+        "OCTO_STARTING_HEAD": record["starting_head"],
+        "OCTO_LANE": record["lane"],
+        "OCTO_PROVISION_RECORD": str(provision.record_path),
+    }
+    env = {key: values[key] for key in LANE_ENV_KEYS}
+    return cwd, env
+
+
+def run_lane_loop(
+    provision: LaneProvision,
+    envelope: Mapping[str, Any],
+    *,
+    runner: Callable[[Path, Mapping[str, str], Mapping[str, Any]], Any],
+) -> Any:
+    """launch-provision-identity-supersedes-interim (ruling-62 'runs the loop IN
+    it'): actually INVOKE the loop through the injected runner with the seam's
+    cwd, env, and the already-built envelope, proving this layer STARTS the loop
+    rather than only building params."""
+    cwd, env = lane_invocation_env(provision)
+    return runner(cwd, env, envelope)
 
 
 def _child_workspace_check(

@@ -4363,6 +4363,171 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
             self.assertEqual(3, self._ping_count(log))
 
 
+class WorkspaceAdmitProvisionCliTests(unittest.TestCase):
+    # gh#8 host-provisioned isolated worktree RED-9: `octo-control workspace-admit`
+    # PROVISIONS the lane worktree (not admit-only) and emits the out-of-tree
+    # provisioning record path; stdout JSON carries the frozen record.
+
+    def _init_control_repo(self, repo: Path, remote: str) -> str:
+        # A full self-contained copy of the real octo-lite source tree, so the
+        # REAL scripts/install-octo-lite the default install_check invokes has
+        # every source path it needs (link_one requires each source to exist
+        # even in --check mode).
+        shutil.copytree(
+            ROOT, repo,
+            ignore=shutil.ignore_patterns(".git", "tests", "docs", "spec", "__pycache__", "*.pyc"),
+        )
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", remote], check=True)
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+        return subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    def test_workspace_admit_cli_provisions_and_emits_record(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            control_repo = base / "control"
+            slug = "acme/widgets"
+            head = self._init_control_repo(control_repo, f"https://github.com/{slug}.git")
+            worktree_root = base / "worktrees"
+            worktree = worktree_root / "lane-1"
+            prefix = base / "prefix"
+            subprocess.run(
+                [str(control_repo / "scripts" / "install-octo-lite"), "--prefix", str(prefix)],
+                check=True, capture_output=True, text=True,
+            )
+            env = dict(os.environ, HOME=str(prefix))
+            result = subprocess.run(
+                [
+                    str(CONTROL), "workspace-admit",
+                    "--control-repo", str(control_repo),
+                    "--worktree-root", str(worktree_root),
+                    "--worktree", str(worktree),
+                    "--lane", "lane-1",
+                    "--branch", "octo-lite/lane-1",
+                    "--starting-commit", head,
+                    "--repo-slug", slug,
+                    "--minimum-free-bytes", "1",
+                ],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["admitted"])
+            self.assertEqual(str(worktree.resolve()), payload["worktree"])
+            record_path = Path(payload["record_path"])
+            self.assertFalse(str(record_path).startswith(str(worktree) + os.sep))
+            self.assertTrue(record_path.is_file())
+            record = payload["record"]
+            self.assertEqual("host-provisioned-worktree", record["source"])
+            self.assertEqual("lane-1", record["lane"])
+            self.assertEqual(head, record["starting_head"])
+            self.assertEqual(json.loads(record_path.read_text()), record)
+
+    # REG-4 (code-review finding 4, octo-control:959): the frozen
+    # `--starting-commit <ref>` flag name must be honored by the CLI, and an
+    # abbreviated sha must be RESOLVED to the full commit sha before it is
+    # compared and recorded.
+    def test_workspace_admit_cli_honors_frozen_starting_commit_flag_and_resolves_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            control_repo = base / "control"
+            slug = "acme/widgets"
+            head = self._init_control_repo(control_repo, f"https://github.com/{slug}.git")
+            worktree_root = base / "worktrees"
+            worktree = worktree_root / "lane-2"
+            prefix = base / "prefix"
+            subprocess.run(
+                [str(control_repo / "scripts" / "install-octo-lite"), "--prefix", str(prefix)],
+                check=True, capture_output=True, text=True,
+            )
+            env = dict(os.environ, HOME=str(prefix))
+            result = subprocess.run(
+                [
+                    str(CONTROL), "workspace-admit",
+                    "--control-repo", str(control_repo),
+                    "--worktree-root", str(worktree_root),
+                    "--worktree", str(worktree),
+                    "--lane", "lane-2",
+                    "--branch", "octo-lite/lane-2",
+                    "--starting-commit", head[:10],
+                    "--repo-slug", slug,
+                    "--minimum-free-bytes", "1",
+                ],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(head, payload["record"]["starting_head"])
+
+    # REG-8 (code-review finding 8, octo-control:782): the CLI must SURFACE
+    # install_check_owner_route (route the drift owner signal), not discard it.
+    def test_workspace_admit_cli_surfaces_install_check_owner_route_on_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            control_repo = base / "control"
+            slug = "acme/widgets"
+            head = self._init_control_repo(control_repo, f"https://github.com/{slug}.git")
+            worktree_root = base / "worktrees"
+            worktree = worktree_root / "lane-3"
+            prefix = base / "prefix"
+            subprocess.run(
+                [str(control_repo / "scripts" / "install-octo-lite"), "--prefix", str(prefix)],
+                check=True, capture_output=True, text=True,
+            )
+            # Seed a genuine foreign-owned drift the installer refuses to repair.
+            target = prefix / ".codex" / "AGENTS.md"
+            target.unlink()
+            foreign = prefix / "elsewhere.md"
+            foreign.write_text("foreign\n")
+            target.symlink_to(foreign)
+            env = dict(os.environ, HOME=str(prefix))
+            result = subprocess.run(
+                [
+                    str(CONTROL), "workspace-admit",
+                    "--control-repo", str(control_repo),
+                    "--worktree-root", str(worktree_root),
+                    "--worktree", str(worktree),
+                    "--lane", "lane-3",
+                    "--branch", "octo-lite/lane-3",
+                    "--starting-commit", head,
+                    "--repo-slug", slug,
+                    "--minimum-free-bytes", "1",
+                ],
+                capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual("drifted", payload["record"]["install_check"])
+            self.assertEqual("installed-surface-owner", payload.get("install_check_owner_route"))
+
+    # REG-9 (code-review finding 9, octo-control:953): admit-only backward
+    # compat. Every prior admit-only caller (no provisioning flags) must
+    # still function unchanged.
+    def test_workspace_admit_cli_admit_only_backward_compat_without_provisioning_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            worktree_root = base / "worktrees"
+            worktree_root.mkdir()
+            worktree = worktree_root / "plain-admit"
+            result = subprocess.run(
+                [
+                    str(CONTROL), "workspace-admit",
+                    "--worktree", str(worktree),
+                    "--worktree-root", str(worktree_root),
+                    "--minimum-free-bytes", "1",
+                ],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual({"admitted": True, "worktree": str(worktree.resolve())}, payload)
+
+
 if __name__ == "__main__":
     unittest.main()
 
