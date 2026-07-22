@@ -112,14 +112,11 @@ for source in "$root"/skills/herdr-comms/assets/*; do
   link_one "$source" "$prefix/.local/bin/$(basename "$source")"
 done
 
-# TUR-505 A3.2 (ruling-94): seed the durable operator-mode flag in live XDG
-# state. Missing file reads asleep (paste + Enter wakes the operator); at the
-# A3 land the operator is AWAKE, so seed awake ONCE. Never clobber an
-# operator-set value: the operator toggles this flag by signal afterward.
-if [[ "$check" != true ]]; then
-  mode_dir="${XDG_STATE_HOME:-$prefix/.local/state}/octo-lite"
-  mkdir -p "$mode_dir"
-  [[ -f "$mode_dir/operator-mode" ]] || printf 'awake\n' >"$mode_dir/operator-mode"
-fi
+# TUR-505 A3 review F3: install NEVER seeds XDG/octo-lite/operator-mode. The
+# ruled default is missing file = asleep; install-time seeding of awake would
+# invert that default on every future fresh install. The A3-land live seed
+# (awake, once) is a manual one-shot runbook step, not install behavior:
+#   printf 'awake\n' >"${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/operator-mode"
+# The operator toggles the flag by signal afterward.
 
 echo "octo-lite links ${check:+checked} at $prefix"

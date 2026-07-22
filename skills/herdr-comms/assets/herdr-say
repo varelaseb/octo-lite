@@ -180,7 +180,7 @@ operator_mode="asleep"
 if [[ -f "$state_root/operator-mode" ]]; then
   operator_mode="$(tr -d '[:space:]' <"$state_root/operator-mode")"
 fi
-if [[ -z "${OCTO_GATE_PING:-}" && -n "$owner_route" && "$target" == "$owner_route" && "$operator_mode" == "awake" ]]; then
+if [[ "${OCTO_GATE_PING:-}" != "1" && -n "$owner_route" && "$target" == "$owner_route" && "$operator_mode" == "awake" ]]; then
   # Queue-only: durable state (retryable, so an operator-initiated drain
   # pulls it) plus the inbox item, and nothing ever touches the pane.
   init_state pending deferred

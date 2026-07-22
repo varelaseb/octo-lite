@@ -3287,6 +3287,20 @@ class StructuralDeliveryModeGateTests(unittest.TestCase):
             self.assertEqual(["prompt", "send-keys"], log.read_text().splitlines())
             state = next(iter((self._base(td) / "messages").glob("*.toml")))
             self.assertEqual("completed", self._load(state)["status"])
+        with self.subTest("gate-ping-value-0-does-not-bypass-queue-only"), tempfile.TemporaryDirectory() as td:
+            # TUR-505 A3 review F2: the sole exception is the EXACT value "1".
+            # A present-but-non-1 flag (e.g. OCTO_GATE_PING=0 leaked from a
+            # caller env) must NOT bypass the awake queue-only gate.
+            env, log = self._env(td)
+            self._owner(td, "agent1")
+            self._mode(td, "awake")
+            env["OCTO_GATE_PING"] = "0"
+            result = self._say(env, "command", "agent1", "for the operator")
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertIn("queued for operator pull", result.stderr)
+            self.assertFalse(log.exists())
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            self.assertEqual("pending", self._load(state)["status"])
 
     def test_a3c_info_completes_on_matched_state_only(self):
         with self.subTest("say-seq-advance-alone-leaves-info-pending"), tempfile.TemporaryDirectory() as td:

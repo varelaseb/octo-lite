@@ -4753,6 +4753,54 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
             self.assertIn("delta-env=", lines)
             self.assertNotIn("delta-env=1", lines)
 
+    def test_delta_send_pops_inherited_gate_ping_flag(self) -> None:
+        # TUR-505 A3 review F2: even when the SWEEP PROCESS itself inherits
+        # OCTO_GATE_PING=1 (leaked caller env), the sweep-delta operator-say
+        # child env must NOT carry the flag; only _emit_operator_gate's own
+        # explicit marking may. The delta call site pops it defensively.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            self._stream(control)
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["OCTO_GATE_PING"] = "1"
+            command = self._sweep_cmd(control, owner, repo)
+
+            self._run_to_noop(command, env)
+            lines = log.read_text().splitlines()
+            self.assertIn("gate-ping-env=1", lines)
+            self.assertIn("delta-env=", lines)
+            self.assertNotIn("delta-env=1", lines)
+
+
+class InstallOperatorModeSeedTests(unittest.TestCase):
+    # TUR-505 A3 review F3: install NEVER seeds the operator-mode flag. The
+    # ruled default is missing file = asleep; a fresh install that seeded
+    # awake would invert that default forever. The one-shot live seed at the
+    # A3 land is a manual runbook step, not install behavior.
+
+    def test_install_does_not_seed_operator_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            prefix = base / "prefix"
+            xdg_state = base / "xdg-state"
+            env = dict(os.environ, XDG_STATE_HOME=str(xdg_state))
+            result = subprocess.run(
+                [str(ROOT / "scripts" / "install-octo-lite"), "--prefix", str(prefix)],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertFalse((xdg_state / "octo-lite" / "operator-mode").exists())
+            self.assertFalse(
+                (prefix / ".local/state/octo-lite/operator-mode").exists()
+            )
+
 
 class WorkspaceAdmitProvisionCliTests(unittest.TestCase):
     # gh#8 host-provisioned isolated worktree RED-9: `octo-control workspace-admit`

@@ -1156,6 +1156,10 @@ def main() -> int:
     emit_transport_surfaces()
 
     environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
+    # F2 (TUR-505 A3 review): the gate-ping sole-exception flag belongs ONLY
+    # to _emit_operator_gate's own send; never let an inherited value leak
+    # into the delta delivery and bypass the awake queue-only gate.
+    environment.pop("OCTO_GATE_PING", None)
     # systemd user services run with a bare PATH (live FileNotFoundError
     # evidence); helpers resolve from this repo's own root, test-overridable.
     operator_say = os.environ.get("OCTO_OPERATOR_SAY") or str(root / "skills/herdr-comms/assets/operator-say")
