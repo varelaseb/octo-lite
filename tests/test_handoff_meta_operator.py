@@ -70,7 +70,17 @@ elif [[ "$1 $2" == "pane read" ]]; then
 fi
 """
 
-FAKE_SYSTEMD_RUN = "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+# Timer-install interceptors. The initial launcher installs a periodic sweep by
+# invoking scripts/operator-timer (which internally shells out to systemd-run);
+# see launch-meta-operator.sh. The LIVE handoff launcher must install NO timer at
+# all. Detecting that reliably requires shadowing BOTH boundaries a timer install
+# would cross: the operator-timer entrypoint (by name on PATH, ahead of the real
+# scripts/operator-timer) and systemd-run. Each shadow APPENDS an unmistakable
+# marker line to a dedicated marker file (TIMER_MARKER), so the never-installs
+# assertion can require that file absent/empty rather than grepping a shared log
+# for a string the fake might never emit.
+FAKE_OPERATOR_TIMER = "#!/usr/bin/env bash\nprintf 'TIMER-INSTALL-INVOKED operator-timer %s\\n' \"$*\" >>\"$TIMER_MARKER\"\nexit 0\n"
+FAKE_SYSTEMD_RUN = "#!/usr/bin/env bash\nprintf 'TIMER-INSTALL-INVOKED systemd-run %s\\n' \"$*\" >>\"$TIMER_MARKER\"\nexit 0\n"
 
 # Any liveness probe of the current owner (ps/kill/pane-read of the owner)
 # is forbidden. These fakes record a marker if the launcher ever calls them so
@@ -97,9 +107,11 @@ class HandoffMetaOperatorTests(unittest.TestCase):
         fake_bin.mkdir()
         log = base / "calls.log"
         probe_log = base / "probe.log"
+        timer_marker = base / "timer-install.marker"
         for name, body in (
             ("claude", FAKE_BOOTSTRAP_CLAUDE),
             ("herdr", FAKE_HERDR),
+            ("operator-timer", FAKE_OPERATOR_TIMER),
             ("systemd-run", FAKE_SYSTEMD_RUN),
             ("ps", FAKE_PS),
             ("kill", FAKE_KILL),
@@ -134,6 +146,7 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             FAKE_LOG=str(log),
             CALL_LOG=str(log),
             PROBE_LOG=str(probe_log),
+            TIMER_MARKER=str(timer_marker),
             HERDR_SPAWN_BOOTSTRAP_RETRIES="2",
         )
         return {
@@ -145,6 +158,7 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             "revision": revision,
             "env": env,
             "probe_log": probe_log,
+            "timer_marker": timer_marker,
         }
 
     def run_launcher(self, ctx, *extra, name="operator-next"):
@@ -213,12 +227,18 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             # Owner file is untouched: no owner write by the launcher.
             self.assertEqual(owner_before, ctx["owner_path"].read_text())
 
-            # No timer install: systemd-run / operator-timer never invoked.
-            calls = Path(ctx["env"]["CALL_LOG"]).read_text() if Path(ctx["env"]["CALL_LOG"]).exists() else ""
-            self.assertNotIn("systemd-run", calls)
-            self.assertNotIn("timer install", calls)
-            fake = Path(ctx["env"]["FAKE_LOG"]).read_text() if Path(ctx["env"]["FAKE_LOG"]).exists() else ""
-            self.assertNotIn("timer install", fake)
+            # No timer install. Both timer boundaries are shadowed by fakes that
+            # append a TIMER-INSTALL-INVOKED marker if the launcher ever crosses
+            # them: the operator-timer entrypoint (the exact invocation the initial
+            # launch-meta-operator.sh uses) and systemd-run. The live handoff
+            # launcher installs no timer, so the dedicated marker file must be
+            # absent (or empty). A grep of the shared call log is NOT sufficient
+            # here: a real install would go through operator-timer/systemd-run and
+            # need never write the literal strings the old assertion looked for.
+            marker = ctx["timer_marker"]
+            marker_text = marker.read_text() if marker.exists() else ""
+            self.assertEqual("", marker_text.strip(), marker_text)
+            self.assertNotIn("TIMER-INSTALL-INVOKED", marker_text)
 
     def test_emitted_owner_transfer_command_carries_all_eleven_args_exactly(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -317,6 +337,22 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             self.assertEqual(str(ctx["handoff_doc"]), flags["--handoff"])
             self.assertEqual(str(succ / "successor-ready.toml"), flags["--successor-readiness"])
 
+            # The successor-ready line is a SEPARATE emitted command whose --path
+            # value is a space-containing successor-ready path. Parsing only the
+            # owner-transfer line above would miss dropped quoting on this line, so
+            # capture it too, shlex.split it, and assert its --path is the intact
+            # space-containing path as a SINGLE token (word-split would shatter an
+            # unquoted value into extra tokens and change --path's parsed value).
+            ready_line = self.successor_ready_line(result.stdout)
+            self.assertIsNotNone(ready_line, result.stdout)
+            ready_tokens = shlex.split(ready_line)
+            ready_flags = self.flags(ready_line)
+            successor_ready_path = str(succ / "successor-ready.toml")
+            self.assertIn(" ", successor_ready_path)
+            self.assertEqual(successor_ready_path, ready_flags["--path"])
+            # The intact path is exactly one token in the split command line.
+            self.assertIn(successor_ready_path, ready_tokens)
+
     def test_refuses_when_owner_file_absent(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ctx = self.environment(td, seed_owner=False)
@@ -399,6 +435,51 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             probe = ctx["probe_log"]
             self.assertFalse(probe.exists() and probe.read_text().strip(),
                              probe.read_text() if probe.exists() else "")
+
+            # A ps/kill probe is not the only way to probe the owner: a herdr
+            # pane-read (or any herdr call targeting the owner session id / route)
+            # would also probe owner liveness and must never happen. The launcher
+            # only READS the owner TOML file; it must never message or probe the
+            # owner over herdr. The owner file is seeded with a KNOWN owner session
+            # id and route, and FAKE_HERDR logs every herdr invocation to FAKE_LOG.
+            # Assert no logged herdr invocation references either owner identity.
+            # herdr-spawn legitimately targets the SUCCESSOR name/pane, so only
+            # owner-targeted herdr calls are banned, not herdr use in general.
+            fake_log = Path(ctx["env"]["FAKE_LOG"])
+            log_lines = fake_log.read_text().splitlines() if fake_log.exists() else []
+            # FAKE_LOG is shared with the bootstrap claude fake (its lines start
+            # with "claude "); herdr invocations are every other logged line.
+            herdr_lines = [ln for ln in log_lines if not ln.startswith("claude ")]
+            self.assertTrue(herdr_lines, log_lines)  # herdr WAS used (on the successor).
+            for ln in herdr_lines:
+                tokens = shlex.split(ln)
+                # The owner's immutable session id must never appear in ANY herdr
+                # invocation: it is never a legitimate path segment or successor
+                # target, so any occurrence means the launcher probed/messaged the
+                # owner over herdr.
+                self.assertNotIn(self.CURRENT_OWNER_SID, tokens, ln)
+                # The owner route legitimately appears only as a directory segment
+                # inside the invariant control-dir path embedded in the spawn
+                # prompt (the launcher reads the owner TOML / handoff doc). It must
+                # never be a herdr ROUTING TARGET: a bare route token, or a
+                # session/route/pane target argument naming the owner. Any herdr
+                # token that IS the owner route (not merely containing it inside a
+                # filesystem path) is an owner-targeted call and is banned.
+                for i, tok in enumerate(tokens):
+                    self.assertNotEqual(
+                        self.CURRENT_ROUTE, tok,
+                        f"owner route used as a bare herdr target token: {ln}",
+                    )
+                    if tok in ("--name", "--route", "--session", "--session-id", "--target"):
+                        value = tokens[i + 1] if i + 1 < len(tokens) else ""
+                        self.assertNotEqual(
+                            self.CURRENT_ROUTE, value,
+                            f"herdr {tok} targets the owner route: {ln}",
+                        )
+                        self.assertNotEqual(
+                            self.CURRENT_OWNER_SID, value,
+                            f"herdr {tok} targets the owner session: {ln}",
+                        )
 
     def test_prints_exactly_one_owner_transfer_command_no_second_identity(self) -> None:
         with tempfile.TemporaryDirectory() as td:
