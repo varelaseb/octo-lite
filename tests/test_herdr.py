@@ -76,6 +76,20 @@ PY
 #                                   when a trust dialog is active, and fails
 #                                   (non-zero, logs "prompt-failed") when the
 #                                   server reports a stall/refusal.
+#     --wait --timeout <ms>       (A1, soak finding 1): mirrors the live 0.7.5
+#                                   flag semantics: --wait requires an observed
+#                                   post-submission state change else it reports
+#                                   agent_prompt_stalled. FAKE_WAIT_STALL models
+#                                   the dirty-composer swallow: rc=0 WITHOUT a
+#                                   submission; with --wait the stall is visible
+#                                   (agent_prompt_stalled printed, rc still 0,
+#                                   logs "prompt-stalled"); WITHOUT --wait the
+#                                   output is indistinguishable from a submit
+#                                   (rc=0, logs "prompt" - the exact live
+#                                   defect). On an observed state change with
+#                                   --wait the fake prints the matched
+#                                   post-submission state JSON. The full argv is
+#                                   recorded in $FAKE_PROMPT_ARGV when set.
 #   agent send-keys <target> ...  -> literal keystrokes, no submit; logs "send-keys".
 #   pane read <pane> ...          -> visible transcript for the modal-safe check.
 # `agent send` and top-level `wait` no longer exist in 0.7.5.
@@ -98,8 +112,14 @@ elif [[ "$sub" == "pane read" ]]; then
   fi
   printf '%s\n' "$FAKE_PANE_TEXT"
 elif [[ "$sub" == "agent prompt" ]]; then
-  # agent prompt <target> <text>: $3 is the target, $4 is the literal text.
-  # Atomic: capture the full literal text argument for a round-trip assertion.
+  # agent prompt <target> <text> [--wait --timeout <ms>]: $3 is the target,
+  # $4 is the literal text. Atomic: capture the full literal text argument for
+  # a round-trip assertion, and the full argv for the --wait grammar assertion.
+  [[ -n "${FAKE_PROMPT_ARGV:-}" ]] && printf '%s\n' "$*" >>"$FAKE_PROMPT_ARGV"
+  has_wait=""
+  for arg in "$@"; do
+    [[ "$arg" == "--wait" ]] && has_wait=1
+  done
   [[ -n "${FAKE_PROMPT_CAPTURE:-}" ]] && printf '%s\n' "$4" >>"$FAKE_PROMPT_CAPTURE"
   # T13 hook: snapshot the caller's durable message states at the exact fire
   # instant, so a test can assert state-before-transport (order law).
@@ -127,7 +147,23 @@ elif [[ "$sub" == "agent prompt" ]]; then
     echo 'herdr: agent_prompt_stalled' >&2
     exit 1
   fi
+  if [[ -n "${FAKE_WAIT_STALL:-}" ]]; then
+    # Dirty composer: the prompt returns rc=0 WITHOUT submitting. Only --wait
+    # observes the missing state change and reports agent_prompt_stalled
+    # (still rc=0: rc alone never carries the submission signal).
+    if [[ -n "$has_wait" ]]; then
+      echo prompt-stalled >>"$FAKE_LOG"
+      echo 'agent_prompt_stalled'
+      exit 0
+    fi
+    echo prompt >>"$FAKE_LOG"
+    exit 0
+  fi
   echo prompt >>"$FAKE_LOG"
+  if [[ -n "$has_wait" ]]; then
+    # Observed post-submission state change within the wait window.
+    echo '{"result":{"agent":{"state":"idle","state_change_seq":2}}}'
+  fi
   # T20 / T-R87b hook: the transport is accepted server-side, then the CALLER
   # dies before its post-transport transition (crash-mid-fire). Close the
   # inherited lock fd first so the caller's death releases its flock.
@@ -1573,7 +1609,7 @@ class MessageLockProtocolTests(unittest.TestCase):
             FAKE_PANE_TEXT=pane_text,
             FAKE_LOG=str(log),
         )
-        for stale in ("OCTO_STREAM", "OCTO_TRANSPORT_ATTEMPT_CAP"):
+        for stale in ("OCTO_STREAM", "OCTO_TRANSPORT_ATTEMPT_CAP", "OCTO_PROMPT_CONFIRM_TIMEOUT_MS"):
             env.pop(stale, None)
         return env, log
 
@@ -2475,6 +2511,219 @@ exec {real_mv} "$@"
             self.assertNotIn("Acknowledge with", sent)
             state = self._base(td) / "messages" / f"{self.ID_1}.toml"
             self.assertEqual("completed", self._load(state)["status"])
+
+
+def _load_operator_sweep_module():
+    import importlib.machinery
+    import importlib.util
+
+    sweep = ROOT / "scripts/operator-sweep"
+    loader = importlib.machinery.SourceFileLoader("operator_sweep_a1", str(sweep))
+    spec = importlib.util.spec_from_file_location("operator_sweep_a1", sweep, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+class ObservedConfirmationTests(unittest.TestCase):
+    """TUR-505 amendment A1 (soak finding 1): rc never confirms delivery.
+    Confirmation is OBSERVED STATE via `agent prompt --wait --timeout`; only a
+    matched post-submission state confirms. agent_prompt_stalled, timeout,
+    nonzero rc, or any unmatched outcome is UNCONFIRMED and fails closed:
+    status stays-or-becomes pending, the inbox item is retained-or-created for
+    drain retry, and the attempts law applies unchanged. Test names carry the
+    contract TA1 letters."""
+
+    ID_1 = "20260722T000000-11-111"
+
+    _env = MessageLockProtocolTests._env
+    _base = MessageLockProtocolTests._base
+    _load = MessageLockProtocolTests._load
+    _seed = MessageLockProtocolTests._seed
+    _drain = MessageLockProtocolTests._drain
+
+    def test_ta1a_rc_zero_wait_stall_never_confirms_and_fails_closed_to_pending(self):
+        # The live swallow: prompt rc=0 but --wait observes NO state change
+        # (agent_prompt_stalled). Pre-fix the info kind went completed (the
+        # captured red); post-fix every kind stays pending with its retry item
+        # and the attempt incremented.
+        with self.subTest("say-info"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_WAIT_STALL"] = "1"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertNotIn("status=completed", result.stdout)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("deferred", stored["delivery_path"])
+            self.assertEqual(1, stored["transport_attempts"])
+            self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
+            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+        with self.subTest("say-non-info"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_WAIT_STALL"] = "1"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            # Never a false confirmed-pending promotion to path=direct.
+            self.assertEqual("deferred", stored["delivery_path"])
+            self.assertEqual(1, stored["transport_attempts"])
+            self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
+        with self.subTest("drain"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_WAIT_STALL"] = "1"
+            state = self._seed(td, self.ID_1, kind="info", message="fyi update")
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertNotIn("status=completed", result.stdout)
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("deferred", stored["delivery_path"])
+            self.assertEqual(1, stored["transport_attempts"])
+            self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
+            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+
+    def test_ta1b_observed_state_change_confirms_exactly_as_before(self):
+        with self.subTest("say-info-completed"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("status=completed", result.stdout)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("completed", stored["status"])
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+        with self.subTest("say-non-info-direct-promotion"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            # Pending, no item, promoted direct: the ACK-WAIT promotion intact.
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
+        with self.subTest("drain-confirmed"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            state = self._seed(td, self.ID_1)
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / self.ID_1).exists())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+
+    def test_ta1c_confirm_timeout_env_knob_with_invalid_default_and_warning(self):
+        with self.subTest("say-custom-timeout"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            argv = Path(td) / "prompt-argv"
+            env["FAKE_PROMPT_ARGV"] = str(argv)
+            env["OCTO_PROMPT_CONFIRM_TIMEOUT_MS"] = "2500"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue(argv.read_text().splitlines()[-1].endswith("--wait --timeout 2500"))
+        with self.subTest("say-invalid-default-warn"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            argv = Path(td) / "prompt-argv"
+            env["FAKE_PROMPT_ARGV"] = str(argv)
+            env["OCTO_PROMPT_CONFIRM_TIMEOUT_MS"] = "soon"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("OCTO_PROMPT_CONFIRM_TIMEOUT_MS", result.stderr)
+            self.assertTrue(argv.read_text().splitlines()[-1].endswith("--wait --timeout 15000"))
+        with self.subTest("drain-invalid-default-warn"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            argv = Path(td) / "prompt-argv"
+            env["FAKE_PROMPT_ARGV"] = str(argv)
+            env["OCTO_PROMPT_CONFIRM_TIMEOUT_MS"] = "-3"
+            self._seed(td, self.ID_1)
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("OCTO_PROMPT_CONFIRM_TIMEOUT_MS", result.stderr)
+            self.assertTrue(argv.read_text().splitlines()[-1].endswith("--wait --timeout 15000"))
+
+    def test_ta1d_say_and_drain_fire_with_wait_and_timeout_argv(self):
+        with self.subTest("say"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            argv = Path(td) / "prompt-argv"
+            env["FAKE_PROMPT_ARGV"] = str(argv)
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            lines = argv.read_text().splitlines()
+            self.assertEqual(1, len(lines))
+            self.assertTrue(lines[0].startswith("agent prompt w1:p1 "), lines[0])
+            self.assertTrue(lines[0].endswith("--wait --timeout 15000"), lines[0])
+        with self.subTest("drain"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            argv = Path(td) / "prompt-argv"
+            env["FAKE_PROMPT_ARGV"] = str(argv)
+            self._seed(td, self.ID_1)
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            lines = argv.read_text().splitlines()
+            self.assertEqual(1, len(lines))
+            self.assertTrue(lines[0].startswith("agent prompt w1:p1 "), lines[0])
+            self.assertTrue(lines[0].endswith("--wait --timeout 15000"), lines[0])
+
+    def test_ta1e_capped_wait_stalls_still_surface_via_the_sweep_stalled_line(self):
+        # Existing S3 law, asserted unchanged over states produced by the new
+        # wait-stall path: repeated rc=0 stalls burn attempts to the cap, the
+        # message goes stalled, and the sweep surfaces the loud
+        # transport-stalled line (never a silent swallow).
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_WAIT_STALL"] = "1"
+            env["OCTO_TRANSPORT_ATTEMPT_CAP"] = "1"
+            say = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, say.returncode, say.stdout + say.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            message_id = state.stem
+            self.assertTrue((self._base(td) / "inbox/agent1" / message_id).is_file())
+            stalled = self._drain(env)
+            self.assertEqual(0, stalled.returncode, stalled.stderr)
+            self.assertIn("status=stalled", stalled.stdout)
+            stored = self._load(state)
+            self.assertEqual("stalled", stored["status"])
+            self.assertEqual(1, stored["transport_attempts"])
+            module = _load_operator_sweep_module()
+            report = module.transport_message_report(
+                self._base(td) / "messages",
+                self._base(td) / "inbox",
+                self._base(td) / "locks",
+            )
+            stalled_lines = "\n".join(report["stalled_lines"])
+            self.assertIn("TRANSPORT STALLED", stalled_lines)
+            self.assertIn(message_id, stalled_lines)
 
 
 if __name__ == "__main__":

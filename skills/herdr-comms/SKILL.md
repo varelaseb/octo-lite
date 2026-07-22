@@ -29,11 +29,20 @@ composer state, consumption, or delivery. Modal-safe: an open dialog defers,
 queues immediately, returns 75, never force-submits.
 Queued and pending are not acknowledged or completed.
 
+Delivery confirmation is observed state, never the exit code: a prompt can
+return rc 0 without submitting when the composer holds residual text. Every
+fire runs `agent prompt --wait --timeout` with
+`OCTO_PROMPT_CONFIRM_TIMEOUT_MS` milliseconds (default 15000, invalid falls
+back to the default with a warning); only a matched post-submission state
+(idle, done, blocked) confirms. `agent_prompt_stalled`, a timeout, a nonzero
+rc, or any unmatched outcome is unconfirmed: the message stays pending with
+its retry item for `herdr-drain`, under the attempt cap.
+
 Transport class: bounded duplicate-prone transport with no delivery
 guarantee. A message may arrive zero times, once, or up to the retry cap per
 epoch. Every transported body carries `[msg:<id>]`, info included, so
-duplicates are id-correlated. Only herdr-ack proves delivery; a confirmed
-info submit completes on its own.
+duplicates are id-correlated. Only herdr-ack proves delivery; an
+observed-state-confirmed info submit completes on its own.
 
 On every wake, run `herdr-drain <own-agent-name>`. It fires only when the
 prompt is safe, and a pending retry re-fires the same atomic prompt with the

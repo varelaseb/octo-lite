@@ -25,6 +25,32 @@ cap="${OCTO_TRANSPORT_ATTEMPT_CAP:-3}"
   cap=3
 }
 
+# A1 (soak finding 1) observed-state confirmation timeout, milliseconds:
+# positive int, default 15000, invalid -> default + warn.
+confirm_timeout_ms="${OCTO_PROMPT_CONFIRM_TIMEOUT_MS:-15000}"
+[[ "$confirm_timeout_ms" =~ ^[1-9][0-9]*$ ]] || {
+  echo "herdr-drain: invalid OCTO_PROMPT_CONFIRM_TIMEOUT_MS '$confirm_timeout_ms', using default 15000" >&2
+  confirm_timeout_ms=15000
+}
+
+# A1 (soak finding 1): `agent prompt` can return rc=0 WITHOUT submitting when
+# the target composer holds residual text, so rc alone NEVER confirms.
+# Confirmation is OBSERVED STATE: the fire passes --wait --timeout so herdr
+# reports the observed post-submission state; only a matched state
+# (idle|done|blocked) confirms. agent_prompt_stalled, a timeout, a nonzero
+# rc, or any unmatched outcome is UNCONFIRMED and fails closed.
+prompt_confirmed() { # $1 pane, $2 body -> 0 only on an observed matched state
+  local out="$state.$$.wait" rc=0
+  herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
+  if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
+    && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
+    rm -f "$out"
+    return 0
+  fi
+  rm -f "$out"
+  return 1
+}
+
 # TUR-505: a message body may be multi-line (herdr 0.7.5 atomic prompt sends
 # arbitrary multi-line text). Fields are read via NUL-delimited pairs, exactly
 # like herdr-ack, so a message line can never masquerade as the status field.
@@ -257,11 +283,13 @@ PY
       write_state pending "$path" "$attempts"
       # herdr 0.7.5: retry the exact same atomic prompt (paste + submit in
       # one op) with the same [msg:id]; the atomic op never double-submits
-      # partially-pasted text.
-      if herdr agent prompt "$pane" "$(body_with_suffix)" >/dev/null 2>&1; then
-        # Confirmed transport, under the lock: promote path=direct (ACK-WAIT
-        # by construction, never repaired, never drain-fired), transition
-        # info->completed, then remove the item (state before removal).
+      # partially-pasted text. A1: only an OBSERVED post-submission state
+      # confirms, never rc alone.
+      if prompt_confirmed "$pane" "$(body_with_suffix)"; then
+        # Observed-state-confirmed transport, under the lock: promote
+        # path=direct (ACK-WAIT by construction, never repaired, never
+        # drain-fired), transition info->completed, then remove the item
+        # (state before removal).
         if [[ "${fields[kind]}" == "info" ]]; then
           write_state completed direct "$attempts"
           rm -f "$item"
@@ -271,6 +299,10 @@ PY
           rm -f "$item"
           echo "message_id=$id status=pending"
         fi
+      else
+        # Fail closed: status stays pending and the item stays for the next
+        # drain retry; the attempt was already burned above (attempts law).
+        echo "herdr-drain: transport unconfirmed, message_id=$id stays pending" >&2
       fi
       ;;
     *)

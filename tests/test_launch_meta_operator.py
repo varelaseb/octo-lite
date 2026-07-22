@@ -59,6 +59,14 @@ elif [[ "$1 $2" == "agent get" ]]; then
   echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
 elif [[ "$1 $2" == "pane read" ]]; then
   printf 'ready\n'
+elif [[ "$1 $2" == "agent prompt" ]]; then
+  # A1 observed-state confirmation: with --wait the prompt reports the
+  # observed post-submission state; this fake models a clean submit.
+  for arg in "$@"; do
+    if [[ "$arg" == "--wait" ]]; then
+      echo '{"result":{"agent":{"state":"idle","state_change_seq":2}}}'
+    fi
+  done
 fi
 """
 

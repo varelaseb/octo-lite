@@ -56,6 +56,14 @@ cap="${OCTO_TRANSPORT_ATTEMPT_CAP:-3}"
   cap=3
 }
 
+# A1 (soak finding 1) observed-state confirmation timeout, milliseconds:
+# positive int, default 15000, invalid -> default + warn.
+confirm_timeout_ms="${OCTO_PROMPT_CONFIRM_TIMEOUT_MS:-15000}"
+[[ "$confirm_timeout_ms" =~ ^[1-9][0-9]*$ ]] || {
+  echo "herdr-say: invalid OCTO_PROMPT_CONFIRM_TIMEOUT_MS '$confirm_timeout_ms', using default 15000" >&2
+  confirm_timeout_ms=15000
+}
+
 # Source B operator-gate stamp (sweep-operator-ask): when the lane operator-ask
 # path sends a --kind question and OCTO_STREAM names the sending stream, stamp a
 # mechanical per-stream operator-wait the sweep reads. This is written before any
@@ -253,12 +261,30 @@ fi
 attempts=$((attempts + 1))
 write_locked_state pending deferred "$attempts"
 
-# On CONFIRMED direct success, under the lock: transition (info -> completed,
-# non-info stays pending) + promote delivery_path=direct + remove the item
-# (state-transition precedes item removal, order law). A non-zero result is a
-# local stall or refusal; the message stays pending + deferred with its item
-# so herdr-drain retries, never claiming delivery.
-if herdr agent prompt "$pane" "$(body_with_suffix)" >/dev/null 2>&1; then
+# A1 (soak finding 1): `agent prompt` can return rc=0 WITHOUT submitting when
+# the target composer holds residual text, so rc alone NEVER confirms.
+# Confirmation is OBSERVED STATE: the fire passes --wait --timeout so herdr
+# reports the observed post-submission state; only a matched state
+# (idle|done|blocked) confirms. agent_prompt_stalled, a timeout, a nonzero
+# rc, or any unmatched outcome is UNCONFIRMED and fails closed.
+prompt_confirmed() { # $1 pane, $2 body -> 0 only on an observed matched state
+  local out="$state.$$.wait" rc=0
+  herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
+  if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
+    && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
+    rm -f "$out"
+    return 0
+  fi
+  rm -f "$out"
+  return 1
+}
+
+# On OBSERVED-STATE-CONFIRMED direct success, under the lock: transition
+# (info -> completed, non-info stays pending) + promote delivery_path=direct
+# + remove the item (state-transition precedes item removal, order law). An
+# unconfirmed outcome keeps the message pending + deferred with its item so
+# herdr-drain retries under the attempts law, never claiming delivery.
+if prompt_confirmed "$pane" "$(body_with_suffix)"; then
   if [[ "$kind" == "info" ]]; then
     write_locked_state completed direct "$attempts"
     rm -f "$inbox/$id"
@@ -269,6 +295,6 @@ if herdr agent prompt "$pane" "$(body_with_suffix)" >/dev/null 2>&1; then
     echo "message_id=$id status=pending"
   fi
 else
-  echo "herdr-say: transport attempted, delivery pending message_id=$id" >&2
+  echo "herdr-say: transport unconfirmed, delivery pending message_id=$id" >&2
   exit 75
 fi
