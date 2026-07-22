@@ -288,72 +288,118 @@ export function assertContainment(worktreeRoot, worktreePath) {
 // trusted identity roots the worker/child CANNOT forge, validated BEFORE any Shaped -> Todo fire
 // or spawn. NEITHER anchor derives from the child envelope.
 //
-// Anchor A - host-provisioned RECEIPT workspace binding. The launcher wrote a receipt at spawn
-// carrying [workspace] repo, worktree, starting_head; it is host-authored, read from a
-// HOST-TRUSTED location (an env var / launch-context path the child cannot influence, NEVER a
-// path supplied by the child envelope). assertReceiptWorkspaceBinding rejects unless the envelope
-// repo_slug/worktree/starting_head EXACTLY match the receipt, catching a forged envelope claiming
-// a different repo/worktree/head than the host provisioned. The receipt fields are validated with
-// the same slug/containment shape as readiness so a malformed receipt fails closed too.
-const HOST_RECEIPT_SOURCE = 'host-provisioned-receipt'
+// Anchor A (gh#8 TRUST ROOT) - host-provisioned WORKTREE workspace binding. The old receipt-at-
+// $OCTO_RECEIPT anchor is RETIRED as the trust source. The identity trust root is now the gh#8
+// per-lane host-provisioned worktree: the host provisions an exclusive worktree, writes an
+// OUT-OF-TREE provision record (its path in $OCTO_PROVISION_RECORD), and STARTS the loop process
+// with working directory == OCTO_WORKTREE and the frozen launch env set. A child cannot forge its
+// own launch env, and cwd == OCTO_WORKTREE is the anchor, so record + env + cwd is the non-forgeable
+// trust root (INV1-5). assertProvisionedWorkspaceBinding rejects unless the provision record is a
+// host-provisioned-worktree record with schema_version 1 and resolver_root == worktree, and the
+// envelope repo_slug/worktree/starting_head/branch EXACTLY match BOTH the record AND the resolved
+// launch env, catching a forged envelope or an accidentally misrouted lane. The record fields are
+// shape-validated (canonical slug, real head, worktree) so a malformed record fails closed too.
+export const HOST_PROVISION_SOURCE = 'host-provisioned-worktree'
 const HOST_WORKTREE_READ_SOURCE = 'host-receipt-pinned-worktree-read'
-const RECEIPT_BINDING_FIELDS = [
+// The frozen launch env seam (role-runtime launch-provision-env-seam): the host-set names the
+// reader resolves and returns so the gate can cross-check env == record == envelope.
+const PROVISION_ENV_KEYS = {
+  worktree: 'OCTO_WORKTREE',
+  worktree_root: 'OCTO_WORKTREE_ROOT',
+  control_repo: 'OCTO_CONTROL_REPO',
+  repo_slug: 'OCTO_REPO_SLUG',
+  starting_head: 'OCTO_STARTING_HEAD',
+  lane: 'OCTO_LANE',
+}
+// Envelope <-> record identity fields (INV3/4): each must agree with BOTH the record and the env.
+const PROVISION_BINDING_FIELDS = [
   ['repo_slug', 'repo_slug', 'canonical repo slug'],
-  ['worktree', 'worktree', 'host issue worktree'],
+  ['worktree', 'worktree', 'host lane worktree'],
   ['starting_head', 'starting_head', 'starting HEAD'],
+  ['branch', 'branch', 'lane branch'],
 ]
 
-export function assertReceiptWorkspaceBinding(envelope, receipt) {
+export function assertProvisionedWorkspaceBinding(envelope, provision, env) {
   required(envelope, 'launch envelope')
-  required(receipt, 'host-provisioned receipt')
-  // Provenance: the receipt must be stamped by the host launcher, never the child envelope. A
-  // receipt whose source is the child/worker/envelope, or an unstamped receipt, fails closed so
-  // the anchor cannot be satisfied by a value the child controls.
-  if (receipt.source !== HOST_RECEIPT_SOURCE) {
-    throw new Error('receipt binding rejected: receipt not from the host-provisioned launch location')
+  required(provision, 'host-provisioned provision record')
+  required(env, 'resolved launch env')
+  // Provenance: the record must be the host-authored gh#8 provision record, never a child value. A
+  // record whose source is anything but host-provisioned-worktree fails closed so the trust root
+  // cannot be satisfied by a value the child controls.
+  if (provision.source !== HOST_PROVISION_SOURCE) {
+    throw new Error('provision binding rejected: provision record source is not host-provisioned-worktree')
   }
-  // The receipt fields are themselves shape-validated (a canonical slug, a real head, a worktree)
-  // so a malformed host receipt fails closed rather than matching a malformed envelope.
-  assertRepoSlug(receipt.repo_slug, 'receipt repo_slug')
-  requiredNonEmptyString(receipt.worktree, 'receipt worktree')
-  requiredNonEmptyString(receipt.starting_head, 'receipt starting HEAD')
-  for (const [envField, rcField, label] of RECEIPT_BINDING_FIELDS) {
-    requiredNonEmptyString(envelope[envField], `envelope ${label}`)
-    if (envelope[envField] !== receipt[rcField]) {
-      throw new Error(`receipt binding rejected: envelope ${label} does not match the host-provisioned receipt`)
+  if (provision.schema_version !== 1) {
+    throw new Error('provision binding rejected: provision record schema_version must be 1')
+  }
+  // The record fields are themselves shape-validated so a malformed host record fails closed.
+  assertRepoSlug(provision.repo_slug, 'provision record repo_slug')
+  requiredNonEmptyString(provision.worktree, 'provision record worktree')
+  requiredNonEmptyString(provision.worktree_root, 'provision record worktree_root')
+  requiredNonEmptyString(provision.control_repo, 'provision record control_repo')
+  requiredNonEmptyString(provision.starting_head, 'provision record starting HEAD')
+  requiredNonEmptyString(provision.branch, 'provision record branch')
+  requiredNonEmptyString(provision.resolver_root, 'provision record resolver_root')
+  // INV5: the role resolver root is the provisioned worktree itself.
+  if (provision.resolver_root !== provision.worktree) {
+    throw new Error('provision binding rejected: provision record resolver_root does not equal the worktree')
+  }
+  // The reader resolves the frozen launch env a child cannot forge (cwd == OCTO_WORKTREE). Each
+  // required env name must be present and must equal the record (env == record cross-check, INV1/2).
+  for (const [recField, envName] of Object.entries(PROVISION_ENV_KEYS)) {
+    const envValue = requiredNonEmptyString(env[envName], `resolved env ${envName}`)
+    if (envValue !== provision[recField]) {
+      throw new Error(`provision binding rejected: resolved env ${envName} does not match the provision record`)
     }
   }
-  return { repo_slug: receipt.repo_slug, worktree: receipt.worktree, starting_head: receipt.starting_head }
+  // INV1/5: the provisioned worktree is exactly OCTO_WORKTREE and the resolver root.
+  if (provision.worktree !== env.OCTO_WORKTREE || provision.worktree !== provision.resolver_root) {
+    throw new Error('provision binding rejected: provision worktree does not equal OCTO_WORKTREE and resolver_root')
+  }
+  // INV3/4: the envelope identity fields must agree with BOTH the record AND the resolved env. A
+  // mismatch (a forged envelope or an accidentally misrouted lane) rejects.
+  for (const [envField, recField, label] of PROVISION_BINDING_FIELDS) {
+    requiredNonEmptyString(envelope[envField], `envelope ${label}`)
+    if (envelope[envField] !== provision[recField]) {
+      throw new Error(`provision binding rejected: envelope ${label} does not match the host-provisioned record`)
+    }
+  }
+  return {
+    repo_slug: provision.repo_slug, worktree: provision.worktree,
+    starting_head: provision.starting_head, branch: provision.branch,
+  }
 }
 
-// Anchor B - LIVE git read of the RECEIPT-pinned worktree (non-forgeable reality). A host-controlled
-// subagent runs git -C <receipt.worktree> rev-parse HEAD, rev-parse --abbrev-ref HEAD, and remote
-// get-url origin over the RECEIPT worktree (never an envelope path). assertLiveWorktreeIdentity
-// rejects unless the live HEAD equals the receipt/envelope starting_head, the live branch equals the
-// envelope branch, and the live origin remote resolves to the envelope repo_slug. This catches the
-// ACTUAL tur-456 bug that Anchor A alone MISSES: the worktree PATH matches the receipt but the shared
-// dir is on a FOREIGN branch / different remote; the live read reveals the foreign branch/repo and
-// REJECTS. The receipt is the pinned reality source, so the live read is proven over the host-pinned
-// path, never a path the child could redirect.
-export function assertLiveWorktreeIdentity(receipt, envelope, live) {
-  required(receipt, 'host-provisioned receipt')
+// Anchor B (DEFENSE-IN-DEPTH, no longer the trust root) - LIVE git read of the PROVISIONED worktree
+// (a cheap reality confirm). A host-controlled subagent runs git -C <provision.worktree> rev-parse
+// HEAD, rev-parse --abbrev-ref HEAD, and remote get-url origin over the provisioned worktree (never
+// an envelope path). assertLiveWorktreeIdentity rejects unless the live HEAD equals the
+// provision/envelope starting_head, the live branch equals the envelope branch, and the live origin
+// remote resolves to the envelope repo_slug. This still catches the tur-456 shape (the worktree PATH
+// matches but the dir is on a FOREIGN branch / different remote) as a reality check on top of the
+// provisioning trust root. The provisioned worktree is the pinned reality source, so the live read is
+// proven over the host-pinned path, never a path the child could redirect. The `provision` parameter
+// carries the pinned worktree + starting_head (a plain record works too, since only .worktree and
+// .starting_head are read).
+export function assertLiveWorktreeIdentity(provision, envelope, live) {
+  required(provision, 'host-provisioned provision record')
   required(envelope, 'launch envelope')
   required(live, 'live worktree read')
   // Provenance: the live read must be stamped by the host-controlled reader and must have been
-  // pinned (git -C) to the RECEIPT worktree, not any envelope-supplied path.
+  // pinned (git -C) to the PROVISIONED worktree, not any envelope-supplied path.
   if (live.source !== HOST_WORKTREE_READ_SOURCE) {
-    throw new Error('live worktree read rejected: not from the host-controlled receipt-pinned reader')
+    throw new Error('live worktree read rejected: not from the host-controlled provisioned-worktree reader')
   }
-  requiredNonEmptyString(receipt.worktree, 'receipt worktree')
-  if (live.read_worktree !== receipt.worktree) {
-    throw new Error('live worktree read rejected: reader did not read the receipt-pinned worktree')
+  requiredNonEmptyString(provision.worktree, 'provision worktree')
+  if (live.read_worktree !== provision.worktree) {
+    throw new Error('live worktree read rejected: reader did not read the provisioned worktree')
   }
   const liveHead = requiredNonEmptyString(live.head, 'live worktree HEAD')
   const liveBranch = requiredNonEmptyString(live.branch, 'live worktree branch')
   const liveSlug = requiredNonEmptyString(live.repo_slug, 'live worktree origin repo slug')
-  // The live HEAD is the non-forgeable reality: it must equal the receipt AND envelope starting HEAD.
-  if (liveHead !== receipt.starting_head) {
-    throw new Error('live worktree read rejected: live HEAD is not the receipt-pinned starting HEAD')
+  // The live HEAD is the non-forgeable reality: it must equal the provision AND envelope starting HEAD.
+  if (liveHead !== provision.starting_head) {
+    throw new Error('live worktree read rejected: live HEAD is not the provisioned starting HEAD')
   }
   if (liveHead !== envelope.starting_head) {
     throw new Error('live worktree read rejected: live HEAD disagrees with the envelope starting HEAD')
@@ -361,23 +407,26 @@ export function assertLiveWorktreeIdentity(receipt, envelope, live) {
   // The live branch reveals a FOREIGN branch on a matching path (the tur-456 shape).
   requiredNonEmptyString(envelope.branch, 'envelope branch')
   if (liveBranch !== envelope.branch) {
-    throw new Error('live worktree read rejected: receipt-pinned worktree is on a foreign branch')
+    throw new Error('live worktree read rejected: provisioned worktree is on a foreign branch')
   }
   // The live origin remote (normalized to owner/repo) reveals a different remote on a matching path.
   assertRepoSlug(liveSlug, 'live origin repo slug')
   if (liveSlug !== envelope.repo_slug) {
-    throw new Error('live worktree read rejected: receipt-pinned worktree origin is a foreign remote')
+    throw new Error('live worktree read rejected: provisioned worktree origin is a foreign remote')
   }
   return { head: liveHead, branch: liveBranch, repo_slug: liveSlug }
 }
 
-// The single host-trusted identity gate. Validates the envelope against BOTH anchors before any
-// spawn or the Shaped -> Todo fire; a mismatch on either rejects with no transition and no spawn.
-// receipt is Anchor A's host-provisioned binding; live is Anchor B's receipt-pinned live git read.
-// Neither is derived from the envelope.
-export function assertHostTrustedIdentity(envelope, receipt, live) {
-  const binding = assertReceiptWorkspaceBinding(envelope, receipt)
-  const reality = assertLiveWorktreeIdentity(receipt, envelope, live)
+// The single host-trusted identity gate. Validates the envelope against the trust root plus the
+// defense-in-depth reality check before any spawn or the Shaped -> Todo fire; a mismatch on either
+// rejects with no transition and no spawn. The TRUST ROOT is the gh#8 host-provisioned worktree:
+// assertProvisionedWorkspaceBinding cross-checks the envelope against the out-of-tree provision
+// record AND the frozen launch env (a child cannot forge its launch env; cwd == OCTO_WORKTREE).
+// live is Anchor B's provisioned-worktree live git read, kept as a cheap defense-in-depth reality
+// confirm (ruling-61C), no longer the trust root. Neither the record, env, nor live is envelope-derived.
+export function assertHostTrustedIdentity(envelope, provision, live, env) {
+  const binding = assertProvisionedWorkspaceBinding(envelope, provision, env)
+  const reality = assertLiveWorktreeIdentity(provision, envelope, live)
   return { binding, reality }
 }
 
