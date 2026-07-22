@@ -9,11 +9,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from octo_lite.launch import (
     GateError,
     LaneProvision,
     _prepare_worktree,
+    cleanup_clean_abort,
     default_install_check,
     lane_invocation_env,
     provision_lane_worktree,
@@ -458,6 +460,83 @@ class LaneProvisionTests(unittest.TestCase):
         self.assertEqual(expected_cwd, cwd)
         self.assertEqual(expected_env, env)
         self.assertEqual(envelope, args)
+
+
+class CleanupProvisionRecordGuardTests(unittest.TestCase):
+    # TUR-447 d1 provision-record-guard (workspace-cleanup-clean-abort,
+    # launch-provision-record-schema): clean-abort removal is gated on
+    # host-provision ownership. Only a worktree a matching host-provision record
+    # proves workspace-admit created and owns may be removed on the error path; a
+    # hand-created FOREIGN worktree, even clean and at the exact expected HEAD, is
+    # PRESERVED, never force-removed. This is the ops-2 live-harm defect: the
+    # bootstrap-failure cleanup removed a real hand-created worktree three times.
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.control_repo = base / "control"
+        self.worktree_root = base / "worktrees"
+        self.head = _init_control_repo(self.control_repo)
+        # Ownership must be proven by the on-disk host-provision record, never an
+        # ambient inherited lane env pointing somewhere unrelated.
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("OCTO_PROVISION_RECORD", None)
+
+    def provision(self, worktree: Path, lane: str, branch: str) -> LaneProvision:
+        return provision_lane_worktree(
+            control_repo=self.control_repo,
+            worktree_root=self.worktree_root,
+            worktree=worktree,
+            lane=lane,
+            branch=branch,
+            head=self.head,
+            repo_slug=REPO_SLUG,
+            install_check=lambda repo: "clean",
+            now=lambda: "2026-07-21T00:00:00+00:00",
+        )
+
+    def test_cleanup_preserves_foreign_worktree_without_provision_record(self) -> None:
+        # A hand-created worktree (real prior work, e.g. a tur-326 branch) that is
+        # clean and at the exact expected HEAD has NO host-provision record, so the
+        # error-path cleanup must PRESERVE it.
+        foreign = self.worktree_root / "tur-326"
+        self.worktree_root.mkdir(parents=True)
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "add", "-b", "tur-326", str(foreign), self.head],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(self.head, _git(foreign, "rev-parse", "HEAD"))
+        self.assertEqual("", _git(foreign, "status", "--porcelain"))
+
+        cleanup_clean_abort(self.control_repo, foreign, self.head)
+
+        self.assertTrue(foreign.is_dir(), "hand-created foreign worktree was force-removed")
+        listing = _git(self.control_repo, "worktree", "list", "--porcelain")
+        self.assertEqual(1, listing.count(f"worktree {foreign.resolve()}"))
+
+        # A host-provision record owning a DIFFERENT worktree proves nothing about
+        # this one: the foreign worktree is still preserved.
+        self.provision(self.worktree_root / "lane-1", "lane-1", "octo-lite/lane-1")
+        cleanup_clean_abort(self.control_repo, foreign, self.head)
+        self.assertTrue(foreign.is_dir(), "foreign worktree removed on a mismatched record")
+
+    def test_cleanup_removes_only_provision_record_owned_worktree(self) -> None:
+        # A worktree WITH a matching host-provision record (source
+        # host-provisioned-worktree, schema_version 1, record.worktree == this
+        # worktree) is still removed when pristine, exactly as before.
+        owned = self.worktree_root / "lane-1"
+        result = self.provision(owned, "lane-1", "octo-lite/lane-1")
+        record = json.loads(result.record_path.read_text())
+        self.assertEqual("host-provisioned-worktree", record["source"])
+        self.assertEqual(1, record["schema_version"])
+        self.assertEqual(str(owned.resolve()), record["worktree"])
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertFalse(owned.exists(), "provision-record-owned pristine worktree must still be removed")
 
 
 class InstallCheckOwnerRoutingTests(unittest.TestCase):

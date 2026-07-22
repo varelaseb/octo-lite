@@ -366,6 +366,160 @@ class PersistentReceiptRevalidationTests(unittest.TestCase):
         self.assertEqual([], calls)
 
 
+class BootstrapReverifyTests(unittest.TestCase):
+    # TUR-447 d2 (launch-bootstrap-reverify-idempotent,
+    # launch-entrypoint-revalidation): a receipt already marked
+    # bootstrap.verified=true with a recorded provider session is accepted
+    # idempotently on the re-verify path, re-confirming the SAME recorded provider
+    # session and acknowledgment facts, never forced through a fresh full
+    # --session-id create the real provider refuses as a duplicate session.
+    # The stub runner emulates that real provider refusal exactly.
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.repo = base / "repo"
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        (self.repo / "AGENTS.md").write_text("# Target\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
+        self.head = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.role_repo = base / "role-src"
+        subprocess.run(["git", "init", "-q", str(self.role_repo)], check=True)
+        (self.role_repo / "roles").mkdir()
+        (self.role_repo / "roles" / "orchestrator.md").write_text("# orchestrator\nContract.\n")
+        self.receipt_path = base / "persistent.toml"
+        self.spawn_id = str(uuid.uuid4())
+
+    def _verified_receipt(self) -> dict:
+        contract_path = "roles/orchestrator.md"
+        blob = subprocess.run(
+            ["git", "-C", str(self.role_repo), "hash-object", "--no-filters", contract_path],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        instructions_blob = subprocess.run(
+            ["git", "-C", str(self.repo), "hash-object", "AGENTS.md"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        receipt = {
+            "schema_version": 1,
+            "spawn_id": self.spawn_id,
+            "parent": "meta-operator",
+            "reply_route": "herdr:meta-operator",
+            "ready": True,
+            "role": {
+                "name": "orchestrator",
+                "root": str(self.role_repo),
+                "contract_path": contract_path,
+                "contract_blob": blob,
+                "mapping_revision": "map-1",
+            },
+            "runtime": {
+                "provider": "anthropic", "model": "claude-sonnet-5", "effort": "xhigh",
+                "mode": "auto", "session": "persistent", "service_tier": "default",
+                "tools": ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"],
+            },
+            "skills": {"resolved": [], "matched_capabilities": [], "paths": [], "blobs": []},
+            "workspace": {
+                "repo": str(self.repo), "worktree": str(self.repo),
+                "starting_head": self.head, "instructions_path": "AGENTS.md",
+                "instructions_blob": instructions_blob,
+            },
+            "access": {
+                "execution_location": "remote", "operator_loopback": False,
+                "review_delivery": "reachable_url_required",
+            },
+            # The receipt is ALREADY bootstrap-verified with its recorded provider
+            # session: the exact shape the re-verify path receives.
+            "bootstrap": {"verified": True, "provider_session_id": self.spawn_id},
+        }
+        receipt["launch_revision"] = launch_revision(receipt)
+        return receipt
+
+    def _write(self, receipt: dict) -> None:
+        self.receipt_path.write_text(render_receipt(receipt))
+
+    def _ack(self, receipt: dict) -> dict:
+        return {
+            "schema_version": 1,
+            "spawn_id": receipt["spawn_id"],
+            "provider_session_id": receipt["spawn_id"],
+            "launch_revision": receipt["launch_revision"],
+            "role": receipt["role"]["name"],
+            "worktree": receipt["workspace"]["worktree"],
+            "starting_head": receipt["workspace"]["starting_head"],
+            "ready": True,
+            "blocker": "",
+        }
+
+    def _provider_faithful_runner(self, receipt: dict, ack_overrides: dict | None = None):
+        # Emulates the REAL provider: a fresh --session-id create for an existing
+        # session is refused as a duplicate; a --resume of the recorded session
+        # answers with the bound acknowledgment facts.
+        ack = self._ack(receipt)
+        ack.update(ack_overrides or {})
+        calls: list[list[str]] = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if "--session-id" in argv:
+                return subprocess.CompletedProcess(
+                    argv, 1, stdout="",
+                    stderr=f"Error: Session ID {receipt['spawn_id']} is already in use.",
+                )
+            output = {"session_id": receipt["spawn_id"], "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        return runner, calls
+
+    def test_bootstrap_reverify_accepts_already_verified_receipt(self) -> None:
+        receipt = self._verified_receipt()
+        self._write(receipt)
+        runner, calls = self._provider_faithful_runner(receipt)
+
+        session = bootstrap_from_receipt(self.receipt_path, runner=runner)
+
+        self.assertEqual(self.spawn_id, session)
+        # Idempotent re-verify: exactly one provider call, resuming the SAME
+        # recorded session, never a forced fresh full session resolve.
+        self.assertEqual(1, len(calls))
+        self.assertNotIn("--session-id", calls[0])
+        self.assertIn("--resume", calls[0])
+        self.assertIn(self.spawn_id, calls[0])
+        readback = tomllib.loads(self.receipt_path.read_text())
+        self.assertTrue(readback["ready"])
+        self.assertTrue(readback["bootstrap"]["verified"])
+        self.assertEqual(self.spawn_id, readback["bootstrap"]["provider_session_id"])
+
+    def test_bootstrap_reverify_still_revalidates(self) -> None:
+        # A tampered already-verified receipt is still rejected before any
+        # provider call (launch-entrypoint-revalidation is NOT weakened).
+        tampered = self._verified_receipt()
+        tampered["reply_route"] = "herdr:substituted-parent"
+        self._write(tampered)
+        runner, calls = self._provider_faithful_runner(tampered)
+        with self.assertRaisesRegex(GateError, "revision mismatch"):
+            bootstrap_from_receipt(self.receipt_path, runner=runner)
+        self.assertEqual([], calls)
+
+        # The acknowledgment facts are still re-checked on the re-verify path: a
+        # session whose echo reports a different starting head never re-verifies,
+        # and the durable receipt is left byte-identical.
+        receipt = self._verified_receipt()
+        self._write(receipt)
+        runner, calls = self._provider_faithful_runner(receipt, {"starting_head": "f" * 40})
+        before = self.receipt_path.read_text()
+        with self.assertRaises(GateError):
+            bootstrap_from_receipt(self.receipt_path, runner=runner)
+        self.assertEqual(before, self.receipt_path.read_text())
+
+
 class RetiredWorkerPassLauncherTests(unittest.TestCase):
     # TUR-447 F4a (decision-109-workflow-native, role-worker-migration,
     # launch-correctness-path): the octo-launch worker-pass launcher is retired.
