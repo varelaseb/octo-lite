@@ -9,19 +9,23 @@ target repositories.
 ## Durable Sources
 
 - `README.md` explains the product and install shape.
-- `role-skills.json` records the Issue Shaper, implementer, and reviewer skill
-  mapping.
+- `roles.toml` records every role's runtime and skill mapping.
+- `roles/` contains the sole canonical prose contract for each LLM role.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
 - `skills/` contains reusable octo-lite skills and their bundled templates.
-- `agents/` contains custom subagent profiles: Codex `*.toml` and the parallel
-  Claude Code `*.md` (Markdown + YAML frontmatter) profiles. Keep both in sync
-  when changing implementer/reviewer behavior.
-- `workflows/` contains Claude Code Workflow scripts (currently
-  `octo-loop-qa.js`, the loop-with-QA implementation); their conventions
-  blocks are per-target configuration.
+- `agents/` contains generated Claude Markdown launch adapters only. OpenAI
+  roles use a direct `codex exec` relay with no generated Codex custom-agent
+  file. Never edit or spawn `agents/` raw. Regenerate through the role
+  resolver.
+- `workflows/` contains target-neutral native Claude Workflow scripts.
 
 ## Target Spec Format Capability
 
+- Spec format: spec-chat
+- Canonical spec paths: spec/domains/operating-model.spec.html, spec/domains/delivery-lifecycle.spec.html, spec/domains/role-runtime.spec.html, spec/domains/operator-control.spec.html
+- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html
+- octo-lite's own canonical specifications and ADRs use native spec-chat
+  `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact
   signal `Spec format: spec-chat` in its `AGENTS.md`.
 - An absent signal, or `Spec format: markdown`, keeps Markdown specs as the
@@ -42,11 +46,15 @@ target repositories.
 - Keep templates inside the relevant skill `assets/` directory.
 - Keep always-loaded guidance in `profile/AGENTS.md` short.
 - Do not copy octo-lite skills, agents, or templates into target repos.
+- Install profile, roles, adapters, skills, workflows, and helpers by symlink.
 
 ## Validation
 
 - Check Markdown and TOML syntax after edits.
+- Run `python3 workflows/lib/role_resolver.py check` and
+  `python3 -m unittest tests/test_role_resolver.py` after role changes.
 - Verify skill symlinks point at this source repo when installing locally.
+- Run `scripts/install-octo-lite --check` after installed-surface changes.
 
 ## Conventions
 

@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+id="${1:-}"
+status="${2:-}"
+shift 2 || true
+by=""
+artifact=""
+while (($#)); do
+  case "$1" in
+    --by) by="${2:?}"; shift 2 ;;
+    --artifact) artifact="${2:?}"; shift 2 ;;
+    *) echo "herdr-ack: unknown option $1" >&2; exit 64 ;;
+  esac
+done
+case "$status" in acknowledged|rejected|completed) ;; *) exit 64 ;; esac
+[[ -n "$id" && -n "$by" ]] || exit 64
+# L3 identity: the id argument is validated against the exact id shape BEFORE
+# deriving any path, so no alias or traversal ever reaches the filesystem.
+[[ "$id" =~ ^[0-9]{8}T[0-9]{6}-[0-9]+-[0-9]+$ ]] || {
+  echo "herdr-ack: malformed message id $id" >&2
+  exit 64
+}
+[[ "$status" != "completed" || -n "$artifact" ]] || {
+  echo "herdr-ack: completed requires --artifact" >&2
+  exit 64
+}
+
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite"
+root="$state_root/messages"
+state="$root/$id.toml"
+[[ -f "$state" ]] || { echo "herdr-ack: unknown message $id" >&2; exit 66; }
+
+# L1/L4 (TUR-505 phase-1): herdr-ack takes the PERMANENT per-message lock
+# locks/<id>.lock, the same flock(2) sidecar herdr-say and herdr-drain hold
+# around their check-then-fire, so an ack can never write terminal state
+# inside a fire window. The whole read-validate-write runs under the lock;
+# on bounded-wait timeout exit non-zero without touching state. Nothing ever
+# unlinks a lock (reclamation is runbook-only).
+locks="$state_root/locks"
+mkdir -p "$locks"
+lock="$locks/$id.lock"
+exec 9>>"$lock"
+flock -w "${HERDR_ACK_LOCK_WAIT:-10}" 9 || {
+  echo "herdr-ack: timed out waiting for message lock $lock" >&2
+  exit 70
+}
+
+# TUR-505: a message body may be multi-line (herdr 0.7.5 atomic prompt sends
+# arbitrary multi-line text). Read each field via NUL-delimited pairs so a
+# message line never masquerades as the status field.
+declare -A fields=()
+while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+  fields["$key"]="$value"
+done < <(python3 - "$state" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    data = tomllib.load(f)
+for key in ('target', 'kind', 'artifact', 'message', 'created_at', 'status', 'delivery_path', 'transport_attempts'):
+    sys.stdout.write(key)
+    sys.stdout.write('\0')
+    value = data.get(key, '')
+    sys.stdout.write('' if value is None else str(value))
+    sys.stdout.write('\0')
+PY
+)
+target="${fields[target]}"
+current_status="${fields[status]}"
+[[ "$by" == "$target" ]] || {
+  echo "herdr-ack: acknowledger does not match target" >&2
+  exit 65
+}
+
+# Operator answer relay clears the Source B operator-wait stamp
+# (sweep-operator-ask): any per-stream stamp whose message_id is this acked
+# message is removed, so the sweep stops surfacing the ask on the next run.
+clear_wait_stamps() {
+  local waits="$state_root/operator-waits"
+  [[ -d "$waits" ]] || return 0
+  local stamp stamp_id
+  for stamp in "$waits"/*.toml; do
+    [[ -f "$stamp" ]] || continue
+    stamp_id="$(python3 -c 'import sys,tomllib;
+try:
+    print(tomllib.load(open(sys.argv[1],"rb")).get("message_id",""))
+except Exception:
+    print("")' "$stamp")"
+    [[ "$stamp_id" == "$id" ]] && rm -f "$stamp"
+  done
+  return 0
+}
+
+# Transition legality (TUR-505 phase-1 state machine):
+# legal: pending|stalled -> acknowledged|rejected|completed (recipient-exact,
+# artifact rule), acknowledged -> completed (ack completion).
+# REPEAT-ACK LAW: a re-ack with the SAME status as current is an idempotent
+# no-op (exit 0, no write, matching stamp cleared via the live clear path).
+# Everything else, including any ack of a never-transported queued message,
+# is an illegal transition: nonzero exit, no write.
+case "$current_status:$status" in
+  pending:acknowledged|pending:rejected|pending:completed|stalled:acknowledged|stalled:rejected|stalled:completed|acknowledged:completed)
+    ;;
+  acknowledged:acknowledged|rejected:rejected|completed:completed)
+    clear_wait_stamps
+    echo "message_id=$id status=$status"
+    exit 0
+    ;;
+  *)
+    echo "herdr-ack: illegal transition $current_status -> $status" >&2
+    exit 65
+    ;;
+esac
+
+[[ -n "$artifact" ]] || artifact="${fields[artifact]}"
+quote() { jq -Rn --arg value "$1" '$value'; }
+temporary="$state.$$.tmp"
+{
+  echo 'schema_version = 1'
+  echo "message_id = $(quote "$id")"
+  echo "target = $(quote "$target")"
+  echo "kind = $(quote "${fields[kind]}")"
+  echo "status = $(quote "$status")"
+  if [[ -n "${fields[delivery_path]}" ]]; then
+    echo "delivery_path = $(quote "${fields[delivery_path]}")"
+  fi
+  if [[ -n "${fields[transport_attempts]}" ]]; then
+    echo "transport_attempts = ${fields[transport_attempts]}"
+  fi
+  echo "artifact = $(quote "$artifact")"
+  echo "message = $(quote "${fields[message]}")"
+  echo "created_at = $(quote "${fields[created_at]}")"
+  echo "acknowledged_by = $(quote "$by")"
+  echo "acknowledged_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+} >"$temporary"
+mv "$temporary" "$state"
+
+clear_wait_stamps
+echo "message_id=$id status=$status"

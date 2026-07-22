@@ -1,1 +1,1 @@
-/root/octo-lite/AGENTS.md
+AGENTS.md

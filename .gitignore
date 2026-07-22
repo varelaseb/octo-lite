@@ -1,5 +1,6 @@
 .DS_Store
 .octo-lite/drafts/
+*.review/
 
 
 __pycache__/

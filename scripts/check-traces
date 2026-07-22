@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from octo_lite.runtime import FAILURE_CATEGORIES, GateError, _validate_trace
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print("usage: check-traces FILE...", file=sys.stderr)
+        return 64
+    try:
+        for raw_path in sys.argv[1:]:
+            path = Path(raw_path)
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                _validate_trace(event)
+                attributes = event["attributes"]
+                if event["status"] in {"failed", "retry"}:
+                    if attributes.get("category") not in FAILURE_CATEGORIES:
+                        raise GateError("failure or retry needs approved category")
+                    if not isinstance(attributes.get("attempt"), int) or attributes["attempt"] < 1:
+                        raise GateError("failure or retry needs positive attempt")
+    except (OSError, json.JSONDecodeError, GateError) as error:
+        print(f"{path}:{number}: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

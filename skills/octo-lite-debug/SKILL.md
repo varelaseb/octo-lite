@@ -5,6 +5,11 @@ description: Diagnose octo-lite workflow blockers in local Codex, git, gh, valid
 
 # octo-lite Debug
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill when an octo-lite implementer/reviewer pass is stuck, validation
 cannot run, GitHub operations fail, branch state is confusing, or review cannot
 proceed from the available durable context.

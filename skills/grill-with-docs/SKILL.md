@@ -5,6 +5,11 @@ description: Run a docs-backed grilling session for octo-lite issue shaping; str
 
 # Grill With Docs
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill from `$octo-lite-issue-shaper` when a new idea, rough Linear or
 GitHub issue, or issue draft needs clarification before it can be marked ready.
 
@@ -63,7 +68,8 @@ Use these shaping patterns:
 - Record durable product or system behavior in specs, not only in chat.
 - Surface ADR-worthy decisions before readiness.
 - Propose follow-up issues only when the work is independently valuable or a
-  real prerequisite; do not create them without operator approval.
+  real prerequisite; create them under prior operator intent and notify, or
+  propose them in the notification when no such intent exists.
 - Treat the final ready gate as a quality bar, not a formatting step.
 
 ## Spec Updates

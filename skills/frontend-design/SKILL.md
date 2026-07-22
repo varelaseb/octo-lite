@@ -5,6 +5,11 @@ description: Apply production-quality frontend design practice during octo-lite 
 
 # Frontend Design
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill only when the Linear/GitHub issue, specs, ADRs, repo instructions, or
 code clearly put UI/frontend work in scope.
 

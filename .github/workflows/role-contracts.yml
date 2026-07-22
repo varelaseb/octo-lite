@@ -1,0 +1,44 @@
+name: octo-lite contracts
+
+on:
+  pull_request:
+    paths:
+      - roles.toml
+      - roles/**
+      - agents/**
+      - profile/**
+      - skills/**
+      - scripts/**
+      - octo_lite/**
+      - workflows/**
+      - workflows/lib/role_resolver.py
+      - tests/**
+      - .github/workflows/role-contracts.yml
+  push:
+    paths:
+      - roles.toml
+      - roles/**
+      - agents/**
+      - profile/**
+      - skills/**
+      - scripts/**
+      - octo_lite/**
+      - workflows/**
+      - workflows/lib/role_resolver.py
+      - tests/**
+      - .github/workflows/role-contracts.yml
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python3 workflows/lib/role_resolver.py check
+      - run: python3 -m unittest discover -s tests -v
+      - run: node --test tests/gates.test.mjs
+      - run: scripts/check-traces tests/fixtures/traces/happy.jsonl tests/fixtures/traces/failure.jsonl tests/fixtures/traces/retry.jsonl
+      - run: if scripts/check-traces tests/fixtures/traces/invalid.jsonl; then exit 1; fi
+      - run: bash -n scripts/install-octo-lite scripts/operator-timer skills/herdr-comms/assets/* skills/launch-meta-operator/scripts/*

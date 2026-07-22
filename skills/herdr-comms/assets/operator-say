@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+owner_file="${OCTO_OPERATOR_OWNER:-${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/operator-owner.toml}"
+[[ -f "$owner_file" ]] || { echo "operator-say: owner state missing" >&2; exit 66; }
+owner="$(python3 - "$owner_file" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    print(tomllib.load(f)['owner_route'])
+PY
+)"
+options=()
+while (($#)); do
+  case "$1" in
+    --kind|--artifact) options+=("$1" "${2:?}"); shift 2 ;;
+    *) break ;;
+  esac
+done
+exec "$(dirname "$0")/herdr-say" "${options[@]}" "$owner" "$@"

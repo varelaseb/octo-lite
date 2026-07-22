@@ -5,6 +5,11 @@ description: TypeScript policy for octo-lite implementer work when durable repo 
 
 # TypeScript
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill only when the target repo contains durable TypeScript signals
 such as `.ts` or `.tsx` files, `tsconfig*.json`, TypeScript package scripts,
 Vitest/MSW files, or TypeScript lint/test config.

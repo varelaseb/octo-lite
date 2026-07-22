@@ -1,0 +1,1188 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+import uuid
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from octo_lite.launch import fetch_stream_binding, prepare_reconcile_launch, run_reconcile_launch  # noqa: E402
+from octo_lite.runtime import GateError  # noqa: E402
+
+CANONICAL_SPEC_SIGNAL = "Canonical spec paths:"
+CANONICAL_ADR_SIGNAL = "Canonical ADR paths:"
+
+# ---- TUR-505 phase-1 message transport laws (E1/P1/S3/G2-lite) ----
+#
+# Transport class: bounded duplicate-prone transport with NO delivery
+# guarantee; a message may be delivered zero times, once, or up to the attempt
+# cap per epoch. The sweep's stalled/undelivered surfacing is the no-delivery
+# detection path.
+MESSAGE_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}-[0-9]+-[0-9]+$")
+MESSAGE_TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(:[A-Za-z0-9]+)?$")
+RETRYABLE_PATHS = {"modal-queued", "deferred"}
+ACK_WAIT_PATHS = {"direct", "unresolved-ask"}
+_LEGACY_NOTE_CAP = 20
+
+
+def _positive_int_env(name: str, default: int) -> tuple[int, str]:
+    """Positive-int env knob: invalid value degrades to the default with a
+    distinct warning note (OCTO_TRANSPORT_ATTEMPT_CAP / OCTO_PUBLICATION_REPAIR_SECONDS)."""
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default, ""
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw), ""
+    return default, f"SWEEP NOTE (invalid env): {name}='{raw}' invalid, using default {default}"
+
+
+def _load_message_state(path: Path) -> dict | None:
+    try:
+        with path.open("rb") as stream:
+            state = tomllib.load(stream)
+    except Exception:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def transport_message_report(messages_root: Path, inbox_root: Path, locks_root: Path, *, now: float | None = None) -> dict:
+    """S3 stalled surfacing + P1 publication repair over the durable message
+    states. Stalled messages emit a loud transport-stalled line EVERY cycle
+    (unsuppressible family) until resumed or acked. A RETRYABLE state
+    (queued|pending with delivery_path modal-queued|deferred) with no inbox
+    item whose state-file mtime is older than OCTO_PUBLICATION_REPAIR_SECONDS
+    gets its item recreated (content = id) under the permanent message lock.
+    delivery_path direct or unresolved-ask is NEVER repaired; legacy states
+    without delivery_path are never guess-repaired, only noted
+    undelivered-unknown-legacy (capped)."""
+    import fcntl
+
+    current = time.time() if now is None else now
+    repair_seconds, repair_warn = _positive_int_env("OCTO_PUBLICATION_REPAIR_SECONDS", 180)
+    stalled_lines: list[str] = []
+    repair_notes: list[str] = []
+    legacy_notes: list[str] = []
+    warnings: list[str] = [repair_warn] if repair_warn else []
+    if not messages_root.is_dir():
+        return {"stalled_lines": [], "repair_notes": [], "legacy_notes": [], "warnings": warnings}
+    for state_path in sorted(messages_root.glob("*.toml")):
+        if not MESSAGE_ID_RE.match(state_path.stem):
+            continue
+        state = _load_message_state(state_path)
+        if state is None:
+            continue
+        message_id = state_path.stem
+        status = str(state.get("status") or "")
+        target = str(state.get("target") or "")
+        path = str(state.get("delivery_path") or "")
+        if status == "stalled":
+            attempts = state.get("transport_attempts", 0)
+            stalled_lines.append(
+                f"TRANSPORT STALLED: message {message_id} target={target} "
+                f"attempts={attempts} - resume with herdr-drain --resume {message_id} or ack"
+            )
+            continue
+        if status not in {"queued", "pending"}:
+            continue
+        if path in ACK_WAIT_PATHS:
+            continue  # ACK-WAIT by construction: never repaired.
+        if not path:
+            # Legacy state without delivery_path: no guess-repair for itemless
+            # ones; drain's legacy promotion keeps live items firing.
+            if MESSAGE_TARGET_RE.match(target):
+                item = inbox_root / target / message_id
+                if item.is_file():
+                    continue
+            if len(legacy_notes) < _LEGACY_NOTE_CAP:
+                legacy_notes.append(
+                    f"SWEEP NOTE (undelivered-unknown-legacy): message {message_id} "
+                    "has no delivery_path and no inbox item, not repaired"
+                )
+            elif len(legacy_notes) == _LEGACY_NOTE_CAP:
+                legacy_notes.append("SWEEP NOTE (undelivered-unknown-legacy): further legacy messages elided")
+            continue
+        if path not in RETRYABLE_PATHS:
+            continue
+        # L3 target grammar (ruling-87 fold): validated BEFORE deriving any
+        # path, so ../../escape:p1 can never traverse out of the inbox root.
+        if not MESSAGE_TARGET_RE.match(target):
+            repair_notes.append(
+                f"SWEEP NOTE (invalid target): message {message_id} target rejected, not repaired"
+            )
+            continue
+        item = inbox_root / target / message_id
+        if item.is_file():
+            continue
+        try:
+            mtime = state_path.stat().st_mtime
+        except OSError:
+            continue
+        if (current - mtime) <= repair_seconds:
+            continue  # Fresh publication window: not repaired yet.
+        # P1 repair under the permanent message lock (skip when held; the next
+        # cycle retries, bounded by construction).
+        locks_root.mkdir(parents=True, exist_ok=True)
+        lock_path = locks_root / f"{message_id}.lock"
+        try:
+            with lock_path.open("a") as lock_handle:
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    continue
+                # Re-verify under the lock before recreating the item.
+                state = _load_message_state(state_path)
+                if not isinstance(state, dict):
+                    continue
+                if str(state.get("status") or "") not in {"queued", "pending"}:
+                    continue
+                if str(state.get("delivery_path") or "") not in RETRYABLE_PATHS:
+                    continue
+                if item.is_file():
+                    continue
+                item.parent.mkdir(parents=True, exist_ok=True)
+                temporary = item.parent / f".{message_id}.tmp"
+                temporary.write_text(message_id + "\n")
+                temporary.replace(item)
+                repair_notes.append(
+                    f"SWEEP NOTE (publication repair): recreated inbox item {target}/{message_id}"
+                )
+        except OSError:
+            continue
+    return {
+        "stalled_lines": stalled_lines,
+        "repair_notes": repair_notes,
+        "legacy_notes": legacy_notes,
+        "warnings": warnings,
+    }
+
+
+def registry_lite_advisories(control: Path, owner_route: str) -> list[str]:
+    """G2-lite (ruling-86 second split): one `herdr agent list` call per sweep;
+    each live agent lacking streams/<name>/stream.toml gets an ADVISORY-marked
+    note. Explicitly NEVER an OPERATOR ACTION line and exempt from the
+    nothing-suppresses-gates law in both directions. owner_route and
+    OCTO_REGISTRY_EXEMPT names are exempt. Degrades gracefully to no
+    advisories on any failure."""
+    herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
+    if not herdr:
+        return []
+    try:
+        result = subprocess.run(
+            [herdr, "agent", "list"], capture_output=True, text=True, timeout=3,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        payload = json.loads(result.stdout) if result.stdout.strip() else {}
+    except ValueError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    result_obj = payload.get("result")
+    agents = result_obj.get("agents") if isinstance(result_obj, dict) else None
+    if not isinstance(agents, list):
+        return []
+    exempt = {owner_route}
+    exempt.update(name.strip() for name in os.environ.get("OCTO_REGISTRY_EXEMPT", "").split(",") if name.strip())
+    advisories: list[str] = []
+    for entry in agents:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or entry.get("agent_name") or "")
+        if not name or name in exempt:
+            continue
+        if (control / "streams" / name / "stream.toml").is_file():
+            continue
+        advisories.append(
+            f"ADVISORY (registry-lite): live agent {name} lacks streams/{name}/stream.toml"
+        )
+    return advisories
+
+
+def atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def load_toml(path: Path) -> dict:
+    with path.open("rb") as stream:
+        return tomllib.load(stream)
+
+
+def repo_head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _agents_md_text(repo: Path, head: str) -> str:
+    kind = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-t", f"{head}:AGENTS.md"],
+        capture_output=True, text=True,
+    )
+    if kind.returncode != 0 or kind.stdout.strip() != "blob":
+        raise SystemExit("operator-sweep: target AGENTS.md missing at head")
+    return subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-p", f"{head}:AGENTS.md"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+def _signal_lines(text: str, signal: str) -> list[str]:
+    values = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            stripped = stripped[2:].strip()
+        if stripped.startswith(signal):
+            values.append(stripped[len(signal):].strip())
+    return values
+
+
+def _declared_paths(text: str, signal: str, *, label: str, allow_none: bool = False) -> list[str]:
+    values = _signal_lines(text, signal)
+    if len(values) == 0:
+        raise SystemExit(f"operator-sweep: no canonical {label} paths declared")
+    if len(values) > 1:
+        raise SystemExit(f"operator-sweep: repeated canonical {label} paths declaration")
+    value = values[0]
+    if allow_none and value == "none":
+        return []
+    if not value:
+        raise SystemExit(f"operator-sweep: no canonical {label} paths declared")
+    entries = [entry.strip() for entry in value.split(",")]
+    if any(not entry for entry in entries):
+        raise SystemExit(f"operator-sweep: malformed canonical {label} declaration")
+    if allow_none and any(entry == "none" for entry in entries):
+        raise SystemExit(f"operator-sweep: malformed canonical {label} declaration")
+    if len(set(entries)) != len(entries):
+        raise SystemExit(f"operator-sweep: duplicate canonical {label} path declared")
+    for entry in entries:
+        segments = entry.split("/")
+        if entry.startswith("/") or entry.startswith("~") or any(part in ("", "..", ".") for part in segments):
+            raise SystemExit(f"operator-sweep: escaped canonical {label} path: {entry}")
+    return entries
+
+
+def _tree_entry(repo: Path, head: str, relative: str) -> tuple[str, str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", head, "--", relative],
+        capture_output=True, text=True,
+    )
+    line = result.stdout.strip()
+    if result.returncode != 0 or not line:
+        return "", ""
+    fields = line.split()
+    return fields[0], fields[1]
+
+
+def canonical_blobs(repo: Path, head: str) -> tuple[list[str], list[str]]:
+    text = _agents_md_text(repo, head)
+
+    def bind(signal: str, label: str, *, allow_none: bool = False) -> list[str]:
+        bound = []
+        for relative in _declared_paths(text, signal, label=label, allow_none=allow_none):
+            mode, kind = _tree_entry(repo, head, relative)
+            if not kind:
+                raise SystemExit(f"operator-sweep: canonical {label} path missing: {relative}")
+            if mode == "120000":
+                raise SystemExit(f"operator-sweep: canonical {label} path is a symlink: {relative}")
+            if kind != "blob":
+                raise SystemExit(f"operator-sweep: canonical {label} path is not a regular file: {relative}")
+            size = subprocess.run(
+                ["git", "-C", str(repo), "cat-file", "-s", f"{head}:{relative}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            if size == "0":
+                raise SystemExit(f"operator-sweep: canonical {label} path is empty: {relative}")
+            digest = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", f"{head}:{relative}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            bound.append(f"{relative}:{digest}")
+        return bound
+
+    spec_bound = bind(CANONICAL_SPEC_SIGNAL, "spec")
+    adr_bound = bind(CANONICAL_ADR_SIGNAL, "ADR", allow_none=True)
+    spec_paths = {entry.split(":", 1)[0] for entry in spec_bound}
+    adr_paths = {entry.split(":", 1)[0] for entry in adr_bound}
+    if spec_paths & adr_paths:
+        raise SystemExit("operator-sweep: canonical path declared as both spec and ADR")
+    return spec_bound, adr_bound
+
+
+# Operator-gated Linear states (sweep-operator-gated-set): the acceptance state
+# plus this target's operator-owned promotion states, excluding the terminal
+# live state, the accepted-and-merged transient, and every agent/mechanical
+# state. Exact casing verified against the repo's own 9-state usage.
+OPERATOR_GATED_STATES = {"Awaiting Accept", "In Staging", "In Preprod"}
+# One-line operator action per gated state (sweep-operator-gate-loud).
+OPERATOR_GATE_ACTION = {
+    "Awaiting Accept": "accept or reject the delivered work",
+    "In Staging": "verify staging then promote or hold",
+    "In Preprod": "authorize the live traffic shift or hold",
+}
+
+
+def _carried_issues(linear_decl) -> list[str]:
+    """A stream may declare a single `issue = "..."` (back-compat) and/or a
+    LIST `issues = ["...", "..."]`; every carried issue is read (sweep-carried-issues)."""
+    issues: list[str] = []
+    if isinstance(linear_decl, dict):
+        if linear_decl.get("issue"):
+            issues.append(str(linear_decl["issue"]))
+        raw_list = linear_decl.get("issues")
+        if isinstance(raw_list, list):
+            for entry in raw_list:
+                if entry:
+                    issues.append(str(entry))
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for issue in issues:
+        if issue not in seen:
+            seen.add(issue)
+            ordered.append(issue)
+    return ordered
+
+
+_TUR_TOKEN = re.compile(r"\b([A-Za-z]+-\d+)\b")
+
+
+def _normalize_issue(token: str) -> str:
+    """Normalize a carried-issue token to canonical upper prefix (TUR-479)."""
+    return token.upper()
+
+
+def _envelope_carried_issues(stream_dir: Path) -> list[str]:
+    """Derive carried issues from every review/delivery envelope in the stream:
+    each *envelope*.toml with a top-level string `issue = "TUR-<n>"` (sweep-
+    carried-issues). Real production streams have no sources.toml; the shaping,
+    code, and delivery review envelopes carry the bound issue at top level."""
+    issues: list[str] = []
+    for path in sorted(stream_dir.glob("*envelope*.toml")):
+        try:
+            envelope = load_toml(path)
+        except Exception:
+            continue
+        value = envelope.get("issue")
+        if isinstance(value, str) and value.strip():
+            issues.append(_normalize_issue(value.strip()))
+    return issues
+
+
+def _status_line_carried_issues(stream_dir: Path) -> list[str]:
+    """Derive carried issues from the stream status.md ANCHORED `Issues:` line
+    only (sweep-carried-issues). Real tf-password-reset shape declares carried
+    issues on `Issues: TUR-454 (...) - TUR-479 (...)`. CRITICAL noise guard: only
+    the anchored `^Issues:` line is parsed; free prose TUR-ids elsewhere in the
+    roadmap status are never scanned or surfaced."""
+    status_path = stream_dir / "status.md"
+    if not status_path.is_file():
+        return []
+    try:
+        text = status_path.read_text()
+    except Exception:
+        return []
+    match = re.search(r"^Issues:\s*(.+)$", text, re.MULTILINE)
+    if not match:
+        return []
+    return [_normalize_issue(token) for token in _TUR_TOKEN.findall(match.group(1))]
+
+
+def _derive_carried_issues(stream_dir: Path, linear_decl) -> list[str]:
+    """Union of carried issues in priority order (sweep-carried-issues): explicit
+    sources.toml [linear] issue/issues, then every review/delivery envelope's
+    top-level issue, then the status.md anchored `Issues:` line. Deduped, case-
+    insensitive TUR match, normalized to upper. Only structured declarations are
+    read; free prose is never scanned."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for issue in (
+        *_carried_issues(linear_decl),
+        *_envelope_carried_issues(stream_dir),
+        *_status_line_carried_issues(stream_dir),
+    ):
+        key = issue.upper()
+        if key not in seen:
+            seen.add(key)
+            ordered.append(issue)
+    return ordered
+
+
+# Read failures we tolerate around a single carried-issue Linear read so one bad
+# issue (rate-limit, network, deleted issue, missing auth) never crashes the whole
+# sweep and takes down the live timer (sweep-graceful-degradation). Programming
+# errors in our own code path are NOT swallowed; only external read failures are.
+_CARRIED_READ_ERRORS: tuple[type[BaseException], ...] = (
+    subprocess.CalledProcessError,
+    subprocess.SubprocessError,
+    OSError,
+    ValueError,
+)
+
+
+def declared_stream_facts(stream_dir: Path) -> dict:
+    sources_path = stream_dir / "sources.toml"
+    declared = load_toml(sources_path) if sources_path.is_file() else {}
+    linear_decl = declared.get("linear")
+    pr_decl = declared.get("pull_request")
+    carried = _derive_carried_issues(stream_dir, linear_decl)
+    pr_repo = str(pr_decl["repo"]) if isinstance(pr_decl, dict) and pr_decl.get("repo") else None
+    pr_number = int(pr_decl["number"]) if isinstance(pr_decl, dict) and pr_decl.get("number") else None
+    facts: dict = {}
+    read_errors: list[dict] = []
+
+    def _read_one(issue: str, *, with_pr: bool) -> dict | None:
+        """Read a single carried issue's Linear binding (plus the pull request on the
+        primary read) with the whole read GUARDED: any external read failure is
+        recorded and skipped so it never crashes the sweep (sweep-graceful-
+        degradation). Returns the binding dict, or None when the read failed."""
+        try:
+            return fetch_stream_binding(
+                linear_issue=issue,
+                pr_repo=pr_repo if with_pr else None,
+                pr_number=pr_number if with_pr else None,
+            )
+        except _CARRIED_READ_ERRORS as error:
+            read_errors.append({"issue": issue, "error": str(error)})
+            return None
+
+    # The first carried issue plus the pull request keep the original single-issue
+    # binding shape the reconcile gateway re-verifies WHEN that primary read
+    # succeeds; a failed primary read degrades (primary binding absent) yet the
+    # remaining carried issues are still read and every successful gated issue is
+    # still surfaced. The full carried set is surfaced through carried_linear below.
+    primary_issue = carried[0] if carried else None
+    if primary_issue or (pr_repo and pr_number):
+        if primary_issue:
+            primary_binding = _read_one(primary_issue, with_pr=bool(pr_repo and pr_number))
+            if primary_binding is not None:
+                facts.update(primary_binding)
+        elif pr_repo and pr_number:
+            # No carried issue but a declared PR: the PR read is a plain binding
+            # read, not a per-issue read, so it keeps the original (uncaught)
+            # reconcile-gateway shape.
+            facts.update(fetch_stream_binding(linear_issue=None, pr_repo=pr_repo, pr_number=pr_number))
+    if carried:
+        carried_linear = []
+        # The primary issue's binding is reused if it succeeded above; the remaining
+        # carried issues are each read exactly once (sweep-carried-issues) with no
+        # redundant Linear call. A failed read of any carried issue is skipped and
+        # noted, never fatal.
+        if facts.get("linear"):
+            carried_linear.append(facts["linear"])
+        for issue in carried[1:]:
+            binding = _read_one(issue, with_pr=False)
+            if binding is not None and "linear" in binding:
+                carried_linear.append(binding["linear"])
+        if carried_linear:
+            facts["carried_linear"] = carried_linear
+    if read_errors:
+        facts["carried_read_errors"] = read_errors
+    for name in ("evidence", "deployment"):
+        decl = declared.get(name)
+        if isinstance(decl, dict) and decl.get("path"):
+            artifact = Path(str(decl["path"]))
+            facts[name] = {
+                "path": str(decl["path"]),
+                "hash": hashlib.sha256(artifact.read_bytes()).hexdigest() if artifact.is_file() else "missing",
+            }
+    return facts
+
+
+def _gated_carried_states(stream_facts: dict) -> list[tuple[str, str]]:
+    """Every (issue_id, state) a stream carries whose state is operator-gated."""
+    gated: list[tuple[str, str]] = []
+    bindings = stream_facts.get("carried_linear")
+    if not bindings and stream_facts.get("linear"):
+        bindings = [stream_facts["linear"]]
+    for binding in bindings or []:
+        state = str(binding.get("state") or "")
+        identifier = str(binding.get("identifier") or "")
+        if identifier and state in OPERATOR_GATED_STATES:
+            gated.append((identifier, state))
+    return gated
+
+
+def operator_waits(waits_root: Path, stream_name: str) -> list[dict]:
+    """Source B substrate (sweep-operator-ask): a mechanical per-stream stamp the
+    lane operator-ask path writes when it sends a --kind question to the operator
+    route, cleared by the operator answer relay (herdr-ack). Read structurally,
+    never from pane transcript text, so detection is modal-safe."""
+    stamp_path = waits_root / f"{stream_name}.toml"
+    if not stamp_path.is_file():
+        return []
+    try:
+        stamp = load_toml(stamp_path)
+    except Exception:
+        return []
+    if str(stamp.get("owner") or "") != "operator":
+        return []
+    ask = str(stamp.get("ask") or "").strip()
+    if not ask:
+        return []
+    return [{"ask": ask, "message_id": str(stamp.get("message_id") or "")}]
+
+
+def operator_gate_lines(stream_dirs: list[Path], facts: dict, waits_root: Path) -> list[str]:
+    """Loud, unsuppressible operator-gate block (sweep-operator-gate-loud). Source
+    A is every carried issue in an operator-gated Linear state; Source B is every
+    open unanswered operator ask. Emitted at the very top of the sweep delta before
+    all other content, and never silenced by any suppression class."""
+    lines: list[str] = []
+    for stream_dir in stream_dirs:
+        stream_facts = facts.get(stream_dir.name)
+        if isinstance(stream_facts, dict):
+            for identifier, state in _gated_carried_states(stream_facts):
+                action = OPERATOR_GATE_ACTION.get(state, "review and act")
+                lines.append(f"OPERATOR ACTION NEEDED: {identifier} {state} - {action}")
+        for wait in operator_waits(waits_root, stream_dir.name):
+            lines.append(f"OPERATOR ACTION NEEDED: {stream_dir.name} asks: {wait['ask']}")
+    return lines
+
+
+def _stream_gate_reason(stream_dir: Path, stream_facts, waits_root: Path) -> str:
+    """The per-stream operator-gate reason (sweep-operator-gate-classify / ruling-46):
+    the same gate content that drives classification, so every waiting-on-operator
+    stream carries a non-empty open_ask under wait_owner=operator and the taxonomy
+    stays unified with no empty-wait_owner third bucket. Source A is each carried
+    operator-gated issue as '<ID> <STATE> - <action>'; Source B is each open
+    operator ask. Multiple reasons join with '; '."""
+    reasons: list[str] = []
+    if isinstance(stream_facts, dict):
+        for identifier, state in _gated_carried_states(stream_facts):
+            action = OPERATOR_GATE_ACTION.get(state, "review and act")
+            reasons.append(f"{identifier} {state} - {action}")
+    for wait in operator_waits(waits_root, stream_dir.name):
+        reasons.append(wait["ask"])
+    return "; ".join(reasons)
+
+
+def degraded_read_notes(stream_dirs: list[Path], facts: dict) -> list[str]:
+    """Distinct, clearly-labeled degraded-read notes (sweep-graceful-degradation):
+    one per carried issue whose Linear read failed and was skipped. Deliberately NOT
+    an `OPERATOR ACTION NEEDED` gate line: a transient read failure must never be
+    mistaken for an operator gate."""
+    notes: list[str] = []
+    for stream_dir in stream_dirs:
+        stream_facts = facts.get(stream_dir.name)
+        if not isinstance(stream_facts, dict):
+            continue
+        for entry in stream_facts.get("carried_read_errors") or []:
+            issue = str(entry.get("issue") or "")
+            notes.append(
+                f"SWEEP NOTE (degraded read): {stream_dir.name} skipped {issue} - "
+                "linear read failed, other carried issues still read"
+            )
+    return notes
+
+
+def sanitize_project_dir(cwd: str) -> str:
+    """Claude session transcripts live under ~/.claude/projects/<sanitized-cwd>/;
+    the sanitized name replaces every non-alphanumeric character with a dash."""
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
+
+
+def _stream_transcript_paths(stream_dir: Path, projects_root: Path) -> list[Path]:
+    """Resolve every session transcript a stream's receipts point at: each
+    receipt*.toml's session id plus workspace cwd derives
+    <projects_root>/<sanitized-cwd>/<session_id>.jsonl. A stream may carry an
+    original receipt for a closed session plus a newer receipt for the active
+    one (tur-416 evidence); liveness must consider them all."""
+    paths: list[Path] = []
+    for receipt_path in sorted(stream_dir.glob("receipt*.toml")):
+        try:
+            receipt = load_toml(receipt_path)
+        except Exception:
+            continue
+        session_id = str(receipt.get("bootstrap", {}).get("provider_session_id") or "")
+        worktree = str(receipt.get("workspace", {}).get("worktree") or "")
+        if session_id and worktree:
+            paths.append(projects_root / sanitize_project_dir(worktree) / f"{session_id}.jsonl")
+    return paths
+
+
+# ---- Native dead-agent watchdog (sweep-dead-agent, TUR-505 C3) ----
+#
+# Streams are spawned through herdr-spawn with `--name <stream name>` (the
+# receipt-verified spawn path passes the stream name as the herdr agent name),
+# so the stream name IS the herdr agent target for the watchdog probe.
+#
+# `herdr agent get <target>` is deliberately the probe command because it exists
+# with the same shape in BOTH the live 0.7.1 grammar and the 0.7.5 grammar
+# (grammar-compatible across the handoff): found -> rc 0 with
+# .result.agent.agent_status; gone -> rc 1 with .error.code agent_not_found
+# (0.7.1, live-verified) or agent_not_running (0.7.5). The 0.7.5-only
+# `herdr agent wait <target> --status <s> [--timeout MS]` is the BLOCKING
+# variant and is deliberately not used here.
+_HERDR_PROBE_TIMEOUT_SECONDS = 1.5
+_HERDR_AGENT_GONE_CODES = {"agent_not_found", "agent_not_running"}
+
+# Closed-stream class (sweep-closed-stream): only the ANCHORED `^Outcome:` line
+# of status.md is consulted, case-insensitive, never free prose, mirroring the
+# `Issues:` noise guard.
+_OUTCOME_CLOSED = re.compile(r"^Outcome:.*superseded-closed", re.MULTILINE | re.IGNORECASE)
+
+
+def herdr_agent_probe(target: str) -> dict:
+    """Cheap, bounded, non-fatal per-stream agent probe (sweep-watchdog-degrade):
+    a missing herdr binary, an unreachable socket, a timeout, or an unrecognized
+    payload degrades to {"available": False, "error": ...} and the caller falls
+    back to the time-based classification, same discipline as the carried
+    Linear-read graceful degradation. Never raises; watchdog failure must never
+    crash the sweep. OCTO_HERDR overrides the binary for tests."""
+    herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
+    if not herdr:
+        return {"available": False, "error": "herdr binary absent"}
+    try:
+        result = subprocess.run(
+            [herdr, "agent", "get", target],
+            capture_output=True, text=True, timeout=_HERDR_PROBE_TIMEOUT_SECONDS,
+        )
+    except (subprocess.SubprocessError, OSError) as error:
+        return {"available": False, "error": str(error)}
+    try:
+        payload = json.loads(result.stdout) if result.stdout.strip() else {}
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if result.returncode == 0:
+        result_obj = payload.get("result")
+        agent = result_obj.get("agent") if isinstance(result_obj, dict) else None
+        if isinstance(agent, dict):
+            return {"available": True, "running": True, "agent_status": str(agent.get("agent_status") or "")}
+        return {"available": False, "error": "unrecognized agent get payload"}
+    error_obj = payload.get("error")
+    if not isinstance(error_obj, dict):
+        # Live-verified (herdr 0.7.1): the error JSON is printed to STDERR with
+        # empty stdout (rc 1). Success payloads stay stdout-only; error payloads
+        # may arrive on either stream, so fall back to parsing stderr here.
+        try:
+            stderr_payload = json.loads(result.stderr) if result.stderr.strip() else {}
+        except ValueError:
+            stderr_payload = {}
+        if isinstance(stderr_payload, dict):
+            error_obj = stderr_payload.get("error")
+    error_code = str(error_obj.get("code") or "") if isinstance(error_obj, dict) else ""
+    if error_code in _HERDR_AGENT_GONE_CODES:
+        return {"available": True, "running": False}
+    return {
+        "available": False,
+        "error": result.stderr.strip() or result.stdout.strip() or f"herdr agent get rc={result.returncode}",
+    }
+
+
+def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None, operator_gated: bool = False, operator_gate_reason: str = "") -> dict:
+    """Per-stream liveness report (sweep-stream-liveness): real surfaces only,
+    session transcript mtime from the stream receipts, status gate lines, the
+    Herdr XDG inbox and message state, plus the native dead-agent watchdog
+    probe (sweep-dead-agent) and the anchored Outcome closed-stream class
+    (sweep-closed-stream). Classification is advisory; the report never enters
+    the digested reconcile snapshot.
+
+    """
+    current = time.time() if now is None else now
+
+    def mtime(path: Path) -> int | None:
+        return int(path.stat().st_mtime) if path.is_file() else None
+
+    status_path = stream_dir / "status.md"
+    status_mtime = mtime(status_path)
+    status_text = status_path.read_text() if status_path.is_file() else ""
+
+    projects = projects_root if projects_root is not None else Path.home() / ".claude" / "projects"
+    transcript_mtimes = [
+        value
+        for value in (mtime(path) for path in _stream_transcript_paths(stream_dir, projects))
+        if value is not None
+    ]
+    transcript_mtime = max(transcript_mtimes) if transcript_mtimes else None
+
+    # Status gate lines are the real, child-written wait surface: the first
+    # waiting-on line names the owner and carries the verbatim open ask.
+    wait_owner, open_ask, ask_consumed = "", "", False
+    match = re.search(r"^\s*[-*]?\s*waiting-on:\s*([^:\n]+):\s*(.+)$", status_text, re.MULTILINE | re.IGNORECASE)
+    if match:
+        recorded_owner = match.group(1).strip()
+        recorded_ask = match.group(2).strip()
+        if (
+            transcript_mtime is not None
+            and status_mtime is not None
+            and transcript_mtime > status_mtime
+        ):
+            ask_consumed = True
+        elif recorded_owner:
+            wait_owner, open_ask = recorded_owner, recorded_ask
+
+    # In-flight workflow ids are parsed from status content, the surface the
+    # owning session already maintains.
+    inflight = sorted(set(re.findall(r"\bwf_[a-z0-9]+-[a-z0-9]+\b", status_text)))
+
+    # Undelivered derivation (TUR-505 phase-1 E1): id-shaped fully-published
+    # inbox entries only; locks, dot-temporaries, and foreign files are never
+    # items. An item whose state is NON-RETRYABLE (any terminal, stalled, or
+    # ACK-WAIT residue such as promoted-direct where death preceded item
+    # removal) is NOT undelivered: it is residue for drain's uniform removal
+    # rule, noted once. A missing or malformed state is noted
+    # undelivered-unknown, never a crash. Itemless states stay surfaced:
+    # retryable itemless (crash window, P1 repairs), plus legacy no-path
+    # states (undelivered-unknown-legacy); ACK-WAIT states (path direct or
+    # unresolved-ask) are awaiting ack, not undelivered.
+    target_inbox = inbox_root / stream_dir.name
+    undelivered_set: set[str] = set()
+    message_notes: list[str] = []
+    if target_inbox.is_dir():
+        for path in target_inbox.iterdir():
+            if not path.is_file() or not MESSAGE_ID_RE.match(path.name):
+                continue
+            state_path = messages_root / f"{path.name}.toml"
+            state = _load_message_state(state_path) if state_path.is_file() else None
+            if state is None:
+                message_notes.append(f"undelivered-unknown: item {path.name} has no readable state")
+                continue
+            status = str(state.get("status") or "")
+            delivery_path = str(state.get("delivery_path") or "")
+            if status in {"queued", "pending"} and (not delivery_path or delivery_path in RETRYABLE_PATHS):
+                undelivered_set.add(path.name)
+            else:
+                message_notes.append(f"residue: item {path.name} state {status or 'unknown'} awaits removal")
+    if messages_root.is_dir():
+        for state_path in messages_root.glob("*.toml"):
+            state = _load_message_state(state_path)
+            if state is None:
+                continue
+            if str(state.get("target") or "") != stream_dir.name:
+                continue
+            if str(state.get("status") or "") not in {"pending", "queued"}:
+                continue
+            if str(state.get("delivery_path") or "") in ACK_WAIT_PATHS:
+                continue
+            undelivered_set.add(str(state.get("message_id") or state_path.stem))
+    undelivered = sorted(undelivered_set)
+
+    # Closed-stream class (sweep-closed-stream): a status.md anchored
+    # `^Outcome:` line recording superseded-closed classifies the stream
+    # 'closed' and excludes it from suspected-stuck/dead flagging, so a
+    # dead-but-retained lane stops tripping cosmetic needs_fable forever.
+    closed = bool(_OUTCOME_CLOSED.search(status_text))
+
+    # Native dead-agent watchdog probe (sweep-dead-agent): skipped for closed
+    # streams (already excluded from dead/stuck flagging) so the per-sweep
+    # probe latency stays bounded.
+    agent_running: bool | None = None
+    agent_status = ""
+    watchdog_error = ""
+    if not closed:
+        probe = herdr_agent_probe(stream_dir.name)
+        if probe.get("available"):
+            agent_running = bool(probe.get("running"))
+            agent_status = str(probe.get("agent_status") or "")
+        else:
+            # Probe unavailable (herdr absent, socket down, timeout): degrade
+            # gracefully to the time-based classification with a noted error
+            # (sweep-watchdog-degrade); never crash the sweep.
+            watchdog_error = str(probe.get("error") or "")
+
+    transcript_idle = transcript_mtime is None or (current - transcript_mtime) > idle_seconds
+
+    # Classification precedence: waiting-on-operator > closed > dead > waiting
+    # > suspected-stuck > active. An operator gate (a carried operator-gated
+    # issue or an open operator ask) classifies the stream waiting-on-operator
+    # regardless of transcript activity or dead/closed standing
+    # (sweep-operator-gate-classify): it takes precedence over every other
+    # class and is never silenced by ask_consumed.
+    if operator_gated:
+        classification = "waiting-on-operator"
+        # Unify the waiting-on-operator taxonomy (ruling-46): a Source-A gate wait
+        # is derived from Linear state and writes no status waiting-on line, so it
+        # would otherwise carry an empty wait_owner the reconciler treats as a
+        # third, inconsistent bucket. Every operator-gated stream carries
+        # wait_owner=operator; the open ask prefers a real Source-B/status ask when
+        # present, else the gate reason. A Source-A operator wait is NEVER consumed.
+        wait_owner = "operator"
+        if not open_ask:
+            open_ask = operator_gate_reason
+    elif closed:
+        classification = "closed"
+    elif agent_running is False and transcript_idle:
+        # Pane closed / agent gone AND no live transcript activity: 'dead'
+        # (sweep-dead-agent), a distinct class so a dead lane stops perpetually
+        # re-flagging suspected-stuck.
+        classification = "dead"
+    elif wait_owner:
+        classification = "waiting"
+    elif transcript_idle:
+        classification = "suspected-stuck"
+    else:
+        classification = "active"
+    return {
+        "status_mtime": status_mtime,
+        "transcript_mtime": transcript_mtime,
+        "wait_owner": wait_owner,
+        "open_ask": open_ask,
+        "ask_consumed": ask_consumed,
+        "inflight_workflows": inflight,
+        "undelivered_queue": undelivered,
+        "message_notes": message_notes,
+        "agent_running": agent_running,
+        "agent_status": agent_status,
+        "watchdog_error": watchdog_error,
+        "classification": classification,
+    }
+
+
+def _emit_operator_gate(gate_lines: list[str], root: Path, owner_file: Path, owner_route: str, state_dir: Path) -> None:
+    """Surface the loud operator-gate block: print every line to stdout every cycle
+    (the sweep delta ALWAYS shows current gates, unsuppressible), but push the loud
+    ping to the OPERATOR PANE only when the gate SET CHANGES (edge-triggered,
+    sweep-operator-gate-edge / ruling-58). A persistent gate (e.g. an issue parked
+    In Staging for hours) must not re-ping the operator every 2 minutes; the pane
+    ping fires once on a new/changed gate set and is re-armed when the set clears or
+    changes. The stdout/result.md surface is never suppressed."""
+    marker = state_dir / ".operator-gate-last"
+    if not gate_lines:
+        # Gate set now empty: clear the marker so the next gate re-pings.
+        marker.unlink(missing_ok=True)
+        return
+    for line in gate_lines:
+        print(line)
+    fingerprint = hashlib.sha256("\n".join(sorted(gate_lines)).encode("utf-8")).hexdigest()
+    try:
+        previous = marker.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        previous = ""
+    if previous == fingerprint:
+        return  # Unchanged gate set: already pinged the operator, do not re-flood.
+    environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
+    operator_say = os.environ.get("OCTO_OPERATOR_SAY") or str(root / "skills/herdr-comms/assets/operator-say")
+    handle, temporary = tempfile.mkstemp(prefix=".operator-gate-", suffix=".md")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(gate_lines) + "\n")
+        result = subprocess.run(
+            [operator_say, "--kind", "info", "--artifact", temporary, "Operator gate"],
+            env=environment,
+            check=False,
+        )
+        # Persist the marker only when the operator will see it (delivered rc=0 or
+        # queued-at-modal rc=75); on a hard failure leave it unwritten so the next
+        # pass retries rather than silently dropping a NEW gate.
+        if result.returncode in (0, 75):
+            marker.write_text(fingerprint + "\n", encoding="utf-8")
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Compact operator reconciliation sweep")
+    parser.add_argument("--control-dir", type=Path, required=True)
+    parser.add_argument("--owner-file", type=Path, required=True)
+    parser.add_argument("--repo", type=Path, required=True)
+    args = parser.parse_args()
+
+    control = args.control_dir.resolve()
+    repo = args.repo.resolve()
+    owner_file = args.owner_file.resolve()
+    owner = load_toml(owner_file)
+    if owner.get("schema_version") != 1 or Path(str(owner.get("control_dir", ""))).resolve() != control:
+        raise SystemExit("operator-sweep: control identity mismatch")
+    owner_route = str(owner.get("owner_route") or "")
+    if not owner_route:
+        raise SystemExit("operator-sweep: owner missing")
+
+    paths = ([control / "status.md"] if (control / "status.md").is_file() else [])
+    stream_dirs = sorted((control / "streams").glob("*")) if (control / "streams").is_dir() else []
+    paths.extend(sorted(path for stream_dir in stream_dirs for path in [stream_dir / "status.md"] if path.is_file()))
+    parts = [f"## {path.relative_to(control)}\n{path.read_text().strip()}\n" for path in paths]
+
+    # Every bound fact, including target HEAD and canonical spec/ADR blobs, is
+    # refetched and validated before any unchanged decision or snapshot write, so
+    # a drifted or invalid source can never hide behind an unchanged Linear
+    # fingerprint or leave a persisted artifact behind on failure.
+    head = repo_head(repo)
+    spec_blobs, adr_blobs = canonical_blobs(repo, head)
+
+    facts = {"owner_route": owner_route, "control_head": head, "canonical": {"spec_blobs": spec_blobs, "adr_blobs": adr_blobs}}
+    xdg_state = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state")) / "octo-lite"
+    inbox_root = xdg_state / "inbox"
+    messages_root = xdg_state / "messages"
+    waits_root = xdg_state / "operator-waits"
+
+    # Declared facts (including every carried issue's Linear state) are read
+    # before liveness so an operator gate can drive classification, and before
+    # the fingerprint/gate-line block so the loud operator-gate output is
+    # deterministic on both the changed and the unchanged-fingerprint paths.
+    streams = []
+    for stream_dir in stream_dirs:
+        stream_facts = declared_stream_facts(stream_dir)
+        if stream_facts:
+            facts[stream_dir.name] = stream_facts
+        if "linear" in stream_facts or "pull_request" in stream_facts:
+            entry = {"stream": stream_dir.name}
+            if "linear" in stream_facts:
+                entry["linear"] = stream_facts["linear"]
+            if "pull_request" in stream_facts:
+                entry["pull_request"] = stream_facts["pull_request"]
+            streams.append(entry)
+
+    liveness = {}
+    for stream_dir in stream_dirs:
+        stream_facts = facts.get(stream_dir.name)
+        gated = bool(
+            (isinstance(stream_facts, dict) and _gated_carried_states(stream_facts))
+            or operator_waits(waits_root, stream_dir.name)
+        )
+        gate_reason = _stream_gate_reason(stream_dir, stream_facts, waits_root) if gated else ""
+        liveness[stream_dir.name] = stream_liveness(
+            stream_dir, inbox_root, messages_root, idle_seconds=3600, operator_gated=gated, operator_gate_reason=gate_reason
+        )
+
+    gate_lines = operator_gate_lines(stream_dirs, facts, waits_root)
+    degraded_notes = degraded_read_notes(stream_dirs, facts)
+
+    # TUR-505 phase-1: S3 stalled surfacing + P1 publication repair every
+    # cycle (loud lines below are unsuppressible-family, emitted on the
+    # changed, unchanged, and deferred paths alike), plus the G2-lite
+    # registry advisory (one agent-list call per sweep, stderr note, never an
+    # OPERATOR ACTION line).
+    locks_root = xdg_state / "locks"
+    transport = transport_message_report(messages_root, inbox_root, locks_root)
+    transport_lines = transport["stalled_lines"] + transport["repair_notes"] + transport["warnings"]
+    registry_advisories = registry_lite_advisories(control, owner_route)
+
+    def emit_transport_surfaces() -> None:
+        for line in transport_lines:
+            print(line)
+        for advisory in registry_advisories:
+            print(advisory, file=sys.stderr)
+
+    normalized_facts = json.dumps(facts, sort_keys=True, separators=(",", ":"))
+
+    snapshot = (
+        "# Stream snapshot\n\n" + "\n".join(parts)
+        + "\n## Declared facts\n\n" + normalized_facts + "\n"
+    )
+    fingerprint = hashlib.sha256(snapshot.encode()).hexdigest()
+    state_path = control / "sweep-state.toml"
+    prior = load_toml(state_path) if state_path.exists() else {}
+    root = Path(__file__).resolve().parents[1]
+    if prior.get("fingerprint") == fingerprint:
+        # Liveness is an operator report, not reconcile-gateway input: one
+        # control-level file plus stdout, written only on completed sweeps so a
+        # failed gateway leaves nothing behind.
+        atomic_write(control / "liveness.json", json.dumps(liveness, sort_keys=True, indent=1) + "\n")
+        # Operator-gate output is exempt from the unchanged-fingerprint class
+        # (sweep-operator-gate-unsuppressible): even on the noop path the loud
+        # lines are surfaced to stdout and delivered to the operator.
+        _emit_operator_gate(gate_lines, root, owner_file, owner_route, control)
+        for note in degraded_notes:
+            print(note)
+        emit_transport_surfaces()
+        print(json.dumps({
+            "changed": False, "fingerprint": fingerprint, "owner": owner_route,
+            "liveness": liveness, "operator_gate": gate_lines, "degraded_reads": degraded_notes,
+            "transport_stalled": transport["stalled_lines"],
+            "transport_repairs": transport["repair_notes"],
+            "transport_legacy": transport["legacy_notes"],
+            "registry_advisories": registry_advisories,
+        }))
+        return 0
+
+    sweep_dir = control / "sweeps" / fingerprint
+    snapshot_path = sweep_dir / "snapshot.md"
+    journal_path = sweep_dir / "journal.json"
+    result_path = sweep_dir / "result.md"
+
+    worktree_root = control / "worktrees"
+    worktree = worktree_root / fingerprint
+
+    # snapshot.md is never persisted under the final sweep directory before the
+    # gateway validates Linear, PR, HEAD, spec, and ADR facts, so a failing
+    # gateway leaves no sweep artifact directory or state behind. A pending copy
+    # outside that directory backs only the gateway's own independent digest
+    # check and is removed on every failure. The gateway itself persists the
+    # verified bytes to snapshot_path and binds the journal entry to that exact
+    # final location, so bootstrap always reads an existing, matching source.
+    pending_snapshot_path = control / f".sweep-pending-{fingerprint}.md"
+    # liveness.json is a plain operator report, current when the reconciler
+    # reads it; the launch failure handler removes it with the pending snapshot.
+    liveness_path = control / "liveness.json"
+    atomic_write(liveness_path, json.dumps(liveness, sort_keys=True, indent=1) + "\n")
+    atomic_write(pending_snapshot_path, snapshot)
+    try:
+        # HEADLESS RECONCILE MODE (ruling-48, TUR-489): this sweep runs from the
+        # 2-minute systemd --user timer with NO owning Claude session and no
+        # Workflow runtime. It therefore KEEPS the provider-argv subprocess relay
+        # (prepare_reconcile_launch / run_reconcile_launch, a `claude` subprocess),
+        # which is a legitimate headless reconcile path, not a retired worker-pass
+        # bypass. It deliberately does NOT use the additive Workflow-native
+        # reconciler (octo_lite.launch.bind_reconcile_workflow_journal driving
+        # octo-loop-qa.js spawnReconciler via the Workflow tool's agent(),
+        # agentType 'Explore'), because agent() only runs inside an owning session;
+        # migrating this headless timer to it would leave the live sweep unable to
+        # spawn its reconciler and crash it. The Workflow-native path is for
+        # session-driven loop contexts only; F4b-C does not remove these relay
+        # functions. Trust-critical operator-gate surfacing is deterministic and
+        # independent of the reconcile mechanism.
+        #
+        # Sole reconciler launch gateway: same worktree provisioning and
+        # containment as the worker launch path, narrowed to the reconciler's
+        # aggregate read-only shape and bound through the sweep's journal.json
+        # entry, never a reconcile receipt.toml (Unit I, decision-109-binding).
+        # Fails closed before any provider call on stale or substituted Linear,
+        # PR, spec, ADR, or repo HEAD input, including a target HEAD that
+        # changed since head was captured above.
+        prepared = prepare_reconcile_launch(
+            root=root,
+            spawn_id=str(uuid.uuid4()),
+            parent=owner_route,
+            reply_route="operator-say",
+            repo=repo,
+            worktree_root=worktree_root,
+            worktree=worktree,
+            journal_path=journal_path,
+            execution_location=os.environ.get("OCTO_EXECUTION_LOCATION", "remote"),
+            operator_loopback=os.environ.get("OCTO_OPERATOR_LOOPBACK", "false") == "true",
+            review_delivery=os.environ.get("OCTO_REVIEW_DELIVERY", "reachable_url_required"),
+            expected_head=head,
+            snapshot_path=pending_snapshot_path,
+            snapshot_digest=fingerprint,
+            streams=streams,
+            spec_blobs=spec_blobs,
+            adr_blobs=adr_blobs,
+            conversation_state_refs=[str(path.relative_to(control)) for path in paths],
+        )
+    except GateError as error:
+        # A target commit landing between snapshot capture above and the gateway's
+        # own HEAD recheck fails closed inside prepare_reconcile_launch with a
+        # 'target HEAD changed' GateError. In the LIVE topology the sweep runs from
+        # a control dir another lane actively commits to, so this race is expected
+        # and must NOT crash the whole timer sweep (real crash observed 08:56:06).
+        # Tolerate a genuine mid-run HEAD change ONLY (message match OR the captured
+        # head no longer matches the current repo HEAD) by deferring the reconcile
+        # for this pass; ANY OTHER GateError (HEAD unchanged: spec/ADR/PR/Linear
+        # drift) is re-raised so the deliberate fail-closed behavior is preserved.
+        pending_snapshot_path.unlink(missing_ok=True)
+        head_changed = "target HEAD changed" in str(error) or repo_head(repo) != head
+        if not head_changed:
+            liveness_path.unlink(missing_ok=True)
+            raise
+        # Deferred reconcile: still surface the trust-critical operator-gate block
+        # (stdout AND operator-say) exactly like the noop/completed paths, print the
+        # distinct deferred note, and do NOT persist sweep-state.toml so the next
+        # 2-minute pass retries the reconcile against a stable HEAD. Exit 0 (clean).
+        _emit_operator_gate(gate_lines, root, owner_file, owner_route, control)
+        for note in degraded_notes:
+            print(note)
+        emit_transport_surfaces()
+        deferred_note = (
+            "SWEEP NOTE (deferred reconcile): target HEAD changed mid-run - "
+            "operator-gates surfaced, reconcile retried next pass"
+        )
+        print(deferred_note)
+        print(json.dumps({
+            "changed": True,
+            "deferred_reconcile": True,
+            "deferred_note": deferred_note,
+            "fingerprint": fingerprint,
+            "owner": owner_route,
+            "liveness": liveness,
+            "operator_gate": gate_lines,
+            "degraded_reads": degraded_notes,
+        }))
+        return 0
+    except BaseException:
+        pending_snapshot_path.unlink(missing_ok=True)
+        liveness_path.unlink(missing_ok=True)
+        raise
+    pending_snapshot_path.unlink(missing_ok=True)
+
+    judgment_prompt = (
+        f"Bootstrap verified. Read snapshot {snapshot_path}. The pinned per-stream liveness "
+        f"report is at {control / 'liveness.json'}: transcript activity only, never status age; "
+        "idle without a recorded wait-owner is suspected-stuck; an ask older than later activity "
+        "is consumed; a 'dead' stream's agent pane is gone and a 'closed' stream is retained but "
+        "superseded, and neither needs a stuck or needs_fable flag. "
+        "Classify facts as changed, missing, stale, contradictory, or needs_fable. "
+        "Read only. Never mutate. Return a compact delta for the operator as plain text."
+    )
+    message = run_reconcile_launch(prepared, judgment_prompt)
+    # Operator-gate lines are PREPENDED to the delivered delta at the very top,
+    # before all reconciler content (sweep-operator-gate-loud). They are the
+    # deterministic sweep's own output, never the LLM's judgment, so they cannot
+    # be silenced by any reconcile suppression, vestige, or consumed-ask class.
+    if gate_lines:
+        message = "\n".join(gate_lines) + "\n\n" + message
+    atomic_write(result_path, message)
+
+    # Echo the loud operator-gate block to stdout too, so the deterministic gate
+    # surfaces even where the delivered artifact is not read.
+    for line in gate_lines:
+        print(line)
+    # Degraded-read notes are surfaced as distinct, clearly-labeled notes, never
+    # gate lines (sweep-graceful-degradation).
+    for note in degraded_notes:
+        print(note)
+    emit_transport_surfaces()
+
+    environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
+    # systemd user services run with a bare PATH (live FileNotFoundError
+    # evidence); helpers resolve from this repo's own root, test-overridable.
+    operator_say = os.environ.get("OCTO_OPERATOR_SAY") or str(root / "skills/herdr-comms/assets/operator-say")
+    delivered = subprocess.run(
+        [
+            operator_say, "--kind", "info", "--artifact", str(result_path),
+            f"Sweep delta ready: {result_path}",
+        ],
+        env=environment,
+        check=False,
+    )
+    if delivered.returncode not in {0, 75}:
+        raise SystemExit(delivered.returncode)
+
+    atomic_write(
+        state_path,
+        "schema_version = 1\n"
+        f"fingerprint = {json.dumps(fingerprint)}\n"
+        f"owner_route = {json.dumps(owner_route)}\n"
+        f"snapshot = {json.dumps(str(snapshot_path))}\n"
+        f"journal = {json.dumps(str(journal_path))}\n"
+        f"result = {json.dumps(str(result_path))}\n",
+    )
+    print(json.dumps({
+        "changed": True, "fingerprint": fingerprint, "owner": owner_route,
+        "result": str(result_path), "degraded_reads": degraded_notes,
+        "transport_stalled": transport["stalled_lines"],
+        "transport_repairs": transport["repair_notes"],
+        "transport_legacy": transport["legacy_notes"],
+        "registry_advisories": registry_advisories,
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

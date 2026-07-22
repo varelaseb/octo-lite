@@ -5,6 +5,11 @@ description: Pull latest origin/main into the current local branch and resolve m
 
 # Pull
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill when an octo-lite branch must be updated from the remote default
 branch or when push is rejected because the branch is stale.
 
@@ -24,4 +29,3 @@ branch or when push is rejected because the branch is stale.
 
 Ask only when a conflict requires a product or architecture decision that local
 code, specs, ADRs, and issue context cannot answer.
-

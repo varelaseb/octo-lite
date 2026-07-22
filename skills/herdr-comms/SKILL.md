@@ -1,71 +1,101 @@
 ---
 name: herdr-comms
-description: Modal-safe herdr messaging and clean session spawning. Use whenever sending a message to another herdr agent or pane (use herdr-say, never raw agent send / pane run), spawning an orchestrator session in a new tab (use herdr-spawn), or reading another session's pane.
+description: Modal-safe Herdr delivery, acknowledgments, queue drain, owner routing, and persistent-session spawn.
 ---
 
-# herdr comms protocol
+# Herdr communications
 
-Operator-mandated (2026-07-13) after real incidents: raw message injection
-submitted half-typed text and pressed Enter into open question modals —
-selecting answers on the human's behalf; spawned tabs came up split in half;
-fresh sessions stalled silently on the folder-trust dialog until a human
-pressed trust manually. These rules bind every agent that talks through
-herdr — meta-operators, stream orchestrators, and ad-hoc sessions alike.
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
 
 ## Install
 
-The helpers ship in this skill's `assets/` directory and must be on PATH:
+Symlink every executable in `assets/` into `~/.local/bin`. Never copy it.
 
-    install -m 0755 <this-skill-dir>/assets/herdr-say  ~/.local/bin/herdr-say
-    install -m 0755 <this-skill-dir>/assets/herdr-spawn ~/.local/bin/herdr-spawn
+## Send
 
-## Messaging: ALWAYS `herdr-say`, never raw send/run
+Always use:
 
-    herdr-say <agent-name|pane-id> "<one-line message>"
+```sh
+herdr-say [--kind info|command|ruling|ownership|question] \
+  [--artifact REF] TARGET MESSAGE
+```
 
-- `herdr agent send` pastes text but does NOT submit to an idle REPL, and
-  `herdr pane run <pane> ""` presses Enter. In the wrong order the text sits
-  unsubmitted; while the target shows a question/permission/trust dialog,
-  the Enter SELECTS AN OPTION ON THE HUMAN'S BEHALF. Never hand-roll this.
-- `herdr-say` enforces paste → settle → Enter, refuses to inject while a
-  dialog is visible (retries up to 2 min), then queues the message to
-  `~/.local/state/herdr-inbox/<target>/` and exits 75.
-- Exit 75 = QUEUED, not failed — do not retry-spam; the recipient reads its
-  inbox on its next wake. Exit 0 = delivered.
-- Message discipline: ONE line, no single quotes, no multi-line blobs.
-  Details live in durable artifacts (tracker issue, PR, brief files).
-- On every wake, check `~/.local/state/herdr-inbox/<your-agent-name>/`;
-  process each file then delete it.
+Never hand-run raw transport. `herdr-say` fires one atomic agent prompt,
+paste plus submit in one server-owned op, leaving the message pending.
+Multi-line bodies round-trip literally; the TUR-485 single-line discipline is
+retired. `herdr-say` reads the pane only to detect a modal, never to infer
+composer state, consumption, or delivery. Modal-safe: an open dialog defers,
+queues immediately, returns 75, never force-submits.
+Queued and pending are not acknowledged or completed.
 
-## Spawning a session in a new tab: ALWAYS `herdr-spawn`
+Delivery confirmation is observed state, never the exit code: a prompt can
+return rc 0 without submitting when the composer holds residual text. Every
+fire runs `agent prompt --wait --timeout` with
+`OCTO_PROMPT_CONFIRM_TIMEOUT_MS` milliseconds (default 15000, invalid falls
+back to the default with a warning); only a matched post-submission state
+(idle, done, blocked) confirms. `agent_prompt_stalled`, a timeout, a nonzero
+rc, or any unmatched outcome is unconfirmed: the message stays pending with
+its retry item for `herdr-drain`, under the attempt cap.
 
-    herdr-spawn --workspace <ws> --name <agent-name> [--label "<tab label>"] \
-                [--cwd <dir>] -- <argv...>
+Transport class: bounded duplicate-prone transport with no delivery
+guarantee. A message may arrive zero times, once, or up to the retry cap per
+epoch. Every transported body carries `[msg:<id>]`, info included, so
+duplicates are id-correlated. Only herdr-ack proves delivery; an
+observed-state-confirmed info submit completes on its own.
 
-Fixes three spawn bugs at once — never hand-roll the sequence:
+On every wake, run `herdr-drain <own-agent-name>`. It fires only when the
+prompt is safe, and a pending retry re-fires the same atomic prompt with the
+same message id, which never double-submits partially-pasted text. Retries
+are capped by `OCTO_TRANSPORT_ATTEMPT_CAP` (default 3, per epoch): at the cap
+the message goes stalled, never auto-fires again, and the operator sweep
+surfaces it loudly every cycle. `herdr-drain --resume <id>` starts a new
+epoch (stalled to pending, attempts reset to 0). State reads, attempt
+increments, and fires all run under the permanent per-message flock
+`locks/<id>.lock`; nothing ever unlinks a lock. Reclamation is runbook-only:
+`docs/runbooks/herdr-comms-lock-reclamation.md`.
 
-- SPLIT TAB: `herdr tab create` ships a root shell pane and
-  `herdr agent start --tab` adds a second one; the script closes the root
-  pane so the tab ends single-pane.
-- TRUST STALL: fresh sessions sit silently on the folder-trust dialog
-  ("Quick safety check … Yes, I trust this folder") until a human presses
-  Enter. The script watches the pane for up to 60s and auto-accepts it.
-- WRONG CWD: `herdr agent start` does NOT inherit the tab's cwd; the script
-  passes `--cwd` explicitly.
+Commands, rulings, ownership transfers, and blocking questions require:
 
-Exit 0 with `startup=running` = REPL confirmed. Exit 2 with
-`startup=unverified` = read the pane yourself; do not assume it started.
+```sh
+herdr-ack MESSAGE_ID acknowledged --by OWN_AGENT_NAME
+```
 
-## Tab naming
+Dependent action waits for acknowledgment. No arbitrary timer converts silence
+to rejection. Completion requires the named artifact or outcome:
 
-Work tabs: `<ISSUE-KEY>(<PR#>) topic` once issue/PR exist; keep labels in
-sync via `herdr tab rename` as they attach. Non-issue tabs stay descriptive.
+```sh
+herdr-ack MESSAGE_ID completed --by OWN_AGENT_NAME --artifact REF
+```
 
-## Gotchas the scripts encode (for anyone editing them)
+Use `operator-say` for messages to the current Fable owner. It resolves
+`operator-owner.toml` at send time, so an atomic handoff changes the next route.
 
-- `herdr pane read` outputs RAW TEXT; `herdr agent read` outputs JSON.
-  Piping pane read into jq silently breaks dialog detection.
-- The trust prompt's text is "Quick safety check" / "trust this folder" —
-  older "Do you trust" greps miss it.
-- A bare Enter (`herdr pane run <pane> ""`) selects the trust dialog's
-  default ("Yes, I trust this folder").
+## Spawn
+
+Only persistent Fable and Opus orchestrators get Herdr tabs. Workflow workers
+run inside the owning Opus session.
+
+Always use `herdr-spawn`. Before any pane exists, it runs a read-only print-mode
+bootstrap itself and verifies the full BOOTSTRAP_ACK; the child never runs
+bootstrap-ack or mutates the receipt. Only the exact verified provider session is
+then resumed into the persistent pane. It creates one pane, passes exact cwd,
+handles the trusted-folder prompt, and enforces exact Claude model and auto mode
+for operator and orchestrator roles.
+
+Labels:
+
+```text
+🧠 operator
+[🎤] [◆]issue[/pr] · outcome
+```
+
+`◆` marks epic Opus. Normal issues have no marker. `🎤` appears only during a
+direct investigation, grill, diagnosis, or decision that needs the operator.
+Fable removes it as soon as the Opus can work autonomously. No worker tabs.
+
+Remote control: every `🎤` or `🧠` session must have Claude remote control
+enabled durably at launch through the launcher (`claude --rc` flag or a
+`remoteControlAtStartup` settings injection), never post-hoc. `herdr-spawn`
+fails closed on a `🎤` or `🧠` spawn without it. Flipping `🎤` on is a Fable
+duty that requires ensuring remote control is active on that session.

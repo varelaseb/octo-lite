@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import tomllib
+from pathlib import Path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Fresh exact-model reachability probe")
+    parser.add_argument("role")
+    args = parser.parse_args()
+    root = Path(__file__).resolve().parents[1]
+    with (root / "roles.toml").open("rb") as stream:
+        role = tomllib.load(stream).get("roles", {}).get(args.role)
+    if not isinstance(role, dict):
+        parser.error("unknown role")
+
+    prompt = "Reply PROBE_OK only."
+    if role["provider"] == "anthropic":
+        command = [
+            "claude", "-p", "--model", role["model"], "--effort", role["effort"],
+            "--permission-mode", role["mode"], prompt,
+        ]
+    else:
+        command = [
+            "codex", "exec", "-m", role["model"],
+            "-c", f'model_reasoning_effort="{role["effort"]}"',
+        ]
+        if role["service_tier"] == "fast":
+            command.extend(["-c", 'service_tier="fast"'])
+        command.extend(["-s", "read-only", prompt])
+
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    reachable = result.returncode == 0 and "PROBE_OK" in result.stdout
+    report = {
+        "schema_version": 1,
+        "role": args.role,
+        "provider": role["provider"],
+        "model": role["model"],
+        "reachable": reachable,
+        "classification": "lane_or_session" if reachable else "provider_account_or_network",
+        "fleet_outage": False,
+        "original_error": "" if reachable else (result.stderr.strip() or result.stdout.strip())[:1000],
+    }
+    print(json.dumps(report, sort_keys=True))
+    return 0 if reachable else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

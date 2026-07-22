@@ -13,8 +13,11 @@ client, product, or engagement.
 ## What It Provides
 
 - A user-facing Issue Shaper workflow for turning ideas or rough Linear/GitHub
-  issues into clear, spec-backed work.
-- A native Codex subagent loop for implementer and reviewer passes.
+  issues into clear, spec-backed work, plus an independent fresh shaping
+  review before readiness.
+- A native Claude Workflow delivery loop for fresh implementer, code-reviewer,
+  QA-capture, and QA-reviewer passes, with Codex relays for shaping and review
+  roles.
 - A cross-client meta-operator launcher for consolidating and supervising
   long-running Herdr workstreams.
 - Templates bundled inside skills, not copied as top-level target repo
@@ -29,50 +32,56 @@ at them with symlinks:
 
 ```text
 ~/.codex/AGENTS.md -> profile/AGENTS.md
-~/.codex/octo-lite-role-skills.json -> role-skills.json
+~/.codex/octo-lite/roles.toml -> roles.toml
+~/.codex/octo-lite/roles/<role>.md -> roles/<role>.md
 ~/.codex/skills/<skill> -> skills/<skill>
 ~/.agents/skills/<skill> -> skills/<skill>
-~/.codex/agents/octo-lite-implementer.toml -> agents/octo-lite-implementer.toml
-~/.codex/agents/octo-lite-reviewer.toml -> agents/octo-lite-reviewer.toml
 ```
 
+Codex has no generated custom-agent adapter. Per Decision 109 every worker role
+runs as a Claude Workflow subagent of the owning session, and an OpenAI-backed
+role pass runs inside a Claude relay subagent that executes one explicit
+`codex exec` relay, carrying the canonical role contract as the exec prompt and
+returning the codex findings verbatim; see ADR 0001.
+
 The Claude Code surface reuses the same source repo. Skills share the SKILL.md
-format and symlink directly, but subagents use a different format
-(Markdown + YAML frontmatter instead of Codex TOML), so the repo carries
-parallel `agents/*.md` profiles that install the same way:
+format and symlink directly. Claude uses generated Markdown + YAML frontmatter
+subagent adapters, which install the same way:
 
 ```text
 ~/.claude/CLAUDE.md -> profile/AGENTS.md
+~/.claude/octo-lite/roles.toml -> roles.toml
+~/.claude/octo-lite/roles/<role>.md -> roles/<role>.md
+~/.claude/octo-lite/adapters/<role>.md -> agents/<role>.md
 ~/.claude/skills/<skill> -> skills/<skill>
-~/.claude/agents/octo-lite-implementer.md -> agents/octo-lite-implementer.md
-~/.claude/agents/octo-lite-reviewer.md -> agents/octo-lite-reviewer.md
-~/.claude/workflows/octo-loop-qa.js (copy of workflows/octo-loop-qa.js)
+~/.claude/workflows/octo-loop-qa.js -> workflows/octo-loop-qa.js
 ```
 
-`workflows/octo-loop-qa.js` is the Claude Code Workflow implementation of the
-loop with QA stages (see `skills/octo-lite-loop/SKILL.md`). Its CONVENTIONS
-and QA_APP blocks are per-target configuration (currently Turbo-Outreach), so
-copy it rather than symlinking and rewrite those blocks per target repo.
+`workflows/octo-loop-qa.js` is the target-neutral native Claude Workflow.
+Target repos supply their own instructions and evidence publication helpers.
+The workflow, roles, mappings, skills, and profile always install by symlink.
+
+Install or verify all links:
+
+```bash
+scripts/install-octo-lite
+scripts/install-octo-lite --check
+```
 
 `~/.codex/skills` is supported by the current local profile. `$HOME/.agents/skills`
 is the documented user-skill location in the current Codex manual, so both are
 installed.
 
-Install every directory under `skills/`; the role-specific mapping in
-`role-skills.json` determines which skills each workflow role should load.
+Install every directory under `skills/`. `roles.toml` defines required and
+conditional skills for all eight roles. `roles/<role>.md` is the sole prose
+contract. `agents/` is generated and must match the resolver exactly.
 
-Current octo-lite role skills:
+Validate or regenerate after role changes:
 
-```text
-Issue Shaper:
-  octo-lite-issue-shaper, grill-with-docs, octo-lite-github
-
-Implementer:
-  commit, frontend-design, octo-lite-github, nodejs, pnpm, pnpm-patching,
-  pull, push, python, tdd, typescript
-
-Reviewer:
-  octo-lite-debug, octo-lite-github, pull
+```bash
+python3 workflows/lib/role_resolver.py check
+python3 workflows/lib/role_resolver.py generate
+python3 -m unittest tests/test_role_resolver.py
 ```
 
 Operator utility skills are not role-bound. Invoke `launch-meta-operator`
@@ -89,9 +98,13 @@ idea or rough Linear/GitHub issue
   -> specs/ADRs/repo init where needed
   -> operator approval
   -> Linear issue/spec updates, or GitHub issue body for GitHub-first work
-  -> ready status/approval
-  -> implementer/reviewer loop
-  -> human PR review
+  -> evolving draft PR
+  -> fresh shaping review (clear verdict required)
+  -> implement with spec-derived red, green, refactor
+  -> fresh code review, fresh fix when blocking
+  -> QA capture and fresh QA review when user-facing
+  -> operator acceptance
+  -> merge and lifecycle transition
 ```
 
 During shaping, the draft file is the canonical working artifact. In
@@ -122,6 +135,9 @@ spec/adr/
 repo-specific conventions that can diverge from the initial octo-lite scaffold.
 
 ### Spec format capability
+
+octo-lite itself declares `Spec format: spec-chat`; its canonical domain specs
+and ADRs live under `spec/` as `*.spec.html`.
 
 Target repos declare their canonical spec format in `AGENTS.md` with the exact
 signal `Spec format: spec-chat`. Repos without that signal, or with

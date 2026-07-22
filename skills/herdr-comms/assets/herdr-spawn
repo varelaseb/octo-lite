@@ -1,75 +1,237 @@
-#!/bin/bash
-# herdr-spawn — spawn an agent session in a NEW single-pane herdr tab,
-# auto-accepting the folder-trust dialog and verifying the session starts.
-#
-# Usage:
-#   herdr-spawn --workspace <ws> --name <agent-name> [--label "<tab label>"]
-#               [--cwd <dir>] -- <argv...>
-# Example:
-#   herdr-spawn --workspace w7 --name gp-x --label "TUR-000 topic" --cwd /root \
-#     -- claude --model opus --permission-mode auto -n gp-x "<prompt>"
-#
-# Fixes (operator-mandated 2026-07-13):
-#   - single-pane tab (closes the root shell pane tab-create ships)
-#   - trust dialog auto-accepted (bare Enter selects the default "Yes, proceed";
-#     nobody has to press trust manually)
-#   - startup verified (stalled/unknown state reported, not assumed fine)
-set -u
-WS=""; LABEL=""; CWD="$PWD"; NAME=""
-while [ $# -gt 0 ]; do
+#!/usr/bin/env bash
+set -euo pipefail
+
+workspace=""
+name=""
+label=""
+cwd="$PWD"
+role=""
+receipt=""
+while (($#)); do
   case "$1" in
-    --workspace) WS="$2"; shift 2 ;;
-    --label)     LABEL="$2"; shift 2 ;;
-    --cwd)       CWD="$2"; shift 2 ;;
-    --name)      NAME="$2"; shift 2 ;;
+    --workspace) workspace="${2:?}"; shift 2 ;;
+    --name) name="${2:?}"; shift 2 ;;
+    --label) label="${2:?}"; shift 2 ;;
+    --cwd) cwd="${2:?}"; shift 2 ;;
+    --role) role="${2:?}"; shift 2 ;;
+    --receipt) receipt="${2:?}"; shift 2 ;;
     --) shift; break ;;
-    *) echo "herdr-spawn: unknown arg '$1'" >&2; exit 64 ;;
+    *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
   esac
 done
-if [ -z "$WS" ] || [ -z "$NAME" ] || [ $# -eq 0 ]; then
-  echo "usage: herdr-spawn --workspace <ws> --name <name> [--label L] [--cwd D] -- <argv...>" >&2
-  exit 64
-fi
+[[ -n "$workspace" && -n "$name" && -n "$role" && -n "$receipt" && $# -gt 0 ]] || exit 64
+[[ -d "$cwd" ]] || exit 66
+cwd="$(cd "$cwd" && pwd -P)"
+[[ -f "$receipt" ]] || exit 66
 
-OUT=$(herdr tab create --workspace "$WS" --label "${LABEL:-$NAME}" --cwd "$CWD" --no-focus)
-TAB=$(echo "$OUT" | jq -r '.result.tab.tab_id // empty')
-ROOT=$(echo "$OUT" | jq -r '.result.root_pane.pane_id // empty')
-[ -z "$TAB" ] && { echo "herdr-spawn: tab create failed: $OUT" >&2; exit 1; }
+value_after() {
+  local wanted="$1" previous=""
+  shift
+  for value in "$@"; do
+    [[ "$previous" == "$wanted" ]] && { echo "$value"; return 0; }
+    previous="$value"
+  done
+  return 1
+}
 
-# agent start does NOT inherit the tab's cwd — pass it explicitly
-herdr agent start "$NAME" --tab "$TAB" --cwd "$CWD" --no-focus -- "$@" >/dev/null \
-  || { echo "herdr-spawn: agent start failed" >&2; exit 1; }
-[ -n "$ROOT" ] && herdr pane close "$ROOT" >/dev/null 2>&1
+flag_present() {
+  local wanted="$1"
+  shift
+  for value in "$@"; do
+    [[ "$value" == "$wanted" ]] && return 0
+  done
+  return 1
+}
 
-PANE=""
-for _ in $(seq 1 10); do
-  PANE=$(herdr agent get "$NAME" 2>/dev/null | jq -r '.result.agent.pane_id // empty')
-  [ -n "$PANE" ] && break
-  sleep 1
-done
-[ -z "$PANE" ] && { echo "herdr-spawn: cannot resolve pane for $NAME" >&2; exit 1; }
+[[ "$1" == claude ]] || { echo "herdr-spawn: persistent tabs require Claude" >&2; exit 65; }
+model="$(value_after --model "$@" || true)"
+effort="$(value_after --effort "$@" || true)"
+mode="$(value_after --permission-mode "$@" || true)"
+agent="$(value_after --agent "$@" || true)"
+# herdr-label-remote-control-gate: every 🎤 or 🧠 spawn must enable Claude
+# remote control durably at launch (--rc), never post-hoc. Fail closed.
+require_remote_control() {
+  flag_present --rc "$@" || {
+    echo "herdr-spawn: 🎤/🧠 spawn requires remote control at launch (--rc)" >&2
+    exit 65
+  }
+}
+case "$role" in
+  meta-operator)
+    [[ "$model" == claude-fable-5 && "$effort" == xhigh && "$mode" == auto && "$agent" == meta-operator ]] || exit 65
+    [[ "$label" == "🧠 operator" ]] || exit 65
+    require_remote_control "$@"
+    ;;
+  orchestrator)
+    [[ "$model" == 'claude-opus-4-8[1m]' && "$effort" == high && "$mode" == auto && "$agent" == "$role" ]] || exit 65
+    grep -Eq '^(🎤 )?(◆)?[0-9]+(/[0-9]+)? · .+$' <<<"$label" || exit 65
+    [[ "$label" == 🎤* ]] && require_remote_control "$@"
+    ;;
+  *) echo "herdr-spawn: role has no persistent tab" >&2; exit 65 ;;
+esac
 
-# Watch startup up to ~60s: accept trust dialog(s), stop once the REPL is up.
-STATE="unverified"
-for _ in $(seq 1 30); do
-  # NB: `herdr pane read` outputs RAW TEXT (no JSON envelope) — do not jq it.
-  TXT=$(herdr pane read "$PANE" --source visible --lines 30 2>/dev/null)
-  if echo "$TXT" | grep -qiE 'Do you trust|Quick safety check|trust this folder'; then
-    herdr pane run "$PANE" "" >/dev/null 2>&1   # Enter = default "Yes, proceed"
-    STATE="trust-accepted"
-    sleep 1
-    continue
+# The passed --role and canonical --cwd must exactly equal the receipt's role.name
+# and workspace.worktree before any bootstrap call or pane creation. This never
+# trusts the CLI-supplied role or cwd on their own. An unreadable receipt or
+# missing required field fails closed with the same code as a bootstrap
+# verification failure; it never mutates the receipt.
+python3 - "$receipt" "$role" "$cwd" <<'PY'
+import os
+import sys
+import tomllib
+
+receipt_path, role, cwd = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(receipt_path, "rb") as handle:
+        receipt = tomllib.load(handle)
+    receipt_role = receipt["role"]["name"]
+    receipt_worktree = receipt["workspace"]["worktree"]
+except Exception:
+    sys.exit(2)
+if not receipt_role or not receipt_worktree:
+    sys.exit(2)
+if receipt_role != role or os.path.realpath(cwd) != os.path.realpath(receipt_worktree):
+    sys.exit(65)
+PY
+
+# Parent-controlled two-phase bootstrap. octo-launch runs a read-only print-mode
+# bootstrap for the exact receipt and verifies the full BOOTSTRAP_ACK (schema,
+# spawn, provider session, launch revision, role, worktree, starting HEAD, ready,
+# blocker) before any pane exists. A spoofed ack, wrong session, wrong
+# role/worktree/HEAD/revision, or unverified receipt fails here and creates no tab
+# or pane. The child never runs bootstrap-ack and never mutates the receipt.
+bootstrap_output="$(octo-launch bootstrap --receipt "$receipt")" || {
+  echo "herdr-spawn: parent bootstrap verification failed" >&2
+  exit 2
+}
+provider_session_id="$(jq -r '.provider_session_id // empty' <<<"$bootstrap_output")"
+[[ -n "$provider_session_id" ]] || { echo "herdr-spawn: bootstrap verification returned no session" >&2; exit 2; }
+
+# Resume the exact verified provider session; never start a fresh unverified one.
+resumed=("$1" "--resume" "$provider_session_id" "${@:2}")
+
+# The tab is created at the receipt-verified cwd; that is the sole cwd anchor.
+# The real 0.7.5 tab-create result (bundled API schema, `tab_created`) carries
+# the tab's root pane as required `.result.root_pane.pane_id`, so the launch
+# pane is known here with no extra resolution call.
+out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"
+tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
+[[ -n "$tab" ]] || exit 1
+pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
+[[ -n "$pane" ]] || exit 1
+
+# TUR-505 hotfix: the REAL herdr 0.7.5 grammar (verified live via
+# `herdr agent start --help`) is
+#   agent start <NAME> --kind <KIND> --pane <ID> [--timeout MS] [-- AGENT_ARG...]
+# There is NO --tab and NO --no-focus; the binary rejects both as unknown
+# options. The agent adopts the given EXISTING root pane in place with no
+# topology change: no split, no phantom root pane, so the old split-tab-close
+# hack (`pane close` on the leftover pane) stays gone. The adopted pane already
+# sits at the receipt-verified cwd above, so no duplicated `--cwd` either.
+#
+# TUR-505 hotfix r2 (live verify): the freshly created root pane may not have
+# reached its interactive shell prompt yet when agent start fires. The real
+# 0.7.5 binary then exits 1 with the structured stderr error
+#   {"error":{"code":"agent_pane_busy","message":"agent target pane <id> is
+#    not an available shell"},"id":"cli:agent:start"}
+# ONLY that structural error code retries, with bounded backoff: up to
+# HERDR_SPAWN_START_RETRIES (default 8) attempts, sleeping 0.5s doubling to a
+# 2s max between attempts (~10s total). Any OTHER agent start failure fails
+# immediately. On final failure (retries exhausted or non-busy error) the tab
+# created above is closed (real 0.7.5 grammar `tab close <tab_id>`, verified
+# via `herdr tab close --help`) so a failed spawn leaves no orphan tab, then
+# spawn exits non-zero with no success report.
+close_orphan_tab() {
+  herdr tab close "$tab" >/dev/null 2>&1 || true
+}
+start_retries="${HERDR_SPAWN_START_RETRIES:-8}"
+start_delay="0.5"
+start_attempt=0
+while :; do
+  start_attempt=$((start_attempt + 1))
+  start_rc=0
+  start_err="$(herdr agent start "$name" --kind claude --pane "$pane" -- "${resumed[@]}" 2>&1 >/dev/null)" || start_rc=$?
+  [[ "$start_rc" == 0 ]] && break
+  start_code="$(jq -r '.error.code // empty' <<<"$start_err" 2>/dev/null || true)"
+  if [[ "$start_code" != agent_pane_busy ]]; then
+    [[ -n "$start_err" ]] && printf '%s\n' "$start_err" >&2
+    echo "herdr-spawn: agent start failed with a non-busy error; closing the created tab $tab" >&2
+    close_orphan_tab
+    exit "$start_rc"
   fi
-  if echo "$TXT" | grep -qE '⏵⏵|esc to interrupt|❯'; then
-    STATE="running"
+  if (( start_attempt >= start_retries )); then
+    printf '%s\n' "$start_err" >&2
+    echo "herdr-spawn: agent start still agent_pane_busy after $start_retries attempts; closing the created tab $tab" >&2
+    close_orphan_tab
+    exit "$start_rc"
+  fi
+  sleep "$start_delay"
+  case "$start_delay" in
+    0.5) start_delay=1 ;;
+    *) start_delay=2 ;;
+  esac
+done
+
+# Bootstrap is already verified. This loop only dismisses the one-time trusted-folder
+# dialog that Claude onboarding still shows on a fresh pane; it never infers
+# readiness from pane text. 0.7.5 grammar: accept the dialog with a literal
+# `agent send-keys` Enter, never an atomic `agent prompt`, which would submit
+# text into the modal.
+# TUR-505 review round 2: the accept is verified, never assumed. After each
+# accept keystroke the pane is re-read (bounded retries) to check the dialog
+# actually cleared; a failed send-keys or a dialog that persists after the
+# bounded attempts fails closed with no success report, so a session trapped
+# at the trust dialog is never reported as spawned.
+# TUR-505 ruling-75 finding 1: a failed pane read is NOT evidence the dialog
+# cleared; it means the state is unknown. dialog_state is three-valued so the
+# caller can distinguish dialog-present (0), verified-cleared (1), and
+# read-failed (2). Only a successful read that shows no dialog counts as
+# cleared; read failures retry within the bounded loop and, if reads never
+# recover, spawn fails closed with no success report.
+dialog_state() {
+  local text
+  if ! text="$(herdr pane read "$pane" --source visible --lines 50 2>/dev/null)"; then
+    return 2
+  fi
+  if grep -qiE 'Quick safety check|trust this folder' <<<"$text"; then
+    return 0
+  fi
+  return 1
+}
+retries="${HERDR_SPAWN_BOOTSTRAP_RETRIES:-10}"
+dialog_cleared=0
+for _ in $(seq 1 "$retries"); do
+  state=0
+  dialog_state || state=$?
+  if [[ "$state" == 1 ]]; then
+    dialog_cleared=1
     break
   fi
-  sleep 2
+  if [[ "$state" == 0 ]]; then
+    herdr agent send-keys "$pane" Enter >/dev/null 2>&1 || {
+      echo "herdr-spawn: trust-dialog accept keystroke failed; session may be trapped at the trust dialog" >&2
+      exit 69
+    }
+  fi
+  # state 2 (read failed): dialog state unknown; retry within the bound.
+  sleep 1
 done
-
-STATUS=$(herdr agent get "$NAME" 2>/dev/null | jq -r '.result.agent.agent_status // "unknown"')
-echo "spawned name=$NAME tab=$TAB pane=$PANE startup=$STATE agent_status=$STATUS"
-if [ "$STATE" = "unverified" ]; then
-  echo "herdr-spawn: WARNING - REPL not confirmed within 60s; read the pane yourself" >&2
-  exit 2
+if [[ "$dialog_cleared" != 1 ]]; then
+  # One final re-read after the last attempt before failing closed. Only a
+  # successful no-dialog read admits success; a read failure fails closed.
+  state=0
+  dialog_state || state=$?
+  case "$state" in
+    1) dialog_cleared=1 ;;
+    2)
+      echo "herdr-spawn: pane read kept failing while verifying the trust dialog cleared; failing closed" >&2
+      exit 69
+      ;;
+    *)
+      echo "herdr-spawn: trust dialog did not clear after $retries accept attempts; failing closed" >&2
+      exit 69
+      ;;
+  esac
 fi
+
+echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=acknowledged provider_session_id=$provider_session_id receipt=$receipt"

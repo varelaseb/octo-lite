@@ -1,0 +1,1271 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from octo_lite.launch import provision_lane_worktree, verify_relay_verbatim  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflows" / "lib"))
+
+from role_resolver import load_registry  # noqa: E402
+from octo_lite.runtime import (  # noqa: E402
+    GateError,
+    admit_workspace,
+    append_trace,
+    bind_pass_result,
+    declare_successor_ready,
+    exact_fingerprint,
+    herdr_label,
+    launch_revision,
+    normalize_launch_access,
+    record_acceptance,
+    record_failure,
+    safe_cleanup,
+    initialize_stream,
+    update_stream_brief,
+    write_stream_status,
+    transfer_owner,
+    transition_linear,
+    verdict_body,
+)
+
+def load_toml(path: Path) -> dict:
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def run_json(argv: list[str]) -> dict:
+    result = subprocess.run(argv, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
+def linear_read(issue: str) -> dict:
+    raw = run_json(["linear", "issue", "view", issue, "--json", "--no-download"])
+    state = raw.get("state")
+    normalized = dict(raw)
+    normalized["state"] = state.get("name") if isinstance(state, dict) else state
+    return {"issue": normalized, "fingerprint": exact_fingerprint(normalized)}
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary.write_text(text)
+    os.replace(temporary, path)
+
+
+def write_status(path: Path, issue: dict, args) -> None:
+    text = (
+        f"Outcome: {args.outcome}\n"
+        f"Gate: {args.gate}\n"
+        f"Blocker: {args.blocker}\n"
+        f"Next operator action: {args.next_action}\n"
+        f"Issue: {issue['identifier']}\n"
+        f"Linear state: {issue['state']}\n"
+        f"Linear fingerprint: {exact_fingerprint(issue)}\n"
+    )
+    _atomic_write_text(path, text)
+
+
+def command_linear_read(args) -> dict:
+    return linear_read(args.issue)
+
+
+def _verify_transition_authority(args) -> None:
+    if bool(args.stream) == bool(args.receipt):
+        raise GateError("exactly one of --stream or --receipt required")
+    if args.stream:
+        stream_state = load_toml(Path(args.stream) / "stream.toml")
+        if stream_state.get("child_session") != args.caller:
+            raise GateError("caller is not the exact stream owner")
+        if stream_state.get("child_role") != "orchestrator":
+            raise GateError("caller is not the exact issue-orchestrator role")
+        if stream_state.get("stream_id") != args.issue:
+            raise GateError("stream_id does not match requested issue")
+        return
+    receipt = load_toml(Path(args.receipt))
+    if receipt.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("caller receipt bootstrap not verified")
+    if receipt.get("role", {}).get("name") != "orchestrator":
+        raise GateError("caller is not the exact issue-orchestrator role")
+    if receipt.get("issue", {}).get("identifier") != args.issue:
+        raise GateError("caller receipt issue mismatch")
+    if receipt.get("bootstrap", {}).get("provider_session_id") != args.caller:
+        raise GateError("caller is not the exact receipt-bound session")
+
+
+# Unit J shaped-transition authority (role-runtime launch-shaping-authority,
+# launch-shaping-authority-issue, launch-receipt-persistent;
+# delivery-lifecycle shaping-operator-approval-order; operating-model
+# decision-109-binding): a Shaped transition binds to the verified generic
+# persistent issue-orchestrator receipt whose launcher-resolved skill set
+# includes shaping and whose stream dir claims this exact issue in the live
+# streams/ registry, the journalled clear shaping verdict carrying
+# relay-verbatim rollout-record provenance, and the Unit L operator-intent
+# record stamping that same exact head. The retired worker shaping-review
+# receipt and the interim published-verdict ack-echo path (tur-416 style)
+# carry no authority.
+
+
+def _read_shaping_verdict_journal(path: Path, issue: str) -> dict:
+    if not path.is_file():
+        raise GateError("journalled shaping verdict missing")
+    try:
+        entry = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateError("journalled shaping verdict unreadable") from error
+    if not isinstance(entry, dict) or entry.get("schema_version") != 1:
+        raise GateError("journalled shaping verdict schema mismatch")
+    if entry.get("review_type") != "shaping":
+        raise GateError("journalled shaping verdict wrong review type")
+    if entry.get("verdict") != "clear":
+        raise GateError("journalled shaping verdict not clear")
+    if entry.get("issue") != issue:
+        raise GateError("journalled shaping verdict issue mismatch")
+    if not isinstance(entry.get("repo"), str) or not entry["repo"].strip():
+        raise GateError("journalled shaping verdict repo missing")
+    if not isinstance(entry.get("pr"), int):
+        raise GateError("journalled shaping verdict pr missing")
+    if not isinstance(entry.get("head"), str) or not re.fullmatch(r"[0-9a-f]{40}", entry["head"]):
+        raise GateError("journalled shaping verdict head missing")
+    # Workflow-native reviewer provenance of rollout-record grade (Unit C):
+    # an unqualified verdict, including the interim published-verdict
+    # ack-echo binding without these fields, carries no shaping authority.
+    for key in ("codex_session_id", "verdict_sha256", "codex_model", "codex_effort", "verdict_payload"):
+        if not isinstance(entry.get(key), str) or not entry[key].strip():
+            raise GateError(f"journalled shaping verdict lacks rollout-record provenance: {key} missing")
+    if entry.get("provenance") != "relay-verbatim-rollout":
+        raise GateError(
+            "journalled shaping verdict lacks rollout-record provenance: interim ack-echo authority retired"
+        )
+    # F5-r2 fix 2: the EXPECTED model/effort come from the CANONICAL roles.toml
+    # shaping-reviewer role runtime via the role resolver, NOT from the journal's
+    # self-reported codex_model/codex_effort. A forged journal that names its own
+    # (weaker) model/effort and points at a matching rollout would otherwise
+    # self-attest; verifying like-with-like against the canonical reviewer
+    # runtime closes that. The journal's self-reported fields must ALSO equal the
+    # canonical values (a divergent self-report signals a mis-provisioned or
+    # tampered journal and is rejected before the rollout readback).
+    expected_model, expected_effort = _canonical_shaping_reviewer_identity()
+    if entry["codex_model"] != expected_model or entry["codex_effort"] != expected_effort:
+        raise GateError(
+            "journalled shaping verdict self-reported model/effort does not match the canonical "
+            "roles.toml shaping-reviewer runtime"
+        )
+    # Rollout readback (role-runtime launch-shaping-authority, role-openai-fail-closed,
+    # decision-identity-source): the declared provenance session id must resolve to
+    # an ACTUAL codex rollout record under CODEX_HOME/sessions proving effective
+    # provider=openai and the CANONICAL model/effort, and the verdict payload +
+    # its sha256 must match that rollout's own final assistant message. An
+    # arbitrary session id or hash with no resolvable rollout record, or a
+    # non-OpenAI provider or wrong model/effort, is rejected fail-closed. The
+    # self-reported codex_session_id/verdict_sha256 alone never suffice.
+    try:
+        verify_relay_verbatim(
+            entry["codex_session_id"],
+            entry["verdict_payload"],
+            entry["verdict_sha256"],
+            expected_model,
+            expected_effort,
+        )
+    except GateError as error:
+        raise GateError(
+            f"journalled shaping verdict rollout readback failed: {error}"
+        ) from error
+    return entry
+
+
+def _canonical_shaping_reviewer_identity() -> tuple[str, str]:
+    # Derive the expected reviewer provider identity from the canonical
+    # roles.toml shaping-reviewer runtime (decision-identity-source): the
+    # readback verifies the rollout matches THIS canonical value, like-with-like,
+    # so a journal cannot name its own model/effort and self-authorize.
+    registry = load_registry(Path(__file__).resolve().parents[1])
+    role = registry.roles.get("shaping-reviewer")
+    if role is None:
+        raise GateError("canonical roles.toml has no shaping-reviewer role")
+    if role.provider != "openai":
+        raise GateError("canonical shaping-reviewer provider is not openai")
+    return role.model, role.effort
+
+
+# D4 shaping-verdict journal PRODUCER (role-runtime launch-shaping-authority,
+# role-openai-relay, role-openai-fail-closed; delivery-lifecycle
+# shaping-operator-approval-order; operating-model decision-identity-source):
+# the production writer that persists the journalled clear shaping verdict Unit
+# J's _read_shaping_verdict_journal consumes. It does NOT trust caller-supplied
+# payload/sha256/model/effort: it resolves the shaping-reviewer relay's exact
+# codex session id to codex's OWN rollout record under CODEX_HOME/sessions
+# (verify_relay_verbatim), proving effective provider=openai and the CANONICAL
+# roles.toml shaping-reviewer model/effort, and takes the VERBATIM final
+# assistant message and its sha256 from that record. The persisted journal
+# therefore carries only rollout-record-grade provenance, and reading it back
+# through the consumer proves the round-trip is authority-satisfying.
+def command_shaping_verdict_journal_write(args) -> dict:
+    path = Path(args.journal)
+    head = args.head.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise GateError("shaping verdict journal requires a 40-hex --head")
+    if not isinstance(args.pr, int):
+        raise GateError("shaping verdict journal requires --pr")
+    repo_slug = _canonical_slug(args.repo_slug)
+    if not isinstance(args.codex_session_id, str) or not args.codex_session_id.strip():
+        raise GateError("shaping verdict journal requires --codex-session-id")
+    session_id = args.codex_session_id.strip()
+    # Canonical reviewer identity (never caller-supplied): the readback verifies
+    # the rollout matches THIS canonical value, like-with-like.
+    expected_model, expected_effort = _canonical_shaping_reviewer_identity()
+    # Rollout readback: resolve the relay session id to codex's OWN rollout
+    # record, prove provider=openai and the canonical model/effort, and take the
+    # VERBATIM final assistant message from that record. Caller-supplied
+    # payload/sha256 are never a source; an absent or wrong-identity rollout
+    # fails closed here. The producer commits to exactly the record's own final
+    # message and its digest, then re-verifies via verify_relay_verbatim so the
+    # persisted payload/sha256 are the SAME the consumer independently reproves.
+    payload = _rollout_final_message(session_id)
+    verdict_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    record = verify_relay_verbatim(
+        session_id, payload, verdict_sha256, expected_model, expected_effort,
+    )
+    # The persisted verdict must genuinely clear THIS exact issue, PR, and head,
+    # exactly as Unit J's rollout-message binding requires; a rollout that
+    # cleared a different issue, blocked, or named a different PR/head is
+    # rejected before the journal is written, so a mis-provisioned pipeline
+    # never persists an unusable journal.
+    _verify_rollout_message_binds_verdict(payload, issue=args.issue, pr=args.pr, head=head)
+    entry = {
+        "schema_version": 1,
+        "review_type": "shaping",
+        "verdict": "clear",
+        "issue": args.issue,
+        "repo": repo_slug,
+        "pr": args.pr,
+        "head": head,
+        "codex_session_id": args.codex_session_id.strip(),
+        "verdict_payload": payload,
+        "verdict_sha256": verdict_sha256,
+        "codex_model": record["model"],
+        "codex_effort": record["effort"],
+        "provenance": "relay-verbatim-rollout",
+    }
+    _atomic_write_text(path, json.dumps(entry, sort_keys=True))
+    # Consumer round-trip: read the persisted journal back through the exact
+    # consumer Unit J uses, so a journal this producer writes is proven
+    # authority-satisfying before success is reported.
+    verified = _read_shaping_verdict_journal(path, args.issue)
+    return {
+        "journal": str(path.resolve()),
+        "issue": verified["issue"],
+        "repo": verified["repo"],
+        "pr": verified["pr"],
+        "head": verified["head"],
+        "verdict": verified["verdict"],
+        "codex_session_id": verified["codex_session_id"],
+        "verdict_sha256": verified["verdict_sha256"],
+        "codex_model": verified["codex_model"],
+        "codex_effort": verified["codex_effort"],
+        "provenance": verified["provenance"],
+    }
+
+
+def _rollout_final_message(session_id: str) -> str:
+    # Resolve the verbatim final assistant message from codex's own rollout
+    # record. This is the SAME record verify_relay_verbatim proves; reading it
+    # first lets the producer commit to exactly that verbatim payload and its
+    # digest rather than trusting any caller-supplied text.
+    from octo_lite.launch import _read_codex_rollout_record  # noqa: E402
+
+    record = _read_codex_rollout_record(session_id)
+    message = record.get("final_message") or ""
+    if not message:
+        raise GateError("shaping verdict journal: rollout record has no final assistant message")
+    return message
+
+
+def _verify_shaped_transition_authority(args) -> dict:
+    if args.stream or not args.receipt:
+        raise GateError("Shaped transition requires exact persistent receipt authority")
+    receipt_path = Path(args.receipt).resolve()
+    receipt = load_toml(receipt_path)
+    # The retired worker shaping-review receipt shape carries no authority.
+    if receipt.get("purpose") == "shaping-review" and isinstance(receipt.get("shaping"), dict):
+        raise GateError("retired worker shaping-review receipt carries no Shaped authority")
+    if "purpose" in receipt:
+        raise GateError("caller receipt carries a pass purpose; generic persistent shape required")
+    if receipt.get("role", {}).get("name") != "orchestrator":
+        raise GateError("caller is not the exact issue-orchestrator role")
+    if receipt.get("bootstrap", {}).get("verified") is not True:
+        raise GateError("caller receipt bootstrap not verified")
+    if receipt.get("bootstrap", {}).get("provider_session_id") != args.caller:
+        raise GateError("caller is not the exact receipt-bound session")
+    if not isinstance(receipt.get("launch_revision"), str) or receipt["launch_revision"] != launch_revision(receipt):
+        raise GateError("caller receipt launch revision mismatch")
+    skills = receipt.get("skills")
+    matched = skills.get("matched_capabilities") if isinstance(skills, dict) else None
+    if not isinstance(matched, list) or "shaping" not in matched:
+        raise GateError("caller receipt resolved skills lack shaping")
+    # Exact-issue registry authority (launch-shaping-authority-issue): the
+    # caller session must be this issue's registered issue orchestrator in
+    # the live streams/ registry, so an epic orchestrator or an orchestrator
+    # owning any other issue is rejected even with shaping capability.
+    if receipt_path.name != "receipt.toml":
+        raise GateError("caller receipt is not a stream registry receipt.toml")
+    stream_dir = receipt_path.parent
+    issue_table = receipt.get("issue")
+    identity = issue_table.get("identifier") if isinstance(issue_table, dict) else None
+    if not identity:
+        raise GateError("epic orchestrator receipt binds no exact issue")
+    if identity != args.issue:
+        raise GateError("caller stream is registered to another issue")
+    registry = stream_dir.parent
+    for other_dir in sorted(path for path in registry.iterdir() if path.is_dir() and path != stream_dir):
+        other_path = other_dir / "receipt.toml"
+        if not other_path.is_file():
+            continue
+        try:
+            other = load_toml(other_path)
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise GateError(f"stream registry receipt unreadable: {other_path}") from error
+        if other.get("bootstrap", {}).get("provider_session_id") != args.caller:
+            continue
+        other_issue_table = other.get("issue")
+        other_identity = other_issue_table.get("identifier") if isinstance(other_issue_table, dict) else None
+        if other_identity != args.issue:
+            raise GateError("caller session is registered to another issue in the live stream registry")
+    if not args.verdict_journal or not args.repo or not args.repo_slug:
+        raise GateError("Shaped transition requires --verdict-journal, --repo, and --repo-slug")
+    # Repo split: --repo is the LOCAL PATH used for git -C head checks; the
+    # canonical owner/repo slug used for gh api / gh pr view is --repo-slug.
+    # The single-value --repo dual-meaning is impossible (a filesystem path is
+    # never a valid gh slug and vice versa), so the two are separate arguments
+    # and the cross-surface binding compares one canonical slug identity.
+    cli_slug = _canonical_slug(args.repo_slug)
+    verdict = _read_shaping_verdict_journal(Path(args.verdict_journal), args.issue)
+    # Repo-arg bind: a verdict binding a different canonical repo slug than the
+    # CLI repo slug carries no authority here.
+    if _canonical_slug(verdict["repo"]) != cli_slug:
+        raise GateError("journalled verdict repo does not match CLI repo slug")
+    # The Unit L operator-intent record, validated via the intent-record
+    # --verify path (which re-reads the command-published PR/status surface and
+    # checks the trusted-publisher comment author so a forged valid-head local
+    # TOML is rejected), must stamp that same exact head and bind the same
+    # canonical repo slug and PR the verdict does. The local path proves the
+    # head commit exists; the slug is the surface identity.
+    record = _verify_intent_record(
+        stream_dir / "intent-record.toml", args.repo, cli_slug, args.trusted_publisher
+    )
+    # F5-r2 fix 3: bind the journalled verdict tuple (verdict=clear, issue, PR,
+    # HEAD) to the actual rollout final message the verdict provenance resolves
+    # to, so an unrelated / different-issue / blocking real rollout cannot back
+    # an arbitrary clear Shaped transition for THIS issue and head. The verdict
+    # journal already proved (in _read_shaping_verdict_journal) that its payload
+    # equals the rollout record's own final assistant message; here that same
+    # payload must COMMIT to this exact issue, PR, and clear-verdict HEAD.
+    if record["head"] != verdict["head"]:
+        raise GateError("operator-intent record head mismatch with journalled verdict")
+    if record["pr"] != verdict["pr"]:
+        raise GateError("operator-intent record pr mismatch with journalled verdict")
+    _verify_rollout_message_binds_verdict(
+        verdict["verdict_payload"], issue=args.issue, pr=verdict["pr"], head=verdict["head"]
+    )
+    return {"repo_slug": cli_slug, "pr": verdict["pr"], "head": verdict["head"]}
+
+
+def _verify_rollout_message_binds_verdict(payload: str, *, issue: str, pr: int, head: str) -> None:
+    # F5-r2 fix 3: the rollout final assistant message (proven verbatim equal to
+    # the verdict payload in the rollout readback) must itself COMMIT to this
+    # exact clear verdict on this exact issue, PR, and HEAD. Verbatim-payload
+    # equality alone is insufficient: without this, a real rollout that cleared a
+    # DIFFERENT issue, or blocked, or named a different PR/HEAD, could back an
+    # arbitrary clear Shaped transition for this issue and head. The reviewer
+    # rollout message must name the issue, the PR (`PR <n>` / `#<n>`), the exact
+    # 40-hex HEAD, and a clear-verdict marker; a mis-provisioned pipeline that
+    # pointed at an unrelated rollout is rejected fail-closed.
+    #
+    # D3 cycle2 (F5): the shaping-reviewer final message is PROSE (roles/
+    # shaping-reviewer.md: "one exact-revision clear or blocking PR verdict
+    # artifact"), not structured JSON, so this scans anchored lexically. But the
+    # binding must be EXACT, not merely lexical:
+    #   - issue: whole-token match, else `TUR-10` (or `TUR-4470`) backs `TUR-1`
+    #     (or `TUR-447`) via substring, and `PR 60` backs `PR 6`.
+    #   - verdict: a GENUINE clear assertion; a blocking message or negated clear
+    #     (`not clear`, `cannot clear`, `unclear`, `blocking`) is rejected, since
+    #     a bare `\bclear\b` matches "Not clear to proceed".
+    text = payload if isinstance(payload, str) else ""
+    missing: list[str] = []
+    # Whole-token identifier: no alphanumeric or hyphen adjacent, so TUR-1 does
+    # not match TUR-10 and TUR-447 does not match TUR-4470.
+    if not re.search(
+        rf"(?<![A-Za-z0-9-]){re.escape(issue)}(?![A-Za-z0-9-])", text
+    ):
+        missing.append("issue")
+    # Exact PR token: the `PR `/`#` prefix anchors the front and the trailing
+    # `(?![0-9])` anchors the back, so PR 6 does not match PR 60 or PR 16.
+    if not re.search(rf"(?:PR\s*|#)0*{pr}(?![0-9])", text):
+        missing.append("pr")
+    if head not in text:
+        missing.append("head")
+    # Genuine clear verdict: an explicit clear assertion AND no blocking/negated
+    # -clear marker. A blocking message that merely contains the word clear (e.g.
+    # "Not clear to proceed") is rejected fail-closed.
+    blocking = re.search(
+        r"\b(?:blocking|blocked|unclear|not\s+clear|cannot\s+clear|can't\s+clear|"
+        r"no[nt]-?\s*clear)\b",
+        text,
+        re.IGNORECASE,
+    )
+    genuine_clear = re.search(
+        r"(?:^|(?<![A-Za-z]))(?:verdict\s*[:=]\s*clear|VERDICT\s+clear)"
+        r"(?![A-Za-z])",
+        text,
+        re.IGNORECASE,
+    )
+    if blocking is not None or genuine_clear is None:
+        missing.append("clear-verdict")
+    if missing:
+        raise GateError(
+            "journalled verdict rollout message does not bind this issue/pr/head/clear verdict: "
+            + ", ".join(missing)
+        )
+
+
+def _verify_fresh_shaping_head(repo: str, pr: object, expected_head: str) -> None:
+    # A stale journalled verdict rejects here: the verdict head must equal
+    # the freshly refetched live PR head immediately before mutation.
+    current = run_json(["gh", "pr", "view", str(pr), "--repo", repo, "--json", "headRefOid"])
+    if current.get("headRefOid") != expected_head:
+        raise GateError("shaping PR head mismatch")
+
+
+def command_linear_transition(args) -> dict:
+    allowed = {
+        ("Todo", "In Progress"),
+        ("In Progress", "Awaiting Accept"),
+        ("Ideas", "Shaped"),
+        ("Todo", "Shaped"),
+        # Loop fire: the one mechanical Shaped -> Todo delivery-entry transition
+        # (delivery-lifecycle linear-loop-fire-transition, delivery-entry-gate).
+        ("Shaped", "Todo"),
+    }
+    if (args.expected, args.target) not in allowed:
+        raise GateError("stream orchestrator transition not allowed")
+    if args.target == "Shaped":
+        shaping = _verify_shaped_transition_authority(args)
+    else:
+        shaping = None
+        _verify_transition_authority(args)
+
+    def read():
+        return linear_read(args.issue)["issue"]
+
+    def mutate(target):
+        if shaping is not None:
+            _verify_fresh_shaping_head(shaping["repo_slug"], shaping["pr"], shaping["head"])
+        subprocess.run(
+            ["linear", "issue", "update", args.issue, "--state", target],
+            check=True,
+        )
+
+    def status(issue):
+        write_status(Path(args.status), dict(issue), args)
+
+    def notify(issue):
+        if not args.parent:
+            raise GateError("parent route required")
+        message = f"{args.issue} entered {issue['state']}; status {Path(args.status).resolve()}"
+        if args.parent == "operator":
+            # A top-level notification resolves the current owner through operator-say
+            # rather than a static route, so it always reaches the post-handoff owner.
+            subprocess.run(["operator-say", message], check=True)
+        else:
+            subprocess.run(["herdr-say", args.parent, message], check=True)
+
+    return transition_linear(
+        args.issue,
+        args.expected,
+        args.target,
+        Path(args.progress),
+        read,
+        mutate,
+        status,
+        notify,
+    )
+
+
+def command_verdict(args) -> dict:
+    # F5-r2 fix 4 (the --repo dual-use bug): --repo is the LOCAL git path,
+    # --repo-slug is the canonical owner/repo gh identity used for gh pr view /
+    # gh api, exactly like linear-transition. A filesystem path is never a valid
+    # gh slug, so the two are separate arguments and a local path can no longer
+    # leak into gh calls.
+    slug = _canonical_slug(args.repo_slug)
+    current = run_json(
+        ["gh", "pr", "view", str(args.pr), "--repo", slug, "--json", "headRefOid"]
+    )["headRefOid"]
+    if current != args.head:
+        raise GateError("PR HEAD mismatch")
+    body = verdict_body(
+        args.review_type,
+        args.verdict,
+        args.head,
+        args.bound_input,
+        args.finding,
+        args.receipt,
+        args.conversation_log_reference,
+        args.conversation_cutoff,
+    )
+    marker = f"<!-- octo-lite-verdict:{args.review_type} -->"
+    comments = run_json(
+        ["gh", "api", f"repos/{slug}/issues/{args.pr}/comments", "--paginate"]
+    )
+    existing = next((item for item in comments if marker in item.get("body", "")), None)
+    if existing:
+        published = run_json(
+            [
+                "gh", "api", "--method", "PATCH",
+                f"repos/{slug}/issues/comments/{existing['id']}",
+                "-f", f"body={body}",
+            ]
+        )
+    else:
+        published = run_json(
+            [
+                "gh", "api", "--method", "POST",
+                f"repos/{slug}/issues/{args.pr}/comments",
+                "-f", f"body={body}",
+            ]
+        )
+    readback = run_json(
+        ["gh", "api", f"repos/{slug}/issues/comments/{published['id']}"]
+    )
+    if readback.get("body") != body:
+        raise GateError("verdict comment readback mismatch")
+    return {"url": readback["html_url"], "head": args.head, "verdict": args.verdict}
+
+
+def command_owner(args) -> dict:
+    handoff = Path(args.handoff)
+    if not handoff.is_file():
+        raise GateError("immutable handoff missing")
+    return transfer_owner(
+        Path(args.owner_file),
+        args.expected_owner,
+        args.expected_route,
+        args.expected_revision,
+        args.new_owner,
+        args.new_route,
+        args.revision,
+        str(Path(args.control_dir).resolve()),
+        caller=args.caller,
+        handoff=handoff,
+        successor_readiness_path=Path(args.successor_readiness),
+    )
+
+
+def command_successor_ready(args) -> dict:
+    return declare_successor_ready(
+        Path(args.path), caller=args.caller, session_id=args.session_id, handoff_revision=args.handoff_revision,
+    )
+
+
+def command_accept(args) -> dict:
+    return record_acceptance(
+        Path(args.path),
+        Path(args.owner_file),
+        caller=args.caller,
+        issue=args.issue,
+        pr=args.pr,
+        head=args.head,
+        verdict_reference=args.verdict_reference,
+        decision=args.decision,
+    )
+
+
+def command_trace(args) -> dict:
+    event = json.loads(Path(args.event).read_text())
+    written = append_trace(Path(args.trace), Path(args.status), event)
+    return {"written": written, "degraded": not written}
+
+
+def command_access(args) -> dict:
+    values = {
+        "execution_location": args.execution_location,
+        "operator_loopback_access": args.operator_loopback_access,
+        "review_delivery": args.review_delivery,
+    }
+    return normalize_launch_access({key: value for key, value in values.items() if value is not None})
+
+
+def command_failure(args) -> dict:
+    return record_failure(
+        args.attempt,
+        args.error,
+        args.category,
+        args.useful_work,
+        args.owner,
+        args.next_action,
+    )
+
+
+def command_label(args) -> dict:
+    return {
+        "label": herdr_label(
+            kind=args.kind,
+            issue=args.issue,
+            pr=args.pr,
+            outcome=args.outcome,
+            direct=args.direct,
+        )
+    }
+
+
+def command_stream_init(args) -> dict:
+    return initialize_stream(
+        Path(args.path),
+        stream_id=args.stream_id,
+        parent_session=args.parent,
+        child_session=args.child,
+        child_role=args.child_role,
+        caller=args.caller,
+        brief=Path(args.brief_file).read_text(),
+    )
+
+
+def command_stream_brief(args) -> dict:
+    return update_stream_brief(
+        Path(args.path),
+        caller=args.caller,
+        expected_revision=args.expected_revision,
+        brief=Path(args.brief_file).read_text(),
+    )
+
+
+def command_stream_status(args) -> dict:
+    path = Path(args.path)
+    state = write_stream_status(
+        path,
+        caller=args.caller,
+        expected_revision=args.expected_revision,
+        outcome=args.outcome,
+        gate=args.gate,
+        blocker=args.blocker,
+        next_operator_action=args.next_action,
+    )
+    parent = state["parent_session"]
+    message = f"{state['stream_id']} status revision {state['status_revision']}"
+    artifact = str((path / "status.md").resolve())
+    if parent == "operator":
+        # A top-level notification resolves the current owner through operator-say
+        # rather than a static route, so it always reaches the post-handoff owner.
+        result = subprocess.run(
+            ["operator-say", "--kind", "info", "--artifact", artifact, message],
+            check=False,
+        )
+    else:
+        result = subprocess.run(
+            ["herdr-say", "--kind", "info", "--artifact", artifact, parent, message],
+            check=False,
+        )
+    if result.returncode not in {0, 75}:
+        raise GateError("parent notification failed")
+    state["notification"] = "queued" if result.returncode == 75 else "pending"
+    return state
+
+
+def command_result_bind(args) -> dict:
+    result = json.loads(Path(args.result).read_text())
+    binding = bind_pass_result(Path(args.receipt), args.role, result)
+    return {"binding": binding}
+
+
+# Unit L operator-intent record (delivery-lifecycle shaping-operator-approval
+# and shaping-operator-approval-binding, operator-control
+# supervision-operator-gate-no-hashes and supervision-default-action,
+# role-runtime launch-shaping-authority): prior explicit operator intent is
+# recorded machine-checkably, the tool itself stamps the current exact head at
+# action time, and Unit J consumes exactly this record.
+
+
+def _canonical_slug(slug: str) -> str:
+    # Canonical owner/repo identity for cross-surface binding: strip a git host
+    # prefix, a trailing .git, and case, so the verdict repo, the intent record
+    # repo, and the CLI repo slug all normalize to one comparable identity even
+    # if a caller passes a full remote URL. It is deliberately NOT a filesystem
+    # path: git -C uses the separate --repo local path, gh uses this slug.
+    value = slug.strip()
+    if not value:
+        raise GateError("repo slug empty")
+    for prefix in ("git@github.com:", "https://github.com/", "http://github.com/", "ssh://git@github.com/"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+            break
+    if value.endswith(".git"):
+        value = value[: -len(".git")]
+    value = value.strip("/").lower()
+    if not re.fullmatch(r"[0-9a-z._-]+/[0-9a-z._-]+", value):
+        raise GateError(f"repo slug not a canonical owner/repo identity: {slug}")
+    return value
+
+
+def _current_repo_head(repo: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", repo, "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+    head = result.stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise GateError("repo head unreadable")
+    return head
+
+
+_INTENT_SURFACE_MARKER = "<!-- octo-lite-intent-record -->"
+
+
+def _intent_surface_body(*, repo: str, pr: object, head: str, intent_ref: str, recorded_at: str) -> str:
+    # The command-published PR/status surface body. It binds the exact repo
+    # slug, PR, head, intent reference, and stamp, so a hand-authored local
+    # TOML cannot forge the matching live publication: the record carries a
+    # digest of exactly this body and Unit J re-reads the live surface to match
+    # it. Body equality is necessary but not sufficient: the record also binds
+    # the exact live comment id and the trusted publisher author identity, so a
+    # matching body posted by any other identity is rejected.
+    payload = {
+        "schema_version": 1,
+        "repo": repo,
+        "pr": pr,
+        "head": head,
+        "intent_ref": intent_ref,
+        "recorded_at": recorded_at,
+    }
+    return _INTENT_SURFACE_MARKER + "\n```json\n" + json.dumps(payload, sort_keys=True) + "\n```\n"
+
+
+def _comment_author_login(comment: dict) -> str | None:
+    user = comment.get("user")
+    if isinstance(user, dict):
+        login = user.get("login")
+        if isinstance(login, str) and login.strip():
+            return login
+    return None
+
+
+def _surface_digest(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _read_intent_record(path: Path) -> dict:
+    if not path.is_file():
+        raise GateError("intent record missing")
+    try:
+        record = load_toml(path)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise GateError("intent record unreadable") from error
+    if record.get("schema_version") != 1:
+        raise GateError("intent record schema mismatch")
+    for key in ("intent_ref", "head", "recorded_at", "repo", "surface_sha256", "publisher"):
+        value = record.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise GateError(f"intent record {key} missing")
+    if not isinstance(record.get("pr"), int):
+        raise GateError("intent record pr missing")
+    if not isinstance(record.get("comment_id"), int):
+        raise GateError("intent record comment_id missing")
+    return record
+
+
+def _fetch_intent_comment(repo_slug: str, comment_id: int) -> dict | None:
+    try:
+        comment = run_json(
+            ["gh", "api", f"repos/{repo_slug}/issues/comments/{comment_id}"]
+        )
+    except subprocess.CalledProcessError:
+        return None
+    if not isinstance(comment, dict):
+        return None
+    return comment
+
+
+def _derive_trusted_publisher() -> str:
+    # F5-r2 fix 1 (delivery-tdd-trusted-command-source discipline applied to the
+    # operator-intent surface): the trusted publisher is DERIVED from a
+    # non-caller source, the authenticated gh actor of the control identity that
+    # actually posts the intent surface, NEVER a caller-supplied flag. A caller
+    # cannot self-authorize by naming a forged identity because it cannot forge
+    # the authenticated `gh api user` login of the control CLI. This is the same
+    # identity command_intent_record stamps as `publisher` at publication time.
+    try:
+        user = run_json(["gh", "api", "user"])
+    except subprocess.CalledProcessError as error:
+        raise GateError("trusted publisher underivable: gh authenticated identity unavailable") from error
+    login = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(login, str) or not login.strip():
+        raise GateError("trusted publisher underivable: gh authenticated identity has no login")
+    return login
+
+
+def _verify_intent_record(
+    path: Path, repo_local: str, repo_slug: str, caller_publisher: str | None = None
+) -> dict:
+    record = _read_intent_record(path)
+    head = record["head"]
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise GateError("intent record head malformed")
+    # Repo split + canonical bind: the record binds the exact canonical repo
+    # slug; --repo is the separate local path used only for the git head check.
+    if _canonical_slug(record["repo"]) != _canonical_slug(repo_slug):
+        raise GateError("intent record repo mismatch with CLI repo slug")
+    probe = subprocess.run(
+        ["git", "-C", repo_local, "cat-file", "-e", f"{head}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    if probe.returncode != 0:
+        raise GateError("intent record head unknown to repo")
+    # Self-consistency: the surface digest must be the digest of exactly this
+    # record's own fields, so a digest borrowed from an unrelated surface fails
+    # before any live fetch.
+    expected_body = _intent_surface_body(
+        repo=record["repo"], pr=record["pr"], head=head,
+        intent_ref=record["intent_ref"], recorded_at=record["recorded_at"],
+    )
+    if record["surface_sha256"] != _surface_digest(expected_body):
+        raise GateError("intent record surface digest does not bind its own fields")
+    # F5-r2 fix 1: the trusted publisher is DERIVED here from the authenticated
+    # gh actor of the control identity, a NON-caller source, only after the
+    # local record self-checks pass (so a missing/malformed record still fails
+    # before any gh call). A caller-supplied value is never the source; when
+    # present it is only a misconfiguration cross-check and must equal the
+    # derived identity, else the pipeline is mis-provisioned and fails closed.
+    trusted_publisher = _derive_trusted_publisher()
+    if caller_publisher is not None and caller_publisher.strip() and caller_publisher != trusted_publisher:
+        raise GateError(
+            "caller-supplied trusted publisher differs from the derived control identity: "
+            "trusted publisher is derived, not caller-selected"
+        )
+    # Unforgeable publication identity: fetch the EXACT bound comment id off the
+    # live PR surface and require (a) it actually exists, (b) its body digest
+    # equals the record digest, and (c) its author login equals the trusted
+    # command-publisher identity. gh api returns each comment's author identity,
+    # so a fabricated TOML plus a self-posted comment under any other login is
+    # rejected: only a comment the trusted publisher actually posted, bound by
+    # exact id, carries authority. A local record with no such comment fails.
+    comment = _fetch_intent_comment(repo_slug, record["comment_id"])
+    if comment is None:
+        raise GateError("intent record has no command-published surface: forged record rejected")
+    if _INTENT_SURFACE_MARKER not in (comment.get("body") or ""):
+        raise GateError("intent record bound comment is not an operator-intent surface")
+    if _surface_digest(comment["body"]) != record["surface_sha256"]:
+        raise GateError("intent record surface digest mismatch with live publication")
+    author = _comment_author_login(comment)
+    if author != trusted_publisher:
+        raise GateError(
+            "intent record surface not published by the trusted command identity: forged record rejected"
+        )
+    if record["publisher"] != trusted_publisher:
+        raise GateError("intent record publisher does not match the trusted command identity")
+    return record
+
+
+def command_intent_record(args) -> dict:
+    path = Path(args.stream_dir) / "intent-record.toml"
+    # Repo split: --repo is the LOCAL PATH for git -C, --repo-slug is the
+    # canonical owner/repo gh identity. A single value cannot serve both.
+    repo_slug = _canonical_slug(args.repo_slug)
+    if args.verify:
+        # --trusted-publisher is no longer required and is never the authority
+        # source: it is derived from the authenticated control identity. A
+        # supplied value is only a cross-check against that derived identity.
+        record = _verify_intent_record(path, args.repo, repo_slug, args.trusted_publisher)
+        return {
+            "record": str(path.resolve()),
+            "head": record["head"],
+            "intent_ref": record["intent_ref"],
+            "recorded_at": record["recorded_at"],
+            "repo": record["repo"],
+            "pr": record["pr"],
+            "comment_id": record["comment_id"],
+            "publisher": record["publisher"],
+            "verified": True,
+        }
+    if not isinstance(args.intent_ref, str) or not args.intent_ref.strip():
+        raise GateError("intent-ref required nonempty")
+    if not isinstance(args.pr, int):
+        raise GateError("intent record requires --pr for surface publication")
+    # Compare: the tool captures the current exact head itself at action time;
+    # no supplied head is ever accepted (no --head flag exists). The head comes
+    # from the LOCAL repo path.
+    head = _current_repo_head(args.repo)
+    recorded_at = datetime.now(timezone.utc).isoformat()
+    surface_body = _intent_surface_body(
+        repo=repo_slug, pr=args.pr, head=head,
+        intent_ref=args.intent_ref, recorded_at=recorded_at,
+    )
+    surface_sha256 = _surface_digest(surface_body)
+    # Publish the binding to the PR/status surface, then read it back off the
+    # live surface before persisting the record: a failed readback aborts. The
+    # readback captures the actual command-publisher author identity and the
+    # exact comment id, so the persisted record binds an unforgeable publication.
+    published = _publish_intent_surface(repo_slug, args.pr, surface_body)
+    readback = run_json(
+        ["gh", "api", f"repos/{repo_slug}/issues/comments/{published['id']}"]
+    )
+    if readback.get("body") != surface_body:
+        raise GateError("intent record surface readback mismatch")
+    comment_id = readback.get("id")
+    if not isinstance(comment_id, int):
+        raise GateError("intent record surface readback missing comment id")
+    publisher = _comment_author_login(readback)
+    if publisher is None:
+        raise GateError("intent record surface readback missing publisher identity")
+    text = (
+        "schema_version = 1\n"
+        f"intent_ref = {json.dumps(args.intent_ref)}\n"
+        f'head = "{head}"\n'
+        f'recorded_at = "{recorded_at}"\n'
+        f"repo = {json.dumps(repo_slug)}\n"
+        f"pr = {args.pr}\n"
+        f'surface_sha256 = "{surface_sha256}"\n'
+        f"comment_id = {comment_id}\n"
+        f"publisher = {json.dumps(publisher)}\n"
+    )
+    # Act: whole-record atomic replace; a partial or corrupt existing record
+    # is overwritten, never appended.
+    _atomic_write_text(path, text)
+    # Readback: verify persisted content before reporting success.
+    record = _read_intent_record(path)
+    if (
+        record["intent_ref"] != args.intent_ref
+        or record["head"] != head
+        or record["recorded_at"] != recorded_at
+        or record["repo"] != repo_slug
+        or record["pr"] != args.pr
+        or record["surface_sha256"] != surface_sha256
+        or record["comment_id"] != comment_id
+        or record["publisher"] != publisher
+    ):
+        raise GateError("intent record readback mismatch")
+    return {
+        "record": str(path.resolve()),
+        "head": head,
+        "intent_ref": args.intent_ref,
+        "recorded_at": recorded_at,
+        "repo": repo_slug,
+        "pr": args.pr,
+        "comment_id": comment_id,
+        "publisher": publisher,
+        "surface_url": readback.get("html_url"),
+    }
+
+
+def _publish_intent_surface(repo: str, pr: object, body: str) -> dict:
+    comments = run_json(
+        ["gh", "api", f"repos/{repo}/issues/{pr}/comments", "--paginate"]
+    )
+    existing = next(
+        (item for item in comments if _INTENT_SURFACE_MARKER in item.get("body", "")),
+        None,
+    )
+    if existing:
+        return run_json(
+            [
+                "gh", "api", "--method", "PATCH",
+                f"repos/{repo}/issues/comments/{existing['id']}",
+                "-f", f"body={body}",
+            ]
+        )
+    return run_json(
+        [
+            "gh", "api", "--method", "POST",
+            f"repos/{repo}/issues/{pr}/comments",
+            "-f", f"body={body}",
+        ]
+    )
+
+
+def command_workspace_admit(args) -> dict:
+    # gh#8 host-provisioned isolated worktree (workspace-admission-provisions):
+    # supplying all five provisioning flags (control-repo/lane/branch/
+    # starting-commit/repo-slug) admits then PROVISIONS the exclusive per-lane
+    # worktree; stdout then carries the frozen out-of-tree record. Omitting
+    # every provisioning flag preserves the prior admit-only behavior (disk/
+    # conflict/containment guard only, no worktree created), so an existing
+    # admit-only caller is never silently broken by this additive
+    # subcommand-family (code-review finding 9).
+    provisioning_flags = {
+        "control_repo": args.control_repo,
+        "lane": args.lane,
+        "branch": args.branch,
+        "starting_commit": args.starting_commit,
+        "repo_slug": args.repo_slug,
+    }
+    provided = {name: value for name, value in provisioning_flags.items() if value is not None}
+    if not provided:
+        root = Path(args.worktree_root)
+        target = Path(args.worktree)
+        admitted = admit_workspace(
+            target,
+            root,
+            disk_free_bytes=shutil.disk_usage(root).free,
+            minimum_free_bytes=args.minimum_free_bytes,
+            conflicts=args.conflict,
+            provider_overloaded=args.provider_overloaded,
+        )
+        return {"admitted": True, "worktree": str(admitted)}
+    if len(provided) != len(provisioning_flags):
+        missing = sorted(set(provisioning_flags) - set(provided))
+        flags = ", ".join(f"--{name.replace('_', '-')}" for name in missing)
+        raise GateError(
+            "workspace-admit provisioning requires --control-repo, --lane, --branch, "
+            f"--starting-commit, and --repo-slug together; missing: {flags}"
+        )
+    provision = provision_lane_worktree(
+        control_repo=Path(args.control_repo),
+        worktree_root=Path(args.worktree_root),
+        worktree=Path(args.worktree),
+        lane=args.lane,
+        branch=args.branch,
+        head=args.starting_commit,
+        repo_slug=args.repo_slug,
+        minimum_free_bytes=args.minimum_free_bytes,
+        conflicts=args.conflict,
+        provider_overloaded=args.provider_overloaded,
+    )
+    return {
+        "admitted": True,
+        "worktree": provision.record["worktree"],
+        "record_path": str(provision.record_path),
+        # code-review finding 8: SURFACE the drift owner-routing signal rather
+        # than discarding it, so a genuine install drift is always routed.
+        "install_check_owner_route": provision.install_check_owner_route,
+        "record": provision.record,
+    }
+
+
+def command_workspace_cleanup(args) -> dict:
+    control = Path(args.control_repo)
+
+    def remove(worktree: Path) -> None:
+        subprocess.run(["git", "-C", str(control), "worktree", "remove", str(worktree)], check=True)
+
+    safe_cleanup(
+        Path(args.worktree),
+        worktree_root=Path(args.worktree_root),
+        control_repo=control,
+        handoff=Path(args.handoff),
+        expected_head=args.expected_head,
+        remote_ref=args.remote_ref,
+        remove=remove,
+    )
+    return {"removed": True, "worktree": str(Path(args.worktree).resolve())}
+
+
+def parser() -> argparse.ArgumentParser:
+    root = argparse.ArgumentParser(description="Small foreground octo-lite gates")
+    sub = root.add_subparsers(dest="command", required=True)
+
+    read = sub.add_parser("linear-read")
+    read.add_argument("issue")
+    read.set_defaults(run=command_linear_read)
+
+    transition = sub.add_parser("linear-transition")
+    transition.add_argument("issue")
+    transition.add_argument("--expected", required=True)
+    transition.add_argument("--target", required=True)
+    transition.add_argument("--progress", required=True)
+    transition.add_argument("--status", required=True)
+    transition.add_argument("--parent", required=True)
+    transition.add_argument("--outcome", required=True)
+    transition.add_argument("--gate", required=True)
+    transition.add_argument("--blocker", default="none")
+    transition.add_argument("--next-action", default="none")
+    transition.add_argument("--caller", required=True)
+    transition.add_argument("--stream")
+    transition.add_argument("--receipt")
+    transition.add_argument("--verdict-journal")
+    transition.add_argument("--repo", help="local repo path for git -C head checks")
+    transition.add_argument("--repo-slug", help="canonical owner/repo slug for gh api / gh pr view")
+    transition.add_argument("--trusted-publisher", help="trusted command-publisher comment author identity")
+    transition.set_defaults(run=command_linear_transition)
+
+    verdict = sub.add_parser("verdict-publish")
+    verdict.add_argument("--repo", required=True, help="local repo path")
+    verdict.add_argument("--repo-slug", required=True, help="canonical owner/repo slug for gh api / gh pr view")
+    verdict.add_argument("--pr", type=int, required=True)
+    verdict.add_argument("--review-type", choices=["shaping", "code"], required=True)
+    verdict.add_argument("--verdict", choices=["clear", "blocking"], required=True)
+    verdict.add_argument("--head", required=True)
+    verdict.add_argument("--receipt", required=True)
+    verdict.add_argument("--bound-input", action="append", default=[])
+    verdict.add_argument("--finding", action="append", default=[])
+    verdict.add_argument("--conversation-log-reference", action="append", default=[])
+    verdict.add_argument("--conversation-cutoff", default="")
+    verdict.set_defaults(run=command_verdict)
+
+    owner = sub.add_parser("owner-transfer")
+    owner.add_argument("--owner-file", required=True)
+    owner.add_argument("--expected-owner", required=True)
+    owner.add_argument("--expected-route", required=True)
+    owner.add_argument("--expected-revision", type=int, required=True)
+    owner.add_argument("--caller", required=True)
+    owner.add_argument("--new-owner", required=True)
+    owner.add_argument("--new-route", required=True)
+    owner.add_argument("--revision", type=int, required=True)
+    owner.add_argument("--control-dir", required=True)
+    owner.add_argument("--handoff", required=True)
+    owner.add_argument("--successor-readiness", required=True)
+    owner.set_defaults(run=command_owner)
+
+    successor_ready = sub.add_parser("successor-ready")
+    successor_ready.add_argument("--path", required=True)
+    successor_ready.add_argument("--caller", required=True)
+    successor_ready.add_argument("--session-id", required=True)
+    successor_ready.add_argument("--handoff-revision", type=int, required=True)
+    successor_ready.set_defaults(run=command_successor_ready)
+
+    accept = sub.add_parser("accept")
+    accept.add_argument("--path", required=True)
+    accept.add_argument("--owner-file", required=True)
+    accept.add_argument("--caller", required=True)
+    accept.add_argument("--issue", required=True)
+    accept.add_argument("--pr", required=True)
+    accept.add_argument("--head", required=True)
+    accept.add_argument("--verdict-reference", required=True)
+    accept.add_argument("--decision", choices=["accept", "reject"], required=True)
+    accept.set_defaults(run=command_accept)
+
+    trace = sub.add_parser("trace-append")
+    trace.add_argument("--trace", required=True)
+    trace.add_argument("--status", required=True)
+    trace.add_argument("--event", required=True)
+    trace.set_defaults(run=command_trace)
+
+    access = sub.add_parser("launch-access")
+    access.add_argument("--execution-location")
+    access.add_argument("--operator-loopback-access", action="store_true", default=None)
+    access.add_argument("--review-delivery")
+    access.set_defaults(run=command_access)
+
+    failure = sub.add_parser("failure-record")
+    failure.add_argument("--attempt", type=int, required=True)
+    failure.add_argument("--error", required=True)
+    failure.add_argument("--category", required=True)
+    failure.add_argument("--useful-work", default="")
+    failure.add_argument("--owner", required=True)
+    failure.add_argument("--next-action", required=True)
+    failure.set_defaults(run=command_failure)
+
+    label = sub.add_parser("herdr-label")
+    label.add_argument("--kind", choices=["operator", "epic", "issue"], required=True)
+    label.add_argument("--issue", type=int)
+    label.add_argument("--pr", type=int)
+    label.add_argument("--outcome")
+    label.add_argument("--direct", action="store_true")
+    label.set_defaults(run=command_label)
+
+    stream_init = sub.add_parser("stream-init")
+    stream_init.add_argument("--path", required=True)
+    stream_init.add_argument("--stream-id", required=True)
+    stream_init.add_argument("--parent", required=True)
+    stream_init.add_argument("--child", required=True)
+    stream_init.add_argument("--child-role", required=True)
+    stream_init.add_argument("--caller", required=True)
+    stream_init.add_argument("--brief-file", required=True)
+    stream_init.set_defaults(run=command_stream_init)
+
+    stream_brief = sub.add_parser("stream-brief")
+    stream_brief.add_argument("--path", required=True)
+    stream_brief.add_argument("--caller", required=True)
+    stream_brief.add_argument("--expected-revision", type=int, required=True)
+    stream_brief.add_argument("--brief-file", required=True)
+    stream_brief.set_defaults(run=command_stream_brief)
+
+    stream_status = sub.add_parser("stream-status")
+    stream_status.add_argument("--path", required=True)
+    stream_status.add_argument("--caller", required=True)
+    stream_status.add_argument("--expected-revision", type=int, required=True)
+    stream_status.add_argument("--outcome", required=True)
+    stream_status.add_argument("--gate", required=True)
+    stream_status.add_argument("--blocker", default="none")
+    stream_status.add_argument("--next-action", default="none")
+    stream_status.set_defaults(run=command_stream_status)
+
+    result_bind = sub.add_parser("result-bind")
+    result_bind.add_argument("--receipt", required=True)
+    result_bind.add_argument("--role", required=True)
+    result_bind.add_argument("--result", required=True)
+    result_bind.set_defaults(run=command_result_bind)
+
+    intent = sub.add_parser("intent-record")
+    intent.add_argument("--stream-dir", required=True)
+    intent.add_argument("--intent-ref")
+    intent.add_argument("--repo", required=True, help="local repo path for git -C head checks")
+    intent.add_argument("--repo-slug", required=True, help="canonical owner/repo slug for gh api")
+    intent.add_argument("--pr", type=int)
+    intent.add_argument("--verify", action="store_true")
+    intent.add_argument("--trusted-publisher", help="trusted command-publisher comment author identity")
+    intent.set_defaults(run=command_intent_record)
+
+    admission = sub.add_parser("workspace-admit")
+    admission.add_argument("--worktree", required=True)
+    admission.add_argument("--worktree-root", required=True)
+    # The five provisioning flags are OPTIONAL together (code-review finding 9,
+    # admit-only backward compat): omitting all five preserves the prior
+    # admit-only invocation shape; supplying all five provisions the exclusive
+    # per-lane worktree. --starting-commit is the frozen contract flag name
+    # (code-review finding 4; previously implemented as --head).
+    admission.add_argument("--control-repo")
+    admission.add_argument("--lane")
+    admission.add_argument("--branch")
+    admission.add_argument("--starting-commit")
+    admission.add_argument("--repo-slug")
+    admission.add_argument("--minimum-free-bytes", type=int, required=True)
+    admission.add_argument("--conflict", action="append", default=[])
+    admission.add_argument("--provider-overloaded", action="store_true")
+    admission.set_defaults(run=command_workspace_admit)
+
+    cleanup = sub.add_parser("workspace-cleanup")
+    cleanup.add_argument("--worktree", required=True)
+    cleanup.add_argument("--worktree-root", required=True)
+    cleanup.add_argument("--control-repo", required=True)
+    cleanup.add_argument("--handoff", required=True)
+    cleanup.add_argument("--expected-head", required=True)
+    cleanup.add_argument("--remote-ref", required=True)
+    cleanup.set_defaults(run=command_workspace_cleanup)
+
+    shaping_journal = sub.add_parser("shaping-verdict-journal-write")
+    shaping_journal.add_argument("--journal", required=True, help="output journal path Unit J consumes")
+    shaping_journal.add_argument("--issue", required=True)
+    shaping_journal.add_argument("--repo-slug", required=True, help="canonical owner/repo slug")
+    shaping_journal.add_argument("--pr", type=int, required=True)
+    shaping_journal.add_argument("--head", required=True, help="40-hex clear-verdict head")
+    shaping_journal.add_argument(
+        "--codex-session-id", required=True,
+        help="shaping-reviewer relay codex session id whose rollout record backs the verdict",
+    )
+    shaping_journal.set_defaults(run=command_shaping_verdict_journal_write)
+    return root
+
+
+def main() -> int:
+    try:
+        args = parser().parse_args()
+        print(json.dumps(args.run(args), sort_keys=True, ensure_ascii=False))
+        return 0
+    except (GateError, subprocess.CalledProcessError, json.JSONDecodeError, OSError) as error:
+        print(f"octo-control: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

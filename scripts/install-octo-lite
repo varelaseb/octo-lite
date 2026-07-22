@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+prefix="$HOME"
+check=false
+while (($#)); do
+  case "$1" in
+    --prefix) prefix="${2:?}"; shift 2 ;;
+    --check) check=true; shift ;;
+    *) echo "usage: install-octo-lite [--prefix PATH] [--check]" >&2; exit 64 ;;
+  esac
+done
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+prefix="$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)"
+
+link_one() {
+  local source="$1" target="$2"
+  [[ -e "$source" || -L "$source" ]] || { echo "missing source: $source" >&2; exit 66; }
+  if [[ "$check" == true ]]; then
+    [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] || {
+      echo "bad link: $target" >&2
+      exit 1
+    }
+    return
+  fi
+  mkdir -p "$(dirname "$target")"
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
+    echo "refusing to replace: $target" >&2
+    exit 1
+  fi
+  ln -s "$source" "$target"
+}
+
+# Known legacy octo-lite symlinks from earlier role/adapter names. Migration removes
+# only a dangling link or one that still resolves inside this source repo; any other
+# file or link at these exact paths is left untouched. --check rejects a leftover.
+legacy_links=(
+  ".codex/octo-lite-role-skills.json"
+  ".claude/agents/octo-lite-implementer.md"
+  ".claude/agents/octo-lite-reviewer.md"
+  ".codex/agents/octo-lite-implementer.toml"
+  ".codex/agents/octo-lite-reviewer.toml"
+  ".codex/agents/meta-operator.toml"
+  ".codex/agents/orchestrator.toml"
+  ".codex/agents/shaping-reviewer.toml"
+  ".codex/agents/implementer.toml"
+  ".codex/agents/code-reviewer.toml"
+  ".codex/agents/qa-capture.toml"
+  ".codex/agents/qa-reviewer.toml"
+  ".codex/agents/reconciler.toml"
+)
+
+migrate_legacy_link() {
+  local target="$prefix/$1"
+  [[ -L "$target" ]] || return 0
+  if [[ -e "$target" ]]; then
+    case "$(readlink -f "$target")" in
+      "$root"/*) ;;
+      *) return 0 ;;
+    esac
+  fi
+  rm -f "$target"
+}
+
+check_legacy_gone() {
+  local target="$prefix/$1"
+  if [[ -e "$target" || -L "$target" ]]; then
+    echo "leftover legacy link: $target" >&2
+    exit 1
+  fi
+}
+
+for legacy in "${legacy_links[@]}"; do
+  if [[ "$check" == true ]]; then
+    check_legacy_gone "$legacy"
+  else
+    migrate_legacy_link "$legacy"
+  fi
+done
+
+link_one "$root/profile/AGENTS.md" "$prefix/.codex/AGENTS.md"
+link_one "$root/profile/AGENTS.md" "$prefix/.claude/CLAUDE.md"
+for base in "$prefix/.codex/octo-lite" "$prefix/.claude/octo-lite"; do
+  link_one "$root/roles.toml" "$base/roles.toml"
+  link_one "$root/roles" "$base/roles"
+  link_one "$root/agents" "$base/adapters"
+  link_one "$root/workflows" "$base/workflows"
+done
+link_one "$root/workflows/octo-loop-qa.js" "$prefix/.claude/workflows/octo-loop-qa.js"
+
+for source in "$root"/skills/*; do
+  [[ -d "$source" ]] || continue
+  name="$(basename "$source")"
+  link_one "$source" "$prefix/.codex/skills/$name"
+  link_one "$source" "$prefix/.agents/skills/$name"
+  link_one "$source" "$prefix/.claude/skills/$name"
+done
+
+for source in "$root"/agents/*.md; do
+  name="$(basename "$source")"
+  link_one "$source" "$prefix/.claude/agents/$name"
+done
+
+for source in "$root"/scripts/*; do
+  [[ -x "$source" && -f "$source" ]] || continue
+  link_one "$source" "$prefix/.local/bin/$(basename "$source")"
+done
+for source in "$root"/skills/herdr-comms/assets/*; do
+  [[ -x "$source" ]] || continue
+  link_one "$source" "$prefix/.local/bin/$(basename "$source")"
+done
+
+echo "octo-lite links ${check:+checked} at $prefix"

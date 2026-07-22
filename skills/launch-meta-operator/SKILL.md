@@ -1,82 +1,99 @@
 ---
 name: launch-meta-operator
-description: Launch a persistent operator-level Claude or Codex session in Herdr to inventory active sessions, infer the current workstreams and likely objective, establish durable control state, and ask the user for the smallest missing objective or authority decisions before taking over orchestration. Use when the user explicitly asks to launch a meta-operator, consolidate or drive several Herdr sessions, supervise asynchronous agents, or create an operator that can maintain watchers and handoffs across long-running work.
+description: Launch exact Fable as the persistent octo-lite operator with durable control and atomic handoff support.
 ---
 
-# Launch Meta-Operator
+# Launch meta-operator
 
-Create a new interactive Herdr session whose first job is a read-only inventory,
-not immediate execution. The spawned session owns the operator role after the
-user confirms its objective and authority.
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
 
-Only launch on an explicit user request. Do not silently turn ordinary work into
-a background orchestration session.
+Use only on explicit operator request.
 
-## Choose the Runtime
+## Which launcher
 
-- Always use `claude` (operator directive 2026-07-12): meta-operators run on
-  Fable only — the launcher pins Fable at xhigh effort and uses
-  `--permission-mode auto`. Sol/Codex is a poor meta-orchestrator; do not
-  launch a `codex` meta-operator even if a Codex session is the caller.
-- The `codex` runtime remains in the launcher only as an explicit operator
-  override; it inherits the user's configured model and launches with
-  `--yolo`.
-- Treat these permissive runtime modes as execution plumbing, not expanded
-  authority. The child still performs a read-only bootstrap and preserves every
-  operator gate in its prompt.
+Decision tree. Pick one path; the launchers are distinct scripts.
 
-## Launch
+- No `operator-owner.toml` yet (first ever launch): INITIAL launch. Run
+  `scripts/launch-meta-operator.sh`. Creates the revision-zero owner record;
+  refuses if an owner record already exists.
+- `operator-owner.toml` exists and operator wants a live Fable-to-Fable
+  handoff: LIVE handoff. Run `scripts/handoff-meta-operator.sh`. Requires the
+  existing owner record; refuses if none (that is the initial case). See
+  operator-control `handoff-launcher-initial` / `handoff-launcher-live`.
 
-1. Verify `herdr status` reports a compatible running server.
-2. Prepare a compact caller handoff containing only explicit objectives,
-   authority, terminology, and constraints already supplied by the user. Do not
-   preload summaries of every session; the new operator must inspect live state
-   itself.
-3. Resolve this skill's installed directory and run:
+## INITIAL launch
 
-```bash
-scripts/launch-meta-operator.sh \
-  --runtime claude \
-  --cwd "$PWD" \
-  --handoff "<compact caller handoff>"
-```
+Run `scripts/launch-meta-operator.sh`. It:
 
-Useful overrides:
+- resolves `meta-operator` through `roles.toml`
+- pins exact `claude-fable-5`, xhigh, auto mode, no fallback
+- writes one parent brief, child status, TOML receipt, and owner TOML
+- injects remote access facts from turn one
+- launches through `herdr-spawn` as `🧠 operator`
+- requires bootstrap acknowledgment before mutation
+- installs one lifecycle-bound host timer that runs `operator-sweep` directly
 
-```bash
-scripts/launch-meta-operator.sh --objective "<known starting objective>"
-scripts/launch-meta-operator.sh --workspace w1 --name meta-operator-launch
-scripts/launch-meta-operator.sh --dry-run --runtime claude
-```
+The timer executes the deterministic sweep itself; only a changed sweep
+messages Fable through the sweep's own delta path, so no periodic wake message
+ever enters the operator context.
 
-The launcher creates private durable state under
-`${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/meta-operators/<name>/`, starts
-the agent, and moves it into a role-named Herdr tab. Use `--state-root` to
-override that location.
+The new Fable begins with read-only inventory. It confirms objective, authority,
+and done condition before redirecting work. It owns the reconciled operation
+view, not every raw log.
 
-## Verify the Handoff
+An operator handoff occurs only on explicit request. The outgoing owner writes
+`handoffs/<revision>.md`. The fresh Fable reconciles sources, then declares its
+own readiness with `octo-control successor-ready`. `octo-control owner-transfer`
+verifies that durable receipt and the exact successor session, then performs
+one locked compare and atomic TOML replace. The prior owner becomes read-only.
+No timeout or automatic failover transfers authority.
 
-After launch:
+Use `operator-say` for all messages to Fable. It resolves the current owner on
+every send.
 
-1. Run `herdr agent get <name>` and read a bounded amount of recent output.
-2. Confirm the reported runtime, pane, tab, and control-state path.
-3. If the runtime presents a workspace-trust or permission prompt, approve it
-   only when the user has established that the directory is trusted; otherwise
-   ask the user.
-4. Wait until the new operator begins its inventory or surfaces a real blocker.
-5. Tell the user where the operator is running. Do not duplicate its
-   orchestration in the caller session unless the user deliberately assigns
-   shared responsibility.
+## LIVE handoff
 
-The operator prompt is bundled at `assets/meta-operator-prompt.md` and composed
-by the launcher. Do not paste a second copy into the child session.
+Run `scripts/handoff-meta-operator.sh --workspace ID --handoff DOC [--name NAME]`.
+It:
 
-## Failure Handling
+- requires an existing `operator-owner.toml`; refuses fail-closed if absent
+  (that is the initial case, use `launch-meta-operator.sh`)
+- reads the current owner record: owner session id, route, revision R, and the
+  INVARIANT `control_dir` (passed straight through, never reinvented)
+- requires the `--handoff` doc to exist, its basename to equal the zero-padded
+  R+1, and its parent dir to equal `control_dir/handoffs`; rejects a correct
+  basename in the wrong dir and a wrong basename
+- spawns ONE successor Fable that COEXISTS with the current owner under the same
+  control dir, writing successor artifacts (receipt, brief, status) under its
+  OWN `operators/<name>/` directory
+- writes NO owner record and installs NO timer; owner-transfer is the sole
+  authority commit
+- never probes owner liveness (no ps/kill/pane-read); it cannot and does not
+  distinguish a live from a dead owner
+- pre-derives and prints exactly two runnable commands: the successor-ready
+  command for the successor to run after reconciling, and exactly ONE
+  owner-transfer command bound to the current owner identity for the current
+  owner to run after the successor declares readiness
 
-- If Herdr is unavailable, stop and report that persistent operator launch is
-  unavailable. Do not substitute an ordinary ephemeral subagent while claiming
-  equivalent supervision.
-- If the child exits or blocks before inventory, report the exact pane state and
-  repair or relaunch only after diagnosing the cause.
-- Never claim the child will wake or supervise future work until its selected
-  persistence path is verified.
+The successor reads the handoff, reconciles at source, runs its successor-ready
+command, then signals the current owner. The current owner then runs the printed
+owner-transfer command.
+
+### Boundary (ruling-76 term A, `handoff-launcher-dead-owner-guidance`)
+
+The printed owner-transfer is the normal owner-run handoff-atomic step, run ONLY
+as the live current owner. A dead or ambiguous owner has no agent-callable
+recovery path; it is recovered solely by manual operator takeover outside role
+authority on operator instruction (ADR-0001 `decision-manual-takeover`,
+`decision-no-recover-command`). The launcher prints exactly one owner-transfer
+command and never derives a second command from any other or prior identity.
+
+### Caller-identity property (ruling-76 term B, `handoff-launcher-owner-identity-preexisting`)
+
+The owner-transfer caller-identity gate is a PRE-EXISTING octo-control property
+(`transfer_owner` checks `caller == expected_owner_session_id`). The launcher
+neither strengthens nor weakens it and invents NO new authentication. It only
+pre-fills the exact current owner identity the gate already checks; a caller who
+is not the current owner is rejected by that same pre-existing gate. Any future
+session-authentication hardening is a separate operator-initiated change.

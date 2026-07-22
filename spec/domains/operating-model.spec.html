@@ -1,0 +1,1204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>octo-lite operating model</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header" id="header">
+<h1>octo-lite operating model</h1>
+<nav><a href="../index.spec.html">Specifications</a> / operating model</nav>
+<p>Authority, shared invariants, canonical navigation, and signed decisions.</p>
+</header>
+
+<section data-anchor="representation-contract" id="representation-contract">
+<h2>Visual and prose authority</h2>
+<p data-anchor="representation-diagram" id="representation-diagram">A diagram normatively owns the states and relationships it explicitly encodes.</p>
+<p data-anchor="representation-prose" id="representation-prose">Prose normatively owns exact constraints, exceptions, and behavior a diagram cannot express precisely.</p>
+<p data-anchor="representation-single-owner" id="representation-single-owner">Each rule has one primary representation; the other may clarify or link but should not restate it.</p>
+<p data-anchor="representation-conflict" id="representation-conflict">Any mismatch invalidates the suite and blocks shaping until reconciled; neither representation silently wins.</p>
+</section>
+
+<section data-anchor="diagram-spec-suite" id="diagram-spec-suite">
+<h2>Canonical document map</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "The operating-model overview links to three independently reviewed domain specs and one boundary ADR."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Operating model overview",
+          "x": 470,
+          "y": 70,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Delivery lifecycle",
+          "x": 130,
+          "y": 260,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Role and runtime",
+          "x": 470,
+          "y": 260,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Operator control",
+          "x": 810,
+          "y": 260,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "ADR 0001 boundaries",
+          "x": 470,
+          "y": 440,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Operating model overview",
+          "target": "Delivery lifecycle",
+          "value": "delegates",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Operating model overview",
+          "target": "Role and runtime",
+          "value": "delegates",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Operating model overview",
+          "target": "Operator control",
+          "value": "delegates",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Delivery lifecycle",
+          "target": "ADR 0001 boundaries",
+          "value": "constrained by",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Role and runtime",
+          "target": "ADR 0001 boundaries",
+          "value": "signed boundary",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Operator control",
+          "target": "ADR 0001 boundaries",
+          "value": "signed boundary",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 460px"></div>
+</section>
+
+<section data-anchor="spec-suite" id="spec-suite">
+<h2>Canonical suite</h2>
+<ul>
+<li data-anchor="suite-delivery" id="suite-delivery"><a href="./delivery-lifecycle.spec.html">Delivery lifecycle</a> owns shaping, TDD, delivery, Linear, stories, QA, and release topology.</li>
+<li data-anchor="suite-role-runtime" id="suite-role-runtime"><a href="./role-runtime.spec.html">Role and runtime</a> owns role identity, launch, workspaces, retries, and reconciliation.</li>
+<li data-anchor="suite-operator-control" id="suite-operator-control"><a href="./operator-control.spec.html">Operator control</a> owns messaging, supervision, handoff, stream control, labels, traces, and the optional dashboard.</li>
+<li data-anchor="suite-adr" id="suite-adr"><a href="../adr/0001-operating-model-boundaries.spec.html">ADR 0001</a> signs the critical adapter, relay, delivery, and recovery boundaries.</li>
+</ul>
+<p data-anchor="linear-deployment-target-owned" id="linear-deployment-target-owned">See the delivery lifecycle rule for <a href="./delivery-lifecycle.spec.html#linear-deployment-target-owned">target-owned Linear state mapping</a>.</p>
+</section>
+
+<section data-anchor="diagram-source-authority" id="diagram-source-authority">
+<h2>Source authority and gate flow</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Linear, canonical specs and ADRs, target instructions, and the evolving draft pull request feed exact workflow gates. Gates produce verdicts and evidence for explicit operator acceptance."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Linear",
+          "x": 90,
+          "y": 100,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Specs and ADRs",
+          "x": 90,
+          "y": 250,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Target AGENTS.md",
+          "x": 90,
+          "y": 400,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "Evolving draft PR",
+          "x": 410,
+          "y": 100,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Exact workflow gates",
+          "x": 410,
+          "y": 280,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Verdicts and evidence",
+          "x": 730,
+          "y": 220,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Operator acceptance",
+          "x": 730,
+          "y": 400,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Linear",
+          "target": "Exact workflow gates",
+          "value": "identity, context, state",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Specs and ADRs",
+          "target": "Exact workflow gates",
+          "value": "behavior and constraints",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Target AGENTS.md",
+          "target": "Exact workflow gates",
+          "value": "repo commands",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Evolving draft PR",
+          "target": "Exact workflow gates",
+          "value": "HEAD and artifacts",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Exact workflow gates",
+          "target": "Evolving draft PR",
+          "value": "verdict comments",
+          "lineStyle": {
+            "curveness": 0.16
+          }
+        },
+        {
+          "source": "Exact workflow gates",
+          "target": "Verdicts and evidence",
+          "value": "produces",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Verdicts and evidence",
+          "target": "Operator acceptance",
+          "value": "review surface",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Operator acceptance",
+          "target": "Linear",
+          "value": "operator transitions",
+          "lineStyle": {
+            "curveness": 0.24
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 500px"></div>
+</section>
+
+<section data-anchor="intended-behavior" id="intended-behavior">
+<h2>Intended behavior</h2>
+<p data-anchor="intent-trust" id="intent-trust">octo-lite makes delivery trustworthy and observable without becoming a service or a second operational state machine.</p>
+<p data-anchor="intent-latency" id="intent-latency">The optimization order is trustworthy delivery, low operator latency, throughput, then token and compute cost.</p>
+<p data-anchor="intent-source" id="intent-source">Linear owns high-level issue identity, decisions, context, non-goals, dependencies, and lifecycle state.</p>
+<p data-anchor="intent-spec" id="intent-spec">Canonical specs and ADRs own detailed behavior, acceptance rules, interfaces, edge cases, and constraints.</p>
+<p data-anchor="intent-pr" id="intent-pr">One evolving draft pull request carries shaping and implementation without creating divergent branches of truth.</p>
+<p data-anchor="intent-tdd" id="intent-tdd">Every behavior-changing implementation follows spec-driven red, green, refactor unless shaping records a narrow operator-approved waiver.</p>
+</section>
+
+<section data-anchor="domain-concepts" id="domain-concepts">
+<h2>Domain concepts</h2>
+<dl>
+<dt data-anchor="concept-operator" id="concept-operator">Operator</dt>
+<dd>Fable is the persistent meta-operator and sole writer of the reconciled whole-operation view.</dd>
+<dt data-anchor="concept-orchestrator" id="concept-orchestrator">Stream orchestrator</dt>
+<dd>One persistent Claude Opus session owns exactly one issue or one epic coordination layer and reports to exactly one parent.</dd>
+<dt data-anchor="concept-epic-orchestrator" id="concept-epic-orchestrator">Epic orchestrator</dt>
+<dd>For a multi-issue epic, one dedicated Opus parents the issue orchestrators and owns cross-issue dependencies, topology, carrier integration, and epic outcome.</dd>
+<dt data-anchor="concept-issue-orchestrator" id="concept-issue-orchestrator">Issue orchestrator</dt>
+<dd>Every implementation issue has exactly one dedicated Opus that owns its issue scope, branch, gates, workers, and status.</dd>
+<dt data-anchor="concept-worker" id="concept-worker">Worker pass</dt>
+<dd>One fresh disposable instance performs one implementation, fix, review, re-review, QA capture, or QA review pass.</dd>
+<dt data-anchor="concept-brief" id="concept-brief">Brief</dt>
+<dd>A parent-owned Markdown artifact containing hard invariants, owned scope, standing authority, and must-escalate conditions.</dd>
+<dt data-anchor="concept-status" id="concept-status">Status</dt>
+<dd>A child-owned Markdown artifact containing current gate, health, exact issue and PR facts, material change, and next action.</dd>
+<dt data-anchor="concept-receipt" id="concept-receipt">Receipt</dt>
+<dd>A compact machine-readable fact binding a session or gate to exact role, model, instructions, repo, issue, spec, PR, and HEAD inputs.</dd>
+<dt data-anchor="concept-gate" id="concept-gate">Gate</dt>
+<dd>A durable exact-revision artifact required before a downstream workflow transition.</dd>
+</dl>
+</section>
+
+<section data-anchor="diagram-runtime-boundary" id="diagram-runtime-boundary">
+<h2>Optional tooling boundary</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "The target product remains independently buildable and deployable. octo-lite, spec-chat, and the dashboard operate around target sources without becoming product dependencies."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Target sources",
+          "x": 440,
+          "y": 210,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Build",
+          "x": 740,
+          "y": 80,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Test",
+          "x": 740,
+          "y": 210,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Deploy",
+          "x": 740,
+          "y": 340,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "octo-lite tooling",
+          "x": 120,
+          "y": 80,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        },
+        {
+          "name": "spec-chat review",
+          "x": 120,
+          "y": 210,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        },
+        {
+          "name": "Dashboard",
+          "x": 120,
+          "y": 340,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Target sources",
+          "target": "Build",
+          "value": "native",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Target sources",
+          "target": "Test",
+          "value": "native",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Target sources",
+          "target": "Deploy",
+          "value": "native",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "octo-lite tooling",
+          "target": "Target sources",
+          "value": "foreground workflow",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "spec-chat review",
+          "target": "Target sources",
+          "value": "reads specs",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Dashboard",
+          "target": "Target sources",
+          "value": "read-only projection",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 430px"></div>
+</section>
+
+<section data-anchor="runtime-boundary" id="runtime-boundary">
+<h2>Runtime boundary</h2>
+<p data-anchor="runtime-tooling" id="runtime-tooling">octo-lite is optional installed developer tooling, not a product dependency or service.</p>
+<p data-anchor="runtime-no-service" id="runtime-no-service">It owns no daemon, API, database, scheduler, queue, mirror, poller, cache service, or unowned background runtime.</p>
+<p data-anchor="runtime-foreground" id="runtime-foreground">Small helpers execute inside explicit operator, orchestrator, or workflow sessions.</p>
+<p data-anchor="runtime-target-independence" id="runtime-target-independence">A target product must build, test, deploy, and remain understandable if octo-lite, spec-chat, and the optional dashboard are removed.</p>
+</section>
+
+<section data-anchor="diagram-instruction-ownership" id="diagram-instruction-ownership">
+<h2>Instruction ownership</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Generic octo-lite contracts and target-specific instructions combine at launch. Memory contributes only linked gotchas and never overrides canonical sources."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "roles.toml",
+          "x": 90,
+          "y": 70,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "roles/*.md",
+          "x": 90,
+          "y": 190,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "octo-lite skills",
+          "x": 90,
+          "y": 310,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Target AGENTS.md",
+          "x": 90,
+          "y": 430,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Resolver and brief",
+          "x": 430,
+          "y": 220,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Effective role pass",
+          "x": 760,
+          "y": 220,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Linked memory gotcha",
+          "x": 430,
+          "y": 430,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "roles.toml",
+          "target": "Resolver and brief",
+          "value": "runtime mapping",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "roles/*.md",
+          "target": "Resolver and brief",
+          "value": "role contract",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "octo-lite skills",
+          "target": "Resolver and brief",
+          "value": "procedure",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Target AGENTS.md",
+          "target": "Resolver and brief",
+          "value": "repo law",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Resolver and brief",
+          "target": "Effective role pass",
+          "value": "exact contract",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Linked memory gotcha",
+          "target": "Effective role pass",
+          "value": "evidence only",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 500px"></div>
+</section>
+
+<section data-anchor="instruction-ownership" id="instruction-ownership">
+<h2>Instruction ownership</h2>
+<p data-anchor="instruction-generic" id="instruction-generic">octo-lite owns generic lifecycle, roles, gates, TDD, review mechanics, model policy, and reusable skills.</p>
+<p data-anchor="instruction-target" id="instruction-target">A target repo root <code>AGENTS.md</code> exclusively owns repo-specific commands, architecture, validation, deployment, fixtures, and conventions.</p>
+<p data-anchor="instruction-target-exclusive" id="instruction-target-exclusive">A target root <code>AGENTS.md</code> contains only that target's instructions and is its sole repo instruction source.</p>
+<p data-anchor="instruction-claude" id="instruction-claude">A target root <code>CLAUDE.md</code> is a tracked relative symlink to root <code>AGENTS.md</code> when Claude tooling needs that entry point.</p>
+<p data-anchor="instruction-worktree" id="instruction-worktree">Target instructions remain versioned inside each worktree while generic octo-lite skills, roles, and workflows install by symlink from one canonical source.</p>
+<p data-anchor="instruction-memory" id="instruction-memory">Claude and Codex memory is non-authoritative and may contain only dated evidence-backed gotchas plus durable source links.</p>
+<p data-anchor="instruction-memory-fields" id="instruction-memory-fields">A memory entry contains only date, scope, observed failure, and durable source or fix link.</p>
+<p data-anchor="instruction-memory-owner" id="instruction-memory-owner">Any role may write a qualifying gotcha; the bounded stream orchestrator prunes or promotes entries when the stream closes.</p>
+<p data-anchor="instruction-concise" id="instruction-concise">Every LLM-facing role, skill, launch instruction, brief, handoff, verdict, receipt, and status artifact is extremely concise and may sacrifice grammar for concision.</p>
+<p data-anchor="instruction-dash-style" id="instruction-dash-style">LLM-facing instructions and generated text use no em dash or en dash characters.</p>
+<p data-anchor="instruction-reference" id="instruction-reference">Generated artifacts reference pinned canonical sources and exact revisions rather than restating specs, issues, roles, logs, or earlier artifacts.</p>
+<p data-anchor="instruction-minimum-complete" id="instruction-minimum-complete">Each artifact carries only fields needed for its authority, gate, recovery, or next consumer, but never omits a correctness-critical fact.</p>
+<p data-anchor="instruction-expand-on-demand" id="instruction-expand-on-demand">Detailed prose appears only for a finding, failure, ambiguity, operator decision, or explicit request.</p>
+<p data-anchor="instruction-no-length-cap" id="instruction-no-length-cap">No arbitrary word, character, or token cap may truncate required facts; compact schemas and source references enforce leanness.</p>
+</section>
+
+<section data-anchor="diagram-artifact-formats" id="diagram-artifact-formats">
+<h2>Artifact format ownership</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Each information kind has one preferred durable format. Format does not grant authority."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Behavior and ADRs",
+          "x": 100,
+          "y": 70,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Instructions and context",
+          "x": 100,
+          "y": 190,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Config and current state",
+          "x": 100,
+          "y": 310,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Workflow events",
+          "x": 100,
+          "y": 430,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Visual proof",
+          "x": 100,
+          "y": 550,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "spec-chat HTML",
+          "x": 700,
+          "y": 70,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Markdown",
+          "x": 700,
+          "y": 190,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "TOML",
+          "x": 700,
+          "y": 310,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "JSONL",
+          "x": 700,
+          "y": 430,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Native media",
+          "x": 700,
+          "y": 550,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Behavior and ADRs",
+          "target": "spec-chat HTML",
+          "value": "canonical",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Instructions and context",
+          "target": "Markdown",
+          "value": "canonical",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Config and current state",
+          "target": "TOML",
+          "value": "atomic",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Workflow events",
+          "target": "JSONL",
+          "value": "append only",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Visual proof",
+          "target": "Native media",
+          "value": "evidence",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 600px"></div>
+</section>
+
+<section data-anchor="artifact-formats" id="artifact-formats">
+<h2>Artifact formats</h2>
+<p data-anchor="format-spec" id="format-spec">octo-lite and participating target repos use spec-chat HTML for canonical human-reviewed domain behavior and ADRs.</p>
+<p data-anchor="format-markdown" id="format-markdown">Markdown remains canonical for agent-native instructions and lifecycle-bound human context.</p>
+<p data-anchor="format-toml" id="format-toml">TOML is the default for octo-lite-owned machine configuration and current control state.</p>
+<p data-anchor="format-jsonl" id="format-jsonl">JSONL is the append-only workflow telemetry format.</p>
+<p data-anchor="format-json" id="format-json">JSON or another native format remains only at an external tool, API, schema, or target-consumer boundary.</p>
+<p data-anchor="format-media" id="format-media">Screenshots and necessary video remain native media, and generated HTML views remain non-authoritative projections.</p>
+<p data-anchor="format-version" id="format-version">Machine state and events carry schema versions, TOML updates atomically, and JSONL appends under a small lock.</p>
+<p data-anchor="format-authority" id="format-authority">Format never determines authority.</p>
+</section>
+
+<section data-anchor="constraints" id="constraints">
+<h2>Constraints</h2>
+<p data-anchor="constraint-concise" id="constraint-concise">Prompts, roles, skills, and receipts remain extremely concise and use progressive disclosure.</p>
+<p data-anchor="constraint-no-dashes" id="constraint-no-dashes">Skills use no em dash or en dash characters.</p>
+<p data-anchor="constraint-no-copy" id="constraint-no-copy">Generic octo-lite mechanics are not copied into target repos.</p>
+<p data-anchor="constraint-no-topicfinder" id="constraint-no-topicfinder">TopicFinder-specific paths, credentials, fixtures, states, and dashboard mechanics do not live in generic octo-lite prompts or skills.</p>
+<p data-anchor="constraint-control-panel" id="constraint-control-panel">The optional hosted dashboard is read-only and never becomes a second control plane.</p>
+<p data-anchor="constraint-static-view" id="constraint-static-view">Source systems and control artifacts remain authoritative if every generated view is unavailable.</p>
+<p data-anchor="constraint-ruling-propagation" id="constraint-ruling-propagation">A cross-cutting ruling propagates by a full semantic sweep of every durable surface, reading each file whole and judging its meaning under Decision 108 discipline with one writer per file, never a grep-only or pattern-only pass.</p>
+</section>
+
+<section data-anchor="non-goals" id="non-goals">
+<h2>Non-goals</h2>
+<p data-anchor="non-goal-service" id="non-goal-service">Building an octo-lite service, scheduler, event bus, tracker mirror, orchestration database, or watcher fleet is out of scope.</p>
+<p data-anchor="non-goal-policy-engine" id="non-goal-policy-engine">Building a policy compiler, role registry service, giant spawn manifest, or inheritance engine is out of scope.</p>
+<p data-anchor="non-goal-langfuse" id="non-goal-langfuse">Running Langfuse or OpenTelemetry infrastructure is out of scope.</p>
+<p data-anchor="non-goal-test-matrix" id="non-goal-test-matrix">Building a broad Cartesian workflow conformance matrix is out of scope.</p>
+<p data-anchor="non-goal-transcript" id="non-goal-transcript">Making transcript replay, memory, pane pixels, or queued text a correctness dependency is out of scope.</p>
+<p data-anchor="non-goal-owner-recovery-service" id="non-goal-owner-recovery-service">Building an agent-callable dead-owner recovery command, liveness-probe authority, or cryptographic operator-authentication service is out of scope.</p>
+<p data-anchor="non-goal-codex-agent" id="non-goal-codex-agent">Depending on Codex custom-agent discovery for role identity or fallback is out of scope.</p>
+</section>
+
+<section data-anchor="qa-evidence" id="qa-evidence">
+<h2>QA and evidence</h2>
+<p data-anchor="qa-evidence-canonical-link" id="qa-evidence-canonical-link">Canonical QA rules live in <a href="./delivery-lifecycle.spec.html#qa-evidence">delivery-lifecycle.spec.html</a>.</p>
+</section>
+
+<section data-anchor="open-questions" id="open-questions">
+<h2>Open questions about system behavior</h2>
+<p data-anchor="open-none" id="open-none">None.</p>
+</section>
+
+<section data-anchor="decision-references" id="decision-references">
+<h2>Decision log and references</h2>
+<p data-anchor="source-issue" id="source-issue">The coordinated cutover carrier is <a href="https://linear.app/martellventures/issue/TUR-443">TUR-443</a>.</p>
+<p data-anchor="source-slices" id="source-slices">Bounded delivery slices are <a href="https://linear.app/martellventures/issue/TUR-445">TUR-445</a>, <a href="https://linear.app/martellventures/issue/TUR-447">TUR-447</a>, <a href="https://linear.app/martellventures/issue/TUR-449">TUR-449</a>, <a href="https://linear.app/martellventures/issue/TUR-446">TUR-446</a>, <a href="https://linear.app/martellventures/issue/TUR-444">TUR-444</a>, and <a href="https://linear.app/martellventures/issue/TUR-448">TUR-448</a>.</p>
+<p data-anchor="boundary-adr" id="boundary-adr">Decision 104's boundaries are signed in the canonical ADR at <a href="../adr/0001-operating-model-boundaries.spec.html">0001-operating-model-boundaries.spec.html</a>.</p>
+<p data-anchor="decision-105-historical-cutover" id="decision-105-historical-cutover">Decision 105 approves a one-time historical sequencing exception for PR 6 commits through <code>bc02cc600b3ebbad02890976ed594fc429e1344a</code>, made while the readiness and launch gates were themselves being built.</p>
+<p data-anchor="decision-105-preserves-evidence" id="decision-105-preserves-evidence">It preserves that implementation evidence but waives no TDD, current-head shaping review, code review, QA, acceptance, or future requirement to reach Linear <code>Shaped</code> before implementation.</p>
+<p data-anchor="decision-105-no-later-pass" id="decision-105-no-later-pass">This exception cannot authorize any later pass.</p>
+<p data-anchor="decision-106-spec-structure" id="decision-106-spec-structure">Decision 106 replaces the single broad operating-model spec with one concise overview plus three canonical specs: delivery lifecycle, role/runtime, and operator control.</p>
+<p data-anchor="decision-106-split-rule" id="decision-106-split-rule">Split by independent change and review boundaries, preserve exact cross-links, and do not create one file per subsection.</p>
+<p data-anchor="decision-107-diagram-first" id="decision-107-diagram-first">Decision 107 makes every canonical operating-model page diagram-first.</p>
+<p data-anchor="decision-107-visualize" id="decision-107-visualize">Visualize every relevant hierarchy, sequence, state transition, ownership boundary, mapping, or multi-party flow.</p>
+<p data-anchor="decision-107-prose-retention" id="decision-107-prose-retention">Retain prose only for exact rules, edge conditions, accessibility, and behavior a diagram cannot express precisely.</p>
+<p data-anchor="decision-107-distinct-model" id="decision-107-distinct-model">Each diagram must add a distinct mental model and use document-native semantic data rather than a parallel visualization source.</p>
+<p data-anchor="decision-108-visual-prose-authority" id="decision-108-visual-prose-authority">Decision 108 makes diagrams normative for the states and relationships they explicitly encode and terse prose normative for constraints and exceptions.</p>
+<p data-anchor="decision-108-one-representation" id="decision-108-one-representation">Each rule has one primary representation.</p>
+<p data-anchor="decision-108-other-representation" id="decision-108-other-representation">The other representation may clarify or link but should not overlap.</p>
+<p data-anchor="decision-108-mismatch" id="decision-108-mismatch">A mismatch invalidates the spec and blocks shaping until reconciled, with neither representation silently taking precedence.</p>
+<p data-anchor="decision-109-workflow-native" id="decision-109-workflow-native">Decision 109 runs every worker role as a Claude Workflow subagent of the owning session, retires the octo-launch CLI pass model, and runs OpenAI review roles through a Claude relay subagent that returns codex findings verbatim.</p>
+<p data-anchor="decision-109-binding" id="decision-109-binding">Worker binding proof is the workflow journal plus a schema-forced acknowledgment echo of the exact bound inputs the orchestrator verifies before mutation, durable TOML receipts bind only persistent sessions, and the launch admission and revalidation gates re-home to workflow-layer helpers.</p>
+<p data-anchor="decision-log" id="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 109.</p>
+<p data-anchor="audit-draft" id="audit-draft">The integrated working narrative is preserved in <a href="../../docs/operating-model-audit-2026-07-17/operating-model-draft.md">operating-model-draft.md</a>.</p>
+<p data-anchor="failure-catalog" id="failure-catalog">Observed failure modes are preserved in <a href="../../docs/operating-model-audit-2026-07-17/failure-catalog.md">failure-catalog.md</a>.</p>
+<p data-anchor="symphony-assessment" id="symphony-assessment">The reference-only Symphony comparison is preserved in <a href="../../docs/operating-model-audit-2026-07-17/symphony-assessment.md">symphony-assessment.md</a>.</p>
+<p data-anchor="target-promotion" id="target-promotion">Repo-specific rulings awaiting target shaping are preserved in <a href="../../docs/operating-model-audit-2026-07-17/target-promotion-map.md">target-promotion-map.md</a>.</p>
+</section>
+
+</article>
+</body>
+</html>

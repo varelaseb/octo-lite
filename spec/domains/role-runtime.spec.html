@@ -1,0 +1,1908 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>octo-lite role and runtime</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header" id="header">
+<h1>octo-lite role and runtime</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="./operating-model.spec.html">operating model</a> / role and runtime</nav>
+<p>Canonical role identity, model policy, launch, workspace, retry, and reconciliation behavior.</p>
+</header>
+
+<section data-anchor="diagram-role-hierarchy" id="diagram-role-hierarchy">
+<h2>Role and supervision hierarchy</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Fable owns the whole operation. A multi-issue epic adds one Opus epic orchestrator. Every issue has one Opus issue orchestrator, which launches fresh bounded worker passes."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Fable meta-operator",
+          "x": 520,
+          "y": 60,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Epic Opus",
+          "x": 520,
+          "y": 190,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Issue Opus A",
+          "x": 270,
+          "y": 330,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Issue Opus B",
+          "x": 770,
+          "y": 330,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Implement or fix",
+          "x": 80,
+          "y": 500,
+          "symbolSize": [
+            160,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Code review",
+          "x": 300,
+          "y": 500,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "QA capture",
+          "x": 650,
+          "y": 500,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "QA review",
+          "x": 870,
+          "y": 500,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Fable meta-operator",
+          "target": "Epic Opus",
+          "value": "one parent",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Epic Opus",
+          "target": "Issue Opus A",
+          "value": "spawns",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Epic Opus",
+          "target": "Issue Opus B",
+          "value": "spawns",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue Opus A",
+          "target": "Implement or fix",
+          "value": "fresh pass",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue Opus A",
+          "target": "Code review",
+          "value": "fresh pass",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue Opus B",
+          "target": "QA capture",
+          "value": "fresh pass",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue Opus B",
+          "target": "QA review",
+          "value": "fresh pass",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 540px"></div>
+</section>
+
+<section data-anchor="diagram-role-model-map" id="diagram-role-model-map">
+<h2>Exact role and model map</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Every canonical LLM role resolves to one exact model and effort policy. Unavailability fails visibly rather than silently falling back."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "meta-operator",
+          "x": 70,
+          "y": 70,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "orchestrator",
+          "x": 70,
+          "y": 180,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "implementer",
+          "x": 70,
+          "y": 290,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "qa-capture",
+          "x": 70,
+          "y": 400,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "shaping-reviewer",
+          "x": 70,
+          "y": 510,
+          "symbolSize": [
+            170,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "code-reviewer",
+          "x": 70,
+          "y": 620,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "qa-reviewer",
+          "x": 70,
+          "y": 730,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "reconciler",
+          "x": 70,
+          "y": 840,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "tdd-observer",
+          "x": 70,
+          "y": 950,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "claude-fable-5 xhigh",
+          "x": 600,
+          "y": 70,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "claude-opus-4-8[1m] high",
+          "x": 600,
+          "y": 180,
+          "symbolSize": [
+            220,
+            58
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "claude-opus-4-8[1m] xhigh",
+          "x": 600,
+          "y": 290,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "claude-sonnet-5 high",
+          "x": 600,
+          "y": 455,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "gpt-5.6-sol xhigh fast",
+          "x": 600,
+          "y": 565,
+          "symbolSize": [
+            200,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "gpt-5.6-sol high",
+          "x": 600,
+          "y": 675,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "gpt-5.6-sol high fast",
+          "x": 600,
+          "y": 785,
+          "symbolSize": [
+            200,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "meta-operator",
+          "target": "claude-fable-5 xhigh",
+          "value": "exact",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "orchestrator",
+          "target": "claude-opus-4-8[1m] high",
+          "value": "exact",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "implementer",
+          "target": "claude-opus-4-8[1m] xhigh",
+          "value": "fresh",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "qa-capture",
+          "target": "claude-sonnet-5 high",
+          "value": "fresh",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "reconciler",
+          "target": "claude-sonnet-5 high",
+          "value": "fresh",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "tdd-observer",
+          "target": "claude-sonnet-5 high",
+          "value": "fresh",
+          "lineStyle": {
+            "curveness": 0.12
+          }
+        },
+        {
+          "source": "shaping-reviewer",
+          "target": "gpt-5.6-sol xhigh fast",
+          "value": "fresh",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "code-reviewer",
+          "target": "gpt-5.6-sol high",
+          "value": "fresh",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "qa-reviewer",
+          "target": "gpt-5.6-sol high fast",
+          "value": "fresh",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 860px"></div>
+</section>
+
+<section data-anchor="diagram-role-resolution" id="diagram-role-resolution">
+<h2>Canonical role resolution</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Machine mapping, canonical role prose, requested purpose, conditional skills, and target instructions resolve once into the effective provider contract, which the owning session's workflow dispatches as a Claude subagent, or as a codex relay subagent for OpenAI roles."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "roles.toml",
+          "x": 70,
+          "y": 70,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "roles/<role>.md",
+          "x": 70,
+          "y": 190,
+          "symbolSize": [
+            170,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Requested purpose",
+          "x": 70,
+          "y": 310,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Target AGENTS.md",
+          "x": 70,
+          "y": 430,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "Role resolver",
+          "x": 420,
+          "y": 250,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Resolved skills",
+          "x": 700,
+          "y": 100,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Provider contract",
+          "x": 700,
+          "y": 250,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Journal and ack",
+          "x": 700,
+          "y": 400,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "Workflow dispatch",
+          "x": 880,
+          "y": 250,
+          "symbolSize": [
+            150,
+            56
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Claude subagent",
+          "x": 1010,
+          "y": 140,
+          "symbolSize": [
+            132,
+            52
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Relay subagent",
+          "x": 1010,
+          "y": 360,
+          "symbolSize": [
+            132,
+            52
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "roles.toml",
+          "target": "Role resolver",
+          "value": "runtime fields",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "roles/<role>.md",
+          "target": "Role resolver",
+          "value": "canonical prose",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Requested purpose",
+          "target": "Role resolver",
+          "value": "capability request",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Target AGENTS.md",
+          "target": "Role resolver",
+          "value": "repo law",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Role resolver",
+          "target": "Resolved skills",
+          "value": "exact set",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Role resolver",
+          "target": "Provider contract",
+          "value": "effective identity",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Role resolver",
+          "target": "Journal and ack",
+          "value": "bound inputs",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Provider contract",
+          "target": "Workflow dispatch",
+          "value": "effective identity",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Workflow dispatch",
+          "target": "Journal and ack",
+          "value": "journals spawn",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Claude subagent",
+          "target": "Journal and ack",
+          "value": "ack echo pre-mutation",
+          "lineStyle": {
+            "curveness": 0.2
+          }
+        },
+        {
+          "source": "Relay subagent",
+          "target": "Journal and ack",
+          "value": "ack echo pre-mutation",
+          "lineStyle": {
+            "curveness": 0.2
+          }
+        },
+        {
+          "source": "Workflow dispatch",
+          "target": "Claude subagent",
+          "value": "Claude roles",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Workflow dispatch",
+          "target": "Relay subagent",
+          "value": "OpenAI verbatim",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 500px"></div>
+</section>
+
+<section data-anchor="diagram-reconciler" id="diagram-reconciler">
+<h2>Read-only reconciliation</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Deterministic exact checks normalize current source facts and bind a digest. A fresh Sonnet reconciler classifies deltas and ambiguity for Fable without mutating any source."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Linear facts",
+          "x": 100,
+          "y": 80,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "PR and checks",
+          "x": 100,
+          "y": 200,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Specs and ADRs",
+          "x": 100,
+          "y": 320,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Control artifacts",
+          "x": 100,
+          "y": 440,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "Exact check helpers",
+          "x": 400,
+          "y": 260,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Normalized snapshot",
+          "x": 700,
+          "y": 260,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "Fresh Sonnet reconciler",
+          "x": 1000,
+          "y": 260,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Changed",
+          "x": 100,
+          "y": 620,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Missing",
+          "x": 340,
+          "y": 620,
+          "symbolSize": [
+            118,
+            50
+          ],
+          "itemStyle": {
+            "color": "#dc2626"
+          }
+        },
+        {
+          "name": "Stale",
+          "x": 500,
+          "y": 620,
+          "symbolSize": [
+            118,
+            50
+          ],
+          "itemStyle": {
+            "color": "#dc2626"
+          }
+        },
+        {
+          "name": "Contradictory",
+          "x": 700,
+          "y": 620,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#dc2626"
+          }
+        },
+        {
+          "name": "needs_fable",
+          "x": 1000,
+          "y": 620,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Linear facts",
+          "target": "Exact check helpers",
+          "value": "read",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "PR and checks",
+          "target": "Exact check helpers",
+          "value": "read",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Specs and ADRs",
+          "target": "Exact check helpers",
+          "value": "read",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Control artifacts",
+          "target": "Exact check helpers",
+          "value": "read",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Exact check helpers",
+          "target": "Normalized snapshot",
+          "value": "hash and bind",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Normalized snapshot",
+          "target": "Fresh Sonnet reconciler",
+          "value": "read only",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh Sonnet reconciler",
+          "target": "Changed",
+          "value": "classify",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh Sonnet reconciler",
+          "target": "Missing",
+          "value": "classify",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh Sonnet reconciler",
+          "target": "Stale",
+          "value": "classify",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh Sonnet reconciler",
+          "target": "Contradictory",
+          "value": "classify",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh Sonnet reconciler",
+          "target": "needs_fable",
+          "value": "escalate",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 680px"></div>
+</section>
+
+<section data-anchor="role-topology" id="role-topology">
+<h2>Role and model topology</h2>
+<p data-anchor="role-roster" id="role-roster">The complete LLM role roster is meta-operator, orchestrator, shaping-reviewer, implementer, code-reviewer, qa-capture, qa-reviewer, reconciler, and the delivery <code>tdd-observer</code>.</p>
+<p data-anchor="role-shaping-mode" id="role-shaping-mode">The issue orchestrator performs shaping mode by resolving the issue-shaper skill in its own persistent session, never a second persistent role or tab.</p>
+<p data-anchor="role-fix-reuse" id="role-fix-reuse">Every fix uses a fresh implementer instance and every re-review uses a fresh code-reviewer instance rather than separate role contracts.</p>
+<p data-anchor="role-nested-reuse" id="role-nested-reuse">Every nested stream owner uses the same orchestrator contract.</p>
+<p data-anchor="role-issue-cardinality" id="role-issue-cardinality">Every issue has one and only one dedicated Opus issue orchestrator.</p>
+<p data-anchor="role-epic-layer" id="role-epic-layer">A multi-issue epic adds a separate Opus epic orchestrator above its issue orchestrators, producing two Opus layers below Fable.</p>
+<p data-anchor="role-reporting-chain" id="role-reporting-chain">Fresh workers report to their issue orchestrator; issue orchestrators report to the epic orchestrator; the epic orchestrator reports upward to Fable or its declared parent.</p>
+<p data-anchor="role-nested-rules" id="role-nested-rules">A parent flattens relevant effective rules into the child brief; the child acknowledges them only at spawn or after a material brief revision.</p>
+<p data-anchor="role-helper-boundary" id="role-helper-boundary">Acceptance recording, merge, evidence publication, Linear transition, preproduction promotion, and live traffic shift are deterministic operator-authorized helpers rather than LLM roles.</p>
+<p data-anchor="role-control-view" id="role-control-view">The dashboard displays deterministic gates and helpers separately from LLM roles.</p>
+<p data-anchor="role-model-map-authority" id="role-model-map-authority">The exact model, effort, and service tier for every role, including the delivery <code>tdd-observer</code>, are normative in the role and model map diagram above; the constraints below never restate that mapping.</p>
+<p data-anchor="role-fable" id="role-fable">The meta-operator runs in auto permission mode.</p>
+<p data-anchor="role-fable-context" id="role-fable-context">Fable 5 uses its default 1M context without a redundant <code>[1m]</code> suffix.</p>
+<p data-anchor="role-fable-no-fallback" id="role-fable-no-fallback">An unavailable Fable 5 fails visibly and is never silently replaced by Opus or another model.</p>
+<p data-anchor="role-opus" id="role-opus">Stream and subordinate orchestrators run in auto permission mode.</p>
+<p data-anchor="role-opus-no-fallback" id="role-opus-no-fallback">An unavailable orchestrator model fails visibly and is never silently replaced by another version or family.</p>
+<p data-anchor="role-implementer" id="role-implementer">Implementation and every fix pass run as a fresh exact instance of the mapped implementer role, never reused across passes.</p>
+<p data-anchor="role-reviewer" id="role-reviewer">Code review and every re-review run as a fresh exact instance of the mapped code-reviewer role.</p>
+<p data-anchor="role-shaping-reviewer" id="role-shaping-reviewer">The final post-grill shaping review runs as a fresh exact instance of the mapped shaping-reviewer role.</p>
+<p data-anchor="role-qa-capture" id="role-qa-capture">QA capture runs as a fresh exact instance of the mapped qa-capture role.</p>
+<p data-anchor="role-qa-reviewer" id="role-qa-reviewer">QA review runs as a fresh exact instance of the mapped qa-reviewer role.</p>
+<p data-anchor="role-reconciler" id="role-reconciler">Each reconciliation sweep runs as a fresh exact instance of the mapped reconciler role that never falls back.</p>
+<p data-anchor="role-reconciler-input" id="role-reconciler-input">Deterministic helpers perform exact checks and provide one compact normalized read-only snapshot; Sonnet classifies only changed, missing, stale, contradictory, or <code>needs_fable</code>.</p>
+<p data-anchor="role-reconciler-snapshot-integrity" id="role-reconciler-snapshot-integrity">The reconcile gateway reads the exact snapshot file bytes from a regular contained path and hashes them, rejecting a missing, substituted, corrupt, or digest-mismatched snapshot before any worktree or provider launch.</p>
+<p data-anchor="role-reconciler-pr-facts" id="role-reconciler-pr-facts">Reconcile PR facts bind normalized PR state, review decision, and status check rollup outcomes alongside head, base, and branch, so a change in any of them changes the snapshot fingerprint.</p>
+<p data-anchor="role-reconciler-status-check-identity" id="role-reconciler-status-check-identity">Normalized status check facts sort on name, current status, and outcome so duplicate-name checks in any API order, or with differing outcomes or in-progress states, never collapse or reorder the same rollup's fingerprint.</p>
+<p data-anchor="role-reconciler-canonical-sweep" id="role-reconciler-canonical-sweep">The reconciler's canonical spec and ADR sweep requires every declared canonical path to exist as a readable regular file at the exact control HEAD, and a missing, renamed, unreadable, non-file, or empty resulting source set fails the sweep closed before any snapshot or worktree is produced.</p>
+<p data-anchor="role-reconciler-canonical-declaration" id="role-reconciler-canonical-declaration">Each target repo root AGENTS.md declares its own canonical spec and ADR paths as exact comma-separated Canonical spec paths and Canonical ADR paths lines, and octo-lite's own AGENTS.md declares its own paths the same way rather than a hardcoded constant.</p>
+<p data-anchor="role-reconciler-canonical-bootstrap" id="role-reconciler-canonical-bootstrap">A target initialization template declares exactly one Canonical spec paths placeholder and exactly one Canonical ADR paths signal in root AGENTS.md alongside the spec-format signal.</p>
+<p data-anchor="role-reconciler-canonical-bootstrap-shaping" id="role-reconciler-canonical-bootstrap-shaping">Shaping replaces the spec placeholder with exact target-owned canonical paths before readiness, and no role, skill, workflow, or octo-lite dependency is copied into the target.</p>
+<p data-anchor="role-reconciler-canonical-fail-closed" id="role-reconciler-canonical-fail-closed">The canonical sweep fails closed on an absent declaration, a missing, non-blob, empty, duplicate, malformed, escaped, or symlinked declared path, or a path declared under both the spec and ADR label.</p>
+<p data-anchor="role-reconciler-canonical-no-adr" id="role-reconciler-canonical-no-adr">Canonical ADR paths: none is the sole explicit no-ADR representation and binds an empty ADR blob list rather than a path.</p>
+<p data-anchor="role-reconciler-canonical-no-adr-fail-closed" id="role-reconciler-canonical-no-adr-fail-closed">Any other empty value, sentinel, a mix of none and a path, or a repeated Canonical ADR paths declaration fails the sweep closed, and at least one canonical spec path remains mandatory.</p>
+<p data-anchor="role-reconciler-canonical-repeated" id="role-reconciler-canonical-repeated">Zero or more than one signal line for either label fails the sweep closed, a prefix lookalike line never counts toward that total, and duplicate paths within one otherwise valid line still fail closed.</p>
+<p data-anchor="role-reconciler-noop-safety" id="role-reconciler-noop-safety">A sweep refetches and validates current Linear, GitHub PR, target HEAD, and canonical spec and ADR facts before any unchanged decision or snapshot persistence, and the compared fingerprint binds all of them rather than only declared stream facts.</p>
+<p data-anchor="role-reconciler-head-race" id="role-reconciler-head-race">The sweep captures one target HEAD and passes it as the gateway's expected HEAD, and the gateway compares its own freshly read current repo HEAD against that expected HEAD before validating any source or creating a worktree.</p>
+<p data-anchor="role-reconciler-head-race-fail-closed" id="role-reconciler-head-race-fail-closed">Any HEAD change between capture and gateway comparison, including an unrelated commit that leaves canonical blobs unchanged, fails before any provider launch and persists no snapshot, receipt, result, worktree, or sweep state.</p>
+<p data-anchor="role-reconciler-head-race-binding" id="role-reconciler-head-race-binding">The journalled reconcile binding and the child worktree bind the same expected HEAD.</p>
+<p data-anchor="role-reconciler-snapshot-after-validation" id="role-reconciler-snapshot-after-validation">A snapshot, sweep state, and worktree are persisted only after every bound fact validates; a failed target HEAD read or canonical sweep leaves none of them behind.</p>
+<p data-anchor="role-reconciler-snapshot-no-partial" id="role-reconciler-snapshot-no-partial">The sweep never persists snapshot.md under the final sweep directory before Linear, PR, HEAD, spec, and ADR validation all succeed, and a failing gateway leaves no sweep artifact directory or state behind.</p>
+<p data-anchor="role-reconciler-snapshot-temp-input" id="role-reconciler-snapshot-temp-input">A temporary input required only for digest verification lives outside the final sweep directory and is removed on every failure, while a successful sweep still persists its atomic snapshot, journal entry, result, and no-op state.</p>
+<p data-anchor="role-reconciler-snapshot-receipt-binding" id="role-reconciler-snapshot-receipt-binding">The reconcile journal entry binds the snapshot path to the final persisted <code>snapshot.md</code>, never the temporary digest-verification input, and that exact file exists with matching bytes and digest before the reconciler subagent spawns.</p>
+<p data-anchor="role-reconciler-snapshot-post-persist-atomicity" id="role-reconciler-snapshot-post-persist-atomicity">Every caught pre-spawn failure, including a journal persistence failure that happens after snapshot persistence, leaves no final sweep snapshot, journal entry, or sweep directory and no pending digest-verification input behind.</p>
+<p data-anchor="role-reconciler-bootstrap-snapshot-proof" id="role-reconciler-bootstrap-snapshot-proof">The reconciler subagent acknowledgment opens the exact file at the journal-bound snapshot path, hashes its bytes, and refuses the echo when that file is missing or its digest does not match the journal-bound snapshot digest.</p>
+<p data-anchor="role-reconciler-authority" id="role-reconciler-authority">Sonnet cannot mutate sources, override deterministic mismatches, investigate open-endedly, or silently resolve ambiguity.</p>
+<p data-anchor="role-reconciler-escalation" id="role-reconciler-escalation">Missing or unparseable input and semantic ambiguity return <code>needs_fable</code>; Fable judges the case.</p>
+<p data-anchor="role-claude-native" id="role-claude-native">Orchestrated Claude Workflows are the primary loop runtime rather than an adapter target, and every worker role runs as a subagent of the owning session's workflow.</p>
+<p data-anchor="role-worker-migration" id="role-worker-migration">Every worker role migrates to a Claude Workflow subagent, including implementer, qa-capture, reconciler, and the delivery <code>tdd-observer</code>; reconciler, the <code>tdd-observer</code>, and the review roles run under a Read-restricted subagent type, OpenAI review roles run through the codex relay subagent, and only the meta-operator and the epic and issue orchestrators remain persistent host sessions.</p>
+<p data-anchor="role-implementer-host-gated-push" id="role-implementer-host-gated-push">The implementer worker commits the red and green on an isolated branch and never pushes, and the host gates the push after independent observer verification, the acknowledgment echo, and the fresh pre-push readback.</p>
+<p data-anchor="role-tdd-observer" id="role-tdd-observer">The <code>tdd-observer</code> is a dedicated Read-restricted delivery role, never the mutating worker, that checks out each committed state and the final HEAD in an isolated worktree and runs the trusted-source-derived invocation to confirm the red fails, the green passes, and the final pushed HEAD is green; it never mutates the worker branch, main, or the live repository working directory, and it never pushes.</p>
+<p data-anchor="role-tdd-observer-trusted-source" id="role-tdd-observer-trusted-source">The <code>tdd-observer</code> derives its invocation only from the committed test files and the canonical validation command in the target <code>AGENTS.md</code>, and no worker-supplied string enters its prompt or execution inputs, so its verdict cannot be forged.</p>
+<p data-anchor="role-tdd-observer-host-sourced-inputs" id="role-tdd-observer-host-sourced-inputs">The <code>tdd-observer</code> receives its commit identifiers and command from the host journal binding of the worker's committed delivery branch, never worker-authored, and it checks out exactly the red, green, and final commit ids the host journalled.</p>
+<p data-anchor="role-reconciler-execution-bifurcation" id="role-reconciler-execution-bifurcation">The reconciler has two execution modes selected by the driving context, not one migrated path that replaces the other, and ruling-48 fixes this bifurcation as canonical.</p>
+<p data-anchor="role-reconciler-headless-subprocess" id="role-reconciler-headless-subprocess">The headless subprocess reconcile runs when <code>scripts/operator-sweep</code> fires under a systemd --user timer with no Claude or Workflow runtime and no owning session, so it drives the reconciler through the retained subprocess provider-argv relay (<code>octo_lite.launch.prepare_reconcile_launch</code> then <code>octo_lite.launch.run_reconcile_launch</code>).</p>
+<p data-anchor="role-reconciler-session-workflow" id="role-reconciler-session-workflow">The session Workflow reconcile runs when an owning Claude session drives the loop, so the reconciler spawns as a Read-restricted Workflow subagent that the session binds and verifies through <code>octo_lite.launch.bind_reconcile_workflow_journal</code>, <code>octo_lite.launch.verify_reconcile_workflow_ack</code>, and <code>octo_lite.launch.bind_reconcile_workflow_result</code>.</p>
+<p data-anchor="role-reconciler-headless-timer-constraint" id="role-reconciler-headless-timer-constraint">The headless-timer constraint is that a systemd --user timer cannot spawn a Workflow subagent because it has no Workflow runtime and no session, so the Workflow-native reconciler is for session contexts only and can never serve the headless timer.</p>
+<p data-anchor="role-reconciler-relay-retained" id="role-reconciler-relay-retained">Because the timer has no other path, the subprocess provider-argv relay is retained and is not a bypass, and it must not be removed; ruling-47 and ruling-48 voided the reconcile-relay removal for exactly this reason, and the two modes coexist rather than the Workflow mode superseding the subprocess mode.</p>
+<p data-anchor="role-contract-source" id="role-contract-source">Each <code>roles/&lt;role&gt;.md</code> is the sole canonical prose contract for that role.</p>
+<p data-anchor="role-machine-map" id="role-machine-map"><code>roles.toml</code> exclusively owns provider, exact model, effort, permission mode, tools, required and conditional skills, and contract path.</p>
+<p data-anchor="role-authority-split" id="role-authority-split">Role prose owns responsibilities, authority, stop conditions, inputs, and outputs without repeating machine configuration.</p>
+<p data-anchor="role-resolver" id="role-resolver">One small resolver combines the canonical role contract and machine mapping before every Workflow agent invocation or Sol relay.</p>
+<p data-anchor="role-adapters" id="role-adapters">Claude Markdown adapters are generated launcher inputs and diagnostic surfaces, never alternate role-bearing spawn paths.</p>
+<p data-anchor="role-no-codex-adapter" id="role-no-codex-adapter">Codex has no generated custom-agent adapter; Codex custom agents are not part of correctness or fallback for any role.</p>
+<p data-anchor="role-openai-relay" id="role-openai-relay">An OpenAI-backed role pass runs inside a Claude relay subagent that executes one explicit codex exec relay, carrying exact model, effort, service tier, worktree, and the canonical contract as the exec prompt, and returns the codex final message verbatim with a hash the workflow binds; it never summarizes the relay output and never discovers or depends on a Codex custom agent.</p>
+<p data-anchor="role-openai-fail-closed" id="role-openai-fail-closed">The relay fails closed unless the exact effective provider, model, and effort are independently read back from the Codex session's own rollout record before any mutation.</p>
+<p data-anchor="role-no-prompt-copy" id="role-no-prompt-copy">Claude Workflows load canonical role prose verbatim and Sol relays receive the same prose without copied workflow literals.</p>
+<p data-anchor="role-skill-map" id="role-skill-map">The launcher loads every required skill plus only matched conditional skills and records the actual resolved set.</p>
+<p data-anchor="role-receipt" id="role-receipt">The launch receipt records role path and git blob, <code>roles.toml</code> revision, exact runtime values, and resolved skills.</p>
+<p data-anchor="role-adapter-loss" id="role-adapter-loss">Adapter generation fails if a target platform cannot express a required tool, mode, or contract field.</p>
+<p data-anchor="role-map-boundary" id="role-map-boundary"><code>roles.toml</code> contains no target rules, issue scope, live state, secrets, or operator decisions.</p>
+<p data-anchor="role-ci" id="role-ci">One path-filtered CI dry run proves role blob, map revision, model, mode, skills, target instruction blob, repo, worktree, and starting HEAD reached the spawned session.</p>
+<p data-anchor="role-runtime-fallback" id="role-runtime-fallback">If the Workflow runtime cannot read canonical files directly, a deterministic prebuilt Workflow injects the exact role text and source blob without handwritten prompt literals.</p>
+<p data-anchor="role-no-reuse" id="role-no-reuse">A worker instance is never resumed for another pass and <code>--last</code> is prohibited.</p>
+<p data-anchor="role-retirement" id="role-retirement">A completed orchestrator stream archives its control record and terminates rather than accepting later work.</p>
+</section>
+
+<section data-anchor="diagram-launch-pipeline" id="diagram-launch-pipeline">
+<h2>Fail-closed launch pipeline</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "The workflow validates current source facts, role-purpose capability, Linear state, prior verdicts, manifest shape, and revision before spawning a worker subagent. Mutation begins only after a contained subagent and its verified acknowledgment echo."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Exact source readback",
+          "x": 100,
+          "y": 230,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Role purpose capability",
+          "x": 400,
+          "y": 80,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Linear and verdict gate",
+          "x": 400,
+          "y": 230,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Manifest and revision",
+          "x": 400,
+          "y": 380,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Fresh worktree",
+          "x": 700,
+          "y": 230,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Subagent spawn",
+          "x": 1000,
+          "y": 230,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Journal revalidation",
+          "x": 1000,
+          "y": 500,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Ack echo",
+          "x": 700,
+          "y": 500,
+          "symbolSize": [
+            200,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Mutation permitted",
+          "x": 400,
+          "y": 500,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Fail closed",
+          "x": 100,
+          "y": 500,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#dc2626"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Exact source readback",
+          "target": "Role purpose capability",
+          "value": "current",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Exact source readback",
+          "target": "Linear and verdict gate",
+          "value": "current",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Exact source readback",
+          "target": "Manifest and revision",
+          "value": "current",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Role purpose capability",
+          "target": "Fresh worktree",
+          "value": "valid",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Linear and verdict gate",
+          "target": "Fresh worktree",
+          "value": "valid",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Manifest and revision",
+          "target": "Fresh worktree",
+          "value": "valid",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh worktree",
+          "target": "Journal revalidation",
+          "value": "contained",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Journal revalidation",
+          "target": "Subagent spawn",
+          "value": "valid before spawn",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Subagent spawn",
+          "target": "Ack echo",
+          "value": "echo bound inputs",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Ack echo",
+          "target": "Mutation permitted",
+          "value": "verified",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Role purpose capability",
+          "target": "Fail closed",
+          "value": "invalid",
+          "lineStyle": {
+            "curveness": 0.16
+          }
+        },
+        {
+          "source": "Linear and verdict gate",
+          "target": "Fail closed",
+          "value": "invalid",
+          "lineStyle": {
+            "curveness": 0.08
+          }
+        },
+        {
+          "source": "Manifest and revision",
+          "target": "Fail closed",
+          "value": "invalid",
+          "lineStyle": {
+            "curveness": -0.08
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 570px"></div>
+</section>
+
+<section data-anchor="launch-interface" id="launch-interface">
+<h2>Role launch</h2>
+<p data-anchor="launch-correctness-path" id="launch-correctness-path">A Claude Workflow inside the owning orchestrator session spawns, gates, and runs every worker role pass as a subagent; the deterministic admission and revalidation gates run in the workflow-layer helpers, and OpenAI review roles run through a Claude relay subagent that executes the codex exec relay and returns findings verbatim. Persistent sessions are hosts that run these workflows, never subagents spawned by them.</p>
+<p data-anchor="launch-readback" id="launch-readback">The launch helper performs final exact Linear and PR and HEAD readback before dispatch.</p>
+<p data-anchor="launch-worktree" id="launch-worktree">It provisions a fresh contained worktree from the declared base and starts the exact role, model, effort, mode, and skill set.</p>
+<p data-anchor="launch-identity" id="launch-identity">A worker subagent requires a schema-forced acknowledgment echo of its exact bound inputs before mutation; the host session owns the subagent, so no separate provider session ID handshake is captured for a Claude worker, and only the codex relay subagent returns its proven codex session identity.</p>
+<p data-anchor="launch-containment" id="launch-containment">Workspace containment is checked exactly at provisioning and child bootstrap, not before every command.</p>
+<p data-anchor="launch-provisioning-trust-root" id="launch-provisioning-trust-root">The host provisions the per-lane isolated worktree and runs the loop inside it, so worker workspace identity derives from provisioning by the host and never from a child-supplied or subagent-read claim, the same host-owns-the-trust-root rule as the persistent control root applied at the worktree level.</p>
+<p data-anchor="launch-provision-exclusivity" id="launch-provision-exclusivity">Each lane provisions its own exclusive worktree pinned to its branch and starting commit, and provisioning refuses the control repository path itself and any path already bound to a different lane or branch, so no worker ever operates the shared control directory and no worktree is ever checked out to a foreign lane branch.</p>
+<p data-anchor="launch-provision-record" id="launch-provision-record">Provisioning emits a host-authored provisioning record stamped with source host-provisioned-worktree carrying schema version, lane, control repo, worktree, worktree root, repo slug, branch, resolved starting head, resolver root, install-check state, and provisioned-at, and a record from any non-host source or missing a field fails closed.</p>
+<p data-anchor="launch-provision-record-out-of-tree" id="launch-provision-record-out-of-tree">The provisioning record is written to a host control location outside the worktree tree, never inside it, so the verified-clean tree stays clean and idempotent reuse and cleanup are never broken by a tracked or untracked record file, while OCTO_PROVISION_RECORD names that out-of-tree path.</p>
+<p data-anchor="launch-provision-record-schema" id="launch-provision-record-schema">The record is a JSON object with exactly these keys and constraints: schema_version integer 1; source the string host-provisioned-worktree; lane a nonempty string; control_repo, worktree, worktree_root, and resolver_root absolute paths with resolver_root equal to worktree; repo_slug an owner slash repo slug; branch the lane branch string; starting_head a resolved commit sha; install_check the string clean or drifted; provisioned_at a host-stamped RFC3339 timestamp; any extra key, missing key, wrong type, or wrong source value fails closed.</p>
+<p data-anchor="launch-provision-env-seam" id="launch-provision-env-seam">The host starts the loop process with working directory set to the provisioned worktree and trusted environment variables OCTO_WORKTREE, OCTO_WORKTREE_ROOT, OCTO_CONTROL_REPO, OCTO_REPO_SLUG, OCTO_STARTING_HEAD, OCTO_LANE, and OCTO_PROVISION_RECORD, and these names and the record schema are the frozen stable seam by which the loop learns its host-provisioned worktree.</p>
+<p data-anchor="launch-stream-envelope-builder" id="launch-stream-envelope-builder">The invocation layer builds the loop bound-inputs envelope as parsed JSON carrying every field the loop readiness check requires, and it passes that structured envelope as the loop arguments so a stream name is never handed to a JSON-parsing loop entry as a raw command flag.</p>
+<p data-anchor="launch-stream-envelope-sources" id="launch-stream-envelope-sources">Each envelope field has one defined source: from the provisioning environment come the local repo path used for git operations and the worktree, both from OCTO_WORKTREE because the loop runs inside its provisioned worktree, the worktree root from OCTO_WORKTREE_ROOT, the repo slug from OCTO_REPO_SLUG, and the shaping head and PR head from OCTO_STARTING_HEAD; from stream and brief data come issue, PR number, PR base, branch, topology revision, conversation log references and cutoff, and acceptance criteria; from live reads at the shaping head come spec revision, spec blobs, ADR blobs, the resolved worker-role contract hash, the fresh PR head confirmation, and the Linear revision, fingerprint, and state; and from the shaping-review journal come the clear shaping verdict, its head, the reviewer receipt, and the verdict input bindings, so no required field including the local repo path and the contract hash is unsourced and a missing source fails closed before the envelope is passed.</p>
+<p data-anchor="launch-provision-verify" id="launch-provision-verify">Provisioning verifies the created worktree by reality before emitting the record, requiring its top-level to equal itself, its git-common-dir to belong to the control repo, its origin remote to resolve to the repo slug, its head to equal the resolved starting commit, its branch to equal the lane branch, and its tree to be clean.</p>
+<p data-anchor="launch-provision-wiring-liveness" id="launch-provision-wiring-liveness">Provisioning keeps role, instruction, and skill wiring correct by requiring, as the per-lane guarantee, that the role resolver root is the provisioned worktree with canonical roles.toml and role files present so core role spawns resolve there rather than through a drift-prone shared symlink, and it records the installed-surface check state as clean or drifted without silently overwriting a foreign-owned link, since the installer refuses to replace a nonmatching existing target and a genuine drift is routed to the installed-surface owner rather than repaired in place, while the worktree own AGENTS.md and CLAUDE.md are correct by construction and verified.</p>
+<p data-anchor="launch-provision-identity-supersedes-interim" id="launch-provision-identity-supersedes-interim">When host provisioning is in force the loop trusts its working directory and provisioning record as the workspace identity source, and the interim receipt-binding and live-read identity anchors are retired as the identity trust source because provisioning makes them redundant, leaving any residual reality read to the integrating loop as a non-authoritative implementation choice, not a durable requirement.</p>
+<p data-anchor="launch-provision-identity-integration" id="launch-provision-identity-integration">The integrated delivery loop makes host provisioning the identity trust root: before any Shaped to Todo fire or worker spawn a host-controlled read-only subagent reads the out-of-tree provisioning record named by OCTO_PROVISION_RECORD and resolves the frozen launch environment itself, and the loop rejects unless the record source is host-provisioned-worktree with schema version 1 and resolver root equal to worktree and the envelope repo slug, worktree, starting head, and branch match both the record and the resolved environment, since a child cannot forge its own launch environment and the process working directory equals OCTO_WORKTREE.</p>
+<p data-anchor="launch-provision-identity-defense-in-depth" id="launch-provision-identity-defense-in-depth">The retired receipt-at-OCTO_RECEIPT anchor no longer sources identity trust, and the live git read of the provisioned worktree stays only as a cheap defense-in-depth reality confirm that still rejects an accidentally misrouted worktree on a foreign branch or a foreign origin remote, so its presence never restores the receipt as the trust root and its removal would not weaken the provisioning trust root.</p>
+<p data-anchor="launch-receipt" id="launch-receipt">A worker pass binds no durable TOML receipt; its binding proof is the workflow journal plus a schema-forced acknowledgment echo of the exact bound inputs, meaning role, repo, issue, PR, starting HEAD, spec blobs, and contract hash, which the owning orchestrator deterministically verifies before any mutation phase, so a role, repo, issue, or PR substitution fails the echo exactly as a HEAD mismatch does.</p>
+<p data-anchor="launch-receipt-persistent" id="launch-receipt-persistent">A durable TOML receipt binds only a persistent session: spawn, parent and reply route, role, runtime, repo, instructions, control identity, and required prior gates.</p>
+<p data-anchor="launch-identity-delivery-branch" id="launch-identity-delivery-branch">The mutating worker identity is bound to the isolated delivery branch the host gates, and the independent observer verification plus the fresh pre-push readback bind that identity before any host push.</p>
+<p data-anchor="launch-gates-workflow-layer" id="launch-gates-workflow-layer">The admission matrix, Linear-state gate, manifest-shape and launch-revision revalidation, and bound-result checks run as deterministic workflow-layer helpers the orchestrator calls before each subagent spawn and before every mutation phase.</p>
+<p data-anchor="launch-access-context" id="launch-access-context">The initial launch context and receipt state only execution location, operator loopback reachability, and required review delivery path.</p>
+<p data-anchor="launch-access-default" id="launch-access-default">Unless launch context explicitly confirms operator loopback access, every role treats loopback as unreachable and never presents a localhost URL as usable operator access.</p>
+<p data-anchor="launch-access-ownership" id="launch-access-ownership">Durable access behavior belongs in octo-lite specs and roles, durable target-specific conventions belong in target <code>AGENTS.md</code>, current access facts belong in the receipt or stream status, and temporary routes belong only in stream status.</p>
+<p data-anchor="launch-role-purpose-capability" id="launch-role-purpose-capability">Role, declared purpose, and launcher-resolved capability set are one validated combination checked before any worktree creation or provider bootstrap, and an invalid combination fails closed leaving no worktree, receipt, provider session, or partial launch state.</p>
+<p data-anchor="launch-purpose-shaping-roles" id="launch-purpose-shaping-roles">A shaping-review purpose is admitted only for role <code>shaping-reviewer</code>, or role <code>orchestrator</code> whose launcher-resolved capability set includes <code>shaping</code>; every other role, and an orchestrator without resolved shaping capability, is rejected.</p>
+<p data-anchor="launch-purpose-delivery-roles" id="launch-purpose-delivery-roles">A delivery purpose is admitted only for role <code>implementer</code>, <code>code-reviewer</code>, <code>qa-capture</code>, <code>qa-reviewer</code>, or the Read-restricted <code>tdd-observer</code>; every other role is rejected, and <code>tdd-observer</code> is admitted only as a Read-restricted subagent.</p>
+<p data-anchor="launch-entrypoint-revalidation" id="launch-entrypoint-revalidation">Every persistent-session bootstrap entrypoint revalidates its receipt against its manifest shape and its launch revision immediately after receipt readback and before the provider runner is invoked, and again before marking the receipt ready or bootstrap-verified; every worker subagent path performs the equivalent revalidation in the workflow layer against the journalled bound inputs before spawn and before any mutation phase, so a shape violation, an altered combination, or a revision mismatch is rejected with no provider process or subagent started.</p>
+<p data-anchor="launch-bootstrap-reverify-idempotent" id="launch-bootstrap-reverify-idempotent">A receipt already marked bootstrap-verified with a recorded provider session is accepted idempotently on the re-verify path, re-confirming the exact recorded provider session and the same acknowledgment facts under full receipt revalidation, instead of being refused or forced through a fresh full session resolve the provider rejects as a duplicate; a receipt marked bootstrap-verified with a missing or blank recorded provider session is an inconsistent bootstrap state that is rejected fail closed before any provider invocation instead of being misclassified as fresh, and no failure on a receipt claiming prior verification ever removes the previously verified session's worktree.</p>
+<p data-anchor="launch-receipt-manifest-shapes" id="launch-receipt-manifest-shapes">Only one durable receipt shape remains: the generic persistent launch receipt for role <code>meta-operator</code> or <code>orchestrator</code> carrying no pass purpose, preserving its existing ready semantics; every worker pass, including reconcile, binds through the workflow journal under the role-purpose-capability matrix, and a pass purpose injected onto a persistent receipt, a role substituted for its shape, or an unknown manifest type is rejected.</p>
+<p data-anchor="launch-shaping-authority" id="launch-shaping-authority">Shaped-transition authority binds to the verified persistent issue-orchestrator receipt whose launcher-resolved skill set includes shaping, together with a journalled clear shaping verdict carrying workflow-native reviewer provenance of relay-verbatim rollout-record grade at the exact repo, PR, and freshly verified PR HEAD, so an unqualified verdict or any interim authority path is rejected once this lands, plus the machine-checkable operator-intent record that tooling produces at action time under prior explicit operator intent, stamping that same exact head; a worker shaping-review pass produces the verdict but never carries the transition authority itself, and every other role, an orchestrator without resolved shaping capability, a missing or stale journalled verdict, or a missing, fabricated, or wrong-head operator-intent record carries no shaping authority, while no separate operator sign-off is requested per default-to-action law.</p>
+<p data-anchor="launch-shaping-authority-issue" id="launch-shaping-authority-issue">Shaped-transition authority is exact-issue authority: the journalled verdict binds the exact issue and the caller session must be that issue's registered issue orchestrator in the live stream registry, so an epic orchestrator, or an issue orchestrator owning any other issue, is rejected even with shaping capability.</p>
+<p data-anchor="launch-purpose-reconcile" id="launch-purpose-reconcile">A reconcile purpose is admitted only for role <code>reconciler</code> spawned as a Read-restricted workflow subagent; every other role is rejected, and reconcile carries no shaping or delivery authority.</p>
+<p data-anchor="launch-review-sandbox-integrity" id="launch-review-sandbox-integrity">An OpenAI review pass needing live GitHub or Linear reads bootstraps read-only, then resumes with explicit <code>workspace-write</code> sandbox and network access, and launch rejects any read-only review-pass worktree HEAD or status change found after bootstrap or after the resumed pass.</p>
+<p data-anchor="launch-resume-sandbox-config" id="launch-resume-sandbox-config">Every OpenAI resume call selects its sandbox through <code>-c sandbox_mode=...</code> config, never the top-level <code>-s</code> flag, because the installed CLI's <code>resume</code> subcommand rejects <code>-s</code> while its top-level <code>exec</code> bootstrap still accepts it.</p>
+<p data-anchor="launch-review-background-resume" id="launch-review-background-resume">The OpenAI review stage is a native workflow stage that the workflow owns and codex is the engine, and its relay runs <code>codex exec</code> in the background, detached, to completion rather than as a single foreground timeout-bound call, while the read-only bootstrap stays the top-level <code>-s read-only</code> flag that the <code>codex exec</code> bootstrap accepts and only the resume selects its sandbox through <code>-c sandbox_mode</code>.</p>
+<p data-anchor="launch-review-resume-not-restart" id="launch-review-resume-not-restart">On any cut before the codex final assistant message exists, the relay resumes the same session through <code>codex exec resume</code> until that final message is produced, and it never restarts the pass from scratch and never spawns a new session, because a restart loses in-progress rollout and creates provenance ambiguity.</p>
+<p data-anchor="launch-review-resume-provenance" id="launch-review-resume-provenance">The claimed session id is stable across resumes, so a resumed-to-completion session has the same provenance standing as a single-shot completion, and the same rollout record backs the final message through the unchanged independent rollout reader and relay-verbatim and resume-sandbox gates.</p>
+<p data-anchor="launch-linear-state-gate" id="launch-linear-state-gate">Launch admits a shaping-review purpose only for Linear state <code>Ideas</code>, <code>Todo</code>, <code>Shaped</code>, or <code>In Progress</code>, and admits a delivery purpose only for Linear state <code>Shaped</code>, <code>Todo</code>, or <code>In Progress</code>; every other state, including <code>Awaiting Accept</code> and terminal states, is rejected for both purposes.</p>
+<p data-anchor="launch-linear-state-in-progress" id="launch-linear-state-in-progress">Admitting <code>In Progress</code> for both purposes lets shaping re-review run after material reconciliation and lets implementation, code review, re-review, and QA review workers launch while the stream orchestrator holds <code>In Progress</code>, without weakening the exact shaping-verdict checks a delivery purpose still requires.</p>
+<p data-anchor="launch-loop-fire-first-act" id="launch-loop-fire-first-act">Loop fire acts on Linear state <code>Shaped</code> and its first act is the mechanical <code>Shaped -&gt; Todo</code> transition; shaped-not-started work therefore rests at <code>Shaped</code> until fire and enters <code>Todo</code> as the first delivery step before any delivery-purpose worker launches against it, and launch never treats <code>Shaped</code> as a direct <code>In Progress</code> predecessor.</p>
+</section>
+
+<section data-anchor="diagram-workspace-retry" id="diagram-workspace-retry">
+<h2>Fresh workspace and retry lifecycle</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "A clean control clone supplies objects to a fresh isolated worktree. Successful work is handed off durably before cleanup. Failed or interrupted work is recorded and inspected before a fresh retry."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Clean control clone",
+          "x": 100,
+          "y": 100,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Admission checks",
+          "x": 400,
+          "y": 100,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Fresh worktree",
+          "x": 700,
+          "y": 100,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Target bootstrap",
+          "x": 1000,
+          "y": 100,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Bounded pass",
+          "x": 1000,
+          "y": 300,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Durable handoff push",
+          "x": 700,
+          "y": 300,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Safe cleanup",
+          "x": 400,
+          "y": 300,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Failure record",
+          "x": 1000,
+          "y": 500,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#dc2626"
+          }
+        },
+        {
+          "name": "Inspect useful work",
+          "x": 700,
+          "y": 500,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Fresh retry",
+          "x": 400,
+          "y": 500,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Clean control clone",
+          "target": "Admission checks",
+          "value": "shared objects",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Admission checks",
+          "target": "Fresh worktree",
+          "value": "safe",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh worktree",
+          "target": "Target bootstrap",
+          "value": "isolated",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Target bootstrap",
+          "target": "Bounded pass",
+          "value": "ready",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Bounded pass",
+          "target": "Durable handoff push",
+          "value": "success",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Durable handoff push",
+          "target": "Safe cleanup",
+          "value": "clean only",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Bounded pass",
+          "target": "Failure record",
+          "value": "failed or interrupted",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Failure record",
+          "target": "Inspect useful work",
+          "value": "owner",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Inspect useful work",
+          "target": "Fresh retry",
+          "value": "preserve first",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh retry",
+          "target": "Target bootstrap",
+          "value": "new instance",
+          "lineStyle": {
+            "curveness": 0.2
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 570px"></div>
+</section>
+
+<section data-anchor="workspace-retry" id="workspace-retry">
+<h2>Workspace and retry</h2>
+<p data-anchor="workspace-control-clone" id="workspace-control-clone">One clean control clone supplies shared Git objects to fresh per-pass worktrees.</p>
+<p data-anchor="workspace-cache" id="workspace-cache">Targets may reuse native safe download caches while mutable dependency trees and build outputs remain worktree-local.</p>
+<p data-anchor="workspace-bootstrap" id="workspace-bootstrap">Target-owned bootstrap fails fast on wrong repo, base, remote, tools, dependencies, environment, database access, disk health, or validation capability.</p>
+<p data-anchor="workspace-admission" id="workspace-admission">Before spawn, check disk health, isolated worktree, conflicting ownership of branch, fixture, port, or deployment resource, and active provider overload; unsafe work waits.</p>
+<p data-anchor="workspace-admission-provisions" id="workspace-admission-provisions">Admission that passes then provisions the isolated worktree by creating it from the control repo at the lane branch and starting commit, so admission is the guard and provisioning is the act that yields the exclusive per-lane worktree the loop runs inside.</p>
+<p data-anchor="workspace-provision-idempotent" id="workspace-provision-idempotent">Provisioning is idempotent for the same lane at the expected repo, branch, and head, reusing an already-provisioned worktree without error, while a path bound to a different lane or branch is refused.</p>
+<p data-anchor="workspace-provision-shares-create-verify" id="workspace-provision-shares-create-verify">Lane provisioning shares the existing worker-pass create-and-verify path that guards, creates from the control repo, and checks top-level, common-directory, head, branch, and clean tree, and it adds the origin-slug reality check and the same-lane idempotent-reuse disposition, so the existing fresh-absent worker-pass behavior is preserved unchanged while lane provisioning reuses rather than rejects its own already-provisioned worktree.</p>
+<p data-anchor="workspace-fixture" id="workspace-fixture">State-mutating QA verifies starting state, avoids fixtures under concurrent mutation, and records its fixture; read-only QA may share stable fixtures.</p>
+<p data-anchor="workspace-cleanup" id="workspace-cleanup">Completed worker worktrees are removed only after durable handoff, commit, and push state exists, while dirty worktrees stop for inspection.</p>
+<p data-anchor="workspace-cleanup-committed-not-dirty" id="workspace-cleanup-committed-not-dirty">Committed work on an isolated branch is not dirty, because a durable commit with an unchanged worktree has zero dirty lines and reset is the wrong tool for it.</p>
+<p data-anchor="workspace-cleanup-rejected-unpushed" id="workspace-cleanup-rejected-unpushed">A rejected delivery pass leaves its isolated branch unpushed as the correct host-non-push abort, rather than a destructive reset of committed work the host never pushed.</p>
+<p data-anchor="workspace-cleanup-dirty-still-stops" id="workspace-cleanup-dirty-still-stops">A genuinely dirty or diverged worktree still stops for inspection, so the committed-branch abort reconciles with clean-abort inspection without contradiction.</p>
+<p data-anchor="workspace-cleanup-clean-abort" id="workspace-cleanup-clean-abort">A pass that fails before its acknowledgment echo is verified removes its worktree on the error path only when that worktree is pristine, meaning zero dirty lines and unchanged HEAD, and only under proven host-provision ownership, either because the failing flow itself provisioned that worktree at a required-absent path or because a host-provision record at its host-known location, carrying source host-provisioned-worktree, schema version 1, and a recorded worktree equal to this exact worktree, proves workspace-admit created and owns it, where a record proves ownership only when the live worktree also matches the record's provision instance, its git common directory resolving to the record's control repo and its checked-out branch equal to the record's branch; a record-authorized removal retires the proving provision record before the worktree is removed, and a failed retirement halts the removal and preserves the worktree, so the only failure bias is a leaked worktree and a stale record never re-authorizes deleting a later hand-created worktree at the same conventional path, a foreign or hand-created worktree with no such matching record is preserved and never force-removed, an abandoned owned clean worktree still never blocks the next fresh pass at the same path, and a dirty or diverged abort still stops for inspection.</p>
+<p data-anchor="workspace-cleanup-reconcile" id="workspace-cleanup-reconcile">A completed read-only reconcile worktree is removed only after its result is bound and the journal entry is durably persisted, while a failed, diverged, or dirty reconcile worktree is preserved for inspection.</p>
+<p data-anchor="retry-record" id="retry-record">Only failed or interrupted passes add a compact failure record with exact attempt, original error, category, useful work, owner, and next action.</p>
+<p data-anchor="retry-categories" id="retry-categories">The category is exactly one of input or contract, environment, provider or session, implementation or validation, or external dependency.</p>
+<p data-anchor="retry-timeout" id="retry-timeout">Timeout alone is not failure and cannot launch duplicate work.</p>
+<p data-anchor="retry-fresh" id="retry-fresh">The owner inspects and preserves useful work before launching a fresh retry instance.</p>
+<p data-anchor="retry-outage" id="retry-outage">A fleet outage requires the original error, workspace inspection, a fresh exact-model probe, and lane, session, account, provider, or fleet classification.</p>
+</section>
+
+<section data-anchor="related-specs" id="related-specs">
+<h2>Sources and related specs</h2>
+<p data-anchor="related-overview" id="related-overview">Overview: <a href="./operating-model.spec.html">operating-model.spec.html</a>.</p>
+<p data-anchor="related-delivery-lifecycle" id="related-delivery-lifecycle">Sibling: <a href="./delivery-lifecycle.spec.html">delivery-lifecycle.spec.html</a> for shaping, delivery, Linear, and QA behavior.</p>
+<p data-anchor="related-operator-control" id="related-operator-control">Sibling: <a href="./operator-control.spec.html">operator-control.spec.html</a> for messaging, status, and operator handoff.</p>
+<p data-anchor="related-adr" id="related-adr">Boundary: <a href="../adr/0001-operating-model-boundaries.spec.html">ADR 0001 operating-model boundaries</a>.</p>
+</section>
+
+</article>
+</body>
+</html>

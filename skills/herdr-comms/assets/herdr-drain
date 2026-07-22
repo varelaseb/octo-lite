@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# TUR-505 phase-1 (rulings 83/86/87): bounded duplicate-prone transport with
+# no delivery guarantee. Drain fires only RETRYABLE messages (queued|pending
+# with delivery_path modal-queued|deferred), always under the permanent
+# message lock locks/<id>.lock, with the attempt cap bounding fires per epoch
+# from above. herdr-drain --resume <id> starts a new operator-initiated epoch
+# for a stalled message.
+
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite"
+messages_root="$state_root/messages"
+locks="$state_root/locks"
+mkdir -p "$locks"
+
+id_shape='^[0-9]{8}T[0-9]{6}-[0-9]+-[0-9]+$'
+target_shape='^[A-Za-z0-9][A-Za-z0-9._-]*(:[A-Za-z0-9]+)?$'
+
+quote() { jq -Rn --arg value "$1" '$value'; }
+
+# S2 retry cap: positive int, default 3, invalid -> default + warn.
+cap="${OCTO_TRANSPORT_ATTEMPT_CAP:-3}"
+[[ "$cap" =~ ^[1-9][0-9]*$ ]] || {
+  echo "herdr-drain: invalid OCTO_TRANSPORT_ATTEMPT_CAP '$cap', using default 3" >&2
+  cap=3
+}
+
+# A1 (soak finding 1) observed-state confirmation timeout, milliseconds:
+# positive int, default 15000, invalid -> default + warn.
+confirm_timeout_ms="${OCTO_PROMPT_CONFIRM_TIMEOUT_MS:-15000}"
+[[ "$confirm_timeout_ms" =~ ^[1-9][0-9]*$ ]] || {
+  echo "herdr-drain: invalid OCTO_PROMPT_CONFIRM_TIMEOUT_MS '$confirm_timeout_ms', using default 15000" >&2
+  confirm_timeout_ms=15000
+}
+
+# A1 (soak finding 1): `agent prompt` can return rc=0 WITHOUT submitting when
+# the target composer holds residual text, so rc alone NEVER confirms.
+# Confirmation is OBSERVED STATE: the fire passes --wait --timeout so herdr
+# reports the observed post-submission state; only a matched state
+# (idle|done|blocked) confirms. A2 (soak finding 2): a send into a WORKING
+# pane delivers (submit/queue) but --wait cannot match idle|done|blocked
+# mid-turn, so confirmation is (--wait matched state) OR (state_change_seq
+# ADVANCED across the prompt): the seq is read via `herdr agent get`
+# (structured field, never pane text) immediately BEFORE the prompt and again
+# AFTER the --wait outcome. Unchanged seq with no matched state is a true
+# swallow (UNCONFIRMED, fails closed exactly as A1), and any seq read failure
+# on either side leaves only the matched-state path (fail closed,
+# degrade-safe).
+read_state_seq() { # -> prints state_change_seq for $target; nonzero on any failure
+  local raw seq
+  raw="$(herdr agent get "$target" 2>/dev/null)" || return 1
+  seq="$(printf '%s' "$raw" | jq -er '.result.agent.state_change_seq' 2>/dev/null)" || return 1
+  [[ "$seq" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$seq"
+}
+
+prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
+  local out="$state.$$.wait" rc=0 pre_seq="" post_seq=""
+  pre_seq="$(read_state_seq)" || pre_seq=""
+  herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
+  if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
+    && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
+    rm -f "$out"
+    return 0
+  fi
+  rm -f "$out"
+  if [[ -n "$pre_seq" ]]; then
+    post_seq="$(read_state_seq)" || post_seq=""
+    if [[ -n "$post_seq" ]] && (( 10#$post_seq > 10#$pre_seq )); then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# TUR-505: a message body may be multi-line (herdr 0.7.5 atomic prompt sends
+# arbitrary multi-line text). Fields are read via NUL-delimited pairs, exactly
+# like herdr-ack, so a message line can never masquerade as the status field.
+read_fields() { # populates the global associative array `fields` from $state
+  unset fields
+  declare -gA fields=()
+  local key value
+  while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+    fields["$key"]="$value"
+  done < <(python3 - "$state" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    data = tomllib.load(f)
+for key in ('target', 'kind', 'artifact', 'message', 'created_at', 'status', 'delivery_path', 'transport_attempts'):
+    sys.stdout.write(key)
+    sys.stdout.write('\0')
+    value = data.get(key, '')
+    sys.stdout.write('' if value is None else str(value))
+    sys.stdout.write('\0')
+PY
+)
+}
+
+write_state() { # $1 status, $2 delivery_path, $3 transport_attempts ('' omits)
+  local temporary="$state.$$.tmp"
+  {
+    echo 'schema_version = 1'
+    echo "message_id = $(quote "$id")"
+    echo "target = $(quote "${fields[target]}")"
+    echo "kind = $(quote "${fields[kind]}")"
+    echo "status = $(quote "$1")"
+    echo "delivery_path = $(quote "$2")"
+    if [[ -n "${3:-}" ]]; then
+      echo "transport_attempts = $3"
+    fi
+    echo "artifact = $(quote "${fields[artifact]}")"
+    echo "message = $(quote "${fields[message]}")"
+    echo "created_at = $(quote "${fields[created_at]}")"
+  } >"$temporary"
+  mv "$temporary" "$state"
+}
+
+# S2b: mirror herdr-say's suffix exactly so a retry re-fires the same body;
+# info carries the id with no ack instruction.
+body_with_suffix() {
+  if [[ "${fields[kind]}" == "info" ]]; then
+    printf '%s [msg:%s]' "${fields[message]}" "$id"
+  else
+    printf '%s [msg:%s kind:%s] Acknowledge with: herdr-ack %s acknowledged --by %s' \
+      "${fields[message]}" "$id" "${fields[kind]}" "$id" "${fields[target]}"
+  fi
+}
+
+target=""
+if [[ "${1:-}" == "--resume" ]]; then
+  # S2a manual resume = NEW EPOCH: explicit single id, only legal on stalled,
+  # stalled->pending with transport_attempts reset to 0, under the lock. The
+  # inbox item is recreated so the normal retry path re-fires it below.
+  resume_id="${2:-}"
+  [[ -n "$resume_id" ]] || { echo "usage: herdr-drain --resume MESSAGE_ID" >&2; exit 64; }
+  [[ "$resume_id" =~ $id_shape ]] || {
+    echo "herdr-drain: malformed message id $resume_id" >&2
+    exit 64
+  }
+  id="$resume_id"
+  state="$messages_root/$id.toml"
+  [[ -f "$state" ]] || { echo "herdr-drain: unknown message $id" >&2; exit 66; }
+  lock="$locks/$id.lock"
+  exec 9>>"$lock"
+  flock -w "${HERDR_DRAIN_LOCK_WAIT:-10}" 9 || {
+    echo "herdr-drain: timed out waiting for message lock $lock" >&2
+    exit 70
+  }
+  read_fields
+  [[ "${fields[status]}" == "stalled" ]] || {
+    echo "herdr-drain: --resume is only legal on a stalled message (status ${fields[status]})" >&2
+    exit 65
+  }
+  target="${fields[target]}"
+  # L3 target grammar: the durable target field is validated before any path
+  # derivation, so a poisoned state can never traverse out of the inbox root.
+  [[ "$target" =~ $target_shape ]] || {
+    echo "herdr-drain: invalid target in message state: $target" >&2
+    exit 65
+  }
+  path="${fields[delivery_path]}"
+  [[ "$path" == "modal-queued" || "$path" == "deferred" ]] || path="deferred"
+  write_state pending "$path" 0
+  inbox="$state_root/inbox/$target"
+  mkdir -p "$inbox"
+  item_tmp="$inbox/.$id.tmp"
+  printf '%s\n' "$id" >"$item_tmp"
+  mv "$item_tmp" "$inbox/$id"
+  echo "message_id=$id status=pending resumed=1"
+  exec 9>&-
+  # Fall through to a normal drain of the target: the new epoch re-fires.
+else
+  target="${1:-}"
+  [[ -n "$target" ]] || {
+    echo "usage: herdr-drain TARGET | herdr-drain --resume MESSAGE_ID" >&2
+    exit 64
+  }
+fi
+
+# L3 target grammar (ruling-87 fold): validated BEFORE deriving any path.
+[[ "$target" =~ $target_shape ]] || {
+  echo "herdr-drain: invalid target $target" >&2
+  exit 64
+}
+
+case "$target" in
+  *:p*) pane="$target" ;;
+  *) pane="$(herdr agent get "$target" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" ;;
+esac
+[[ -n "$pane" ]] || exit 66
+
+# herdr-drain never infers composer state, consumption, or delivery from pane
+# transcript text. This read only detects a trust or safety dialog so an atomic
+# prompt is never allowed to bulldoze an open modal; never the sent text itself.
+dialog_open() {
+  herdr pane read "$pane" --source visible --lines 40 2>/dev/null \
+    | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
+}
+
+inbox="$state_root/inbox/$target"
+[[ -d "$inbox" ]] || exit 0
+for item in "$inbox"/*; do
+  [[ -f "$item" ]] || continue
+  name="$(basename "$item")"
+  # L3 identity: only id-shaped basenames are items. Lock files, temporaries,
+  # and foreign or malformed entries are never treated as items and never
+  # touched (D2/T2/T11).
+  [[ "$name" =~ $id_shape ]] || continue
+  id="$name"
+  content="$(<"$item")"
+  # L3: inbox basename = id; a content mismatch is rejected untouched.
+  [[ "$content" == "$id" ]] || {
+    echo "herdr-drain: item $name content mismatch, untouched" >&2
+    continue
+  }
+  state="$messages_root/$id.toml"
+  # L4: every check-then-fire runs under the permanent message lock; a held
+  # lock means another actor owns this message right now: skip, touch nothing.
+  lock="$locks/$id.lock"
+  exec 9>>"$lock"
+  if ! flock -n 9; then
+    exec 9>&-
+    continue
+  fi
+  if [[ ! -f "$item" ]]; then
+    exec 9>&-
+    continue
+  fi
+  if [[ ! -f "$state" ]]; then
+    # Item without state: undelivered-unknown, noted, untouched, no crash.
+    echo "herdr-drain: undelivered-unknown item $id (no state)" >&2
+    exec 9>&-
+    continue
+  fi
+  read_fields
+  status="${fields[status]}"
+  path="${fields[delivery_path]}"
+  case "$status" in
+    acknowledged|rejected|completed|stalled)
+      # Uniform rule: a lingering inbox item for ANY non-retryable state is
+      # removed without transport and without a state rewrite.
+      rm -f "$item"
+      echo "message_id=$id status=$status stale_retry_removed=1"
+      ;;
+    queued|pending)
+      if [[ "$path" == "direct" || "$path" == "unresolved-ask" ]]; then
+        # ACK-WAIT residue (e.g. promoted-direct where death preceded item
+        # removal): same uniform removal, never a fire.
+        rm -f "$item"
+        echo "message_id=$id status=$status stale_retry_removed=1"
+        exec 9>&-
+        continue
+      fi
+      if [[ -z "$path" ]]; then
+        # Legacy promotion: a live queued/pending item without delivery_path
+        # is promoted to deferred under the lock and proceeds by the normal
+        # RETRYABLE rules, so no legacy item is ever stranded.
+        write_state "$status" deferred "${fields[transport_attempts]}"
+        path="deferred"
+      fi
+      # Modal-safe: never fire an atomic prompt while a trust or safety
+      # dialog is open; leave the item for the next retry.
+      if dialog_open; then
+        exec 9>&-
+        exit 75
+      fi
+      # Fire-time recheck under the lock: an out-of-band status write (crash
+      # repair, manual surgery) between the read above and here is honored.
+      recheck="$(python3 - "$state" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    print(tomllib.load(f).get('status', ''))
+PY
+)"
+      case "$recheck" in
+        acknowledged|rejected|completed|stalled)
+          rm -f "$item"
+          echo "message_id=$id status=$recheck stale_retry_removed=1"
+          exec 9>&-
+          continue
+          ;;
+      esac
+      if [[ "$status" == "queued" ]]; then
+        # Queued first-fire order (ruling-87 fold): queued->pending persists
+        # under the lock BEFORE the attempts-increment and BEFORE any
+        # transport, so death pre-fire leaves pending (legal stall path) and
+        # a transported message can never still be queued.
+        write_state pending "$path" "${fields[transport_attempts]}"
+        status=pending
+      fi
+      attempts="${fields[transport_attempts]}"
+      [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+      # S2 fire rule under the lock: cap reached -> pending->stalled, NO fire
+      # (state-transition precedes item removal, order law).
+      if (( attempts >= cap )); then
+        write_state stalled "$path" "$attempts"
+        rm -f "$item"
+        echo "message_id=$id status=stalled transport_attempts=$attempts"
+        exec 9>&-
+        continue
+      fi
+      # Attempts-increment persists before the fire: a crash between them
+      # burns an attempt without a fire (safe direction, never more fires).
+      attempts=$((attempts + 1))
+      write_state pending "$path" "$attempts"
+      # herdr 0.7.5: retry the exact same atomic prompt (paste + submit in
+      # one op) with the same [msg:id]; the atomic op never double-submits
+      # partially-pasted text. A1: only an OBSERVED post-submission state
+      # confirms, never rc alone.
+      if prompt_confirmed "$pane" "$(body_with_suffix)"; then
+        # Observed-state-confirmed transport, under the lock: promote
+        # path=direct (ACK-WAIT by construction, never repaired, never
+        # drain-fired), transition info->completed, then remove the item
+        # (state before removal).
+        if [[ "${fields[kind]}" == "info" ]]; then
+          write_state completed direct "$attempts"
+          rm -f "$item"
+          echo "message_id=$id status=completed"
+        else
+          write_state pending direct "$attempts"
+          rm -f "$item"
+          echo "message_id=$id status=pending"
+        fi
+      else
+        # Fail closed: status stays pending and the item stays for the next
+        # drain retry; the attempt was already burned above (attempts law).
+        echo "herdr-drain: transport unconfirmed, message_id=$id stays pending" >&2
+      fi
+      ;;
+    *)
+      # Unknown status: never transport and keep the item for inspection.
+      ;;
+  esac
+  exec 9>&-
+done

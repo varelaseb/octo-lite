@@ -1,0 +1,1852 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>octo-lite operator control</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header" id="header">
+<h1>octo-lite operator control</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="./operating-model.spec.html">operating model</a> / operator control</nav>
+<p>Canonical messaging, supervision, handoff, control-file, label, trace, and dashboard behavior.</p>
+</header>
+
+<section data-anchor="diagram-control-panel" id="diagram-control-panel">
+<h2>Dashboard authority boundary</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "The hosted dashboard is read-only. Local mode may edit a four-pattern allowlist, validate, and show a diff, but cannot commit or push. Target operation never depends on the dashboard."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Canonical sources",
+          "x": 70,
+          "y": 230,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Hosted dashboard",
+          "x": 360,
+          "y": 100,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        },
+        {
+          "name": "Local dashboard",
+          "x": 360,
+          "y": 360,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        },
+        {
+          "name": "Read-only projection",
+          "x": 650,
+          "y": 100,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Four-path edit allowlist",
+          "x": 650,
+          "y": 300,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Validate and diff",
+          "x": 650,
+          "y": 450,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Commit or push",
+          "x": 940,
+          "y": 450,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#dc2626"
+          }
+        },
+        {
+          "name": "Target build test deploy",
+          "x": 940,
+          "y": 100,
+          "symbolSize": [
+            200,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Canonical sources",
+          "target": "Hosted dashboard",
+          "value": "read",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Canonical sources",
+          "target": "Local dashboard",
+          "value": "read",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Hosted dashboard",
+          "target": "Read-only projection",
+          "value": "only",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Local dashboard",
+          "target": "Four-path edit allowlist",
+          "value": "may edit",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Four-path edit allowlist",
+          "target": "Validate and diff",
+          "value": "save",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Validate and diff",
+          "target": "Commit or push",
+          "value": "prohibited",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Canonical sources",
+          "target": "Target build test deploy",
+          "value": "independent",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 500px"></div>
+</section>
+
+<section data-anchor="control-panel-boundary" id="control-panel-boundary">
+<h2>Dashboard boundary</h2>
+<p data-anchor="runtime-control-panel-package" id="runtime-control-panel-package">The optional dashboard lives inside octo-lite under <code>dashboard/</code>, with frontend dependencies and build output isolated from the core workflow.</p>
+<p data-anchor="runtime-control-panel-no-sibling" id="runtime-control-panel-no-sibling">It is not a sibling repository and does not require independent schema-version coordination with octo-lite.</p>
+<p data-anchor="runtime-control-panel-optional" id="runtime-control-panel-optional">Core installation and workflow execution do not build, launch, or depend on the dashboard unless explicitly invoked.</p>
+<p data-anchor="runtime-control-panel-static" id="runtime-control-panel-static">Hosted mode remains a static read-only projection; local operator mode may edit only approved canonical octo-lite files, validate, and show a git diff.</p>
+<p data-anchor="runtime-control-panel-edit-allowlist" id="runtime-control-panel-edit-allowlist">Local edit paths are exactly <code>roles/*.md</code>, <code>roles.toml</code>, <code>profile/AGENTS.md</code>, and <code>skills/*/SKILL.md</code>.</p>
+<p data-anchor="runtime-control-panel-edit-readonly" id="runtime-control-panel-edit-readonly">Generated adapters, workflows, target-repo instructions, specs, and runtime state remain read-only in the dashboard.</p>
+<p data-anchor="runtime-control-panel-edit-effects" id="runtime-control-panel-edit-effects">A save validates and shows the git diff but never commits or pushes; no per-file edit registry exists.</p>
+<p data-anchor="runtime-control-panel-inspector" id="runtime-control-panel-inspector">The dashboard role inspector shows current roles, model, effort, mode, Linear mappings, actual resolved skills, workflow spawn graph, symlink health, editable canonical role prompts, and the generic system or profile prompt.</p>
+<p data-anchor="runtime-control-panel-pinning" id="runtime-control-panel-pinning">Validated prompt or mapping changes affect only newly spawned sessions; existing sessions remain pinned to their launch contract.</p>
+<p data-anchor="runtime-control-panel-target-discovery" id="runtime-control-panel-target-discovery">The panel derives target values from existing repo instructions, specs, git, Linear, PRs, and evidence manifests; a target has no dashboard adapter by default.</p>
+<p data-anchor="runtime-control-panel-target-override" id="runtime-control-panel-target-override">Only a shaped, proven non-derivable presentation mapping may add <code>.octo-lite/dashboard.toml</code>; it contains no agent instructions, lifecycle state, secrets, or product dependency.</p>
+</section>
+
+<section data-anchor="diagram-message-lifecycle" id="diagram-message-lifecycle">
+<h2>Message lifecycle state table</h2>
+<p data-anchor="message-state-table-note" id="message-state-table-note">The table below is the normative state machine for TUR-505 phase-1: every transition except INIT runs under the permanent per-message flock, and anything not listed as legal is an illegal transition with a nonzero exit and no write.</p>
+<table data-anchor="message-state-table" id="message-state-table">
+<thead>
+<tr><th>From</th><th>To</th><th>Actor</th><th>Rule</th></tr>
+</thead>
+<tbody>
+<tr><td>(none)</td><td>queued (modal-queued)</td><td>herdr-say</td><td>INIT at an open modal: exclusive state creation, then the inbox item, exit 75, no transport.</td></tr>
+<tr><td>(none)</td><td>pending (unresolved-ask)</td><td>herdr-say</td><td>INIT for an unresolved operator ask (question with OCTO_STREAM): no transport, exit 66; other unresolved kinds write no state.</td></tr>
+<tr><td>(none)</td><td>pending (deferred)</td><td>herdr-say</td><td>INIT for every transport-attempting send: state, then item, then transport (order law).</td></tr>
+<tr><td>queued</td><td>pending</td><td>herdr-drain</td><td>First-fire order: the transition persists under the lock before the attempts-increment and before any transport, so a transported message can never still be queued.</td></tr>
+<tr><td>pending (deferred)</td><td>pending (direct)</td><td>herdr-say or herdr-drain</td><td>Confirmed non-info transport promotes delivery_path to direct (ACK-WAIT, itemless by design, never repaired, never drain-fired), then removes the item.</td></tr>
+<tr><td>pending</td><td>completed</td><td>herdr-say or herdr-drain</td><td>Confirmed info submit completes under the lock; the body still carried its message id.</td></tr>
+<tr><td>pending</td><td>stalled</td><td>herdr-say or herdr-drain</td><td>Attempt cap reached: no fire; the sweep surfaces the stall loudly every cycle.</td></tr>
+<tr><td>stalled</td><td>pending</td><td>herdr-drain --resume</td><td>Manual resume only: a new operator-initiated epoch resets transport_attempts to 0 under the lock.</td></tr>
+<tr><td>pending or stalled</td><td>acknowledged, rejected, or completed</td><td>herdr-ack</td><td>Recipient-exact; completion requires a nonempty artifact; a re-ack with the same status is an idempotent no-op.</td></tr>
+<tr><td>acknowledged</td><td>completed</td><td>herdr-ack</td><td>Ack completion with the named artifact stays legal exactly as before.</td></tr>
+</tbody>
+</table>
+<p data-anchor="message-illegal-set" id="message-illegal-set">Illegal by enumeration: any ack of a never-transported queued message, any stalled auto-fire, any terminal state returning to pending, acknowledged to rejected, rejected to acknowledged, rejected to completed, completed to acknowledged, and completed to rejected.</p>
+</section>
+
+<section data-anchor="messaging" id="messaging">
+<h2>Messaging</h2>
+<p data-anchor="message-herdr-say" id="message-herdr-say">Every Herdr message uses <code>herdr-say</code>, which attempts transport at a verified safe prompt or durably queues without acting on a modal.</p>
+<p data-anchor="message-atomic-prompt" id="message-atomic-prompt">Transport is the herdr 0.7.5 atomic <code>agent prompt</code>, which pastes and submits the message in one server-owned op, replacing the retired 0.7.1 <code>agent send</code> plus paste, settle, and bare-Enter dance.</p>
+<p data-anchor="message-multi-line-literal" id="message-multi-line-literal">Because the atomic prompt preserves bracketed paste literally, a message body carries arbitrary multi-line and special-character text verbatim, and the earlier single-line, no-single-quote workaround is retired.</p>
+<p data-anchor="message-modal-safe-atomic" id="message-modal-safe-atomic">The atomic prompt is still modal-safe: a detected trust or safety dialog defers to a durable queue rather than submitting, and a reported stall, refusal, or dialog defers to pending, so an open modal is never bulldozed.</p>
+<p data-anchor="message-no-composer-inference" id="message-no-composer-inference"><code>herdr-say</code> and <code>herdr-drain</code> never infer composer state, consumption, or delivery from pane transcript text.</p>
+<p data-anchor="message-observed-confirmation" id="message-observed-confirmation">Transport confirmation is observed state, never the prompt exit code (a prompt can return zero without submitting when the target composer holds residual text): every fire passes <code>--wait --timeout</code> with <code>OCTO_PROMPT_CONFIRM_TIMEOUT_MS</code> milliseconds (positive integer, default 15000, invalid values degrade to the default with a warning), only a matched post-submission agent state (idle, done, or blocked) confirms, and <code>agent_prompt_stalled</code>, a timeout, a nonzero exit, or any unmatched outcome leaves the message unconfirmed, pending, and retryable with its inbox item under the attempt cap.
+An advanced <code>state_change_seq</code> (read via <code>agent get</code> as a structured field, never pane text, immediately before the prompt and again after the wait outcome) also confirms even when the wait could not match a state mid-turn in a working pane, while an unchanged sequence or any sequence read failure on either side stays unconfirmed and fails closed.</p>
+<p data-anchor="message-pending" id="message-pending">An atomic prompt transport attempt leaves a message pending; retry reuses the same message ID and re-fires the same atomic prompt, which never double-submits partially-pasted text, and the retry count is bounded by the per-epoch attempt cap.</p>
+<p data-anchor="message-pending-persist-before-clear" id="message-pending-persist-before-clear">Every state transition persists before its inbox item is removed (state-transition precedes item removal), and a queued first fire persists queued to pending before the attempts-increment and before any transport; a persistence failure retains the retry item and the prior status.</p>
+<p data-anchor="message-visible" id="message-visible">Visible, injected, pending, or queued TUI text is not acknowledgment.</p>
+<p data-anchor="message-ack" id="message-ack">Commands, operator rulings, ownership transfers, and blocking questions require explicit recipient acknowledgment before dependent action.</p>
+<p data-anchor="message-no-timeout" id="message-no-timeout">Acknowledgment has no arbitrary timeout because dependency, not duration, determines blocking.</p>
+<p data-anchor="message-complete" id="message-complete">Completion requires the named durable artifact or observable outcome, not acknowledgment alone.</p>
+<p data-anchor="message-info-best-effort" id="message-info-best-effort">An info-kind message stays best-effort transport and never claims acknowledged delivery; an observed-state-confirmed info submit transitions the message to completed under the lock, and the transported body carries the message id with no ack instruction.</p>
+<p data-anchor="message-lock-law" id="message-lock-law">Every status read-decide-write, attempts-increment, and check-then-fire runs under the permanent per-message flock at <code>locks/&lt;id&gt;.lock</code>, including herdr-say's own first transport sequence after INIT; only the INIT exclusive creation itself is exempt, no helper ever holds two locks, nothing ever unlinks a lock, and reclamation is runbook-only.</p>
+<p data-anchor="message-state-before-transport" id="message-state-before-transport">Message state is persisted atomically before any transport, with the delivery path resolved provisional-then-promote: modal-open publishes queued (modal-queued) with an item, an unresolved operator ask persists pending (unresolved-ask) with no transport, every transport-attempting send persists pending (deferred) and its item first, and only an observed-state-confirmed transport promotes the path to direct.</p>
+<p data-anchor="message-at-least-once" id="message-at-least-once">Transport is a bounded duplicate-prone transport with no delivery guarantee: a message may be delivered zero times (a crash can burn an attempt before the fire, and a cap stall can leave no fire), once, or up to the attempt cap per epoch, so no surface claims a delivery guarantee and the sweep's stalled and undelivered surfacing is the no-delivery detection path; every transported body carries the <code>[msg:&lt;id&gt;]</code> suffix so every duplicate is id-correlated.</p>
+<p data-anchor="message-retry-cap" id="message-retry-cap">The retry cap <code>OCTO_TRANSPORT_ATTEMPT_CAP</code> (positive integer, default 3, invalid values degrade to the default with a warning) bounds fires per epoch from above: a fire first increments and persists <code>transport_attempts</code> under the lock, a message at the cap transitions pending to stalled with no fire, and only the manual <code>herdr-drain --resume</code> starts a new epoch with the counter reset to zero.</p>
+</section>
+
+<section data-anchor="diagram-status-compaction" id="diagram-status-compaction">
+<h2>One-level status compaction</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Fresh workers report to their issue owner. Issue status compacts to the epic owner. Epic status compacts to Fable. Leaf workers do not flood the top-level operator."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Worker A",
+          "x": 100,
+          "y": 80,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Worker B",
+          "x": 100,
+          "y": 220,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Worker C",
+          "x": 100,
+          "y": 360,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Issue Opus A",
+          "x": 400,
+          "y": 150,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Issue Opus B",
+          "x": 400,
+          "y": 350,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Epic Opus",
+          "x": 700,
+          "y": 250,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Fable",
+          "x": 1000,
+          "y": 250,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Whole-operation view",
+          "x": 1000,
+          "y": 500,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Worker A",
+          "target": "Issue Opus A",
+          "value": "pass result",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Worker B",
+          "target": "Issue Opus A",
+          "value": "pass result",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Worker C",
+          "target": "Issue Opus B",
+          "value": "pass result",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue Opus A",
+          "target": "Epic Opus",
+          "value": "compacted status",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue Opus B",
+          "target": "Epic Opus",
+          "value": "compacted status",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Epic Opus",
+          "target": "Fable",
+          "value": "compacted status",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fable",
+          "target": "Whole-operation view",
+          "value": "sole writer",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 560px"></div>
+</section>
+
+<section data-anchor="diagram-sweep" id="diagram-sweep">
+<h2>Session-durable reconciliation sweep</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "One host timer runs the deterministic sweep directly. No change is a silent no-op. Material deltas receive fresh read-only Sonnet classification and only then message the verified operator route for the Fable update."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Host timer",
+          "x": 100,
+          "y": 250,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        },
+        {
+          "name": "operator-say",
+          "x": 400,
+          "y": 250,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "Current owner pointer",
+          "x": 700,
+          "y": 100,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Deterministic exact checks",
+          "x": 700,
+          "y": 300,
+          "symbolSize": [
+            200,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "No delta",
+          "x": 1000,
+          "y": 150,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        },
+        {
+          "name": "Fresh Sonnet reconcile",
+          "x": 1000,
+          "y": 420,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Fable update",
+          "x": 700,
+          "y": 600,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Status and dashboard",
+          "x": 400,
+          "y": 600,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Host timer",
+          "target": "Deterministic exact checks",
+          "value": "runs directly",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fresh Sonnet reconcile",
+          "target": "operator-say",
+          "value": "classified delta",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Deterministic exact checks",
+          "target": "No delta",
+          "value": "cheap no-op",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Deterministic exact checks",
+          "target": "Fresh Sonnet reconcile",
+          "value": "compact snapshot",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Fable update",
+          "target": "Status and dashboard",
+          "value": "reconcile",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "operator-say",
+          "target": "Current owner pointer",
+          "value": "resolve",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Current owner pointer",
+          "target": "Fable update",
+          "value": "verified route",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 650px"></div>
+</section>
+
+<section data-anchor="supervision" id="supervision">
+<h2>Operator supervision</h2>
+<p data-anchor="supervision-view" id="supervision-view">Fable is the sole writer of the reconciled whole-operation view but does not ingest every raw log.</p>
+<p data-anchor="supervision-report-order" id="supervision-report-order">Upward status leads with product outcome, current gate, blocker, and next operator action; tracker and run identifiers are secondary.</p>
+<p data-anchor="supervision-operator-gate-no-hashes" id="supervision-operator-gate-no-hashes">An operator notification never presents or requests an exact head or hash; it carries plain-language what-changed context and rendered pages, while tooling stamps the exact head at action time and records the binding on the PR and status surfaces.</p>
+<p data-anchor="supervision-default-action" id="supervision-default-action">Default to action: prior explicit operator intent is authorization, no action waits on double confirmation, and no blocking human gate exists beyond the lawful stops below.</p>
+<p data-anchor="supervision-act-then-notify" id="supervision-act-then-notify">A former approval gate is an act-then-notify step with a prepared rollback; the agent acts, notifies the operator with plain-language context, and the operator vetoes by rollback.</p>
+<p data-anchor="supervision-freeze-scope" id="supervision-freeze-scope">An operator freeze halts exactly the named loop, such as autonomous review re-dispatch, and nothing else; defect fixes, repairs, and every other act-then-notify duty continue under standing operator intent, and a frozen agent never asks permission to fix a defect.</p>
+<p data-anchor="supervision-lawful-stops" id="supervision-lawful-stops">The only lawful stops are operator-held access the agent does not possess, legally binding irreversible actions without a prepared rollback, and the three operator carve-outs: actual acceptance of delivered work awaiting acceptance, preproduction promotion, and live traffic shifts, all human-gated.</p>
+<p data-anchor="supervision-carve-out-instruction-gated" id="supervision-carve-out-instruction-gated">The three carve-outs are gated on the human instruction, not the human's manual action: the human decides and instructs the acceptance, the preproduction promotion, or the live traffic shift, and the operator agent then executes that instruction by recording the acceptance artifact, running the preproduction promotion, or running the traffic shift, never handing the mechanical action back to the human.</p>
+<p data-anchor="supervision-carve-out-guard" id="supervision-carve-out-guard">The preserved guard is that no agent infers, self-authorizes, or decides acceptance, a preproduction promotion, or a traffic shift on its own, and the operator agent acts only on an explicit human instruction.</p>
+<p data-anchor="supervision-notifications" id="supervision-notifications">Proactive operator messages are limited to required decisions, blockers, failures, and meaningful gate or outcome changes.</p>
+<p data-anchor="supervision-primary-surface" id="supervision-primary-surface">A target operations view becomes primary only when it is accurate and digestible across all workstreams; until then Fable supplies the complete operation update.</p>
+<p data-anchor="supervision-files" id="supervision-files">Each stream uses one parent-owned <code>brief.md</code> and one child-owned <code>status.md</code> in the operator control directory.</p>
+<p data-anchor="supervision-compaction" id="supervision-compaction">Status compacts upward one parent at a time, and leaf workers do not all message Fable.</p>
+<p data-anchor="supervision-timer" id="supervision-timer">One session-durable host timer runs the deterministic sweep directly throughout the operator lifecycle, including idle periods, primed to fire without a manual first start; only a changed sweep messages the operator, so no periodic wake message ever enters the operator context.</p>
+<p data-anchor="supervision-sweep" id="supervision-sweep">A wake runs deterministic exact checks and may spawn one fresh Sonnet reconciler over the compact normalized snapshot.</p>
+<p data-anchor="sweep-stream-liveness" id="sweep-stream-liveness">The sweep reports per stream, from real surfaces only (receipt-derived session transcript mtimes, status gate lines, the Herdr inbox and message state, the herdr agent probe, and the status.md anchored <code>Outcome:</code> closed marker): waiting-on-whom with the verbatim open ask, in-flight workflow ids, the undelivered message queue, and an advisory classification.</p>
+<p data-anchor="sweep-undelivered-derivation" id="sweep-undelivered-derivation">Undelivered derivation admits only id-shaped fully-published inbox entries, never lock files, dot-temporaries, or foreign files; an item whose state is non-retryable (any terminal, stalled, or an ACK-WAIT path such as promoted-direct residue) is not undelivered and is noted once as residue awaiting drain's uniform removal; a missing or malformed state is noted undelivered-unknown without crashing; and itemless retryable or legacy no-path states stay surfaced while ACK-WAIT states awaiting acknowledgment do not.</p>
+<p data-anchor="sweep-liveness-probe-input" id="sweep-liveness-probe-input">The herdr agent probe input is the grammar-stable non-blocking <code>agent get</code> of the delivery-lifecycle sweep-dead-agent law, bounded per stream, and a probe failure degrades gracefully to the time-based classification with a noted error per sweep-watchdog-degrade.</p>
+<p data-anchor="sweep-classification-order" id="sweep-classification-order">Classification precedence is <code>waiting-on-operator</code> over <code>closed</code> over <code>dead</code> over <code>waiting</code> over <code>suspected-stuck</code> over <code>active</code>, with <code>closed</code> and <code>dead</code> defined by the delivery-lifecycle sweep-closed-stream and sweep-dead-agent laws.</p>
+<p data-anchor="sweep-suspected-stuck" id="sweep-suspected-stuck">Activity means session-transcript activity only and status-file age never counts; an idle stream without a recorded wait-owner is <code>suspected-stuck</code> only when it is neither <code>closed</code> nor <code>dead</code>, and an ask older than later session activity is presumed consumed.</p>
+<p data-anchor="sweep-liveness-outside-digest" id="sweep-liveness-outside-digest">The liveness report lives in the sweep output and one control-level file, never inside the digested reconcile snapshot, so digests verify byte-exactly and active streams never churn the fingerprint.</p>
+<p data-anchor="supervision-noop" id="supervision-noop">A wake with no delta is a cheap no-op and does not remove the timer.</p>
+<p data-anchor="supervision-direct" id="supervision-direct">The human may converse directly with an orchestrator, and stream-local rulings apply after durable status capture while cross-stream effects wait for Fable reconciliation.</p>
+</section>
+
+<section data-anchor="diagram-operator-handoff" id="diagram-operator-handoff">
+<h2>Atomic Fable handoff</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Only an explicit operator request starts handoff. The successor reconciles and becomes ready before one locked compare-and-rename commits authority. Routing observes the new owner and the old operator becomes read-only."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Explicit operator request",
+          "x": 100,
+          "y": 100,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Outgoing handoff artifact",
+          "x": 400,
+          "y": 100,
+          "symbolSize": [
+            200,
+            58
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "Successor reconcile",
+          "x": 700,
+          "y": 100,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Successor ready",
+          "x": 1000,
+          "y": 100,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Expected owner revision",
+          "x": 400,
+          "y": 320,
+          "symbolSize": [
+            200,
+            58
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "Locked compare",
+          "x": 700,
+          "y": 320,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Atomic TOML rename",
+          "x": 1000,
+          "y": 320,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "New routing owner",
+          "x": 700,
+          "y": 540,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Old owner read-only",
+          "x": 1000,
+          "y": 540,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Explicit operator request",
+          "target": "Outgoing handoff artifact",
+          "value": "starts",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Outgoing handoff artifact",
+          "target": "Successor reconcile",
+          "value": "durable state",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Successor reconcile",
+          "target": "Successor ready",
+          "value": "source readback",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Outgoing handoff artifact",
+          "target": "Expected owner revision",
+          "value": "binds",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Expected owner revision",
+          "target": "Locked compare",
+          "value": "compare",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Successor ready",
+          "target": "Atomic TOML rename",
+          "value": "ready",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Locked compare",
+          "target": "Atomic TOML rename",
+          "value": "matches",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Atomic TOML rename",
+          "target": "New routing owner",
+          "value": "commit",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Atomic TOML rename",
+          "target": "Old owner read-only",
+          "value": "commit",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 600px"></div>
+</section>
+
+<section data-anchor="operator-handoff" id="operator-handoff">
+<h2>Operator handoff</h2>
+<p data-anchor="handoff-explicit" id="handoff-explicit">Only an explicit operator request starts a Fable-to-Fable handoff.</p>
+<p data-anchor="handoff-artifact" id="handoff-artifact">The outgoing Fable writes one concise immutable Markdown handoff at <code>handoffs/&lt;zero-padded-revision&gt;.md</code> containing objective, stream tree, exact facts, pending decisions, authorities, blockers, control path, timer, and reply routes.</p>
+<p data-anchor="handoff-reconcile" id="handoff-reconcile">The fresh successor loads canonical instructions, reconciles the handoff against source systems, and declares readiness before cutover.</p>
+<p data-anchor="handoff-owner" id="handoff-owner">One <code>operator-owner.toml</code> stores schema version, exact owner session ID, handoff revision, and control-directory identity.</p>
+<p data-anchor="handoff-atomic" id="handoff-atomic">A locked expected-owner and revision check plus atomic TOML rename is the sole authority commit.</p>
+<p data-anchor="handoff-routing" id="handoff-routing">The timer and top-level child notifications resolve the owner through <code>operator-say</code>, so the next message observes the same atomic commit.</p>
+<p data-anchor="handoff-old-owner" id="handoff-old-owner">The old operator becomes read-only at commit and may only forward late direct messages until cleanup.</p>
+<p data-anchor="handoff-dead-owner" id="handoff-dead-owner">A dead or ambiguous owner record has no agent-callable recovery path; only an explicit manual operator takeover outside role authority may replace it.</p>
+<p data-anchor="handoff-no-failover" id="handoff-no-failover">No probe, self-asserted authorization, timeout, or automatic failover transfers authority; a blocked owner record stays blocked until manual takeover.</p>
+<p data-anchor="handoff-launcher-initial" id="handoff-launcher-initial">The initial-launch launcher creates the first owner record at revision zero and refuses when an owner record already exists.</p>
+<p data-anchor="handoff-launcher-live" id="handoff-launcher-live">The distinct live-handoff launcher requires an existing owner record, spawns one successor that coexists with the current owner under the same invariant control directory, writes the successor session artifacts under its own operator directory, and writes no owner record itself.</p>
+<p data-anchor="handoff-launcher-pre-derive" id="handoff-launcher-pre-derive">The live-handoff launcher reads the current owner record and the next-revision handoff artifact, then pre-derives and prints the exact successor-ready command for the successor and the exact owner-transfer command for the current owner to run after the successor declares readiness.</p>
+<p data-anchor="handoff-launcher-single-live-command" id="handoff-launcher-single-live-command">The launcher handles only the live path, cannot and does not distinguish a live from a dead owner, and never probes liveness; it prints exactly one runnable owner-transfer command bound to the current owner identity, which is the normal owner-run handoff-atomic step and not a new recovery command, and it never derives a second command from any other or prior identity and never adds an authorization flag.</p>
+<p data-anchor="handoff-launcher-owner-identity-preexisting" id="handoff-launcher-owner-identity-preexisting">The owner-transfer caller-identity gate is a pre-existing octo-control property that the launcher neither strengthens nor weakens, the launcher introduces no new authentication, and any future session-authentication hardening is a separate operator-initiated change.</p>
+<p data-anchor="handoff-launcher-dead-owner-guidance" id="handoff-launcher-dead-owner-guidance">The launcher output carries a one-line boundary notice that the printed command is to be run only as the live current owner and that a dead or ambiguous owner is recovered solely by the manual operator takeover outside role authority on operator instruction, and the skill documents this same boundary and the pre-existing caller-identity property explicitly.</p>
+</section>
+
+<section data-anchor="diagram-stream-ownership" id="diagram-stream-ownership">
+<h2>Control artifact ownership</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Each control artifact has one writer. Readers and routes consume exact files without becoming alternate authorities."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Parent",
+          "x": 70,
+          "y": 80,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Child",
+          "x": 70,
+          "y": 210,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Gate helpers",
+          "x": 70,
+          "y": 340,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "Owner transfer helper",
+          "x": 70,
+          "y": 470,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "brief.md",
+          "x": 500,
+          "y": 80,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "status.md",
+          "x": 500,
+          "y": 210,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "trace.jsonl",
+          "x": 500,
+          "y": 340,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "operator-owner.toml",
+          "x": 500,
+          "y": 470,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "operator-say",
+          "x": 850,
+          "y": 470,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Parent",
+          "target": "brief.md",
+          "value": "sole writer",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Child",
+          "target": "status.md",
+          "value": "sole writer",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Gate helpers",
+          "target": "trace.jsonl",
+          "value": "sole appenders",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Owner transfer helper",
+          "target": "operator-owner.toml",
+          "value": "sole replacer",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "operator-owner.toml",
+          "target": "operator-say",
+          "value": "resolves route",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 520px"></div>
+</section>
+
+<section data-anchor="stream-interface" id="stream-interface">
+<h2>Stream control</h2>
+<pre data-anchor="stream-files" id="stream-files"><code>streams/&lt;stream&gt;/brief.md
+streams/&lt;stream&gt;/status.md
+streams/&lt;stream&gt;/trace.jsonl
+operator-owner.toml
+handoffs/0001.md</code></pre>
+<p data-anchor="stream-registry-sole" id="stream-registry-sole">The control-directory <code>streams/</code> tree is the sole sweep-visible stream registry; Fable is the sole writer of the registry itself, meaning which streams exist, while each child writes only its own <code>status.md</code> within its stream.</p>
+<p data-anchor="stream-registry-live-read" id="stream-registry-live-read">A receipt <code>streams_json</code> field is a launch-time snapshot only; a reconcile pass reads the live control-directory <code>streams/</code> registry, never the receipt snapshot field, so a stream added or removed after launch is seen.</p>
+<p data-anchor="stream-brief-owner" id="stream-brief-owner">Only the parent writes a child brief.</p>
+<p data-anchor="stream-status-owner" id="stream-status-owner">Only the child writes its status.</p>
+<p data-anchor="stream-status-whole" id="stream-status-whole">A <code>status.md</code> is rewritten whole to reflect current truth, never patched piecemeal or appended, so no stale fragment survives a status update.</p>
+<p data-anchor="stream-owner-writer" id="stream-owner-writer">Only the owner-transfer helper replaces <code>operator-owner.toml</code>.</p>
+<p data-anchor="stream-trace-writer" id="stream-trace-writer">Only deterministic workflow and gate helpers append trace events.</p>
+<p data-anchor="stream-mutation-caller" id="stream-mutation-caller">Operator-owned mutation helpers verify the exact caller against <code>operator-owner.toml</code>; ordinary read-only commands do not.</p>
+</section>
+
+<section data-anchor="diagram-herdr-labels" id="diagram-herdr-labels">
+<h2>Persistent session label grammar</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "Only persistent Fable and Opus sessions have Herdr tabs. Fable has one exact label. Epic and issue labels use compact identity and outcome. The microphone marker exists only while direct operator engagement is required."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Fable session",
+          "x": 70,
+          "y": 90,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Epic Opus session",
+          "x": 70,
+          "y": 230,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Issue Opus session",
+          "x": 70,
+          "y": 370,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Workflow subagent",
+          "x": 70,
+          "y": 510,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "🧠 operator",
+          "x": 520,
+          "y": 90,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "◆443/6 · outcome",
+          "x": 520,
+          "y": 230,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "446/6 · outcome",
+          "x": 520,
+          "y": 370,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "No Herdr tab",
+          "x": 520,
+          "y": 510,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#6b7280"
+          }
+        },
+        {
+          "name": "🎤 temporary prefix",
+          "x": 880,
+          "y": 300,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#d97706"
+          }
+        },
+        {
+          "name": "Autonomous work",
+          "x": 1130,
+          "y": 300,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Fable session",
+          "target": "🧠 operator",
+          "value": "exact",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Epic Opus session",
+          "target": "◆443/6 · outcome",
+          "value": "compact",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue Opus session",
+          "target": "446/6 · outcome",
+          "value": "compact",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Workflow subagent",
+          "target": "No Herdr tab",
+          "value": "nested",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "◆443/6 · outcome",
+          "target": "🎤 temporary prefix",
+          "value": "direct conversation",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "446/6 · outcome",
+          "target": "🎤 temporary prefix",
+          "value": "direct conversation",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "🎤 temporary prefix",
+          "target": "Autonomous work",
+          "value": "remove immediately",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 540px"></div>
+</section>
+
+<section data-anchor="herdr-label-interface" id="herdr-label-interface">
+<h2>Herdr session labels</h2>
+<p data-anchor="herdr-label-fable" id="herdr-label-fable">The sole Fable tab is exactly <code>🧠 operator</code>, with no issue, PR, or outcome suffix.</p>
+<p data-anchor="herdr-label-direct" id="herdr-label-direct"><code>🎤</code> temporarily prefixes an Opus tab while the operator must remain engaged in a direct investigation, grill, diagnosis, or decision conversation.</p>
+<p data-anchor="herdr-label-direct-exclusions" id="herdr-label-direct-exclusions">Ordinary reporting, commands, acknowledgments, handoffs, and parent-child updates do not receive <code>🎤</code>.</p>
+<p data-anchor="herdr-label-direct-owner" id="herdr-label-direct-owner">Fable judges the conversation mode from bounded pane context and message provenance, without keyword, turn-count, focus, or timeout rules.</p>
+<p data-anchor="herdr-label-direct-clear" id="herdr-label-direct-clear">Fable must remove <code>🎤</code> as soon as the Opus has enough direction to begin autonomous work and the operator can look away; this is required behavior, not optional cleanup.</p>
+<p data-anchor="herdr-label-epic" id="herdr-label-epic"><code>◆</code> immediately precedes an epic identity; normal issue identities are unmarked.</p>
+<p data-anchor="herdr-label-order" id="herdr-label-order">Labels order the optional operator signal, compact issue and PR numbers, then the very short human-readable outcome.</p>
+<p data-anchor="herdr-label-prefix" id="herdr-label-prefix">The presentation label omits the tracker team prefix; durable artifacts and receipts retain the full issue key.</p>
+<p data-anchor="herdr-label-numbers" id="herdr-label-numbers">The identity token is <code>issue/pr</code> with bare numbers, or only <code>issue</code> before a PR exists.</p>
+<p data-anchor="herdr-label-scope" id="herdr-label-scope">Only persistent Fable and Opus orchestrator sessions receive Herdr tab labels; workflow subagents run inside the owning Opus session and never create tabs.</p>
+<p data-anchor="herdr-label-sparse" id="herdr-label-sparse">Normal unattended tabs use no status emoji, and every label uses the fewest characters that remain unique and human-readable.</p>
+<p data-anchor="herdr-label-receipt-bind" id="herdr-label-receipt-bind">The passed persistent spawn role and canonical cwd must exactly equal the receipt's <code>role.name</code> and <code>workspace.worktree</code> before any bootstrap call or pane creation.</p>
+<p data-anchor="herdr-label-remote-control" id="herdr-label-remote-control">Every <code>🎤</code> or <code>🧠</code> persistent session must have Claude remote control enabled.</p>
+<p data-anchor="herdr-label-remote-control-at-launch" id="herdr-label-remote-control-at-launch">Remote control is enabled durably at launch through the launcher mechanism, the <code>claude --rc</code> flag or a <code>remoteControlAtStartup</code> settings injection, never post-hoc.</p>
+<p data-anchor="herdr-label-remote-control-gate" id="herdr-label-remote-control-gate"><code>herdr-spawn</code> treats a <code>🎤</code> or <code>🧠</code> spawn without remote control as a launch-gate failure and fails closed.</p>
+<p data-anchor="herdr-label-direct-remote-control" id="herdr-label-direct-remote-control">Flipping <code>🎤</code> on is a Fable duty that requires ensuring remote control is active on that session.</p>
+<pre data-anchor="herdr-label-examples" id="herdr-label-examples"><code>🧠 operator
+🎤 ◆443/6 · operating model
+◆443/6 · operating model
+🎤 446/6 · modal messaging
+446/6 · modal messaging
+445 · role contracts</code></pre>
+</section>
+
+<section data-anchor="diagram-trace-model" id="diagram-trace-model">
+<h2>Lightweight trace model</h2>
+<script type="application/spec+json" data-render="chart" data-lib="echarts">
+{
+  "aria": {
+    "enabled": true,
+    "description": "A bounded stream or train is a session, one issue delivery is a trace, and meaningful workflow boundaries are observations appended by deterministic helpers. Runtime append failure warns and continues."
+  },
+  "tooltip": {
+    "trigger": "item"
+  },
+  "animation": false,
+  "series": [
+    {
+      "type": "graph",
+      "layout": "none",
+      "roam": true,
+      "symbol": "roundRect",
+      "symbolSize": [
+        142,
+        54
+      ],
+      "edgeSymbol": [
+        "none",
+        "arrow"
+      ],
+      "edgeSymbolSize": 9,
+      "label": {
+        "show": true,
+        "position": "inside",
+        "fontSize": 11,
+        "fontWeight": 600,
+        "overflow": "break",
+        "width": 126
+      },
+      "edgeLabel": {
+        "show": true,
+        "formatter": "{c}",
+        "fontSize": 9,
+        "color": "#475569",
+        "backgroundColor": "rgba(255,255,255,0.86)",
+        "padding": [
+          2,
+          4
+        ],
+        "borderRadius": 3
+      },
+      "lineStyle": {
+        "color": "#64748b",
+        "width": 2,
+        "opacity": 0.82
+      },
+      "emphasis": {
+        "focus": "adjacency"
+      },
+      "data": [
+        {
+          "name": "Stream or train session",
+          "x": 100,
+          "y": 250,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#2563eb"
+          }
+        },
+        {
+          "name": "Issue delivery trace",
+          "x": 400,
+          "y": 250,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#7c3aed"
+          }
+        },
+        {
+          "name": "Bootstrap",
+          "x": 700,
+          "y": 80,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Pass or verdict",
+          "x": 700,
+          "y": 200,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Retry or transition",
+          "x": 700,
+          "y": 320,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "Merge or deploy fact",
+          "x": 700,
+          "y": 440,
+          "symbolSize": [
+            180,
+            58
+          ],
+          "itemStyle": {
+            "color": "#0891b2"
+          }
+        },
+        {
+          "name": "trace.jsonl",
+          "x": 1000,
+          "y": 250,
+          "symbolSize": [
+            142,
+            54
+          ],
+          "itemStyle": {
+            "color": "#475569"
+          }
+        },
+        {
+          "name": "CI contract check",
+          "x": 1000,
+          "y": 600,
+          "symbolSize": [
+            170,
+            58
+          ],
+          "itemStyle": {
+            "color": "#059669"
+          }
+        },
+        {
+          "name": "trace degraded warning",
+          "x": 700,
+          "y": 600,
+          "symbolSize": [
+            190,
+            58
+          ],
+          "itemStyle": {
+            "color": "#dc2626"
+          }
+        }
+      ],
+      "links": [
+        {
+          "source": "Stream or train session",
+          "target": "Issue delivery trace",
+          "value": "contains",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue delivery trace",
+          "target": "Bootstrap",
+          "value": "observation",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue delivery trace",
+          "target": "Pass or verdict",
+          "value": "observation",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue delivery trace",
+          "target": "Retry or transition",
+          "value": "observation",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Issue delivery trace",
+          "target": "Merge or deploy fact",
+          "value": "observation",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Bootstrap",
+          "target": "trace.jsonl",
+          "value": "helper append",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Pass or verdict",
+          "target": "trace.jsonl",
+          "value": "helper append",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Retry or transition",
+          "target": "trace.jsonl",
+          "value": "helper append",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "Merge or deploy fact",
+          "target": "trace.jsonl",
+          "value": "helper append",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "trace.jsonl",
+          "target": "CI contract check",
+          "value": "fixtures",
+          "lineStyle": {
+            "curveness": 0
+          }
+        },
+        {
+          "source": "trace.jsonl",
+          "target": "trace degraded warning",
+          "value": "runtime append failure",
+          "lineStyle": {
+            "curveness": 0
+          }
+        }
+      ],
+      "left": 75,
+      "right": 75,
+      "top": 35,
+      "bottom": 35,
+      "zoom": 0.82
+    }
+  ]
+}
+</script>
+<div data-render-target="chart" style="min-height: 650px"></div>
+</section>
+
+<section data-anchor="tracing" id="tracing">
+<h2>Lightweight tracing</h2>
+<p data-anchor="trace-shape" id="trace-shape">Tracing aligns to Langfuse session, trace, and observation concepts at the data-contract level only.</p>
+<p data-anchor="trace-no-runtime" id="trace-no-runtime">No Langfuse deployment, SDK, collector, exporter, service, or trace database is installed.</p>
+<p data-anchor="trace-file" id="trace-file">Each bounded stream may have one append-only <code>trace.jsonl</code> in its existing control directory.</p>
+<p data-anchor="trace-session" id="trace-session">A session is one bounded orchestrator stream or release train.</p>
+<p data-anchor="trace-trace" id="trace-trace">A trace is one issue-delivery execution.</p>
+<p data-anchor="trace-observation" id="trace-observation">An observation is one meaningful workflow boundary such as bootstrap, pass completion, verdict, retry, transition, accepted control message, merge, or deployment fact.</p>
+<p data-anchor="trace-writer" id="trace-writer">Only deterministic workflow and named gate helpers write traces, and language-model agents never write them directly.</p>
+<p data-anchor="trace-content" id="trace-content">Records contain portable IDs, timing, status, compact role and issue attributes, and artifact references but no raw prompts, responses, logs, transcripts, secrets, evidence bodies, or product data.</p>
+<p data-anchor="trace-lifecycle" id="trace-lifecycle">A trace inherits its stream control-directory lifecycle and has no separate archive, retention timer, or pruning system.</p>
+<p data-anchor="trace-failure" id="trace-failure">Runtime append failure writes one <code>trace degraded</code> status warning and continues without retrying or blocking gates.</p>
+<p data-anchor="trace-ci" id="trace-ci">One path-filtered CI checker validates generated happy, failure and retry, and invalid traces without mutating external systems.</p>
+<p data-anchor="trace-tdd" id="trace-tdd">Trace conformance does not replace spec-driven TDD or target-repo tests.</p>
+</section>
+
+<section data-anchor="edge-cases" id="edge-cases">
+<h2>Edge cases</h2>
+<p data-anchor="edge-modal" id="edge-modal">A modal or question dialog causes <code>herdr-say</code> to queue rather than inject or submit.</p>
+<p data-anchor="edge-trace-corrupt" id="edge-trace-corrupt">A malformed trace blocks the relevant CI contract check but does not retroactively invalidate authoritative gate artifacts.</p>
+<p data-anchor="edge-owner-corrupt" id="edge-owner-corrupt">A missing or ambiguous owner record blocks every operator-owned mutation until manual operator takeover outside role authority; no role or command may self-authorize recovery.</p>
+</section>
+
+<section data-anchor="related-specs" id="related-specs">
+<h2>Sources and related specs</h2>
+<p data-anchor="related-overview" id="related-overview">Overview: <a href="./operating-model.spec.html">operating-model.spec.html</a>.</p>
+<p data-anchor="related-delivery-lifecycle" id="related-delivery-lifecycle">Sibling: <a href="./delivery-lifecycle.spec.html">delivery-lifecycle.spec.html</a> for shaping, delivery, Linear, and QA behavior.</p>
+<p data-anchor="related-role-runtime" id="related-role-runtime">Sibling: <a href="./role-runtime.spec.html">role-runtime.spec.html</a> for role, model, launch, and reconcile runtime.</p>
+<p data-anchor="related-adr" id="related-adr">Boundary: <a href="../adr/0001-operating-model-boundaries.spec.html">ADR 0001 operating-model boundaries</a>.</p>
+</section>
+
+</article>
+</body>
+</html>

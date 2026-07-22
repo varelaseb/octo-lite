@@ -5,6 +5,11 @@ description: pnpm package-management policy for octo-lite implementer work when 
 
 # pnpm
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill only when the repo already selects pnpm through `pnpm-lock.yaml`,
 `pnpm-workspace.yaml`, a `packageManager` field, `.npmrc`, or repo docs.
 
@@ -19,4 +24,3 @@ Use this skill only when the repo already selects pnpm through `pnpm-lock.yaml`,
 
 Stop for clarification when the issue requires dependency or package-manager
 changes without an observable acceptance need.
-

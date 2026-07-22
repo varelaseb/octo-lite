@@ -5,6 +5,11 @@ description: Create a well-formed git commit from current changes using session 
 
 # Commit
 
+## Communication Style
+
+Be extremely concise. Sacrifice grammar for the sake of concision.
+No em-dashes or en-dashes. Ever.
+
 Use this skill when the operator asks to commit durable shaping artifacts or
 implementation changes.
 
