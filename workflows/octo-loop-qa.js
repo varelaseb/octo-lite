@@ -3026,11 +3026,26 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
   // resolver command (no literal '...'); the loop never hardcodes provider/model/effort/
   // service_tier and receives the canonical contract TEXT the relay carries.
   const runtime = await resolveRuntime(role, phaseTitle, worktree, REVIEWER_RUNTIME_SCHEMA, bound.issue)
-  // 2. Relay subagent runs one codex exec for the resolved OpenAI runtime and returns the
-  // verbatim final message plus the claimed session id, the exact bootstrap/resume argv, and
-  // the review worktree HEAD+status before and after. It NEVER supplies the rollout record. The
-  // relay carries the ACTUAL per-pass brief, the contained worktree path, and the canonical
-  // contract TEXT (role-openai-relay).
+  // 2. Relay subagent runs the codex exec for the resolved OpenAI runtime and returns the verbatim
+  // final message plus the claimed session id, the exact bootstrap/resume argv, and the review
+  // worktree HEAD+status before and after. It NEVER supplies the rollout record. The relay carries
+  // the ACTUAL per-pass brief, the contained worktree path, and the canonical contract TEXT
+  // (role-openai-relay).
+  //
+  // TUR-447 ruling-66 resilient native reviewer stage (role-openai-relay, launch-review-sandbox
+  // -integrity, launch-resume-sandbox-config, launch-correctness-path): the WORKFLOW owns the reviewer
+  // stage and CODEX stays the engine, but the codex exec runs in the BACKGROUND, detached, RUN-TO
+  // -COMPLETION (nohup ... & then poll), NOT a single FOREGROUND timeout-bound call. A foreground
+  // external-timeout cut kills the exec and restarts the whole review pass, losing the in-progress
+  // rollout; running detached and RESUMING THE SAME session (codex exec resume <claimed_session_id>)
+  // on ANY cut preserves that progress. This is a PROMPT-shape change only: the read-only bootstrap
+  // -first stays a TOP-LEVEL `-s read-only` flag (the `codex exec` bootstrap accepts `-s`, and the
+  // unchanged assertReadOnlyFirstBootstrap requires `-s read-only` in bootstrap_argv), the host-pinned
+  // -C worktree, the worktree-immutability capture, the resume-sandbox law (sandbox on RESUME only via
+  // -c sandbox_mode, never top-level -s), and the verbatim provenance carriage are unchanged. The
+  // claimed_session_id is STABLE across resumes, so the SAME rollout record backs the final message and
+  // the resumed-to-completion session flows through the UNCHANGED independent rollout reader +
+  // verifyRelayVerbatim + assertResumeSandboxConfig provenance path.
   const relayPrompt = [
     `You are a fresh octo-lite codex relay subagent for the OpenAI ${role} role. One pass only.`,
     'BOUND INPUTS (verify against your own reads before relaying, echo verbatim is not required here):',
@@ -3040,27 +3055,24 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
       { provider: runtime.provider, model: runtime.model, effort: runtime.effort, service_tier: runtime.service_tier },
       null, 2,
     ),
+    // TUR-447 ruling-56 host cwd pin: pin the codex exec AND the worktree snapshot git reads to the
+    // host issue worktree (-C ${worktree}); do NOT rely on the ambient (foreign lane) cwd.
     `CONTAINED REVIEW WORKTREE (run codex exec with -C this exact path): ${worktree}`,
-    // TUR-447 ruling-56 host cwd pin (loop-correctness single-writer): the relay subagent runs in an
-    // AMBIENT cwd that on the shared box is a FOREIGN lane worktree. Pin the codex exec AND the worktree
-    // snapshot git reads to the host issue worktree; do NOT rely on the current working directory.
     `Operate ONLY on the host-pinned issue worktree at ${worktree}. Do NOT rely on the current working directory;`,
     'it may be a foreign lane worktree on a shared box.',
+    `Capture the review worktree HEAD (\`git -C ${worktree} rev-parse HEAD\`) and \`git -C ${worktree} status`,
+    '--porcelain` once BEFORE the bootstrap and again AFTER the resumed-to-completion pass; do not mutate the worktree.',
     'CANONICAL ROLE CONTRACT to pass VERBATIM as the codex exec prompt (never copy a workflow literal):',
     runtime.contract_text,
     'PER-PASS BRIEF for this exact pass:',
     brief,
-    'Run exactly one `codex exec` relay carrying that exact model, effort, service tier, the',
-    'contained review worktree above, and the canonical role contract above as the exec prompt.',
-    'Bootstrap read-only first (-s read-only). If the pass needs live GitHub or Linear reads,',
-    'resume with the sandbox selected ONLY through -c sandbox_mode="workspace-write" plus -c',
-    'sandbox_workspace_write.network_access=true; NEVER use the top-level -s flag on resume.',
-    `Capture the review worktree HEAD (\`git -C ${worktree} rev-parse HEAD\`) and \`git -C ${worktree} status`,
-    '--porcelain` once BEFORE the bootstrap and again AFTER the resumed pass; the review pass must not',
-    'mutate the worktree.',
-    'Return the codex final assistant message VERBATIM as payload (never summarize or edit it),',
-    'the claimed_session_id, bootstrap_argv, resume_argv, needs_live_reads, worktree_before, and',
-    'worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',
+    'Run the `codex exec` relay in the BACKGROUND, detached, RUN-TO-COMPLETION, carrying that exact model, effort, service tier, the contained worktree, and the canonical contract as the exec prompt.',
+    'Do NOT run a single blocking timeout-bound codex exec: launch it detached via `nohup codex exec ... &` to a log file, then POLL to completion until the codex final assistant message exists; a background exec keeps running across a cut instead of dying and losing the in-progress rollout.',
+    'On ANY cut BEFORE the codex final assistant message exists, RESUME THE SAME session in the background via `codex exec resume <claimed_session_id>` (detached, run-to-completion). The claimed_session_id is STABLE across resumes.',
+    'NEVER restart the pass from scratch and NEVER spawn a NEW session on a cut: a restart loses progress and creates provenance ambiguity. Keep polling and resuming THAT SAME session on each cut until the final assistant message is produced.',
+    'Bootstrap read-only first (-s read-only); if the pass needs live GitHub or Linear reads, resume with the sandbox selected ONLY through -c sandbox_mode="workspace-write" plus -c sandbox_workspace_write.network_access=true; NEVER use the top-level -s flag on resume.',
+    'Because the claimed_session_id is stable across resumes, the SAME rollout record backs the final message and the independent rollout reader + verifyRelayVerbatim + assertResumeSandboxConfig provenance path applies unchanged to the resumed-to-completion session.',
+    'Return the codex final assistant message VERBATIM as payload (never summarize or edit it), the claimed_session_id (stable across resumes), bootstrap_argv, resume_argv, needs_live_reads, worktree_before, and worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',
   ].join('\n\n')
   const relay = await agent(relayPrompt, {
     label: `${role}-relay:${bound.issue}`, phase: phaseTitle, schema: RELAY_SCHEMA,
