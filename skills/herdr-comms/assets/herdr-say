@@ -265,10 +265,26 @@ write_locked_state pending deferred "$attempts"
 # the target composer holds residual text, so rc alone NEVER confirms.
 # Confirmation is OBSERVED STATE: the fire passes --wait --timeout so herdr
 # reports the observed post-submission state; only a matched state
-# (idle|done|blocked) confirms. agent_prompt_stalled, a timeout, a nonzero
-# rc, or any unmatched outcome is UNCONFIRMED and fails closed.
-prompt_confirmed() { # $1 pane, $2 body -> 0 only on an observed matched state
-  local out="$state.$$.wait" rc=0
+# (idle|done|blocked) confirms. A2 (soak finding 2): a send into a WORKING
+# pane delivers (submit/queue) but --wait cannot match idle|done|blocked
+# mid-turn, so confirmation is (--wait matched state) OR (state_change_seq
+# ADVANCED across the prompt): the seq is read via `herdr agent get`
+# (structured field, never pane text) immediately BEFORE the prompt and again
+# AFTER the --wait outcome. Unchanged seq with no matched state is a true
+# swallow (UNCONFIRMED, fails closed exactly as A1), and any seq read failure
+# on either side leaves only the matched-state path (fail closed,
+# degrade-safe).
+read_state_seq() { # -> prints state_change_seq for $target; nonzero on any failure
+  local raw seq
+  raw="$(herdr agent get "$target" 2>/dev/null)" || return 1
+  seq="$(printf '%s' "$raw" | jq -er '.result.agent.state_change_seq' 2>/dev/null)" || return 1
+  [[ "$seq" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$seq"
+}
+
+prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
+  local out="$state.$$.wait" rc=0 pre_seq="" post_seq=""
+  pre_seq="$(read_state_seq)" || pre_seq=""
   herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
   if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
     && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
@@ -276,6 +292,12 @@ prompt_confirmed() { # $1 pane, $2 body -> 0 only on an observed matched state
     return 0
   fi
   rm -f "$out"
+  if [[ -n "$pre_seq" ]]; then
+    post_seq="$(read_state_seq)" || post_seq=""
+    if [[ -n "$post_seq" ]] && (( 10#$post_seq > 10#$pre_seq )); then
+      return 0
+    fi
+  fi
   return 1
 }
 
