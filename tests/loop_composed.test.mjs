@@ -44,6 +44,7 @@ const ISSUE = 'TUR-447'
 const PR = 6
 const PR_URL = `https://github.com/${REPO_SLUG}/pull/6`
 const WORKTREE_ABS = '/root/octo-lite'
+const WORKTREE_ROOT = '/root'
 const BRANCH = 'octo-lite/tur-443-operating-model'
 const HEAD = 'f00b13357cb1be87b5c5e6d7bd98fd9572915154'
 const NEWHEAD = 'abc1234new'
@@ -79,15 +80,26 @@ function boundInputs(role) {
   }
 }
 
-// TUR-447 ruling-59 host-trusted identity anchors. The receipt is the HOST-PROVISIONED workspace
-// binding a genuine host receipt reader returns from the OCTO_RECEIPT location (never a child path);
-// the live read is the receipt-pinned worktree reality a genuine host git reader returns. A healthy
-// world: receipt + live agree with the envelope's repo_slug/worktree/starting_head/branch.
-function receiptFor(overrides = {}) {
-  return {
-    source: 'host-provisioned-receipt', repo: REPO, repo_slug: REPO_SLUG,
-    worktree: WORKTREE_ABS, starting_head: HEAD, ...overrides,
+// TUR-447 gh#8 host-provisioned worktree identity trust root. The provision read is the HOST-PROVISIONED
+// out-of-tree record a genuine host reader returns from the OCTO_PROVISION_RECORD location (never a child
+// path) PLUS the frozen launch env it resolves itself (a child cannot forge its own launch env); the live
+// read is the provisioned-worktree reality a genuine host git reader returns as defense-in-depth. A
+// healthy world: record + env + live all agree with the envelope's repo_slug/worktree/starting_head/branch.
+function provisionReadFor(overrides = {}) {
+  const provision = {
+    schema_version: 1, source: 'host-provisioned-worktree', lane: 'tur-447',
+    control_repo: REPO, worktree: WORKTREE_ABS, worktree_root: WORKTREE_ROOT,
+    repo_slug: REPO_SLUG, branch: BRANCH, starting_head: HEAD,
+    resolver_root: WORKTREE_ABS, install_check: 'clean', provisioned_at: '2026-07-22T04:00:00Z',
+    ...(overrides.provision ?? {}),
   }
+  const env = {
+    OCTO_WORKTREE: WORKTREE_ABS, OCTO_WORKTREE_ROOT: WORKTREE_ROOT,
+    OCTO_CONTROL_REPO: REPO, OCTO_REPO_SLUG: REPO_SLUG,
+    OCTO_STARTING_HEAD: HEAD, OCTO_LANE: 'tur-447',
+    ...(overrides.env ?? {}),
+  }
+  return { provision, env }
 }
 function worktreeRealityFor(overrides = {}) {
   return {
@@ -95,10 +107,10 @@ function worktreeRealityFor(overrides = {}) {
     head: HEAD, branch: BRANCH, repo_slug: REPO_SLUG, ...overrides,
   }
 }
-// The two anchor spawn responders keyed for a given role label prefix.
-function identityAnchorEntries(role, { receipt = receiptFor(), reality = worktreeRealityFor() } = {}) {
+// The trust-root + defense-in-depth spawn responders keyed for a given role label prefix.
+function identityAnchorEntries(role, { provisionRead = provisionReadFor(), reality = worktreeRealityFor() } = {}) {
   return [
-    [`${role}-receipt:`, receipt],
+    [`${role}-provision:`, provisionRead],
     [`${role}-worktree-reality:`, reality],
   ]
 }
@@ -252,7 +264,7 @@ function implementScript({
   fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
   mutationOverrides = {}, prePush, gitRead = gitReadFor(), observation = observationFor(), postPush,
   liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
-  receipt = receiptFor(), reality = worktreeRealityFor(), prePushReAnchor = worktreeRealityFor({ head: FINAL_COMMIT }),
+  provisionRead = provisionReadFor(), reality = worktreeRealityFor(), prePushReAnchor = worktreeRealityFor({ head: FINAL_COMMIT }),
 } = {}) {
   // Committed model: red is the committed failing test (a real nonzero test exit), green the committed
   // production-only pass; both name the same scenario. The observer replay, not these strings, is proof.
@@ -267,9 +279,10 @@ function implementScript({
   // Pre-push readback default: git_head is the committed FINAL HEAD (the worker committed on the branch).
   const goodPrePush = prePush ?? freshReads({ git_head: FINAL_COMMIT })
   return [
-    // TUR-447 ruling-59 host-trusted identity anchors: read BEFORE the Shaped -> Todo fire and again
-    // before the spawn. A healthy receipt + receipt-pinned live worktree read agree with the envelope.
-    ...identityAnchorEntries('implementer', { receipt, reality }),
+    // TUR-447 gh#8 host-provisioned worktree identity trust root: read BEFORE the Shaped -> Todo fire
+    // and again before the spawn. A healthy provision record + resolved env + defense-in-depth live
+    // worktree read agree with the envelope.
+    ...identityAnchorEntries('implementer', { provisionRead, reality }),
     ['loop-fire:', {
       command: 'octo-control linear-transition', exit_status: 0,
       readback_state: fireState, readback_fingerprint: fireFingerprint,
@@ -329,104 +342,105 @@ test('P0: a genuine Shaped member fires Todo, the bound fingerprint is RECONCILE
   assert.ok(mutIdx > ackIdx, 'write-capable mutation phase reached after ack')
 })
 
-// === TUR-447 ruling-59 host-trusted identity anchors driven through the REAL loop gate ===========
+// === TUR-447 gh#8 host-provisioned worktree identity trust root driven through the REAL loop gate ==
 // These drive the production identity gate (hostTrustedIdentity -> assertHostTrustedIdentity) on the
 // REAL foreign path: a foreign-but-well-formed envelope, and the tur-456 shape (matching worktree
 // PATH on a FOREIGN branch / different remote). A mismatch must drive NO Shaped -> Todo transition
-// and NO spawn; a genuine matching triple is ACCEPTED. Removing the gate fails these (fail-closed).
+// and NO spawn; a genuine matching triple (record + env + live) is ACCEPTED. Removing the trust-root
+// gate fails these (fail-closed). Anchor B (live-read) stays as defense-in-depth, not the trust root.
 
-test('identity-anchor: the host receipt read and the receipt-pinned live worktree read run BEFORE the Shaped -> Todo fire and before any spawn', async () => {
+test('identity-anchor: the host provision-record read and the provisioned-worktree live read run BEFORE the Shaped -> Todo fire and before any spawn', async () => {
   const factory = loadLoop()
   const agent = makeAgent(implementScript())
   const A = committedEnvelope()
   const result = await factory(agent, JSON.stringify(A), noop)
   assert.equal(result.stage, 'code-review-required')
   const order = agent.calls.map((c) => c.label)
-  const receiptIdx = order.findIndex((l) => l.startsWith('implementer-receipt:'))
+  const provisionIdx = order.findIndex((l) => l.startsWith('implementer-provision:'))
   const realityIdx = order.findIndex((l) => l.startsWith('implementer-worktree-reality:'))
   const fireIdx = order.findIndex((l) => l.startsWith('loop-fire:'))
   const ackIdx = order.findIndex((l) => l.startsWith('implementer-ack:'))
-  assert.ok(receiptIdx >= 0 && realityIdx >= 0, 'both host-trusted anchors were read')
-  assert.ok(receiptIdx < fireIdx && realityIdx < fireIdx, 'both anchors read before the Shaped -> Todo fire')
+  assert.ok(provisionIdx >= 0 && realityIdx >= 0, 'the trust-root read and the defense-in-depth read both ran')
+  assert.ok(provisionIdx < fireIdx && realityIdx < fireIdx, 'both reads run before the Shaped -> Todo fire')
   assert.ok(fireIdx < ackIdx, 'the fire precedes the spawn (sanity)')
-  // The receipt reader is read-only and reads the HOST env location, never a child-envelope path.
-  const receiptCall = agent.calls.find((c) => c.label.startsWith('implementer-receipt:'))
-  assert.equal(receiptCall.agentType, 'Explore', 'receipt reader is read-only')
-  assert.ok(receiptCall.prompt.includes('OCTO_RECEIPT'), 'receipt read from the host OCTO_RECEIPT location')
-  // The live worktree reader is pinned to the RECEIPT worktree (git -C the receipt path).
+  // The provision-record reader is read-only and reads the HOST env location, never a child-envelope path.
+  const provisionCall = agent.calls.find((c) => c.label.startsWith('implementer-provision:'))
+  assert.equal(provisionCall.agentType, 'Explore', 'provision-record reader is read-only')
+  assert.ok(provisionCall.prompt.includes('OCTO_PROVISION_RECORD'), 'record read from the host OCTO_PROVISION_RECORD location')
+  assert.ok(provisionCall.prompt.includes('OCTO_WORKTREE'), 'the reader also resolves the frozen launch env')
+  // The live worktree reader is pinned to the PROVISIONED worktree (git -C the provisioned path).
   const realityCall = agent.calls.find((c) => c.label.startsWith('implementer-worktree-reality:'))
-  assert.ok(/git -C .+ rev-parse HEAD/.test(realityCall.prompt), 'live read pinned to the receipt worktree')
+  assert.ok(/git -C .+ rev-parse HEAD/.test(realityCall.prompt), 'live read pinned to the provisioned worktree')
 })
 
-test('identity-anchor: a FOREIGN-but-well-formed envelope (repo_slug differs from the host receipt) drives NO fire and NO spawn', async () => {
+test('identity-anchor: a FOREIGN-but-well-formed envelope (repo_slug differs from the host record) drives NO fire and NO spawn', async () => {
   const factory = loadLoop()
-  // The receipt is the host truth (canonical slug); the ENVELOPE claims a foreign slug. Self-consistent
-  // envelope validation alone would miss this; the receipt anchor catches it before any transition.
+  // The provision record + env are the host truth (canonical slug); the ENVELOPE claims a foreign slug.
+  // Self-consistent envelope validation alone would miss this; the trust-root gate catches it before any transition.
   const agent = makeAgent(implementScript())
   const A = committedEnvelope({ repo_slug: 'attacker/other' })
   // The launch revision must still be internally consistent for the foreign envelope, so the ONLY thing
-  // that can reject is the host-trusted anchor, not a revision mismatch.
+  // that can reject is the host-trusted trust-root gate, not a revision mismatch.
   A.launch_revision = launchRevision({
     role: 'implementer', repo: REPO, repo_slug: 'attacker/other', worktree: WORKTREE_ABS,
     issue: ISSUE, pr: PR, starting_head: HEAD, spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
   })
   await assert.rejects(
     () => factory(agent, JSON.stringify(A), noop),
-    /receipt binding rejected: envelope canonical repo slug does not match/,
+    /provision binding rejected: envelope canonical repo slug does not match the host-provisioned record/,
   )
   assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no Shaped -> Todo fire on a foreign envelope')
   assert.ok(!agent.calls.some((c) => c.label.startsWith('implementer-ack:')), 'no spawn on a foreign envelope')
 })
 
-test('identity-anchor (tur-456): a receipt-pinned worktree on a FOREIGN BRANCH (matching path) drives NO fire and NO spawn', async () => {
+test('identity-anchor (tur-456): a provisioned worktree on a FOREIGN BRANCH (matching path) drives NO fire and NO spawn', async () => {
   const factory = loadLoop()
-  // Receipt and envelope agree (matching path + branch), but the LIVE read of the receipt-pinned
-  // worktree reveals it is checked out on a FOREIGN branch: the exact tur-456 bug. Anchor A alone
-  // (receipt vs envelope) passes; only the live read rejects.
+  // Record and envelope agree (matching path + branch), but the LIVE read of the provisioned worktree
+  // reveals it is checked out on a FOREIGN branch: the exact tur-456 bug the defense-in-depth read catches.
   const agent = makeAgent(implementScript({ reality: worktreeRealityFor({ branch: 'someone-elses/lane' }) }))
   const A = committedEnvelope()
   await assert.rejects(
     () => factory(agent, JSON.stringify(A), noop),
-    /live worktree read rejected: receipt-pinned worktree is on a foreign branch/,
+    /live worktree read rejected: provisioned worktree is on a foreign branch/,
   )
-  assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no fire when the receipt-pinned worktree is on a foreign branch')
-  assert.ok(!agent.calls.some((c) => c.label.startsWith('implementer-ack:')), 'no spawn when the receipt-pinned worktree is on a foreign branch')
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no fire when the provisioned worktree is on a foreign branch')
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('implementer-ack:')), 'no spawn when the provisioned worktree is on a foreign branch')
 })
 
-test('identity-anchor (tur-456): a receipt-pinned worktree whose origin is a DIFFERENT REMOTE (matching path) drives NO fire and NO spawn', async () => {
+test('identity-anchor (tur-456): a provisioned worktree whose origin is a DIFFERENT REMOTE (matching path) drives NO fire and NO spawn', async () => {
   const factory = loadLoop()
   const agent = makeAgent(implementScript({ reality: worktreeRealityFor({ repo_slug: 'attacker/other' }) }))
   const A = committedEnvelope()
   await assert.rejects(
     () => factory(agent, JSON.stringify(A), noop),
-    /receipt-pinned worktree origin is a foreign remote/,
+    /provisioned worktree origin is a foreign remote/,
   )
   assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no fire on a foreign remote')
 })
 
-test('identity-anchor: a receipt NOT stamped host-provisioned (a forged receipt) drives NO fire and NO spawn', async () => {
+test('identity-anchor: a provision record NOT stamped host-provisioned-worktree (a forged record) drives NO fire and NO spawn', async () => {
   const factory = loadLoop()
-  const agent = makeAgent(implementScript({ receipt: receiptFor({ source: 'child-supplied' }) }))
+  const agent = makeAgent(implementScript({ provisionRead: provisionReadFor({ provision: { source: 'child-supplied' } }) }))
   const A = committedEnvelope()
   await assert.rejects(
     () => factory(agent, JSON.stringify(A), noop),
-    /receipt not from the host-provisioned launch location/,
+    /provision record source is not host-provisioned-worktree/,
   )
-  assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no fire on a forged receipt')
+  assert.ok(!agent.calls.some((c) => c.label.startsWith('loop-fire:')), 'no fire on a forged record')
 })
 
-test('identity-anchor: a live read that did NOT read the receipt-pinned worktree is REJECTED (no fire, no spawn)', async () => {
+test('identity-anchor: a defense-in-depth live read that did NOT read the provisioned worktree is REJECTED (no fire, no spawn)', async () => {
   const factory = loadLoop()
   const agent = makeAgent(implementScript({ reality: worktreeRealityFor({ read_worktree: '/root/foreign-lane-wt' }) }))
   const A = committedEnvelope()
   await assert.rejects(
     () => factory(agent, JSON.stringify(A), noop),
-    /reader did not read the receipt-pinned worktree/,
+    /reader did not read the provisioned worktree/,
   )
   assert.ok(!agent.calls.some((c) => c.label.startsWith('implementer-ack:')), 'no spawn when the reader read the wrong worktree')
 })
 
-test('identity-anchor: a genuine matching envelope+receipt+live triple is ACCEPTED and delivers', async () => {
+test('identity-anchor: a genuine matching envelope + provision record + env + live triple is ACCEPTED and delivers', async () => {
   const factory = loadLoop()
   const agent = makeAgent(implementScript())
   const A = committedEnvelope()
@@ -435,7 +449,7 @@ test('identity-anchor: a genuine matching envelope+receipt+live triple is ACCEPT
   assert.equal(result.head, FINAL_COMMIT)
 })
 
-test('identity-anchor: the code-review relay path also gates identity (foreign branch on the receipt-pinned worktree rejects before the relay)', async () => {
+test('identity-anchor: the code-review relay path also gates identity (foreign branch on the provisioned worktree rejects before the relay)', async () => {
   const factory = loadLoop()
   const script = reviewerScript().map(([m, r]) =>
     m === 'code-reviewer-worktree-reality:' ? [m, worktreeRealityFor({ branch: 'foreign/lane' })] : [m, r])
@@ -1259,8 +1273,12 @@ test('D2 F2 args-quoted: the resolver command shell-quotes interpolated args (a 
   // Re-anchor the identity anchors + reads to the space-containing worktree so identity passes and the
   // pass reaches the resolver spawn (we only assert the resolver command shape here).
   const SPACE_WT = '/root/my worktrees/octo lite wt'
+  const SPACE_ROOT = '/root/my worktrees'
   const spaceScript = implementScript({
-    receipt: receiptFor({ worktree: SPACE_WT }),
+    provisionRead: provisionReadFor({
+      provision: { worktree: SPACE_WT, worktree_root: SPACE_ROOT, resolver_root: SPACE_WT },
+      env: { OCTO_WORKTREE: SPACE_WT, OCTO_WORKTREE_ROOT: SPACE_ROOT },
+    }),
     reality: worktreeRealityFor({ read_worktree: SPACE_WT }),
     prePushReAnchor: worktreeRealityFor({ read_worktree: SPACE_WT, head: FINAL_COMMIT }),
   })

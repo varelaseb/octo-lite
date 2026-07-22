@@ -103,6 +103,7 @@ const ISSUE = 'TUR-447'
 const PR = 6
 const PR_URL = `https://github.com/${REPO_SLUG}/pull/6`
 const WORKTREE_ABS = '/root/octo-lite'
+const WORKTREE_ROOT = '/root'
 const BRANCH = 'octo-lite/tur-443-operating-model'
 const HEAD = 'f00b13357cb1be87b5c5e6d7bd98fd9572915154'
 const SPEC_BLOBS = ['spec/domains/role-runtime.spec.html:anchor-1']
@@ -132,13 +133,23 @@ function ackFor(role, overrides = {}) {
   }
 }
 
-// TUR-447 ruling-59 host-trusted identity anchors (host-provisioned receipt + receipt-pinned live
-// worktree read) the loop reads BEFORE the fire and before the spawn.
-function receiptFor(overrides = {}) {
-  return {
-    source: 'host-provisioned-receipt', repo: REPO, repo_slug: REPO_SLUG,
-    worktree: WORKTREE_ABS, starting_head: HEAD, ...overrides,
+// TUR-447 gh#8 host-provisioned worktree identity trust root (the out-of-tree provision record + the
+// frozen launch env) plus the defense-in-depth live worktree read, all read BEFORE the fire and spawn.
+function provisionReadFor(overrides = {}) {
+  const provision = {
+    schema_version: 1, source: 'host-provisioned-worktree', lane: 'tur-447',
+    control_repo: REPO, worktree: WORKTREE_ABS, worktree_root: WORKTREE_ROOT,
+    repo_slug: REPO_SLUG, branch: BRANCH, starting_head: HEAD,
+    resolver_root: WORKTREE_ABS, install_check: 'clean', provisioned_at: '2026-07-22T04:00:00Z',
+    ...(overrides.provision ?? {}),
   }
+  const env = {
+    OCTO_WORKTREE: WORKTREE_ABS, OCTO_WORKTREE_ROOT: WORKTREE_ROOT,
+    OCTO_CONTROL_REPO: REPO, OCTO_REPO_SLUG: REPO_SLUG,
+    OCTO_STARTING_HEAD: HEAD, OCTO_LANE: 'tur-447',
+    ...(overrides.env ?? {}),
+  }
+  return { provision, env }
 }
 function worktreeRealityFor(overrides = {}) {
   return {
@@ -241,7 +252,7 @@ function implementScript({
   fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
   mutationOverrides = {}, prePush, gitRead = gitReadFor(), observation = observationFor(), postPush,
   liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
-  receipt = receiptFor(), reality = worktreeRealityFor(), prePushReAnchor = worktreeRealityFor({ head: FINAL_COMMIT }),
+  provisionRead = provisionReadFor(), reality = worktreeRealityFor(), prePushReAnchor = worktreeRealityFor({ head: FINAL_COMMIT }),
 } = {}) {
   const goodRed = red ?? {
     command: VALIDATION_COMMAND, exit_status: 1, outcome: 'FAIL: behavior wrong',
@@ -253,8 +264,9 @@ function implementScript({
   }
   const goodPrePush = prePush ?? freshReads({ git_head: FINAL_COMMIT })
   return [
-    // TUR-447 ruling-59 host-trusted identity anchors, read before the fire and before the spawn.
-    ['implementer-receipt:', receipt],
+    // TUR-447 gh#8 host-provisioned worktree identity trust root + defense-in-depth live read,
+    // read before the fire and before the spawn.
+    ['implementer-provision:', provisionRead],
     ['implementer-worktree-reality:', reality],
     ['loop-fire:', {
       command: 'octo-control linear-transition', exit_status: 0,

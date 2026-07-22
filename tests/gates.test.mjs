@@ -34,6 +34,10 @@ import {
   launchRevision,
   verifyAckThenUpgrade,
   verifyRelayVerbatim,
+  assertProvisionedWorkspaceBinding,
+  assertLiveWorktreeIdentity,
+  assertHostTrustedIdentity,
+  HOST_PROVISION_SOURCE,
 } from '../workflows/lib/gates.mjs'
 
 // Spec: role-runtime launch-role-purpose-capability, launch-purpose-shaping-roles,
@@ -1290,4 +1294,155 @@ test('shaping-review relay gate rejects rollout data not from the independent re
     ),
     /not from the independent read-only subagent/,
   )
+})
+
+// === gh#8 integration: provisioning-trust identity (Anchor A retired as trust source) ==============
+// TUR-447 gh#8: the identity TRUST ROOT is now the host-provisioned per-lane worktree, proven by the
+// out-of-tree provision record (source host-provisioned-worktree, schema_version 1, resolver_root ==
+// worktree) cross-checked against the frozen launch env a child cannot forge (cwd == OCTO_WORKTREE).
+// assertReceiptWorkspaceBinding (Anchor A = a receipt.toml at $OCTO_RECEIPT) is RETIRED as the trust
+// source and REPLACED by assertProvisionedWorkspaceBinding(envelope, provision, env). Anchor B
+// (assertLiveWorktreeIdentity) stays as a cheap defense-in-depth reality check, no longer the root.
+const PROV_REPO = '/root/octo-lite'
+const PROV_SLUG = 'varelaseb/octo-lite'
+const PROV_WORKTREE = '/root/octo-lite/.wt/tur-447'
+const PROV_ROOT = '/root/octo-lite/.wt'
+const PROV_BRANCH = 'octo-lite/tur-447-gh8-integration'
+const PROV_HEAD = '3696e1abadc0ffee00000000000000000000abcd'
+
+function provEnvelope(overrides = {}) {
+  return {
+    repo: PROV_REPO, repo_slug: PROV_SLUG, worktree: PROV_WORKTREE,
+    branch: PROV_BRANCH, starting_head: PROV_HEAD, ...overrides,
+  }
+}
+// The host-authored, out-of-tree provision record (gh#8 launch-provision-record).
+function provRecord(overrides = {}) {
+  return {
+    schema_version: 1, source: HOST_PROVISION_SOURCE, lane: 'tur-447',
+    control_repo: PROV_REPO, worktree: PROV_WORKTREE, worktree_root: PROV_ROOT,
+    repo_slug: PROV_SLUG, branch: PROV_BRANCH, starting_head: PROV_HEAD,
+    resolver_root: PROV_WORKTREE, install_check: 'clean',
+    provisioned_at: '2026-07-22T04:00:00Z', ...overrides,
+  }
+}
+// The frozen launch env the host set into the loop process; a child cannot forge its own launch env,
+// and cwd == OCTO_WORKTREE is the anchor. The reader resolves these itself and returns them.
+function provEnv(overrides = {}) {
+  return {
+    OCTO_WORKTREE: PROV_WORKTREE, OCTO_WORKTREE_ROOT: PROV_ROOT,
+    OCTO_CONTROL_REPO: PROV_REPO, OCTO_REPO_SLUG: PROV_SLUG,
+    OCTO_STARTING_HEAD: PROV_HEAD, OCTO_LANE: 'tur-447', ...overrides,
+  }
+}
+function provLive(overrides = {}) {
+  return {
+    source: 'host-receipt-pinned-worktree-read', read_worktree: PROV_WORKTREE,
+    head: PROV_HEAD, branch: PROV_BRANCH, repo_slug: PROV_SLUG, ...overrides,
+  }
+}
+
+test('provision-binding: accepts identity when provision record + resolved env agree with the envelope (source host-provisioned-worktree)', () => {
+  assert.doesNotThrow(() => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord(), provEnv()))
+})
+
+test('provision-binding: rejects when OCTO_PROVISION_RECORD/env is missing (fail closed, no fabricated identity)', () => {
+  assert.throws(() => assertProvisionedWorkspaceBinding(provEnvelope(), null, provEnv()), /provision/)
+  assert.throws(() => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord(), null), /env|provision/)
+  const noWt = provEnv(); delete noWt.OCTO_WORKTREE
+  assert.throws(() => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord(), noWt), /OCTO_WORKTREE/)
+})
+
+test('provision-binding: rejects when the source is not host-provisioned-worktree', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord({ source: 'host-provisioned-receipt' }), provEnv()),
+    /host-provisioned-worktree|provision record source/,
+  )
+})
+
+test('provision-binding: rejects when schema_version is not 1', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord({ schema_version: 2 }), provEnv()),
+    /schema_version/,
+  )
+})
+
+test('provision-binding: rejects when resolver_root != worktree (INV5)', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord({ resolver_root: '/root/octo-lite/.wt/other' }), provEnv()),
+    /resolver_root|resolver root/,
+  )
+})
+
+test('provision-binding: rejects when the envelope worktree disagrees with the provision record (accidental misrouting)', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope({ worktree: '/root/foreign-lane-wt' }), provRecord(), provEnv()),
+    /worktree/,
+  )
+})
+
+test('provision-binding: rejects when the envelope repo_slug disagrees with the provision record', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope({ repo_slug: 'attacker/other' }), provRecord(), provEnv()),
+    /repo_slug|slug/,
+  )
+})
+
+test('provision-binding: rejects when the envelope starting_head disagrees with the provision record', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope({ starting_head: 'deadbeef' }), provRecord(), provEnv()),
+    /starting|head/i,
+  )
+})
+
+test('provision-binding: rejects when the envelope branch disagrees with the provision record', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope({ branch: 'someone-elses/lane' }), provRecord(), provEnv()),
+    /branch/,
+  )
+})
+
+test('provision-binding: rejects when the resolved env OCTO_WORKTREE disagrees with the provision record (env vs record cross-check)', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord(), provEnv({ OCTO_WORKTREE: '/root/foreign-lane-wt' })),
+    /OCTO_WORKTREE|worktree/,
+  )
+})
+
+test('provision-binding: rejects when the resolved env OCTO_REPO_SLUG disagrees with the provision record', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord(), provEnv({ OCTO_REPO_SLUG: 'attacker/other' })),
+    /OCTO_REPO_SLUG|slug/,
+  )
+})
+
+test('provision-binding: rejects when env OCTO_CONTROL_REPO/OCTO_WORKTREE_ROOT is inconsistent with the record (INV2)', () => {
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord(), provEnv({ OCTO_CONTROL_REPO: '/root/other-repo' })),
+    /OCTO_CONTROL_REPO|control_repo/,
+  )
+  assert.throws(
+    () => assertProvisionedWorkspaceBinding(provEnvelope(), provRecord(), provEnv({ OCTO_WORKTREE_ROOT: '/root/other' })),
+    /OCTO_WORKTREE_ROOT|worktree_root/,
+  )
+})
+
+test('host-trusted-identity: now composes provisioning-binding + the live-read Anchor B (defense-in-depth)', () => {
+  // BOTH pass for a genuine matching triple: provision record + env + live read all agree.
+  assert.doesNotThrow(() => assertHostTrustedIdentity(provEnvelope(), provRecord(), provLive(), provEnv()))
+})
+
+test('anchor-b-defense-in-depth: the live read STILL rejects a foreign branch/remote, and its role does NOT restore Anchor A (receipt) as the trust root', () => {
+  // Anchor B (live-read) still catches the tur-456 foreign-branch shape as a cheap reality check.
+  assert.throws(
+    () => assertHostTrustedIdentity(provEnvelope(), provRecord(), provLive({ branch: 'someone-elses/lane' }), provEnv()),
+    /foreign branch/,
+  )
+  assert.throws(
+    () => assertHostTrustedIdentity(provEnvelope(), provRecord(), provLive({ repo_slug: 'attacker/other' }), provEnv()),
+    /foreign remote/,
+  )
+  // The provisioning source constant is the new trust-root stamp.
+  assert.equal(typeof HOST_PROVISION_SOURCE, 'string')
+  assert.equal(HOST_PROVISION_SOURCE, 'host-provisioned-worktree')
 })
