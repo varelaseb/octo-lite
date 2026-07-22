@@ -532,9 +532,17 @@ def cleanup_clean_abort(
 
     TUR-447 cycle-2 P1-2: ownership is bound to the provision INSTANCE, not the
     pathname (_owning_provision_record checks control_repo and branch identity
-    against the live worktree), and a successful record-authorized removal
-    RETIRES the proving record, so a stale record can never re-authorize
-    deleting a later hand-created worktree at the same conventional path."""
+    against the live worktree), and a record-authorized removal RETIRES the
+    proving record, so a stale record can never re-authorize deleting a later
+    hand-created worktree at the same conventional path.
+
+    TUR-447 cycle-3 P1 (retire-first ordering): the record is retired BEFORE
+    git worktree remove, and a failed retirement (any OSError) halts the
+    removal entirely. Retire-first is inherently fail-safe: any crash or
+    failure between the two steps leaves record-gone + worktree-present, a
+    state every future cleanup PRESERVES, so the only reachable failure bias
+    is a leaked worktree, never a stale record that later re-authorizes
+    deleting a hand-recreated worktree at the same path+repo+branch+HEAD."""
     repo = Path(repo)
     worktree = Path(worktree)
     if worktree == repo or not worktree.is_dir():
@@ -553,6 +561,13 @@ def cleanup_clean_abort(
             return
     except subprocess.CalledProcessError:
         return
+    # Retire-first (TUR-447 cycle-3 P1): end the record's authority BEFORE the
+    # destructive step; an unretirable record preserves its worktree.
+    if record_path is not None:
+        try:
+            record_path.unlink()
+        except OSError:
+            return
     try:
         subprocess.run(
             ["git", "-C", str(repo), "worktree", "remove", str(worktree)],
@@ -560,13 +575,6 @@ def cleanup_clean_abort(
         )
     except subprocess.CalledProcessError:
         return
-    # Record retirement (TUR-447 cycle-2 P1-2a): the worktree this record
-    # authorized removing is gone, so the record's authority ends with it.
-    if record_path is not None:
-        try:
-            record_path.unlink()
-        except OSError:
-            pass
 
 
 # gh#8 host-provisioned isolated worktree (spec launch-provisioning-trust-root,
