@@ -149,6 +149,46 @@ class CutoverConformanceTests(unittest.TestCase):
             for forbidden in ("exactly-once", "exactly once", "at-least-once", "at least once"):
                 self.assertNotIn(forbidden, prose, path.name)
 
+    def test_launch_interface_spec_prose_is_one_sentence_per_anchored_line(self) -> None:
+        # TUR-447 c4 F2 (spec-chat conformance): every anchored prose line in
+        # the role-runtime launch-interface section carries exactly ONE ASCII
+        # sentence under a stable data-anchor. The former two-sentence
+        # launch-correctness-path line is split: the workflow-path sentence
+        # keeps the existing stable anchor, and the persistent-sessions-as-hosts
+        # sentence moves to its own stable anchor immediately after, so no
+        # existing anchor id is orphaned.
+        text = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
+        start = text.index('<section data-anchor="launch-interface"')
+        end = text.index("</section>", start)
+        region = text[start:end]
+        anchors = []
+        for raw in region.splitlines():
+            line = raw.strip()
+            match = re.match(r'<p data-anchor="([a-z0-9-]+)" id="\1">(.*)</p>$', line)
+            if not match:
+                continue
+            anchors.append(match.group(1))
+            prose = re.sub(r"<[^>]+>", "", match.group(2))
+            self.assertTrue(prose.isascii(), match.group(1))
+            self.assertIsNone(
+                re.search(r"\.\s+[A-Z]", prose),
+                f"anchored line {match.group(1)} carries more than one sentence",
+            )
+        self.assertIn("launch-correctness-path", anchors)
+        self.assertIn("launch-correctness-hosts", anchors)
+        self.assertEqual(
+            anchors.index("launch-correctness-path") + 1,
+            anchors.index("launch-correctness-hosts"),
+            "the split sentence must sit immediately after its source anchor",
+        )
+        path_line = next(l for l in region.splitlines() if 'data-anchor="launch-correctness-path"' in l)
+        self.assertNotIn("Persistent sessions", path_line)
+        hosts_line = next(l for l in region.splitlines() if 'data-anchor="launch-correctness-hosts"' in l)
+        self.assertIn(
+            "Persistent sessions are hosts that run these workflows, never subagents spawned by them.",
+            hosts_line,
+        )
+
     def test_t30b_no_helper_references_the_retired_inbox_lock_scheme(self) -> None:
         # TUR-505 phase-1 L1: the message lock lives ONLY at locks/<id>.lock;
         # no helper derives a lock path inside an inbox directory.

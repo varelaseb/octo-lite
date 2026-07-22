@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -314,9 +315,10 @@ class LaneProvisionTests(unittest.TestCase):
         expected_keys = {
             "schema_version", "source", "lane", "control_repo", "worktree", "worktree_root",
             "repo_slug", "branch", "starting_head", "resolver_root", "install_check", "provisioned_at",
+            "instance_id",
         }
         self.assertEqual(expected_keys, set(result.record))
-        self.assertEqual(1, result.record["schema_version"])
+        self.assertEqual(2, result.record["schema_version"])
         self.assertEqual("host-provisioned-worktree", result.record["source"])
         self.assertEqual(result.record["worktree"], result.record["resolver_root"])
         self.assertIn(result.record["install_check"], {"clean", "drifted"})
@@ -525,13 +527,13 @@ class CleanupProvisionRecordGuardTests(unittest.TestCase):
 
     def test_cleanup_removes_only_provision_record_owned_worktree(self) -> None:
         # A worktree WITH a matching host-provision record (source
-        # host-provisioned-worktree, schema_version 1, record.worktree == this
-        # worktree) is still removed when pristine, exactly as before.
+        # host-provisioned-worktree, current schema version, record.worktree ==
+        # this worktree) is still removed when pristine, exactly as before.
         owned = self.worktree_root / "lane-1"
         result = self.provision(owned, "lane-1", "octo-lite/lane-1")
         record = json.loads(result.record_path.read_text())
         self.assertEqual("host-provisioned-worktree", record["source"])
-        self.assertEqual(1, record["schema_version"])
+        self.assertEqual(2, record["schema_version"])
         self.assertEqual(str(owned.resolve()), record["worktree"])
 
         cleanup_clean_abort(self.control_repo, owned, self.head)
@@ -656,6 +658,155 @@ class CleanupProvisionRecordGuardTests(unittest.TestCase):
         self.assertTrue(result.record_path.is_file(), "record still present after failed retirement")
         listing = _git(self.control_repo, "worktree", "list", "--porcelain")
         self.assertEqual(1, listing.count(f"worktree {owned.resolve()}"))
+
+
+class ProvisionInstanceBindingTests(unittest.TestCase):
+    # TUR-447 c4 F1a (workspace-cleanup-clean-abort, launch-provision-record,
+    # launch-provision-record-schema): ownership binds to the provision INSTANCE
+    # itself, not to path/repo/branch/HEAD identity. Provisioning stamps a unique
+    # instance id (uuid4) into BOTH the schema_version 2 record AND the
+    # worktree's own worktree-scoped git config (octo.instanceId), and cleanup
+    # requires the LIVE worktree stamp to equal the record's instance_id before
+    # any removal. A hand-recreated worktree at the SAME path, repo, branch, AND
+    # HEAD lacks the stamp, so even an unretired stale record (crash before
+    # cleanup) can never re-authorize deleting it. Legacy schema_version 1
+    # records (no instance_id) keep working additively: they prove ownership
+    # only over a genuine UNSTAMPED worktree.
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.control_repo = base / "control"
+        self.worktree_root = base / "worktrees"
+        self.head = _init_control_repo(self.control_repo)
+        patcher = mock.patch.dict(os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("OCTO_PROVISION_RECORD", None)
+
+    def provision(self, worktree: Path, lane: str, branch: str) -> LaneProvision:
+        return provision_lane_worktree(
+            control_repo=self.control_repo,
+            worktree_root=self.worktree_root,
+            worktree=worktree,
+            lane=lane,
+            branch=branch,
+            head=self.head,
+            repo_slug=REPO_SLUG,
+            install_check=lambda repo: "clean",
+            now=lambda: "2026-07-21T00:00:00+00:00",
+        )
+
+    def read_stamp(self, worktree: Path) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "config", "--worktree", "--get", "octo.instanceId"],
+            capture_output=True, text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def test_v2_provision_stamps_and_matches(self) -> None:
+        # A fresh v2 provision stamps the worktree AND the record with one
+        # uuid4 instance id, and the legit provisioned-cleanup path stays
+        # intact: matching stamp, worktree removed, record retired.
+        owned = self.worktree_root / "lane-1"
+        result = self.provision(owned, "lane-1", "octo-lite/lane-1")
+        record = json.loads(result.record_path.read_text())
+        self.assertEqual(2, record["schema_version"])
+        instance_id = record["instance_id"]
+        uuid.UUID(instance_id)
+        self.assertEqual(instance_id, self.read_stamp(owned))
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertFalse(owned.exists(), "genuine stamped provision must still be removable")
+        self.assertFalse(result.record_path.exists(), "record retired with its worktree")
+
+    def test_same_identity_recreation_preserved(self) -> None:
+        # A stale v2 record (crash before cleanup) plus a hand-recreated
+        # worktree at the SAME path, in the SAME repo, on the SAME branch, at
+        # the SAME HEAD, but WITHOUT the instance stamp: the strongest identity
+        # collision still proves nothing, the worktree is PRESERVED.
+        owned = self.worktree_root / "lane-1"
+        result = self.provision(owned, "lane-1", "octo-lite/lane-1")
+        self.assertEqual(2, json.loads(result.record_path.read_text())["schema_version"])
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "remove", str(owned)],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertTrue(result.record_path.is_file(), "stale-record precondition")
+
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "add", str(owned), "octo-lite/lane-1"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(self.head, _git(owned, "rev-parse", "HEAD"))
+        self.assertEqual("octo-lite/lane-1", _git(owned, "branch", "--show-current"))
+        self.assertEqual("", _git(owned, "status", "--porcelain"))
+        self.assertEqual("", self.read_stamp(owned), "hand-recreated worktree carries no stamp")
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertTrue(
+            owned.is_dir(),
+            "stale record removed an unstamped same-path same-repo same-branch same-HEAD recreation",
+        )
+
+    def test_instance_stamp_mismatch_preserved(self) -> None:
+        # A worktree stamped with a DIFFERENT instance id than the record's is
+        # not this record's provision instance: PRESERVED, record not retired.
+        owned = self.worktree_root / "lane-1"
+        result = self.provision(owned, "lane-1", "octo-lite/lane-1")
+        subprocess.run(
+            ["git", "-C", str(owned), "config", "extensions.worktreeConfig", "true"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(owned), "config", "--worktree", "octo.instanceId", str(uuid.uuid4())],
+            check=True, capture_output=True, text=True,
+        )
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertTrue(owned.is_dir(), "mismatched instance stamp must preserve the worktree")
+        self.assertTrue(result.record_path.is_file(), "record must not be retired on an unproven worktree")
+
+    def test_v1_record_legacy_cleanup_still_works(self) -> None:
+        # A legacy schema_version 1 record (no instance_id) over a genuine
+        # UNSTAMPED provisioned worktree stays removable: no legacy regression.
+        lane = "lane-legacy"
+        branch = "octo-lite/lane-legacy"
+        self.worktree_root.mkdir(parents=True, exist_ok=True)
+        owned = self.worktree_root / lane
+        subprocess.run(
+            ["git", "-C", str(self.control_repo), "worktree", "add", "-b", branch, str(owned), self.head],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual("", self.read_stamp(owned))
+        records_dir = self.worktree_root / ".octo-provisions"
+        records_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "schema_version": 1,
+            "source": "host-provisioned-worktree",
+            "lane": lane,
+            "control_repo": str(self.control_repo.resolve()),
+            "worktree": str(owned.resolve()),
+            "worktree_root": str(self.worktree_root.resolve()),
+            "repo_slug": REPO_SLUG,
+            "branch": branch,
+            "starting_head": self.head,
+            "resolver_root": str(owned.resolve()),
+            "install_check": "clean",
+            "provisioned_at": "2026-07-21T00:00:00+00:00",
+        }
+        validate_provision_record(record)
+        record_path = records_dir / f"{lane}.json"
+        record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertFalse(owned.exists(), "legacy v1-provisioned pristine worktree must still be removable")
+        self.assertFalse(record_path.exists(), "legacy record retired with its worktree")
 
 
 class InstallCheckOwnerRoutingTests(unittest.TestCase):

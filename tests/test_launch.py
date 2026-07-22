@@ -1586,5 +1586,176 @@ class RelayVerbatimTests(unittest.TestCase):
                 )
 
 
+class ReconcileInstanceBindingTests(unittest.TestCase):
+    # TUR-447 c4 F1b (workspace-cleanup-clean-abort, workspace-cleanup-reconcile):
+    # the reconcile gateway's ownership-free deletion bypass (the retired
+    # gateway_provisioned boolean) is gone. The gateway stamps octo.instanceId
+    # into the worktree it creates at a required-absent path, records that
+    # instance id in its journal, and EVERY reconcile cleanup verifies the LIVE
+    # worktree stamp equals the journal-recorded id before removal; a wrong or
+    # missing stamp preserves. A stale reusable journal replayed against a
+    # hand-recreated worktree at the same path can therefore never remove it.
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.repo = base / "repo"
+        self.worktree_root = base / "worktrees"
+        self.worktree = self.worktree_root / "sweep-1"
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "user.name", "Test"], check=True)
+        (self.repo / "AGENTS.md").write_text("# Target\n")
+        spec = self.repo / "spec" / "domains" / "operating-model.spec.html"
+        spec.parent.mkdir(parents=True)
+        spec.write_text('<p data-anchor="x">Works.</p>\n')
+        subprocess.run(["git", "-C", str(self.repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "commit", "-qm", "base"], check=True)
+        self.head = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.spec_blob = subprocess.run(
+            ["git", "-C", str(self.repo), "hash-object", "spec/domains/operating-model.spec.html"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.linear = {"identifier": "TUR-1", "state": "Todo", "updatedAt": "2026-07-19T00:00:00Z"}
+        self.pull = {
+            "url": "https://github.com/org/repo/pull/6",
+            "headRefOid": "a" * 40,
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "state": "OPEN",
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+        }
+        self.streams = [
+            {
+                "stream": "TUR-1",
+                **fetch_stream_binding(
+                    linear_issue="TUR-1", pr_repo="org/repo", pr_number=6,
+                    read_linear=lambda _issue: self.linear,
+                    read_pr=lambda _repo, _number: self.pull,
+                ),
+            }
+        ]
+        self.snapshot_path = base / "pending-snapshot.md"
+        self.snapshot_path.write_text("# snapshot\n")
+        self.snapshot_digest = hashlib.sha256(self.snapshot_path.read_bytes()).hexdigest()
+        self.sweep_dir = base / "sweeps" / "fp1"
+        self.journal_path = self.sweep_dir / "journal.json"
+
+    def prepare(self, **overrides):
+        values = {
+            "root": ROOT,
+            "spawn_id": str(uuid.uuid4()),
+            "parent": "operator-1",
+            "reply_route": "operator-say",
+            "repo": self.repo,
+            "worktree_root": self.worktree_root,
+            "worktree": self.worktree,
+            "journal_path": self.journal_path,
+            "execution_location": "remote",
+            "operator_loopback": False,
+            "review_delivery": "reachable_url_required",
+            "expected_head": self.head,
+            "snapshot_path": self.snapshot_path,
+            "snapshot_digest": self.snapshot_digest,
+            "streams": self.streams,
+            "spec_blobs": [f"spec/domains/operating-model.spec.html:{self.spec_blob}"],
+            "adr_blobs": [],
+            "conversation_state_refs": ["status.md"],
+            "read_linear": lambda _issue: self.linear,
+            "read_pr": lambda _repo, _number: self.pull,
+        }
+        values.update(overrides)
+        return prepare_reconcile_launch(**values)
+
+    def read_stamp(self, worktree: Path) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "config", "--worktree", "--get", "octo.instanceId"],
+            capture_output=True, text=True,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def run_pass(self, prepared, journal_path: Path) -> str:
+        journal = json.loads(journal_path.read_text())
+        spawn_id = journal["spawn_id"]
+        ack = prepared.expected_ack(spawn_id)
+        calls = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if len(calls) == 1:
+                output = {"session_id": spawn_id, "result": json.dumps({"BOOTSTRAP_ACK": ack})}
+            else:
+                output = {"session_id": spawn_id, "result": "unchanged"}
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(output), stderr="")
+
+        return run_reconcile_launch(prepared, "Classify the snapshot.", runner=runner)
+
+    def test_reconcile_cleanup_requires_instance_match(self) -> None:
+        # The prepare stamps the created worktree with the journal-recorded
+        # instance id; a LIVE stamp overwritten to a DIFFERENT id (a foreign
+        # provision instance at the same path) preserves the worktree even
+        # though the pass itself completes and binds its result.
+        prepared = self.prepare()
+        journal = json.loads(self.journal_path.read_text())
+        instance_id = journal["workspace"]["provision_instance_id"]
+        uuid.UUID(instance_id)
+        self.assertEqual(instance_id, self.read_stamp(self.worktree))
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "config", "--worktree", "octo.instanceId", str(uuid.uuid4())],
+            check=True, capture_output=True, text=True,
+        )
+
+        message = self.run_pass(prepared, self.journal_path)
+        self.assertEqual("unchanged", message)
+        self.assertTrue(self.worktree.is_dir(), "mismatched instance stamp must preserve the worktree")
+
+        # A MISSING live stamp (unset before cleanup) equally preserves.
+        worktree2 = self.worktree_root / "sweep-2"
+        journal_path2 = Path(self.temp.name) / "sweeps" / "fp2" / "journal.json"
+        prepared2 = self.prepare(worktree=worktree2, journal_path=journal_path2)
+        subprocess.run(
+            ["git", "-C", str(worktree2), "config", "--worktree", "--unset", "octo.instanceId"],
+            check=True, capture_output=True, text=True,
+        )
+        message2 = self.run_pass(prepared2, journal_path2)
+        self.assertEqual("unchanged", message2)
+        self.assertTrue(worktree2.is_dir(), "missing instance stamp must preserve the worktree")
+
+        # With the MATCHING stamp left intact, the legit path still removes.
+        worktree3 = self.worktree_root / "sweep-3"
+        journal_path3 = Path(self.temp.name) / "sweeps" / "fp3" / "journal.json"
+        prepared3 = self.prepare(worktree=worktree3, journal_path=journal_path3)
+        message3 = self.run_pass(prepared3, journal_path3)
+        self.assertEqual("unchanged", message3)
+        self.assertFalse(worktree3.exists(), "matching instance stamp must still allow removal")
+
+    def test_stale_journal_replay_preserves_foreign_worktree(self) -> None:
+        # A completed reconcile removed its own worktree, but its journal (with
+        # result bound) remains reusable on disk. Replaying cleanup from that
+        # stale journal against a hand-recreated worktree at the same path,
+        # detached at the same control head and clean, must PRESERVE it: the
+        # recreation carries no instance stamp.
+        prepared = self.prepare()
+        message = self.run_pass(prepared, self.journal_path)
+        self.assertEqual("unchanged", message)
+        self.assertFalse(self.worktree.exists(), "completed reconcile removes its own worktree")
+        bound = json.loads(self.journal_path.read_text())
+        self.assertIs(True, bound["result"]["bound"], "stale-journal precondition: result bound")
+
+        subprocess.run(
+            ["git", "-C", str(self.repo), "worktree", "add", "--detach", str(self.worktree), self.head],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual("", self.read_stamp(self.worktree))
+
+        launch_module._cleanup_reconcile_worktree(self.journal_path)
+
+        self.assertTrue(self.worktree.is_dir(), "stale journal replay removed a recreated foreign worktree")
+
+
 if __name__ == "__main__":
     unittest.main()
