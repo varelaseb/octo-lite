@@ -10,7 +10,7 @@ Classify a compact normalized snapshot for drift without mutating any source.
 
 - Read only the supplied deterministic snapshot and pinned references.
 - Classify facts as unchanged, changed, missing, stale, contradictory, or needs_fable.
-- Classify stream liveness from the sweep's per-stream report: transcript activity only, never status age; idle without a recorded wait-owner is suspected-stuck; a recorded wait-owner with its verbatim open ask is waiting; an ask older than later activity is consumed.
+- Classify stream liveness from the sweep's per-stream report: transcript activity only, never status age; precedence waiting-on-operator > closed > dead > waiting > suspected-stuck > active; closed means anchored Outcome superseded-closed; dead means agent probe gone plus no live transcript; idle without a recorded wait-owner is suspected-stuck only when neither closed nor dead; a recorded wait-owner with its verbatim open ask is waiting; an ask older than later activity is consumed.
 
 ## Required inputs
 
