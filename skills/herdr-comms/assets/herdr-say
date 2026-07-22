@@ -101,9 +101,12 @@ esac
   exit 66
 }
 
-# herdr-say never infers composer state, consumption, or delivery from pane
-# transcript text. This read only detects a modal or question dialog, so it
-# never injects text or Enter into one; it never checks for the sent text itself.
+# herdr 0.7.5: `agent prompt` is atomic (bracketed-paste preserved + submit in
+# one server-owned op), so multi-line and special characters round-trip
+# literally and the TUR-485 single-line/no-single-quote workaround is retired.
+# herdr-say still never infers composer state or delivery from pane transcript
+# text. This read only detects a trust or safety dialog so the atomic prompt is
+# never allowed to bulldoze an open modal; it never checks for the sent text.
 dialog_open() {
   herdr pane read "$pane" --source visible --lines 40 2>/dev/null \
     | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
@@ -121,8 +124,9 @@ queue_and_exit() {
   exit 75
 }
 
-# A send or Enter transport attempt leaves the message pending, never re-pasted
-# on retry. Only an explicit herdr-ack from the recipient proves delivery.
+# An atomic prompt attempt leaves the message pending; only an explicit
+# herdr-ack from the recipient proves delivery. The message stays in the inbox
+# so herdr-drain can retry the atomic prompt if this attempt did not land.
 pending_deferred_exit() {
   write_state pending
   printf '%s\n' "$id" >"$inbox/$id"
@@ -130,22 +134,19 @@ pending_deferred_exit() {
   exit 75
 }
 
+# Modal-safe guard: if a trust or safety dialog is open, never fire the atomic
+# prompt; durably queue for herdr-drain to retry once the modal is gone.
 if dialog_open; then
   queue_and_exit
 fi
 
-if herdr agent send "$target" "$message$suffix" >/dev/null 2>&1 \
-  || herdr agent send "$pane" "$message$suffix" >/dev/null 2>&1; then
-  sleep 0.5
-  if dialog_open; then
-    pending_deferred_exit
-  fi
-  if herdr pane run "$pane" "" >/dev/null 2>&1; then
-    write_state pending
-    echo "message_id=$id status=pending"
-  else
-    pending_deferred_exit
-  fi
+# The atomic prompt pastes and submits in one op. On success the message is
+# pending until acknowledged. A non-zero result is a local stall or refusal
+# (agent_prompt_stalled, oversized-paste rejection, or a dialog opening
+# server-side); defer to pending so herdr-drain retries, never claim delivery.
+if herdr agent prompt "$pane" "$message$suffix" >/dev/null 2>&1; then
+  write_state pending
+  echo "message_id=$id status=pending"
 else
-  queue_and_exit
+  pending_deferred_exit
 fi

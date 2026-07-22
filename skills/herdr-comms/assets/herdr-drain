@@ -10,8 +10,8 @@ esac
 [[ -n "$pane" ]] || exit 66
 
 # herdr-drain never infers composer state, consumption, or delivery from pane
-# transcript text. This read only detects a modal or question dialog, never the
-# sent text itself.
+# transcript text. This read only detects a trust or safety dialog so an atomic
+# prompt is never allowed to bulldoze an open modal; never the sent text itself.
 dialog_open() {
   herdr pane read "$pane" --source visible --lines 40 2>/dev/null \
     | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
@@ -69,33 +69,28 @@ PY
     mv "$temporary" "$state"
   }
 
+  # Modal-safe: never fire an atomic prompt while a trust or safety dialog is
+  # open; leave the pending/queued message in the inbox for the next retry.
+  if dialog_open; then
+    exec 9>&-
+    exit 75
+  fi
+
   if [[ "${values[5]}" == "pending" ]]; then
-    # Text already landed in the prompt from an earlier attempt. Never re-send: only
-    # recheck safety and press Enter once it is safe. Stays pending, in the inbox,
-    # for the next retry unless this attempt's own Enter transport succeeds.
-    if dialog_open; then
-      exec 9>&-
-      exit 75
-    fi
-    if herdr pane run "$pane" "" >/dev/null 2>&1; then
+    # herdr 0.7.5: an earlier atomic prompt may not have landed. Retry the exact
+    # same atomic prompt (paste + submit in one op); the atomic op never
+    # double-submits partially-pasted text. Stays pending, in the inbox, for the
+    # next retry unless this attempt's own atomic prompt succeeds.
+    if herdr agent prompt "$pane" "${values[3]}$suffix" >/dev/null 2>&1; then
       clear_retry
     fi
   else
-    if dialog_open; then
-      exec 9>&-
-      exit 75
-    fi
-    if herdr agent send "$target" "${values[3]}$suffix" >/dev/null 2>&1 \
-      || herdr agent send "$pane" "${values[3]}$suffix" >/dev/null 2>&1; then
-      sleep 0.5
-      if dialog_open; then
-        write_pending
-      elif herdr pane run "$pane" "" >/dev/null 2>&1; then
-        write_pending
-        clear_retry
-      else
-        write_pending
-      fi
+    # A queued (never-transported) message: fire the atomic prompt now. Persist
+    # pending before dropping the retry item so a later herdr-ack sees pending,
+    # not the stale queued status.
+    if herdr agent prompt "$pane" "${values[3]}$suffix" >/dev/null 2>&1; then
+      write_pending
+      clear_retry
     fi
   fi
   exec 9>&-

@@ -486,8 +486,11 @@
 <section data-anchor="messaging" id="messaging">
 <h2>Messaging</h2>
 <p data-anchor="message-herdr-say" id="message-herdr-say">Every Herdr message uses <code>herdr-say</code>, which attempts transport at a verified safe prompt or durably queues without acting on a modal.</p>
+<p data-anchor="message-atomic-prompt" id="message-atomic-prompt">Transport is the herdr 0.7.5 atomic <code>agent prompt</code>, which pastes and submits the message in one server-owned op, replacing the retired 0.7.1 <code>agent send</code> plus paste, settle, and bare-Enter dance.</p>
+<p data-anchor="message-multi-line-literal" id="message-multi-line-literal">Because the atomic prompt preserves bracketed paste literally, a message body carries arbitrary multi-line and special-character text verbatim, and the earlier single-line, no-single-quote workaround is retired.</p>
+<p data-anchor="message-modal-safe-atomic" id="message-modal-safe-atomic">The atomic prompt is still modal-safe: a detected trust or safety dialog defers to a durable queue rather than submitting, and a reported stall, refusal, or dialog defers to pending, so an open modal is never bulldozed.</p>
 <p data-anchor="message-no-composer-inference" id="message-no-composer-inference"><code>herdr-say</code> and <code>herdr-drain</code> never infer composer state, consumption, or delivery from pane transcript text.</p>
-<p data-anchor="message-pending" id="message-pending">A send or Enter transport attempt leaves a message pending; retry reuses the same message ID, retries transport only, and never re-pastes text that already landed.</p>
+<p data-anchor="message-pending" id="message-pending">An atomic prompt transport attempt leaves a message pending; retry reuses the same message ID and re-fires the same atomic prompt, which never double-submits partially-pasted text.</p>
 <p data-anchor="message-pending-persist-before-clear" id="message-pending-persist-before-clear">A successful queued transport persists the pending durable status before removing its inbox retry item; a persistence failure retains the retry item and the queued status.</p>
 <p data-anchor="message-visible" id="message-visible">Visible, injected, pending, or queued TUI text is not acknowledgment.</p>
 <p data-anchor="message-ack" id="message-ack">Commands, operator rulings, ownership transfers, and blocking questions require explicit recipient acknowledgment before dependent action.</p>

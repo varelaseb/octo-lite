@@ -24,20 +24,27 @@ root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/messages"
 state="$root/$id.toml"
 [[ -f "$state" ]] || { echo "herdr-ack: unknown message $id" >&2; exit 66; }
 
-readarray -t values < <(python3 - "$state" <<'PY'
+# TUR-505: a message body may be multi-line (herdr 0.7.5 atomic prompt sends
+# arbitrary multi-line text). A positional readarray over line-delimited fields
+# would let a message line masquerade as the status field. Read each field into
+# a distinct shell variable via NUL-delimited pairs so a multi-line message body
+# never shifts the target or status past its own field.
+declare -A fields=()
+while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+  fields["$key"]="$value"
+done < <(python3 - "$state" <<'PY'
 import sys, tomllib
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
-print(data['target'])
-print(data['kind'])
-print(data.get('artifact', ''))
-print(data['message'])
-print(data['created_at'])
-print(data['status'])
+for key in ('target', 'kind', 'artifact', 'message', 'created_at', 'status'):
+    sys.stdout.write(key)
+    sys.stdout.write('\0')
+    sys.stdout.write(str(data.get(key, '')))
+    sys.stdout.write('\0')
 PY
 )
-target="${values[0]}"
-current_status="${values[5]}"
+target="${fields[target]}"
+current_status="${fields[status]}"
 [[ "$by" == "$target" ]] || {
   echo "herdr-ack: acknowledger does not match target" >&2
   exit 65
@@ -49,18 +56,18 @@ case "$current_status:$status" in
     exit 65
     ;;
 esac
-[[ -n "$artifact" ]] || artifact="${values[2]}"
+[[ -n "$artifact" ]] || artifact="${fields[artifact]}"
 quote() { jq -Rn --arg value "$1" '$value'; }
 temporary="$state.$$.tmp"
 {
   echo 'schema_version = 1'
   echo "message_id = $(quote "$id")"
   echo "target = $(quote "$target")"
-  echo "kind = $(quote "${values[1]}")"
+  echo "kind = $(quote "${fields[kind]}")"
   echo "status = $(quote "$status")"
   echo "artifact = $(quote "$artifact")"
-  echo "message = $(quote "${values[3]}")"
-  echo "created_at = $(quote "${values[4]}")"
+  echo "message = $(quote "${fields[message]}")"
+  echo "created_at = $(quote "${fields[created_at]}")"
   echo "acknowledged_by = $(quote "$by")"
   echo "acknowledged_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
 } >"$temporary"

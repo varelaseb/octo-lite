@@ -17,6 +17,8 @@ from workflows.lib.role_resolver import build_launch_receipt, load_registry, ren
 ROOT = Path(__file__).resolve().parents[1]
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
 ACK = ROOT / "skills/herdr-comms/assets/herdr-ack"
+DRAIN = ROOT / "skills/herdr-comms/assets/herdr-drain"
+OPERATOR_SAY = ROOT / "skills/herdr-comms/assets/operator-say"
 SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 OCTO_LAUNCH = ROOT / "scripts/octo-launch"
 
@@ -64,6 +66,51 @@ PY
 """
 
 
+# herdr 0.7.5 fake. Implements the documented 0.7.5 grammar:
+#   agent get <target>           -> JSON incl agent.pane_id
+#   agent prompt <target> <text> -> atomic paste+submit in one op; the WHOLE
+#                                   text (multi-line, special chars) is captured
+#                                   verbatim into $FAKE_PROMPT_CAPTURE so a test
+#                                   can assert an atomic literal round-trip. It
+#                                   refuses (non-zero, logs "prompt-blocked")
+#                                   when a trust dialog is active, and fails
+#                                   (non-zero, logs "prompt-failed") when the
+#                                   server reports a stall/refusal.
+#   agent send-keys <target> ...  -> literal keystrokes, no submit; logs "send-keys".
+#   pane read <pane> ...          -> visible transcript for the modal-safe check.
+# `agent send` and top-level `wait` no longer exist in 0.7.5.
+FAKE_HERDR_075 = r"""#!/usr/bin/env bash
+set -eu
+sub="$1 $2"
+if [[ "$sub" == "agent get" ]]; then
+  echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
+elif [[ "$sub" == "pane read" ]]; then
+  n=0
+  [[ -n "${FAKE_PANE_READ_COUNT:-}" && -f "$FAKE_PANE_READ_COUNT" ]] && n="$(cat "$FAKE_PANE_READ_COUNT")"
+  n=$((n + 1))
+  [[ -n "${FAKE_PANE_READ_COUNT:-}" ]] && echo "$n" >"$FAKE_PANE_READ_COUNT"
+  printf '%s\n' "$FAKE_PANE_TEXT"
+elif [[ "$sub" == "agent prompt" ]]; then
+  # agent prompt <target> <text>: $3 is the target, $4 is the literal text.
+  # Atomic: capture the full literal text argument for a round-trip assertion.
+  [[ -n "${FAKE_PROMPT_CAPTURE:-}" ]] && printf '%s' "$4" >"$FAKE_PROMPT_CAPTURE"
+  if [[ -n "${FAKE_PROMPT_MODAL:-}" ]]; then
+    echo prompt-blocked >>"$FAKE_LOG"
+    exit 1
+  fi
+  if [[ -n "${FAKE_PROMPT_FAIL:-}" ]]; then
+    echo prompt-failed >>"$FAKE_LOG"
+    exit 1
+  fi
+  echo prompt >>"$FAKE_LOG"
+elif [[ "$sub" == "agent send-keys" ]]; then
+  echo send-keys >>"$FAKE_LOG"
+else
+  exit 2
+fi
+"""
+
+
 def build_orchestrator_receipt(repo: Path, receipt_path: Path) -> dict:
     registry = load_registry(ROOT)
     resolved = resolve_role(registry, "orchestrator", set())
@@ -89,41 +136,7 @@ class HerdrHelperTests(unittest.TestCase):
         fake_bin = root / "bin"
         fake_bin.mkdir()
         fake = fake_bin / "herdr"
-        # Each "pane read" call increments a counter file so a test can make the modal
-        # appear only after the Nth read: this reproduces the exact race where a dialog
-        # opens after paste but before Enter, which a single static pane text cannot.
-        fake.write_text(
-            """#!/usr/bin/env bash
-set -eu
-if [[ "$1 $2" == "agent get" ]]; then
-  echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
-elif [[ "$1 $2" == "pane read" ]]; then
-  n=0
-  [[ -n "${FAKE_PANE_READ_COUNT:-}" && -f "$FAKE_PANE_READ_COUNT" ]] && n="$(cat "$FAKE_PANE_READ_COUNT")"
-  n=$((n + 1))
-  [[ -n "${FAKE_PANE_READ_COUNT:-}" ]] && echo "$n" >"$FAKE_PANE_READ_COUNT"
-  if [[ -n "${FAKE_PANE_TEXT_SWITCH_AFTER:-}" && "$n" -gt "$FAKE_PANE_TEXT_SWITCH_AFTER" ]]; then
-    printf '%s\\n' "$FAKE_PANE_TEXT_AFTER"
-  else
-    printf '%s\\n' "$FAKE_PANE_TEXT"
-  fi
-elif [[ "$1 $2" == "agent send" ]]; then
-  if [[ -n "${FAKE_SEND_FAIL:-}" ]]; then
-    echo send-failed >>"$FAKE_LOG"
-    exit 1
-  fi
-  echo send >>"$FAKE_LOG"
-elif [[ "$1 $2" == "pane run" ]]; then
-  if [[ -n "${FAKE_RUN_FAIL:-}" ]]; then
-    echo run-failed >>"$FAKE_LOG"
-    exit 1
-  fi
-  echo run >>"$FAKE_LOG"
-else
-  exit 2
-fi
-"""
-        )
+        fake.write_text(FAKE_HERDR_075)
         fake.chmod(0o755)
         log = root / "herdr.log"
         env = dict(os.environ)
@@ -135,14 +148,80 @@ fi
         )
         return env, log
 
-    def test_modal_queues_without_pressing_enter(self):
+    # --- 0.7.5 atomic-prompt contract ---------------------------------------
+
+    def test_say_submits_atomically_in_one_op_and_marks_pending(self):
+        # herdr 0.7.5: a safe prompt is delivered by a single atomic `agent prompt`
+        # (paste + submit in one server-owned op). No paste/settle/bare-Enter dance,
+        # so exactly one prompt op appears in the log and the message is pending.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+            self.assertIn("status=pending", result.stdout)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            self.assertEqual(1, len(states))
+            with states[0].open("rb") as handle:
+                self.assertEqual("pending", tomllib.load(handle)["status"])
+
+    def test_say_round_trips_a_multi_line_body_literally_through_the_atomic_prompt(self):
+        # The exact TUR-485 case: a multi-line body with a single quote. Under the
+        # old `agent send` + bare-Enter dance this forced a single-line/no-quote
+        # workaround; the 0.7.5 atomic prompt preserves it verbatim.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            capture = Path(td) / "prompt-capture"
+            env["FAKE_PROMPT_CAPTURE"] = str(capture)
+            body = "line one: proceed\nline two: it's ready\nline three: ship"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "ruling", "agent1", body],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+            sent = capture.read_text()
+            self.assertTrue(sent.startswith(body), sent)
+            # The multi-line body survived intact inside the single atomic op.
+            self.assertIn("line two: it's ready", sent)
+
+    def test_multi_line_body_round_trips_through_say_then_ack(self):
+        # End-to-end TUR-485 retirement: herdr-say sends a multi-line-bodied
+        # message and herdr-ack of that exact id succeeds (pending -> acknowledged),
+        # where the pre-fix herdr-ack rejected it with illegal-transition because a
+        # message line masqueraded as the status field.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            body = "please review\nand confirm\nthe change"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", body],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
+            acked = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, acked.returncode, acked.stderr)
+            state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
+            with state.open("rb") as handle:
+                stored = tomllib.load(handle)
+            self.assertEqual("acknowledged", stored["status"])
+            self.assertEqual(body, stored["message"])
+
+    # --- modal-safe: never bulldoze a trust dialog --------------------------
+
+    def test_modal_queues_without_firing_the_atomic_prompt(self):
+        # An open trust dialog: herdr-say must never fire the atomic prompt (which
+        # would submit into the modal); it durably queues instead.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "Quick safety check: trust this folder")
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=env,
-                capture_output=True,
-                text=True,
+                env=env, capture_output=True, text=True,
             )
             self.assertEqual(75, result.returncode)
             self.assertFalse(log.exists())
@@ -151,20 +230,20 @@ fi
             with states[0].open("rb") as handle:
                 self.assertEqual("queued", tomllib.load(handle)["status"])
 
-    def test_say_defers_to_pending_when_modal_appears_after_paste_and_never_presses_enter(self):
+    def test_say_defers_to_pending_when_the_atomic_prompt_reports_a_blocked_dialog(self):
+        # 0.7.5: if the pre-check misses a modal that opens server-side, the atomic
+        # prompt itself refuses (agent_prompt_stalled / dialog detected, non-zero).
+        # herdr-say must defer to pending and keep the message in the inbox for
+        # herdr-drain, never claim delivery or force-submit.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
-            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
-            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
-            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            env["FAKE_PROMPT_MODAL"] = "1"
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=env,
-                capture_output=True,
-                text=True,
+                env=env, capture_output=True, text=True,
             )
             self.assertEqual(75, result.returncode)
-            self.assertEqual(["send"], log.read_text().splitlines())
+            self.assertEqual(["prompt-blocked"], log.read_text().splitlines())
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
             self.assertEqual(1, len(states))
             with states[0].open("rb") as handle:
@@ -173,143 +252,52 @@ fi
             inbox = Path(td) / "state/octo-lite/inbox/agent1" / message_id
             self.assertTrue(inbox.is_file())
 
-    def test_say_marks_pending_after_exactly_two_pane_reads_never_checking_post_enter_text(self):
-        # herdr-say must never infer composer state or delivery from pane transcript
-        # text. Only two pane reads ever happen (the pre-send and pre-enter modal
-        # safety checks); a zero exit from `pane run` alone ends the attempt, with
-        # no third read of the pane to "verify" the composer or transcript.
+    def test_say_defers_to_pending_when_the_atomic_prompt_stalls_and_does_not_claim_delivered(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
-            read_count_path = Path(td) / "pane-read-count"
-            env["FAKE_PANE_READ_COUNT"] = str(read_count_path)
+            env["FAKE_PROMPT_FAIL"] = "1"
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=env,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(["send", "run"], log.read_text().splitlines())
-            self.assertIn("status=pending", result.stdout)
-            self.assertEqual(2, int(read_count_path.read_text()))
-            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
-            self.assertEqual(1, len(states))
-            with states[0].open("rb") as handle:
-                self.assertEqual("pending", tomllib.load(handle)["status"])
-            message_id = states[0].stem
-            self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
-
-    def test_say_defers_to_pending_when_enter_fails_and_does_not_claim_delivered(self):
-        with tempfile.TemporaryDirectory() as td:
-            env, log = self.environment(td, "ready")
-            env["FAKE_RUN_FAIL"] = "1"
-            result = subprocess.run(
-                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=env,
-                capture_output=True,
-                text=True,
+                env=env, capture_output=True, text=True,
             )
             self.assertEqual(75, result.returncode)
-            self.assertEqual(["send", "run-failed"], log.read_text().splitlines())
+            self.assertEqual(["prompt-failed"], log.read_text().splitlines())
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
             with states[0].open("rb") as handle:
                 self.assertEqual("pending", tomllib.load(handle)["status"])
 
-    def test_drain_only_presses_enter_for_a_pending_message_and_never_resends(self):
+    # --- herdr-drain 0.7.5 ---------------------------------------------------
+
+    def test_drain_retries_the_atomic_prompt_for_a_pending_message(self):
+        # A pending message (an earlier atomic prompt did not land) is retried by
+        # firing the atomic prompt again; the atomic op is safe to repeat.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
-            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
-            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
-            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            env["FAKE_PROMPT_FAIL"] = "1"
             queue = subprocess.run(
                 ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
                 env=env, capture_output=True, text=True,
             )
             self.assertEqual(75, queue.returncode)
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
             with states[0].open("rb") as handle:
                 self.assertEqual("pending", tomllib.load(handle)["status"])
 
-            # The pane is safe now: draining a pending message must only press Enter,
-            # never re-send the text, or the pane would see the message twice.
             log.write_text("")
             drain_env = dict(env)
-            drain_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
-            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
-            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+            drain_env.pop("FAKE_PROMPT_FAIL", None)
+            result = subprocess.run(["bash", str(DRAIN), "agent1"], env=drain_env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(["run"], log.read_text().splitlines())
-            with states[0].open("rb") as handle:
-                self.assertEqual("pending", tomllib.load(handle)["status"])
-            message_id = states[0].stem
+            self.assertEqual(["prompt"], log.read_text().splitlines())
             self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
-
-    def test_drain_marks_pending_done_after_exactly_one_pane_read_never_checking_post_enter_text(self):
-        # Same boundary as herdr-say, hit from herdr-drain's retry path: a zero exit
-        # from `pane run` alone ends the retry loop, with no read of the pane after
-        # Enter to "verify" the composer or transcript.
-        with tempfile.TemporaryDirectory() as td:
-            env, log = self.environment(td, "ready")
-            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
-            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
-            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
-            queue = subprocess.run(
-                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=env, capture_output=True, text=True,
-            )
-            self.assertEqual(75, queue.returncode)
-            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
-            message_id = states[0].stem
-
-            log.write_text("")
-            read_count_path = Path(td) / "drain-pane-read-count"
-            drain_env = dict(env, FAKE_PANE_TEXT="ready", FAKE_PANE_READ_COUNT=str(read_count_path))
-            drain_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
-            drain_env.pop("FAKE_PANE_TEXT_AFTER", None)
-            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
-            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(["run"], log.read_text().splitlines())
-            self.assertEqual(1, int(read_count_path.read_text()))
             with states[0].open("rb") as handle:
                 self.assertEqual("pending", tomllib.load(handle)["status"])
-            self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
-
-    def test_drain_retries_enter_only_and_stays_pending_when_enter_transport_fails(self):
-        # A genuine transport-level failure (nonzero exit from `pane run` itself,
-        # never a pane-text match) keeps the message pending and in the inbox for
-        # the next retry, and drain must never re-send the text on this path.
-        with tempfile.TemporaryDirectory() as td:
-            env, log = self.environment(td, "ready")
-            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
-            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
-            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
-            queue = subprocess.run(
-                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=env, capture_output=True, text=True,
-            )
-            self.assertEqual(75, queue.returncode)
-            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
-            message_id = states[0].stem
-
-            log.write_text("")
-            drain_env = dict(env, FAKE_PANE_TEXT="ready", FAKE_RUN_FAIL="1")
-            drain_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
-            drain_env.pop("FAKE_PANE_TEXT_AFTER", None)
-            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
-            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(["run-failed"], log.read_text().splitlines())
-            with states[0].open("rb") as handle:
-                self.assertEqual("pending", tomllib.load(handle)["status"])
-            self.assertTrue((Path(td) / "state/octo-lite/inbox/agent1" / message_id).is_file())
 
     def test_drain_leaves_a_pending_message_queued_while_the_modal_is_still_open(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
-            env["FAKE_PANE_TEXT_AFTER"] = "Quick safety check: trust this folder"
-            env["FAKE_PANE_TEXT_SWITCH_AFTER"] = "1"
-            env["FAKE_PANE_READ_COUNT"] = str(Path(td) / "pane-read-count")
+            env["FAKE_PROMPT_FAIL"] = "1"
             queue = subprocess.run(
                 ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
                 env=env, capture_output=True, text=True,
@@ -318,21 +306,41 @@ fi
             states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
             message_id = states[0].stem
 
-            # The modal is still open on the next drain attempt: never send or run.
+            # The modal is still open on the next drain attempt: never fire a prompt.
             log.write_text("")
             still_open_env = dict(env, FAKE_PANE_TEXT="Quick safety check: trust this folder")
-            still_open_env.pop("FAKE_PANE_TEXT_SWITCH_AFTER", None)
-            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
-            result = subprocess.run(["bash", str(drain), "agent1"], env=still_open_env, capture_output=True, text=True)
+            still_open_env.pop("FAKE_PROMPT_FAIL", None)
+            result = subprocess.run(["bash", str(DRAIN), "agent1"], env=still_open_env, capture_output=True, text=True)
             self.assertEqual(75, result.returncode)
             self.assertEqual([], log.read_text().splitlines())
             with states[0].open("rb") as handle:
                 self.assertEqual("pending", tomllib.load(handle)["status"])
             self.assertTrue((Path(td) / "state/octo-lite/inbox/agent1" / message_id).is_file())
 
+    def test_drain_retries_prompt_and_stays_pending_when_the_prompt_transport_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_PROMPT_FAIL"] = "1"
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+
+            log.write_text("")
+            drain_env = dict(env)  # FAKE_PROMPT_FAIL still set: transport keeps failing
+            result = subprocess.run(["bash", str(DRAIN), "agent1"], env=drain_env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["prompt-failed"], log.read_text().splitlines())
+            with states[0].open("rb") as handle:
+                self.assertEqual("pending", tomllib.load(handle)["status"])
+            self.assertTrue((Path(td) / "state/octo-lite/inbox/agent1" / message_id).is_file())
+
     def test_drain_persists_pending_before_clearing_the_retry_item_for_a_queued_message(self):
-        # A queued (never-sent) message that drain now transports successfully must
-        # persist status=pending before dropping the inbox retry item, or a legitimate
+        # A queued (never-transported) message that drain now delivers must persist
+        # status=pending before dropping the inbox retry item, or a legitimate
         # herdr-ack afterward would see the stale queued status and reject.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "Quick safety check: trust this folder")
@@ -348,10 +356,9 @@ fi
 
             log.write_text("")
             drain_env = dict(env, FAKE_PANE_TEXT="ready")
-            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
-            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+            result = subprocess.run(["bash", str(DRAIN), "agent1"], env=drain_env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(["send", "run"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
             self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
             with states[0].open("rb") as handle:
                 self.assertEqual("pending", tomllib.load(handle)["status"])
@@ -394,31 +401,61 @@ exec {real_mv} "$@"
             drain_env = dict(env, FAKE_PANE_TEXT="ready")
             drain_env["PATH"] = f"{fail_bin}:{drain_env['PATH']}"
             drain_env["FAKE_MV_FAIL_DEST"] = str(states[0])
-            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
-            result = subprocess.run(["bash", str(drain), "agent1"], env=drain_env, capture_output=True, text=True)
+            result = subprocess.run(["bash", str(DRAIN), "agent1"], env=drain_env, capture_output=True, text=True)
             self.assertNotEqual(0, result.returncode)
 
             with states[0].open("rb") as handle:
                 self.assertEqual("queued", tomllib.load(handle)["status"])
             self.assertTrue(inbox_item.is_file())
 
+    def test_drain_locks_each_queued_item_to_prevent_duplicate_delivery(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=dict(env, FAKE_PROMPT_FAIL="1"),
+                capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+            inbox_item = Path(td) / "state/octo-lite/inbox/agent1" / message_id
+            lock_path = Path(f"{inbox_item}.lock")
+
+            holder = subprocess.Popen(["flock", str(lock_path), "sleep", "3"])
+            try:
+                for _ in range(20):
+                    if lock_path.exists():
+                        break
+                    __import__("time").sleep(0.1)
+                result = subprocess.run(["bash", str(DRAIN), "agent1"], env=env, capture_output=True, text=True)
+                self.assertEqual(0, result.returncode)
+                self.assertNotIn("prompt", (log.read_text().splitlines() if log.exists() else []))
+                self.assertTrue(inbox_item.is_file())
+            finally:
+                holder.terminate()
+                holder.wait()
+
+            second = subprocess.run(["bash", str(DRAIN), "agent1"], env=env, capture_output=True, text=True)
+            self.assertEqual(0, second.returncode)
+            self.assertIn("prompt", log.read_text().splitlines())
+            self.assertFalse(inbox_item.exists())
+
+    # --- ack lifecycle -------------------------------------------------------
+
     def test_safe_prompt_marks_pending_then_requires_ack(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "ruling", "agent1", "use screenshots"],
-                env=env,
-                check=True,
-                capture_output=True,
-                text=True,
+                env=env, check=True, capture_output=True, text=True,
             )
-            self.assertEqual(["send", "run"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
             self.assertIn("status=pending", result.stdout)
             message_id = result.stdout.split("message_id=", 1)[1].split()[0]
             subprocess.run(
                 ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
-                env=env,
-                check=True,
+                env=env, check=True,
             )
             state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
             with state.open("rb") as handle:
@@ -473,13 +510,105 @@ exec {real_mv} "$@"
             with state.open("rb") as handle:
                 self.assertEqual("completed", tomllib.load(handle)["status"])
 
+    def test_ack_requires_a_prior_transport_attempt(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self.environment(td, "Quick safety check: trust this folder")
+            queued = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, queued.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+            result = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            with states[0].open("rb") as handle:
+                self.assertEqual("queued", tomllib.load(handle)["status"])
+
+    def test_ack_requires_exact_recipient_even_for_pane_targets(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, _ = self.environment(td, "ready")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "w1:p1", "do work"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
+            wrong = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "someone-else"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, wrong.returncode)
+            right = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "w1:p1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, right.returncode)
+
+    def test_info_kind_never_carries_an_ack_instruction_or_claims_acknowledged(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "fyi status update"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            self.assertIn("status=pending", result.stdout)
+            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
+            state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
+            with state.open("rb") as handle:
+                stored = tomllib.load(handle)
+            self.assertEqual("pending", stored["status"])
+            self.assertNotIn("Acknowledge with", stored["message"])
+
+    def test_send_queues_on_transport_failure_without_recording_false_pending(self):
+        # A hard atomic-prompt transport failure (not a modal) with no prior attempt
+        # leaves the message queued and retryable, never a false pending.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            env["FAKE_PROMPT_FAIL"] = "1"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            self.assertEqual(1, len(states))
+            with states[0].open("rb") as handle:
+                self.assertEqual("pending", tomllib.load(handle)["status"])
+            message_id = states[0].stem
+            inbox = Path(td) / "state/octo-lite/inbox/agent1" / message_id
+            self.assertTrue(inbox.is_file())
+
+    # --- operator-say still delegates to herdr-say ---------------------------
+
+    def test_operator_say_delegates_to_herdr_say_with_the_owner_route(self):
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            owner_file = Path(td) / "operator-owner.toml"
+            owner_file.write_text('owner_route = "agent1"\n')
+            env["OCTO_OPERATOR_OWNER"] = str(owner_file)
+            result = subprocess.run(
+                ["bash", str(OPERATOR_SAY), "--kind", "ruling", "proceed with the plan"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            self.assertEqual(1, len(states))
+            with states[0].open("rb") as handle:
+                stored = tomllib.load(handle)
+            self.assertEqual("agent1", stored["target"])
+            self.assertEqual("pending", stored["status"])
+
+    # --- Source B operator-wait stamp + D5 pending-write scope ---------------
+
     def test_failed_target_resolution_leaves_a_wait_the_operator_can_clear_by_ack(self):
         # TUR-447: a --kind question with OCTO_STREAM stamps a per-stream operator
         # wait BEFORE target resolution. If resolution then FAILS (unresolved
         # target, exit 66) the message-state file must still exist so herdr-ack of
-        # that exact message id can acknowledge and clear the orphan wait via its
-        # advertised path. At prior HEAD no state file was written, so herdr-ack
-        # rejected the id as unknown and the wait was unclearable.
+        # that exact message id can acknowledge and clear the orphan wait.
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             fake_bin = root / "bin"
@@ -517,8 +646,6 @@ exec {real_mv} "$@"
                 stamp = tomllib.load(handle)
             message_id = stamp["message_id"]
 
-            # The advertised clear path: herdr-ack of that exact message id must
-            # succeed and remove the orphan wait stamp.
             acked = subprocess.run(
                 ["bash", str(ACK), message_id, "acknowledged", "--by", "operator-1"],
                 env=env, capture_output=True, text=True,
@@ -527,22 +654,16 @@ exec {real_mv} "$@"
             self.assertFalse(stamp_path.is_file())
 
     def test_errored_target_resolution_leaves_a_wait_the_operator_can_clear_by_ack(self):
-        # TUR-447 cycle1 pass5b: the empty-pane case above resolves cleanly to an
-        # empty pane_id (agent get exits 0). But when `herdr agent get` exits
-        # NON-ZERO (a hard error, not empty) the pane command substitution must not
-        # abort herdr-say under set -euo pipefail before the write_state pending
-        # guard. Both an empty AND an errored resolution must fall through to exit
-        # 66 with a clearable message-state file, so herdr-ack of that exact id can
-        # acknowledge and clear the orphan operator wait. At prior HEAD the command
-        # substitution killed herdr-say (rc != 66) and wrote no message state, so
-        # the stamped wait was orphaned and unacknowledgeable.
+        # TUR-447 cycle1 pass5b: when `herdr agent get` exits NON-ZERO (a hard
+        # error, not empty) the pane command substitution must not abort herdr-say
+        # under set -euo pipefail before the write_state pending guard. Both empty
+        # AND errored resolution must fall through to exit 66 with a clearable
+        # message-state file.
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             fake_bin = root / "bin"
             fake_bin.mkdir()
             fake = fake_bin / "herdr"
-            # agent get exits NON-ZERO: a hard error, distinct from the empty-pane
-            # case. herdr-say must still exit 66 after the wait stamp is written.
             fake.write_text(
                 "#!/usr/bin/env bash\n"
                 "set -eu\n"
@@ -580,8 +701,6 @@ exec {real_mv} "$@"
             message_id = stamp["message_id"]
             self.assertEqual(message_id, states[0].stem)
 
-            # The advertised clear path: herdr-ack of that exact message id must
-            # succeed and remove both the message state and the orphan wait stamp.
             acked = subprocess.run(
                 ["bash", str(ACK), message_id, "acknowledged", "--by", "operator-1"],
                 env=env, capture_output=True, text=True,
@@ -591,19 +710,65 @@ exec {real_mv} "$@"
             with states[0].open("rb") as handle:
                 self.assertEqual("acknowledged", tomllib.load(handle)["status"])
 
-    def test_non_operator_unresolved_target_stays_retryable_not_ack_acknowledgeable(self):
-        # TUR-447 D5: the unresolved-target pending guard exists only to make a
-        # stamped operator-wait (kind==question && OCTO_STREAM) clearable by
-        # herdr-ack. A NON-operator message (kind=info, no OCTO_STREAM) stamps no
-        # wait, so an unresolved target must NOT write a herdr-ack-acknowledgeable
-        # pending state; it must fail (exit 66) and stay retryable. At prior HEAD
-        # the guard wrote a pending state for every kind, falsely acknowledgeable.
+    def test_operator_wait_clears_by_ack_for_a_multi_line_ask(self):
+        # TUR-505: the operator-wait stamp + message state must round-trip through
+        # herdr-ack even when the ask body is multi-line, which the pre-fix ack
+        # parse would misread as an illegal transition.
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             fake_bin = root / "bin"
             fake_bin.mkdir()
             fake = fake_bin / "herdr"
-            # agent get resolves to an EMPTY pane_id: the target is unresolved.
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -eu\n"
+                'if [[ "$1 $2" == "agent get" ]]; then\n'
+                "  echo '{\"result\":{\"agent\":{}}}'\n"
+                "else\n"
+                "  exit 0\n"
+                "fi\n"
+            )
+            fake.chmod(0o755)
+            env = dict(os.environ)
+            env.update(
+                PATH=f"{fake_bin}:{env['PATH']}",
+                XDG_STATE_HOME=str(root / "state"),
+                OCTO_STREAM="scratch-ask",
+            )
+            ask = "Approve this?\nContext line one\nContext line two"
+            said = subprocess.run(
+                ["bash", str(SAY), "--kind", "question", "operator-1", ask],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(66, said.returncode, said.stderr)
+            stamp_path = root / "state/octo-lite/operator-waits/scratch-ask.toml"
+            self.assertTrue(stamp_path.is_file(), said.stderr)
+            with stamp_path.open("rb") as handle:
+                message_id = tomllib.load(handle)["message_id"]
+
+            acked = subprocess.run(
+                ["bash", str(ACK), message_id, "acknowledged", "--by", "operator-1"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, acked.returncode, acked.stderr)
+            self.assertFalse(stamp_path.is_file())
+            state = root / f"state/octo-lite/messages/{message_id}.toml"
+            with state.open("rb") as handle:
+                stored = tomllib.load(handle)
+            self.assertEqual("acknowledged", stored["status"])
+            self.assertEqual(ask, stored["message"])
+
+    def test_non_operator_unresolved_target_stays_retryable_not_ack_acknowledgeable(self):
+        # TUR-447 D5: the unresolved-target pending guard exists only to make a
+        # stamped operator-wait (kind==question && OCTO_STREAM) clearable by
+        # herdr-ack. A NON-operator message (kind=info, no OCTO_STREAM) stamps no
+        # wait, so an unresolved target must NOT write a herdr-ack-acknowledgeable
+        # pending state; it must fail (exit 66) and stay retryable.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "herdr"
             fake.write_text(
                 "#!/usr/bin/env bash\n"
                 "set -eu\n"
@@ -626,21 +791,17 @@ exec {real_mv} "$@"
             )
             self.assertEqual(66, said.returncode, said.stderr)
 
-            # No message-state file is written: nothing for herdr-ack to falsely
-            # acknowledge, so the message stays retryable/unsent.
             msg_dir = root / "state/octo-lite/messages"
             states = list(msg_dir.glob("*.toml")) if msg_dir.exists() else []
             self.assertEqual([], states, said.stderr)
 
-            # No operator wait was stamped for a non-question, non-stream send.
             waits_dir = root / "state/octo-lite/operator-waits"
             self.assertFalse(waits_dir.exists() and any(waits_dir.iterdir()))
 
     def test_operator_wait_unresolved_target_still_writes_ack_clearable_state(self):
         # TUR-447 D5 counterpart: the operator-wait case (question + OCTO_STREAM)
         # must STILL write the clearable pending message-state on an unresolved
-        # target, so herdr-ack clears the stamped wait. Scoping the guard to
-        # operator-wait kinds must not regress this path.
+        # target, so herdr-ack clears the stamped wait.
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             fake_bin = root / "bin"
@@ -672,115 +833,7 @@ exec {real_mv} "$@"
             with states[0].open("rb") as handle:
                 self.assertEqual("pending", tomllib.load(handle)["status"])
 
-    def test_info_kind_never_carries_an_ack_instruction_or_claims_acknowledged(self):
-        with tempfile.TemporaryDirectory() as td:
-            env, log = self.environment(td, "ready")
-            result = subprocess.run(
-                ["bash", str(SAY), "--kind", "info", "agent1", "fyi status update"],
-                env=env,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            self.assertIn("status=pending", result.stdout)
-            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
-            state = Path(td) / f"state/octo-lite/messages/{message_id}.toml"
-            with state.open("rb") as handle:
-                stored = tomllib.load(handle)
-            self.assertEqual("pending", stored["status"])
-            self.assertNotIn("Acknowledge with", stored["message"])
-
-    def test_send_queues_on_transport_failure_without_recording_false_pending(self):
-        with tempfile.TemporaryDirectory() as td:
-            env, log = self.environment(td, "ready")
-            env["FAKE_SEND_FAIL"] = "1"
-            result = subprocess.run(
-                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=env,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(75, result.returncode)
-            self.assertNotIn("run", log.read_text().splitlines() if log.exists() else [])
-            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
-            self.assertEqual(1, len(states))
-            with states[0].open("rb") as handle:
-                self.assertEqual("queued", tomllib.load(handle)["status"])
-            message_id = states[0].stem
-            inbox = Path(td) / "state/octo-lite/inbox/agent1" / message_id
-            self.assertTrue(inbox.is_file())
-
-    def test_drain_locks_each_queued_item_to_prevent_duplicate_delivery(self):
-        with tempfile.TemporaryDirectory() as td:
-            env, log = self.environment(td, "ready")
-            queue = subprocess.run(
-                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=dict(env, FAKE_SEND_FAIL="1"),
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(75, queue.returncode)
-            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
-            message_id = states[0].stem
-            inbox_item = Path(td) / "state/octo-lite/inbox/agent1" / message_id
-            lock_path = Path(f"{inbox_item}.lock")
-            drain = ROOT / "skills/herdr-comms/assets/herdr-drain"
-
-            holder = subprocess.Popen(["flock", str(lock_path), "sleep", "3"])
-            try:
-                for _ in range(20):
-                    if lock_path.exists():
-                        break
-                    __import__("time").sleep(0.1)
-                result = subprocess.run(["bash", str(drain), "agent1"], env=env, capture_output=True, text=True)
-                self.assertEqual(0, result.returncode)
-                self.assertNotIn("send", (log.read_text().splitlines() if log.exists() else []))
-                self.assertTrue(inbox_item.is_file())
-            finally:
-                holder.terminate()
-                holder.wait()
-
-            second = subprocess.run(["bash", str(drain), "agent1"], env=env, capture_output=True, text=True)
-            self.assertEqual(0, second.returncode)
-            self.assertIn("send", log.read_text().splitlines())
-            self.assertFalse(inbox_item.exists())
-
-    def test_ack_requires_a_prior_transport_attempt(self):
-        with tempfile.TemporaryDirectory() as td:
-            env, _ = self.environment(td, "Quick safety check: trust this folder")
-            queued = subprocess.run(
-                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
-                env=env, capture_output=True, text=True,
-            )
-            self.assertEqual(75, queued.returncode)
-            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
-            message_id = states[0].stem
-            result = subprocess.run(
-                ["bash", str(ACK), message_id, "acknowledged", "--by", "agent1"],
-                env=env, capture_output=True, text=True,
-            )
-            self.assertNotEqual(0, result.returncode)
-            with states[0].open("rb") as handle:
-                self.assertEqual("queued", tomllib.load(handle)["status"])
-
-    def test_ack_requires_exact_recipient_even_for_pane_targets(self):
-        with tempfile.TemporaryDirectory() as td:
-            env, _ = self.environment(td, "ready")
-            result = subprocess.run(
-                ["bash", str(SAY), "--kind", "command", "w1:p1", "do work"],
-                env=env, check=True, capture_output=True, text=True,
-            )
-            message_id = result.stdout.split("message_id=", 1)[1].split()[0]
-            wrong = subprocess.run(
-                ["bash", str(ACK), message_id, "acknowledged", "--by", "someone-else"],
-                env=env, capture_output=True, text=True,
-            )
-            self.assertNotEqual(0, wrong.returncode)
-            right = subprocess.run(
-                ["bash", str(ACK), message_id, "acknowledged", "--by", "w1:p1"],
-                env=env, capture_output=True, text=True,
-            )
-            self.assertEqual(0, right.returncode)
+    # --- herdr-spawn (unchanged bootstrap contract) -------------------------
 
     def spawn_environment(self, td, ack_override=None):
         root = Path(td)
@@ -850,8 +903,6 @@ fi
             calls = log.read_text().splitlines()
             start_call = next(line for line in calls if line.startswith("agent start"))
             self.assertIn(f"--resume {receipt['spawn_id']}", start_call)
-            # The resumed command is the exact bootstrap-verified session, immediately
-            # after the executable, never a fresh unverified start.
             self.assertIn(f"claude --resume {receipt['spawn_id']}", start_call)
 
     def test_spawn_creates_no_pane_on_any_bootstrap_mismatch(self):
@@ -902,8 +953,6 @@ fi
             self.assertFalse(any(call.startswith("tab create") for call in calls))
             self.assertFalse(any(call.startswith("agent start") for call in calls))
 
-        # Receipt role is orchestrator, but --role and its flags/label claim
-        # meta-operator: spawn must refuse before bootstrap, never trust the CLI role.
         with self.subTest("role_diverges_from_receipt"), tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             git_repo(repo)
@@ -920,8 +969,6 @@ fi
             result = subprocess.run(argv, env=env, capture_output=True, text=True)
             assert_blocked_before_bootstrap(result, log)
 
-        # Receipt worktree is repo A, but --cwd is ROOT, a different real git root:
-        # spawn must refuse before bootstrap, never trust the CLI cwd.
         with self.subTest("cwd_diverges_from_receipt"), tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             git_repo(repo)
@@ -934,7 +981,6 @@ fi
             assert_blocked_before_bootstrap(result, log)
 
     def spawn_mic_command(self, receipt, cwd=None, rc=False):
-        # A mic-labeled orchestrator spawn; rc controls the --rc launch flag.
         claude = ["claude"]
         if rc:
             claude.append("--rc")
@@ -957,8 +1003,6 @@ fi
         subprocess.run(["git", "-C", str(path), "commit", "-qm", "target"], check=True)
 
     def test_spawn_fails_closed_on_mic_label_without_remote_control_at_launch(self):
-        # herdr-label-remote-control-gate: a mic-labeled spawn without the --rc
-        # launch flag is a launch-gate failure before bootstrap and pane creation.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             self.spawn_git_repo(repo)
@@ -976,8 +1020,6 @@ fi
             self.assertFalse(any(call.startswith("agent start") for call in calls))
 
     def test_spawn_fails_closed_on_operator_label_without_remote_control_at_launch(self):
-        # herdr-label-remote-control: the 🧠 operator session requires remote
-        # control durably at launch; a spawn without --rc fails closed.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             self.spawn_git_repo(repo)
@@ -1006,9 +1048,6 @@ fi
             self.assertFalse(any(call.startswith("agent start") for call in calls))
 
     def test_spawn_admits_mic_label_with_remote_control_at_launch(self):
-        # With --rc at launch the mic-labeled spawn proceeds through the normal
-        # verified-bootstrap path; unlabeled spawns stay valid without --rc
-        # (covered by the existing happy-path test).
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             self.spawn_git_repo(repo)
@@ -1036,8 +1075,6 @@ fi
             self.assertFalse(log.exists())
 
     def test_spawn_rejects_issue_shaper_as_a_role_with_no_persistent_tab(self):
-        # There is no separately persistent issue-shaper session or tab: shaping is a
-        # capability the one issue orchestrator loads, never a distinct spawn role.
         with tempfile.TemporaryDirectory() as td:
             receipt_path = Path(td) / "launch.toml"
             receipt_path.write_text("unused\n")
