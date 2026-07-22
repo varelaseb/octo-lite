@@ -494,7 +494,7 @@ def cleanup_clean_abort(repo: Path, worktree: Path, expected_head: str) -> None:
 PROVISION_RECORD_SOURCE = "host-provisioned-worktree"
 
 # launch-provision-record-schema: the RFC3339 date-time profile (structural
-# shape only; value-range and tz-aware confirmation stay with
+# shape only; calendar-date and tz-aware confirmation stay with
 # datetime.fromisoformat below). `datetime.fromisoformat` alone is NOT
 # sufficient (re-review finding 2): it also accepts non-RFC3339 forms such as
 # ISO week dates ("2026-W30-2...") and compact/basic timestamps
@@ -502,8 +502,19 @@ PROVISION_RECORD_SOURCE = "host-provisioned-worktree"
 # the Z form and the numeric-offset form. The seconds field is captured
 # separately (re-review finding, leap seconds) because RFC3339 section 5.6
 # permits the value 60 there, which `datetime.fromisoformat` rejects.
+#
+# Every numeric component below is explicitly range-bound (re-review finding,
+# offset-bounds regression): month 01-12, day 01-31, hour 00-23, minute
+# 00-59, second 00-60 (60 = leap second, handled separately below), and the
+# offset hour 00-23 / offset minute 00-59. A loose `[+-]\d{2}:\d{2}` offset
+# previously let an out-of-range offset such as "+00:60" or "+24:00" match
+# the regex, after which `datetime.fromisoformat` silently NORMALIZES the
+# out-of-range offset instead of rejecting it, so the structural pattern
+# alone must reject those values before fromisoformat ever sees them.
 _RFC3339_DATE_TIME_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:(?P<seconds>\d{2})(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$"
+    r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])"
+    r"[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?P<seconds>[0-5]\d|60)(\.\d+)?"
+    r"([Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
 )
 
 # launch-provision-record-schema: exactly these keys, no more, no fewer.
