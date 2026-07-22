@@ -63,6 +63,29 @@ FAKE_HERDR = r"""#!/usr/bin/env bash
 echo "$*" >>"$FAKE_LOG"
 if [[ "$1 $2" == "tab create" ]]; then
   echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p0"}}}'
+elif [[ "$1 $2" == "agent start" ]]; then
+  # Real 0.7.5 grammar: agent start <NAME> --kind <KIND> --pane <ID>
+  # [--timeout MS] [-- AGENT_ARG...]; NO --tab/--no-focus (unknown options).
+  shift 2
+  kind=""
+  pane=""
+  while (($#)); do
+    case "$1" in
+      --tab|--no-focus)
+        echo "error: unexpected argument '$1' found" >&2
+        exit 2
+        ;;
+      --kind) kind="${2:-}"; shift 2 ;;
+      --pane) pane="${2:-}"; shift 2 ;;
+      --timeout) shift 2 ;;
+      --) shift; break ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -z "$kind" || -z "$pane" ]]; then
+    echo "error: the following required arguments were not provided: --kind --pane" >&2
+    exit 2
+  fi
 elif [[ "$1 $2" == "agent get" ]]; then
   echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
 elif [[ "$1 $2" == "pane read" ]]; then

@@ -183,10 +183,17 @@ fi
 # herdr 0.7.5 fake for herdr-spawn. Extends the 0.7.5 grammar above with the
 # spawn-side surface and records every call verbatim in $FAKE_LOG:
 #   tab create                    -> JSON incl the tab and its root pane
-#   agent start <name> ... -- ... -> adopts the tab's existing root pane IN
-#                                    PLACE (no split, no phantom pane, no
+#                                    (real 0.7.5 `tab_created` result shape:
+#                                    .result.tab + required .result.root_pane)
+#   agent start <NAME> --kind <KIND> --pane <ID> [--timeout MS] [-- ...]
+#                                 -> REAL 0.7.5 grammar (verified live via
+#                                    `herdr agent start --help`): rejects
+#                                    --tab/--no-focus as unknown options like
+#                                    the live binary, requires --kind and
+#                                    --pane, and adopts the given EXISTING pane
+#                                    in place (no split, no phantom pane, no
 #                                    topology change); argv recorded so tests
-#                                    can assert the exact 0.7.5 launch grammar
+#                                    can assert the exact launch grammar
 #   agent get <target>            -> the adopted pane (same id tab create gave)
 #   agent send-keys <target> ...  -> literal keystrokes (trust-dialog accept);
 #                                    fails non-zero with FAKE_SEND_KEYS_FAIL
@@ -204,7 +211,26 @@ sub="$1 $2"
 if [[ "$sub" == "tab create" ]]; then
   echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}'
 elif [[ "$sub" == "agent start" ]]; then
-  :
+  shift 2
+  kind=""
+  pane=""
+  while (($#)); do
+    case "$1" in
+      --tab|--no-focus)
+        echo "error: unexpected argument '$1' found" >&2
+        exit 2
+        ;;
+      --kind) kind="${2:-}"; shift 2 ;;
+      --pane) pane="${2:-}"; shift 2 ;;
+      --timeout) shift 2 ;;
+      --) shift; break ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -z "$kind" || -z "$pane" ]]; then
+    echo "error: the following required arguments were not provided: --kind --pane" >&2
+    exit 2
+  fi
 elif [[ "$sub" == "agent get" ]]; then
   echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
 elif [[ "$sub" == "agent send-keys" ]]; then
@@ -1240,12 +1266,44 @@ exec {real_mv} "$@"
             self.assertIn(f"--resume {receipt['spawn_id']}", start_call)
             self.assertIn(f"claude --resume {receipt['spawn_id']}", start_call)
 
+    def test_spawn_uses_real_075_agent_start_kind_pane_grammar(self):
+        # TUR-505 hotfix: the REAL 0.7.5 grammar (verified live via
+        # `herdr agent start --help`) is
+        #   agent start <NAME> --kind <KIND> --pane <ID> [--timeout MS] [-- ...]
+        # with NO --tab and NO --no-focus; the live binary rejects both as
+        # unknown options, so any spawn passing them fails. The pane is the
+        # tab's root pane that `tab create` already returns as required
+        # `.result.root_pane.pane_id` in its `tab_created` result.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            receipt = build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            calls = log.read_text().splitlines()
+            start_calls = [call for call in calls if call.startswith("agent start")]
+            self.assertEqual(1, len(start_calls), calls)
+            start_call = start_calls[0]
+            self.assertTrue(
+                start_call.startswith(
+                    f"agent start orch-1 --kind claude --pane w1:p1 -- claude --resume {receipt['spawn_id']}"
+                ),
+                start_call,
+            )
+            self.assertNotIn("--tab", start_call)
+            self.assertNotIn("--no-focus", start_call)
+
     def test_spawn_uses_native_075_agent_start_without_topology_hacks(self):
-        # herdr 0.7.5: `agent start --tab` adopts the tab's existing root pane
+        # herdr 0.7.5 `agent start --pane` adopts the tab's existing root pane
         # without changing topology, so a normal spawn must never fire the old
         # split-tab-close hack (`pane close` on a phantom root pane) and must
         # not duplicate the tab cwd with an explicit `--cwd` on agent start
-        # (new_cwd=follow inherits the receipt-verified tab cwd).
+        # (the adopted pane already sits at the receipt-verified tab cwd).
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             self.spawn_git_repo(repo)
@@ -1261,7 +1319,7 @@ exec {real_mv} "$@"
             self.assertFalse(any(call.startswith("pane close") for call in calls), calls)
             start_calls = [call for call in calls if call.startswith("agent start")]
             self.assertEqual(1, len(start_calls), calls)
-            self.assertIn("--tab w1:t1", start_calls[0])
+            self.assertIn("--pane w1:p1", start_calls[0])
             self.assertNotIn("--cwd", start_calls[0])
             # The receipt-verified cwd is still anchored where the tab is made.
             tab_call = next(call for call in calls if call.startswith("tab create"))

@@ -111,24 +111,24 @@ provider_session_id="$(jq -r '.provider_session_id // empty' <<<"$bootstrap_outp
 resumed=("$1" "--resume" "$provider_session_id" "${@:2}")
 
 # The tab is created at the receipt-verified cwd; that is the sole cwd anchor.
+# The real 0.7.5 tab-create result (bundled API schema, `tab_created`) carries
+# the tab's root pane as required `.result.root_pane.pane_id`, so the launch
+# pane is known here with no extra resolution call.
 out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"
 tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
 [[ -n "$tab" ]] || exit 1
-
-# herdr 0.7.5 `agent start --tab` adopts the tab's existing root pane in place
-# with no topology change: no split, no phantom root pane, so the old
-# split-tab-close hack (`pane close` on the leftover pane) is gone. The 0.7.5
-# new_cwd=follow default inherits the tab pane's cwd, which is the
-# receipt-verified cwd above, so the old duplicated `--cwd` is dropped too.
-herdr agent start "$name" --tab "$tab" --no-focus -- "${resumed[@]}" >/dev/null
-
-pane=""
-for _ in $(seq 1 10); do
-  pane="$(herdr agent get "$name" 2>/dev/null | jq -r '.result.agent.pane_id // empty')"
-  [[ -n "$pane" ]] && break
-  sleep 1
-done
+pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
 [[ -n "$pane" ]] || exit 1
+
+# TUR-505 hotfix: the REAL herdr 0.7.5 grammar (verified live via
+# `herdr agent start --help`) is
+#   agent start <NAME> --kind <KIND> --pane <ID> [--timeout MS] [-- AGENT_ARG...]
+# There is NO --tab and NO --no-focus; the binary rejects both as unknown
+# options. The agent adopts the given EXISTING root pane in place with no
+# topology change: no split, no phantom root pane, so the old split-tab-close
+# hack (`pane close` on the leftover pane) stays gone. The adopted pane already
+# sits at the receipt-verified cwd above, so no duplicated `--cwd` either.
+herdr agent start "$name" --kind claude --pane "$pane" -- "${resumed[@]}" >/dev/null
 
 # Bootstrap is already verified. This loop only dismisses the one-time trusted-folder
 # dialog that Claude onboarding still shows on a fresh pane; it never infers
