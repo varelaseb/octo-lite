@@ -33,16 +33,23 @@ Delivery confirmation is observed state, never the exit code: a prompt can
 return rc 0 without submitting when the composer holds residual text. Every
 fire runs `agent prompt --wait --timeout` with
 `OCTO_PROMPT_CONFIRM_TIMEOUT_MS` milliseconds (default 15000, invalid falls
-back to the default with a warning); only a matched post-submission state
-(idle, done, blocked) confirms. `agent_prompt_stalled`, a timeout, a nonzero
-rc, or any unmatched outcome is unconfirmed: the message stays pending with
-its retry item for `herdr-drain`, under the attempt cap.
+back to the default with a warning). Agent-pane delivery is submission by
+construction (A3, ruling-94): after the atomic paste, an explicit
+`agent send-keys <pane> Enter` follow-up submits it, safe because agents
+never hand-type so the composer holds only the paste. The dialog check runs
+before the Enter: an open dialog defers with no Enter; a nonzero-rc prompt
+also gets no Enter. Non-info confirms on a matched post-submission state
+(idle, done, blocked) or an Enter-backed `state_change_seq` advance across
+the prompt. Info confirms on a matched state ONLY; a seq advance alone
+never completes info. Any other outcome (`agent_prompt_stalled` with no seq
+proof, a timeout, a nonzero rc) is unconfirmed: the message stays pending
+with its retry item for `herdr-drain`, under the attempt cap.
 
 Transport class: bounded duplicate-prone transport with no delivery
 guarantee. A message may arrive zero times, once, or up to the retry cap per
 epoch. Every transported body carries `[msg:<id>]`, info included, so
-duplicates are id-correlated. Only herdr-ack proves delivery; an
-observed-state-confirmed info submit completes on its own.
+duplicates are id-correlated. Only herdr-ack proves delivery; a
+matched-state-confirmed info submit completes on its own.
 
 On every wake, run `herdr-drain <own-agent-name>`. It fires only when the
 prompt is safe, and a pending retry re-fires the same atomic prompt with the
@@ -70,6 +77,17 @@ herdr-ack MESSAGE_ID completed --by OWN_AGENT_NAME --artifact REF
 
 Use `operator-say` for messages to the current Fable owner. It resolves
 `operator-owner.toml` at send time, so an atomic handoff changes the next route.
+
+Operator-pane delivery is mode-gated (ruling-94) by the durable flag
+`XDG_STATE_HOME/octo-lite/operator-mode` holding `awake` or `asleep`
+(missing file = asleep). Asleep: the owner pane behaves like an agent pane
+(paste plus Enter; messages wake the operator). Awake: a send whose target
+equals the owner route injects NOTHING (no prompt, no send-keys); durable
+state plus the inbox item persist for operator pull (exit 75, queued), and
+the operator reads sweeps and drains on wake. `herdr-drain` carries no mode
+gate on purpose: it is the operator's pull instrument. Sole exception: the
+sweep's edge-triggered operator-gate ping (`OCTO_GATE_PING=1`, set only
+inside `operator-sweep`) still injects so a new gate always lands.
 
 ## Spawn
 

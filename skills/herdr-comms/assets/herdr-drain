@@ -37,15 +37,29 @@ confirm_timeout_ms="${OCTO_PROMPT_CONFIRM_TIMEOUT_MS:-15000}"
 # the target composer holds residual text, so rc alone NEVER confirms.
 # Confirmation is OBSERVED STATE: the fire passes --wait --timeout so herdr
 # reports the observed post-submission state; only a matched state
-# (idle|done|blocked) confirms. A2 (soak finding 2): a send into a WORKING
-# pane delivers (submit/queue) but --wait cannot match idle|done|blocked
-# mid-turn, so confirmation is (--wait matched state) OR (state_change_seq
-# ADVANCED across the prompt): the seq is read via `herdr agent get`
-# (structured field, never pane text) immediately BEFORE the prompt and again
-# AFTER the --wait outcome. Unchanged seq with no matched state is a true
-# swallow (UNCONFIRMED, fails closed exactly as A1), and any seq read failure
-# on either side leaves only the matched-state path (fail closed,
-# degrade-safe).
+# (idle|done|blocked) confirms. A3.1 (ruling-94, submission by construction):
+# after the atomic paste an explicit `agent send-keys <pane> Enter` follow-up
+# guarantees the submission, because agents never hand-type so the composer
+# can only hold our paste. Modal-safe law preserved: the dialog check runs
+# BEFORE the Enter, and an open dialog defers with NO Enter (a trust dialog
+# is never force-submitted); a nonzero-rc prompt (blocked, stalled, refused)
+# pasted nothing and also gets NO Enter. A2 (soak finding 2), narrowed by
+# A3.3: for NON-INFO kinds confirmation is (--wait matched state) OR
+# (state_change_seq ADVANCED across the prompt): the seq is read via `herdr
+# agent get` (structured field, never pane text) immediately BEFORE the
+# prompt and again AFTER the --wait outcome and the Enter follow-up. The seq
+# fallback requires the Enter to have landed (without it a busy target's own
+# activity ticking the seq is the A3 standing false-confirm). A3.3 (the
+# executed A2-residual downgrade): INFO confirmation is matched-state ONLY,
+# a seq advance alone never completes info. Unchanged seq with no matched
+# state is a true swallow (UNCONFIRMED, fails closed exactly as A1), and any
+# seq read failure on either side leaves only the matched-state path (fail
+# closed, degrade-safe).
+# A3.2 note (ruling-94): herdr-drain carries NO operator-mode gate on
+# purpose. herdr-say's awake-mode queue-only path persists state + item and
+# never injects; herdr-drain IS the operator's pull instrument (the operator
+# reads sweeps and drains on wake), so an explicit drain of the owner route
+# delivers at a moment the operator chose.
 read_state_seq() { # -> prints state_change_seq for $target; nonzero on any failure
   local raw seq
   raw="$(herdr agent get "$target" 2>/dev/null)" || return 1
@@ -54,17 +68,29 @@ read_state_seq() { # -> prints state_change_seq for $target; nonzero on any fail
   printf '%s' "$seq"
 }
 
-prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
-  local out="$state.$$.wait" rc=0 pre_seq="" post_seq=""
-  pre_seq="$(read_state_seq)" || pre_seq=""
+prompt_confirmed() { # $1 pane, $2 body, $3 kind -> 0 on confirmed submission
+  local out="$state.$$.wait" rc=0 pre_seq="" post_seq="" enter_ok=""
+  if [[ "$3" != "info" ]]; then
+    pre_seq="$(read_state_seq)" || pre_seq=""
+  fi
   herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
-  if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
+  if (( rc != 0 )); then
+    rm -f "$out"
+    return 1
+  fi
+  # Dialog check BEFORE the Enter: an open dialog defers, no Enter ever.
+  if dialog_open; then
+    rm -f "$out"
+    return 1
+  fi
+  if herdr agent send-keys "$1" Enter; then enter_ok=1; fi
+  if ! grep -q 'agent_prompt_stalled' "$out" \
     && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
     rm -f "$out"
     return 0
   fi
   rm -f "$out"
-  if [[ -n "$pre_seq" ]]; then
+  if [[ -n "$enter_ok" && -n "$pre_seq" ]]; then
     post_seq="$(read_state_seq)" || post_seq=""
     if [[ -n "$post_seq" ]] && (( 10#$post_seq > 10#$pre_seq )); then
       return 0
@@ -303,12 +329,13 @@ PY
       # burns an attempt without a fire (safe direction, never more fires).
       attempts=$((attempts + 1))
       write_state pending "$path" "$attempts"
-      # herdr 0.7.5: retry the exact same atomic prompt (paste + submit in
-      # one op) with the same [msg:id]; the atomic op never double-submits
-      # partially-pasted text. A1: only an OBSERVED post-submission state
-      # confirms, never rc alone.
-      if prompt_confirmed "$pane" "$(body_with_suffix)"; then
-        # Observed-state-confirmed transport, under the lock: promote
+      # herdr 0.7.5: retry the exact same atomic prompt (paste, then the
+      # A3.1 explicit Enter follow-up) with the same [msg:id]; the atomic op
+      # never double-submits partially-pasted text. A1: only a CONFIRMED
+      # submission (matched state, or for non-info an Enter-backed seq
+      # advance) confirms, never rc alone.
+      if prompt_confirmed "$pane" "$(body_with_suffix)" "${fields[kind]}"; then
+        # Confirmed-submission transport, under the lock: promote
         # path=direct (ACK-WAIT by construction, never repaired, never
         # drain-fired), transition info->completed, then remove the item
         # (state before removal).

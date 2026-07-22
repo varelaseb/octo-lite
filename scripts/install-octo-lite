@@ -112,4 +112,14 @@ for source in "$root"/skills/herdr-comms/assets/*; do
   link_one "$source" "$prefix/.local/bin/$(basename "$source")"
 done
 
+# TUR-505 A3.2 (ruling-94): seed the durable operator-mode flag in live XDG
+# state. Missing file reads asleep (paste + Enter wakes the operator); at the
+# A3 land the operator is AWAKE, so seed awake ONCE. Never clobber an
+# operator-set value: the operator toggles this flag by signal afterward.
+if [[ "$check" != true ]]; then
+  mode_dir="${XDG_STATE_HOME:-$prefix/.local/state}/octo-lite"
+  mkdir -p "$mode_dir"
+  [[ -f "$mode_dir/operator-mode" ]] || printf 'awake\n' >"$mode_dir/operator-mode"
+fi
+
 echo "octo-lite links ${check:+checked} at $prefix"

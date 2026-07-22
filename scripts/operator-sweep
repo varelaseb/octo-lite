@@ -876,7 +876,13 @@ def _emit_operator_gate(gate_lines: list[str], root: Path, owner_file: Path, own
         previous = ""
     if previous == fingerprint:
         return  # Unchanged gate set: already pinged the operator, do not re-flood.
-    environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file))
+    # OCTO_GATE_PING=1 (TUR-505 A3.2, ruling-94): herdr-say queue-onlys every
+    # owner-route send while the operator-mode flag is awake, so an awake
+    # operator's pane is never injected mid-typing. The edge-triggered
+    # operator-gate ping is the SOLE ruled exception (a NEW gate must reach
+    # the pane immediately even while the operator is awake), and this call
+    # site is the only place that sets the flag.
+    environment = dict(os.environ, OCTO_OPERATOR_OWNER=str(owner_file), OCTO_GATE_PING="1")
     operator_say = os.environ.get("OCTO_OPERATOR_SAY") or str(root / "skills/herdr-comms/assets/operator-say")
     handle, temporary = tempfile.mkstemp(prefix=".operator-gate-", suffix=".md")
     try:

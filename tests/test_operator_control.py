@@ -4517,9 +4517,13 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
         (fake_bin / "operator-say").write_text(
             "#!/usr/bin/env bash\n"
             "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
             'gate=0\n'
             'for a in "$@"; do if [[ "$a" == "Operator gate" ]]; then gate=1; fi; done\n'
+            # A3.2 (ruling-94): record OCTO_GATE_PING per call (before the
+            # artifact dump so the record stays line-exact) so a test can
+            # assert the sole-exception env flag marks ONLY the gate pane push.
+            'if [[ "$gate" == "1" ]]; then printf \'gate-ping-env=%s\\n\' "${OCTO_GATE_PING:-}" >>"$CALL_LOG"; else printf \'delta-env=%s\\n\' "${OCTO_GATE_PING:-}" >>"$CALL_LOG"; fi\n'
+            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
             # The edge-trigger pane push is the "Operator gate" message; count it
             # and let a test force ITS rc via GATE_SAY_RC. Every other operator-say
             # (e.g. the reconcile "Sweep delta ready" delivery) always succeeds so
@@ -4718,6 +4722,36 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
             fourth = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
             self.assertFalse(_sweep_stdout_json(fourth.stdout)["changed"])
             self.assertEqual(3, self._ping_count(log))
+
+    def test_edge_gate_ping_env_flag_marks_only_the_gate_pane_push(self) -> None:
+        # TUR-505 A3.2 sole-exception wiring (ruling-94): _emit_operator_gate
+        # marks its operator-say invocation with OCTO_GATE_PING=1 so herdr-say's
+        # awake-mode queue-only gate admits ONLY the edge-triggered gate pane
+        # ping. Every other operator-say the sweep fires (e.g. the reconcile
+        # "Sweep delta ready" delivery) carries NO flag, so while the operator
+        # is awake those deliveries queue for pull instead of injecting.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            self._stream(control)
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env.pop("OCTO_GATE_PING", None)
+            command = self._sweep_cmd(control, owner, repo)
+
+            self._run_to_noop(command, env)
+            self.assertEqual(1, self._ping_count(log))
+            lines = log.read_text().splitlines()
+            # The gate pane push carries the sole-exception flag.
+            self.assertIn("gate-ping-env=1", lines)
+            # The reconcile result delivery ran flagless (queue-only while awake).
+            self.assertIn("delta-env=", lines)
+            self.assertNotIn("delta-env=1", lines)
 
 
 class WorkspaceAdmitProvisionCliTests(unittest.TestCase):

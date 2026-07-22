@@ -154,6 +154,41 @@ body_with_suffix() {
   fi
 }
 
+# A3.2 + A3-OVERNIGHT (rulings 94/96): OPERATOR-pane delivery is MODE-GATED.
+# The owner route is derived from operator-owner.toml at runtime (never a
+# hardcoded name) and the mode is the durable flag XDG/octo-lite/operator-mode
+# (single line: awake | asleep; missing file = asleep, the ruled default).
+# awake: a send to the owner route injects NOTHING (no prompt, no send-keys);
+# delivery = durable state + inbox item persisted for operator PULL (the
+# operator reads sweeps and drains on wake), exit 75-family queued-for-pull.
+# asleep: the owner pane is an ordinary agent pane (paste + Enter follow-up;
+# messages wake the operator). SOLE exception: OCTO_GATE_PING=1, set only at
+# operator-sweep's _emit_operator_gate call site, marks the edge-triggered
+# operator-gate ping, which still injects while the operator is awake so a
+# NEW gate always reaches the pane.
+owner_file="${OCTO_OPERATOR_OWNER:-$state_root/operator-owner.toml}"
+owner_route=""
+if [[ -f "$owner_file" ]]; then
+  owner_route="$(python3 - "$owner_file" 2>/dev/null <<'PY' || true
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    print(tomllib.load(f).get('owner_route', ''))
+PY
+)"
+fi
+operator_mode="asleep"
+if [[ -f "$state_root/operator-mode" ]]; then
+  operator_mode="$(tr -d '[:space:]' <"$state_root/operator-mode")"
+fi
+if [[ -z "${OCTO_GATE_PING:-}" && -n "$owner_route" && "$target" == "$owner_route" && "$operator_mode" == "awake" ]]; then
+  # Queue-only: durable state (retryable, so an operator-initiated drain
+  # pulls it) plus the inbox item, and nothing ever touches the pane.
+  init_state pending deferred
+  publish_item
+  echo "herdr-say: queued for operator pull message_id=$id" >&2
+  exit 75
+fi
+
 case "$target" in
   *:p*) pane="$target" ;;
   *)
@@ -265,15 +300,24 @@ write_locked_state pending deferred "$attempts"
 # the target composer holds residual text, so rc alone NEVER confirms.
 # Confirmation is OBSERVED STATE: the fire passes --wait --timeout so herdr
 # reports the observed post-submission state; only a matched state
-# (idle|done|blocked) confirms. A2 (soak finding 2): a send into a WORKING
-# pane delivers (submit/queue) but --wait cannot match idle|done|blocked
-# mid-turn, so confirmation is (--wait matched state) OR (state_change_seq
-# ADVANCED across the prompt): the seq is read via `herdr agent get`
-# (structured field, never pane text) immediately BEFORE the prompt and again
-# AFTER the --wait outcome. Unchanged seq with no matched state is a true
-# swallow (UNCONFIRMED, fails closed exactly as A1), and any seq read failure
-# on either side leaves only the matched-state path (fail closed,
-# degrade-safe).
+# (idle|done|blocked) confirms. A3.1 (ruling-94, submission by construction):
+# after the atomic paste an explicit `agent send-keys <pane> Enter` follow-up
+# guarantees the submission, because agents never hand-type so the composer
+# can only hold our paste. Modal-safe law preserved: the dialog check runs
+# BEFORE the Enter, and an open dialog defers to pending with NO Enter (a
+# trust dialog is never force-submitted); a nonzero-rc prompt (blocked,
+# stalled, refused) pasted nothing and also gets NO Enter. A2 (soak finding
+# 2), narrowed by A3.3: for NON-INFO kinds confirmation is (--wait matched
+# state) OR (state_change_seq ADVANCED across the prompt): the seq is read
+# via `herdr agent get` (structured field, never pane text) immediately
+# BEFORE the prompt and again AFTER the --wait outcome and the Enter
+# follow-up. The seq fallback requires the Enter to have landed (without it
+# a busy target's own activity ticking the seq is the A3 standing
+# false-confirm). A3.3 (the executed A2-residual downgrade): INFO
+# confirmation is matched-state ONLY, a seq advance alone never completes
+# info. Unchanged seq with no matched state is a true swallow (UNCONFIRMED,
+# fails closed exactly as A1), and any seq read failure on either side
+# leaves only the matched-state path (fail closed, degrade-safe).
 read_state_seq() { # -> prints state_change_seq for $target; nonzero on any failure
   local raw seq
   raw="$(herdr agent get "$target" 2>/dev/null)" || return 1
@@ -282,17 +326,29 @@ read_state_seq() { # -> prints state_change_seq for $target; nonzero on any fail
   printf '%s' "$seq"
 }
 
-prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
-  local out="$state.$$.wait" rc=0 pre_seq="" post_seq=""
-  pre_seq="$(read_state_seq)" || pre_seq=""
+prompt_confirmed() { # $1 pane, $2 body, $3 kind -> 0 on confirmed submission
+  local out="$state.$$.wait" rc=0 pre_seq="" post_seq="" enter_ok=""
+  if [[ "$3" != "info" ]]; then
+    pre_seq="$(read_state_seq)" || pre_seq=""
+  fi
   herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
-  if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
+  if (( rc != 0 )); then
+    rm -f "$out"
+    return 1
+  fi
+  # Dialog check BEFORE the Enter: an open dialog defers, no Enter ever.
+  if dialog_open; then
+    rm -f "$out"
+    return 1
+  fi
+  if herdr agent send-keys "$1" Enter; then enter_ok=1; fi
+  if ! grep -q 'agent_prompt_stalled' "$out" \
     && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
     rm -f "$out"
     return 0
   fi
   rm -f "$out"
-  if [[ -n "$pre_seq" ]]; then
+  if [[ -n "$enter_ok" && -n "$pre_seq" ]]; then
     post_seq="$(read_state_seq)" || post_seq=""
     if [[ -n "$post_seq" ]] && (( 10#$post_seq > 10#$pre_seq )); then
       return 0
@@ -301,12 +357,12 @@ prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanc
   return 1
 }
 
-# On OBSERVED-STATE-CONFIRMED direct success, under the lock: transition
+# On CONFIRMED-SUBMISSION direct success, under the lock: transition
 # (info -> completed, non-info stays pending) + promote delivery_path=direct
 # + remove the item (state-transition precedes item removal, order law). An
 # unconfirmed outcome keeps the message pending + deferred with its item so
 # herdr-drain retries under the attempts law, never claiming delivery.
-if prompt_confirmed "$pane" "$(body_with_suffix)"; then
+if prompt_confirmed "$pane" "$(body_with_suffix)" "$kind"; then
   if [[ "$kind" == "info" ]]; then
     write_locked_state completed direct "$attempts"
     rm -f "$inbox/$id"
