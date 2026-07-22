@@ -1228,6 +1228,10 @@
 <p data-anchor="handoff-old-owner" id="handoff-old-owner">The old operator becomes read-only at commit and may only forward late direct messages until cleanup.</p>
 <p data-anchor="handoff-dead-owner" id="handoff-dead-owner">A dead or ambiguous owner record has no agent-callable recovery path; only an explicit manual operator takeover outside role authority may replace it.</p>
 <p data-anchor="handoff-no-failover" id="handoff-no-failover">No probe, self-asserted authorization, timeout, or automatic failover transfers authority; a blocked owner record stays blocked until manual takeover.</p>
+<p data-anchor="handoff-launcher-initial" id="handoff-launcher-initial">The initial-launch launcher creates the first owner record at revision zero and refuses when an owner record already exists.</p>
+<p data-anchor="handoff-launcher-live" id="handoff-launcher-live">The distinct live-handoff launcher requires an existing owner record, spawns one successor that coexists with the current owner under the same invariant control directory, writes the successor session artifacts under its own operator directory, and writes no owner record itself.</p>
+<p data-anchor="handoff-launcher-pre-derive" id="handoff-launcher-pre-derive">The live-handoff launcher reads the current owner record and the next-revision handoff artifact, then pre-derives and prints the exact successor-ready command for the successor and the exact owner-transfer command for the current owner to run after the successor declares readiness.</p>
+<p data-anchor="handoff-launcher-dead-owner-emit" id="handoff-launcher-dead-owner-emit">For a dead or ambiguous owner the launcher only emits the operator-instructed takeover command carrying the recorded prior owner identity, marked as executable solely on explicit operator instruction, and it never self-runs a transfer and never probes owner liveness.</p>
 </section>
 
 <section data-anchor="diagram-stream-ownership" id="diagram-stream-ownership">
