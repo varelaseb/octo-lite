@@ -499,9 +499,11 @@ PROVISION_RECORD_SOURCE = "host-provisioned-worktree"
 # sufficient (re-review finding 2): it also accepts non-RFC3339 forms such as
 # ISO week dates ("2026-W30-2...") and compact/basic timestamps
 # ("20260721T000000+0000"), which this pattern rejects while still accepting
-# the Z form and the numeric-offset form.
+# the Z form and the numeric-offset form. The seconds field is captured
+# separately (re-review finding, leap seconds) because RFC3339 section 5.6
+# permits the value 60 there, which `datetime.fromisoformat` rejects.
 _RFC3339_DATE_TIME_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$"
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:(?P<seconds>\d{2})(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$"
 )
 
 # launch-provision-record-schema: exactly these keys, no more, no fewer.
@@ -574,10 +576,27 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", record["starting_head"]):
         raise GateError("provision record starting_head must be a resolved commit sha")
     raw_provisioned_at = record["provisioned_at"]
-    if not _RFC3339_DATE_TIME_RE.fullmatch(raw_provisioned_at):
+    match = _RFC3339_DATE_TIME_RE.fullmatch(raw_provisioned_at)
+    if not match:
         raise GateError("provision record provisioned_at must be an RFC3339 timestamp")
+    normalized = raw_provisioned_at.replace("Z", "+00:00").replace("z", "+00:00")
+    if match.group("seconds") == "60":
+        # RFC3339 section 5.6 permits a leap-second value (seconds field 60),
+        # but `datetime.fromisoformat` raises on second=60, so this case
+        # cannot depend on it succeeding. Probe with the seconds field
+        # substituted to 59 to confirm the surrounding date/time components
+        # and the tz-aware offset are genuinely valid, without accepting the
+        # leap second through fromisoformat itself.
+        probe = normalized[: match.start("seconds")] + "59" + normalized[match.end("seconds"):]
+        try:
+            probed = datetime.fromisoformat(probe)
+        except ValueError as error:
+            raise GateError("provision record provisioned_at must be an RFC3339 timestamp") from error
+        if probed.tzinfo is None:
+            raise GateError("provision record provisioned_at must be an RFC3339 timestamp")
+        return
     try:
-        provisioned_at = datetime.fromisoformat(raw_provisioned_at.replace("Z", "+00:00").replace("z", "+00:00"))
+        provisioned_at = datetime.fromisoformat(normalized)
     except ValueError as error:
         raise GateError("provision record provisioned_at must be an RFC3339 timestamp") from error
     if provisioned_at.tzinfo is None:
