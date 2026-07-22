@@ -99,6 +99,28 @@ PY
         exec 9>&-
         exit 75
       fi
+      # TUR-505 ruling-75 finding 2 (TOCTOU): herdr-ack writes message state
+      # WITHOUT taking this inbox item's lock, so a terminal ack can land
+      # between the status snapshot above and the prompt fire below. Drain
+      # re-validates the durable status here, as close to the fire as
+      # possible, still inside the held lock; a now-terminal message gets its
+      # stale item dropped with no transport and no rewrite, exactly like the
+      # terminal branch above. Only pending can turn terminal this way:
+      # herdr-ack rejects queued (never-transported) messages.
+      recheck="$(python3 - "$state" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as f:
+    print(tomllib.load(f).get('status', ''))
+PY
+)"
+      case "$recheck" in
+        acknowledged|rejected|completed)
+          rm -f "$queued" "$lock"
+          echo "message_id=$id status=$recheck stale_retry_removed=1"
+          exec 9>&-
+          continue
+          ;;
+      esac
       # herdr 0.7.5: an earlier atomic prompt may not have landed. Retry the
       # exact same atomic prompt (paste + submit in one op); the atomic op
       # never double-submits partially-pasted text. Stays pending, in the

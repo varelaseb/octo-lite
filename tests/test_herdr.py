@@ -89,6 +89,13 @@ elif [[ "$sub" == "pane read" ]]; then
   [[ -n "${FAKE_PANE_READ_COUNT:-}" && -f "$FAKE_PANE_READ_COUNT" ]] && n="$(cat "$FAKE_PANE_READ_COUNT")"
   n=$((n + 1))
   [[ -n "${FAKE_PANE_READ_COUNT:-}" ]] && echo "$n" >"$FAKE_PANE_READ_COUNT"
+  # TOCTOU hook: herdr-ack does not share drain's inbox lock, so a terminal
+  # ack can land between drain's status snapshot and the prompt fire. Flip
+  # the message state to acknowledged during the modal-check pane read to
+  # deterministically model an ack landing in exactly that window.
+  if [[ -n "${FAKE_ACK_ON_PANE_READ:-}" && -f "${FAKE_ACK_ON_PANE_READ:-}" ]]; then
+    sed -i 's/^status = .*/status = "acknowledged"/' "$FAKE_ACK_ON_PANE_READ"
+  fi
   printf '%s\n' "$FAKE_PANE_TEXT"
 elif [[ "$sub" == "agent prompt" ]]; then
   # agent prompt <target> <text>: $3 is the target, $4 is the literal text.
@@ -149,6 +156,18 @@ elif [[ "$sub" == "pane read" ]]; then
   [[ -n "${FAKE_READ_COUNT_FILE:-}" && -f "${FAKE_READ_COUNT_FILE:-}" ]] && n="$(cat "$FAKE_READ_COUNT_FILE")"
   n=$((n + 1))
   [[ -n "${FAKE_READ_COUNT_FILE:-}" ]] && echo "$n" >"$FAKE_READ_COUNT_FILE"
+  # Read-failure modes: FAKE_PANE_READ_FAIL=always makes every pane read exit
+  # non-zero; FAKE_PANE_READ_FAIL=after-first lets the first read succeed
+  # (e.g. show the dialog via FAKE_DIALOG_FIRST) and fails every later read,
+  # modelling a pane read that breaks during post-accept verification.
+  if [[ "${FAKE_PANE_READ_FAIL:-}" == "always" ]]; then
+    echo 'pane read failed' >&2
+    exit 1
+  fi
+  if [[ "${FAKE_PANE_READ_FAIL:-}" == "after-first" && "$n" -gt 1 ]]; then
+    echo 'pane read failed' >&2
+    exit 1
+  fi
   if [[ -n "${FAKE_DIALOG_ALWAYS:-}" ]]; then
     printf 'Quick safety check: trust this folder\n'
   elif [[ -n "${FAKE_DIALOG_FIRST:-}" && "$n" -eq 1 ]]; then
@@ -540,6 +559,40 @@ exec {real_mv} "$@"
                 self.assertFalse(inbox_item.exists())
                 with states[0].open("rb") as handle:
                     self.assertEqual(terminal, tomllib.load(handle)["status"])
+
+    def test_drain_rechecks_status_at_fire_time_and_never_refires_a_just_acked_message(self):
+        # TUR-505 ruling-75 finding 2 (TOCTOU): herdr-ack writes message state
+        # WITHOUT taking drain's inbox lock, so an ack can land between drain's
+        # first status snapshot and the prompt fire. The fake herdr flips the
+        # state to acknowledged during the modal-check pane read, which sits in
+        # exactly that window. Drain must re-check the durable status at fire
+        # time and skip: no prompt, terminal state untouched, stale item gone.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                env=dict(env, FAKE_PROMPT_FAIL="1"),
+                capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+            inbox_item = Path(td) / "state/octo-lite/inbox/agent1" / message_id
+            self.assertTrue(inbox_item.is_file())
+            with states[0].open("rb") as handle:
+                self.assertEqual("pending", tomllib.load(handle)["status"])
+
+            log.write_text("")
+            drain_env = dict(env, FAKE_ACK_ON_PANE_READ=str(states[0]))
+            result = subprocess.run(["bash", str(DRAIN), "agent1"], env=drain_env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            # No duplicate atomic prompt for the just-acked message.
+            self.assertEqual([], log.read_text().splitlines())
+            # The terminal state is untouched and the stale retry item is gone.
+            with states[0].open("rb") as handle:
+                self.assertEqual("acknowledged", tomllib.load(handle)["status"])
+            self.assertFalse(inbox_item.exists())
+            self.assertIn("stale_retry_removed=1", result.stdout)
 
     def test_drain_locks_each_queued_item_to_prevent_duplicate_delivery(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1123,6 +1176,51 @@ exec {real_mv} "$@"
             )
             self.assertNotEqual(0, result.returncode, result.stdout)
             self.assertNotIn("bootstrap=acknowledged", result.stdout)
+
+    def test_spawn_fails_closed_when_every_dialog_verification_pane_read_fails(self):
+        # TUR-505 ruling-75 finding 1: a failed `pane read` is NOT-cleared or
+        # unknown, never cleared. When every verification read exits non-zero,
+        # spawn cannot know whether the trust dialog cleared and must fail
+        # closed with no success report instead of reporting spawned.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            env["FAKE_PANE_READ_FAIL"] = "always"
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode, result.stdout)
+            self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn("pane read", result.stderr)
+
+    def test_spawn_fails_closed_when_pane_reads_fail_after_the_accept_keystroke(self):
+        # TUR-505 ruling-75 finding 1, post-accept window: the first read shows
+        # the trust dialog, the accept keystroke is sent, then every re-read
+        # FAILS. Pre-fix spawn treated the failed read as cleared and reported
+        # success; it must instead keep retrying and fail closed when the reads
+        # never recover, because the dialog state is unknown.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            env["FAKE_DIALOG_FIRST"] = "1"
+            env["FAKE_PANE_READ_FAIL"] = "after-first"
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode, result.stdout)
+            self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn("pane read", result.stderr)
+            calls = log.read_text().splitlines()
+            # The accept was attempted; the failure is the unverifiable clear.
+            self.assertTrue(any(call.startswith("agent send-keys") for call in calls), calls)
 
     def test_spawn_creates_no_pane_on_any_bootstrap_mismatch(self):
         scenarios = {

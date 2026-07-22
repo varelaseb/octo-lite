@@ -140,31 +140,56 @@ done
 # actually cleared; a failed send-keys or a dialog that persists after the
 # bounded attempts fails closed with no success report, so a session trapped
 # at the trust dialog is never reported as spawned.
-dialog_showing() {
-  herdr pane read "$pane" --source visible --lines 50 2>/dev/null \
-    | grep -qiE 'Quick safety check|trust this folder'
+# TUR-505 ruling-75 finding 1: a failed pane read is NOT evidence the dialog
+# cleared; it means the state is unknown. dialog_state is three-valued so the
+# caller can distinguish dialog-present (0), verified-cleared (1), and
+# read-failed (2). Only a successful read that shows no dialog counts as
+# cleared; read failures retry within the bounded loop and, if reads never
+# recover, spawn fails closed with no success report.
+dialog_state() {
+  local text
+  if ! text="$(herdr pane read "$pane" --source visible --lines 50 2>/dev/null)"; then
+    return 2
+  fi
+  if grep -qiE 'Quick safety check|trust this folder' <<<"$text"; then
+    return 0
+  fi
+  return 1
 }
 retries="${HERDR_SPAWN_BOOTSTRAP_RETRIES:-10}"
-dialog_cleared=1
+dialog_cleared=0
 for _ in $(seq 1 "$retries"); do
-  if dialog_showing; then
-    dialog_cleared=0
+  state=0
+  dialog_state || state=$?
+  if [[ "$state" == 1 ]]; then
+    dialog_cleared=1
+    break
+  fi
+  if [[ "$state" == 0 ]]; then
     herdr agent send-keys "$pane" Enter >/dev/null 2>&1 || {
       echo "herdr-spawn: trust-dialog accept keystroke failed; session may be trapped at the trust dialog" >&2
       exit 69
     }
-    sleep 1
-    continue
   fi
-  dialog_cleared=1
-  break
+  # state 2 (read failed): dialog state unknown; retry within the bound.
+  sleep 1
 done
 if [[ "$dialog_cleared" != 1 ]]; then
-  # One final re-read after the last accept attempt before failing closed.
-  if dialog_showing; then
-    echo "herdr-spawn: trust dialog did not clear after $retries accept attempts; failing closed" >&2
-    exit 69
-  fi
+  # One final re-read after the last attempt before failing closed. Only a
+  # successful no-dialog read admits success; a read failure fails closed.
+  state=0
+  dialog_state || state=$?
+  case "$state" in
+    1) dialog_cleared=1 ;;
+    2)
+      echo "herdr-spawn: pane read kept failing while verifying the trust dialog cleared; failing closed" >&2
+      exit 69
+      ;;
+    *)
+      echo "herdr-spawn: trust dialog did not clear after $retries accept attempts; failing closed" >&2
+      exit 69
+      ;;
+  esac
 fi
 
 echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=acknowledged provider_session_id=$provider_session_id receipt=$receipt"
