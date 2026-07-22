@@ -111,6 +111,50 @@ fi
 """
 
 
+# herdr 0.7.5 fake for herdr-spawn. Extends the 0.7.5 grammar above with the
+# spawn-side surface and records every call verbatim in $FAKE_LOG:
+#   tab create                    -> JSON incl the tab and its root pane
+#   agent start <name> ... -- ... -> adopts the tab's existing root pane IN
+#                                    PLACE (no split, no phantom pane, no
+#                                    topology change); argv recorded so tests
+#                                    can assert the exact 0.7.5 launch grammar
+#   agent get <target>            -> the adopted pane (same id tab create gave)
+#   agent send-keys <target> ...  -> literal keystrokes (trust-dialog accept)
+#   pane read <pane> ...          -> visible transcript; with FAKE_DIALOG_FIRST
+#                                    the FIRST read shows the trust dialog and
+#                                    later reads show a ready pane
+#   pane close                    -> still recorded, but 0.7.5 spawn must never
+#                                    call it: there is no phantom pane to close
+FAKE_HERDR_075_SPAWN = r"""#!/usr/bin/env bash
+set -eu
+echo "$*" >>"$FAKE_LOG"
+sub="$1 $2"
+if [[ "$sub" == "tab create" ]]; then
+  echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}'
+elif [[ "$sub" == "agent start" ]]; then
+  :
+elif [[ "$sub" == "agent get" ]]; then
+  echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
+elif [[ "$sub" == "agent send-keys" ]]; then
+  :
+elif [[ "$sub" == "pane close" ]]; then
+  :
+elif [[ "$sub" == "pane read" ]]; then
+  n=0
+  [[ -n "${FAKE_READ_COUNT_FILE:-}" && -f "${FAKE_READ_COUNT_FILE:-}" ]] && n="$(cat "$FAKE_READ_COUNT_FILE")"
+  n=$((n + 1))
+  [[ -n "${FAKE_READ_COUNT_FILE:-}" ]] && echo "$n" >"$FAKE_READ_COUNT_FILE"
+  if [[ -n "${FAKE_DIALOG_FIRST:-}" && "$n" -eq 1 ]]; then
+    printf 'Quick safety check: trust this folder\n'
+  else
+    printf 'ready\n'
+  fi
+else
+  exit 2
+fi
+"""
+
+
 def build_orchestrator_receipt(repo: Path, receipt_path: Path) -> dict:
     registry = load_registry(ROOT)
     resolved = resolve_role(registry, "orchestrator", set())
@@ -833,7 +877,7 @@ exec {real_mv} "$@"
             with states[0].open("rb") as handle:
                 self.assertEqual("pending", tomllib.load(handle)["status"])
 
-    # --- herdr-spawn (unchanged bootstrap contract) -------------------------
+    # --- herdr-spawn (0.7.5 agent start; bootstrap contract unchanged) ------
 
     def spawn_environment(self, td, ack_override=None):
         root = Path(td)
@@ -841,18 +885,7 @@ exec {real_mv} "$@"
         fake_bin.mkdir()
         log = root / "herdr.log"
         fake = fake_bin / "herdr"
-        fake.write_text(
-            """#!/usr/bin/env bash
-echo "$*" >>"$FAKE_LOG"
-if [[ "$1 $2" == "tab create" ]]; then
-  echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p0"}}}'
-elif [[ "$1 $2" == "agent get" ]]; then
-  echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
-elif [[ "$1 $2" == "pane read" ]]; then
-  printf 'ready\\n'
-fi
-"""
-        )
+        fake.write_text(FAKE_HERDR_075_SPAWN)
         fake.chmod(0o755)
         (fake_bin / "claude").write_text(FAKE_BOOTSTRAP_CLAUDE)
         (fake_bin / "claude").chmod(0o755)
@@ -861,6 +894,7 @@ fi
             PATH=f"{fake_bin}:{OCTO_LAUNCH.parent}:{os.environ['PATH']}",
             FAKE_LOG=str(log),
             CALL_LOG=str(log),
+            FAKE_READ_COUNT_FILE=str(root / "read-count"),
             HERDR_SPAWN_BOOTSTRAP_RETRIES="2",
         )
         if ack_override:
@@ -904,6 +938,58 @@ fi
             start_call = next(line for line in calls if line.startswith("agent start"))
             self.assertIn(f"--resume {receipt['spawn_id']}", start_call)
             self.assertIn(f"claude --resume {receipt['spawn_id']}", start_call)
+
+    def test_spawn_uses_native_075_agent_start_without_topology_hacks(self):
+        # herdr 0.7.5: `agent start --tab` adopts the tab's existing root pane
+        # without changing topology, so a normal spawn must never fire the old
+        # split-tab-close hack (`pane close` on a phantom root pane) and must
+        # not duplicate the tab cwd with an explicit `--cwd` on agent start
+        # (new_cwd=follow inherits the receipt-verified tab cwd).
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            calls = log.read_text().splitlines()
+            self.assertFalse(any(call.startswith("pane close") for call in calls), calls)
+            start_calls = [call for call in calls if call.startswith("agent start")]
+            self.assertEqual(1, len(start_calls), calls)
+            self.assertIn("--tab w1:t1", start_calls[0])
+            self.assertNotIn("--cwd", start_calls[0])
+            # The receipt-verified cwd is still anchored where the tab is made.
+            tab_call = next(call for call in calls if call.startswith("tab create"))
+            self.assertIn(f"--cwd {repo}", tab_call)
+
+    def test_spawn_auto_accepts_the_trust_dialog_with_literal_send_keys(self):
+        # The Claude onboarding trust dialog still appears on a fresh pane. The
+        # 0.7.5 spawn must dismiss it with a literal `agent send-keys` Enter
+        # (never an atomic prompt, which would submit text into the modal) and
+        # still never close any pane while doing so.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            env["FAKE_DIALOG_FIRST"] = "1"
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("bootstrap=acknowledged", result.stdout)
+            calls = log.read_text().splitlines()
+            accepts = [call for call in calls if call.startswith("agent send-keys")]
+            self.assertEqual(1, len(accepts), calls)
+            self.assertIn("w1:p1", accepts[0])
+            self.assertFalse(any(call.startswith("agent prompt") for call in calls), calls)
+            self.assertFalse(any(call.startswith("pane close") for call in calls), calls)
 
     def test_spawn_creates_no_pane_on_any_bootstrap_mismatch(self):
         scenarios = {

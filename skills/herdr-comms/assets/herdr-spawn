@@ -110,13 +110,17 @@ provider_session_id="$(jq -r '.provider_session_id // empty' <<<"$bootstrap_outp
 # Resume the exact verified provider session; never start a fresh unverified one.
 resumed=("$1" "--resume" "$provider_session_id" "${@:2}")
 
+# The tab is created at the receipt-verified cwd; that is the sole cwd anchor.
 out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"
 tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
-root_pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
 [[ -n "$tab" ]] || exit 1
 
-herdr agent start "$name" --tab "$tab" --cwd "$cwd" --no-focus -- "${resumed[@]}" >/dev/null
-[[ -z "$root_pane" ]] || herdr pane close "$root_pane" >/dev/null 2>&1
+# herdr 0.7.5 `agent start --tab` adopts the tab's existing root pane in place
+# with no topology change: no split, no phantom root pane, so the old
+# split-tab-close hack (`pane close` on the leftover pane) is gone. The 0.7.5
+# new_cwd=follow default inherits the tab pane's cwd, which is the
+# receipt-verified cwd above, so the old duplicated `--cwd` is dropped too.
+herdr agent start "$name" --tab "$tab" --no-focus -- "${resumed[@]}" >/dev/null
 
 pane=""
 for _ in $(seq 1 10); do
@@ -127,12 +131,15 @@ done
 [[ -n "$pane" ]] || exit 1
 
 # Bootstrap is already verified. This loop only dismisses the one-time trusted-folder
-# dialog that a fresh terminal pane can show; it never infers readiness from pane text.
+# dialog that Claude onboarding still shows on a fresh pane; it never infers
+# readiness from pane text. 0.7.5 grammar: accept the dialog with a literal
+# `agent send-keys` Enter, never an atomic `agent prompt`, which would submit
+# text into the modal.
 retries="${HERDR_SPAWN_BOOTSTRAP_RETRIES:-10}"
 for _ in $(seq 1 "$retries"); do
   text="$(herdr pane read "$pane" --source visible --lines 50 2>/dev/null)"
   if grep -qiE 'Quick safety check|trust this folder' <<<"$text"; then
-    herdr pane run "$pane" "" >/dev/null 2>&1
+    herdr agent send-keys "$pane" Enter >/dev/null 2>&1 || true
     sleep 1
     continue
   fi
