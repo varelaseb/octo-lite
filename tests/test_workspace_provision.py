@@ -380,6 +380,20 @@ class LaneProvisionTests(unittest.TestCase):
         numeric_offset = dict(result.record, provisioned_at="2026-07-21T00:00:00+00:00")
         validate_provision_record(numeric_offset)
 
+    # REG-11 (re-review finding, launch.py:503/580): RFC3339 section 5.6
+    # explicitly permits a leap-second value (seconds field 60), but
+    # `datetime.fromisoformat` raises on second=60, so a pure fromisoformat
+    # path false-rejects a valid RFC3339 leap-second timestamp. Both the Z
+    # form and the numeric-offset form must be ACCEPTED.
+    def test_record_schema_accepts_rfc3339_leap_second(self) -> None:
+        result = self.provision()
+
+        zulu_leap = dict(result.record, provisioned_at="1990-12-31T23:59:60Z")
+        validate_provision_record(zulu_leap)
+
+        numeric_offset_leap = dict(result.record, provisioned_at="1990-12-31T23:59:60+00:00")
+        validate_provision_record(numeric_offset_leap)
+
     # RED-6
     def test_lane_invocation_env_seam_frozen(self) -> None:
         result = self.provision()
