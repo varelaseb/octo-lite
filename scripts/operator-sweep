@@ -549,15 +549,29 @@ def operator_waits(waits_root: Path, stream_name: str) -> list[dict]:
 def operator_gate_lines(stream_dirs: list[Path], facts: dict, waits_root: Path) -> list[str]:
     """Loud, unsuppressible operator-gate block (sweep-operator-gate-loud). Source
     A is every carried issue in an operator-gated Linear state; Source B is every
-    open unanswered operator ask. Emitted at the very top of the sweep delta before
-    all other content, and never silenced by any suppression class."""
+    open unanswered operator ask; a carried issue whose state read FAILED emits a
+    loud state-unknown line (sweep-operator-gate-read-failure, TUR-505 A4,
+    rulings 39/40) so a read flake can never silently drop a live gate (live
+    regression: sweep 58edf987 dropped TUR-487 In Staging on one rc=1 flake).
+    Emitted at the very top of the sweep delta before all other content, included
+    in the edge-trigger gate-set fingerprint, and never silenced by any
+    suppression class."""
     lines: list[str] = []
+    unknown_seen: set[str] = set()
     for stream_dir in stream_dirs:
         stream_facts = facts.get(stream_dir.name)
         if isinstance(stream_facts, dict):
             for identifier, state in _gated_carried_states(stream_facts):
                 action = OPERATOR_GATE_ACTION.get(state, "review and act")
                 lines.append(f"OPERATOR ACTION NEEDED: {identifier} {state} - {action}")
+            for entry in stream_facts.get("carried_read_errors") or []:
+                issue = str(entry.get("issue") or "")
+                if not issue or issue.upper() in unknown_seen:
+                    continue  # deduped across streams by issue id
+                unknown_seen.add(issue.upper())
+                lines.append(
+                    f"OPERATOR ACTION NEEDED: {issue} state-unknown (read failed) - verify manually"
+                )
         for wait in operator_waits(waits_root, stream_dir.name):
             lines.append(f"OPERATOR ACTION NEEDED: {stream_dir.name} asks: {wait['ask']}")
     return lines
@@ -581,10 +595,11 @@ def _stream_gate_reason(stream_dir: Path, stream_facts, waits_root: Path) -> str
 
 
 def degraded_read_notes(stream_dirs: list[Path], facts: dict) -> list[str]:
-    """Distinct, clearly-labeled degraded-read notes (sweep-graceful-degradation):
-    one per carried issue whose Linear read failed and was skipped. Deliberately NOT
-    an `OPERATOR ACTION NEEDED` gate line: a transient read failure must never be
-    mistaken for an operator gate."""
+    """Distinct, clearly-labeled degraded-read DIAGNOSTIC notes (sweep-graceful-
+    degradation): one per carried issue whose Linear read failed and was skipped.
+    The note itself is not a gate line; the LOUD gate surface for the same failure
+    is the state-unknown line operator_gate_lines emits (TUR-505 A4, rulings
+    39/40), so the failure is diagnosed here and gated there, never silent."""
     notes: list[str] = []
     for stream_dir in stream_dirs:
         stream_facts = facts.get(stream_dir.name)

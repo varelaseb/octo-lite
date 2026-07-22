@@ -3534,9 +3534,11 @@ FAKE_LINEAR_FAILS_FOR_ISSUE = (
     "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
     'issue=""\n'
     'for a in "$@"; do case "$a" in TUR-*|OCTO-*) issue="$a" ;; esac; done\n'
+    # Ruling-93 fidelity: the real linear CLI fails a read with rc=1, EMPTY
+    # stdout, and the error on stderr; the fake mirrors that exact shape.
     'if [[ "$issue" == "${LINEAR_FAIL_ISSUE:-}" ]]; then\n'
     '  echo "linear: read failed for $issue" >&2\n'
-    "  exit 7\n"
+    "  exit 1\n"
     "fi\n"
     'state="$(python3 -c \'import json,os,sys; print(json.load(open(os.environ[\"LINEAR_STATE_MAP\"])).get(sys.argv[1], \"Todo\"))\' "$issue")"\n'
     "python3 -c 'import json,sys; print(json.dumps({\"identifier\": sys.argv[1], \"state\": {\"name\": sys.argv[2]}, \"updatedAt\": \"2026-07-19T00:00:00Z\"}))' \"$issue\" \"$state\"\n"
@@ -3577,8 +3579,9 @@ class SweepGracefulDegradationTests(unittest.TestCase):
 
     def test_first_carried_read_failure_never_crashes_and_other_issue_surfaces(self) -> None:
         # Two carried issues; the FIRST (primary) read FAILS. The sweep must still
-        # exit 0, still surface the second issue's operator-gate line, and skip +
-        # note the failing one - never emit a gate line for the failing read.
+        # exit 0, still surface the second issue's operator-gate line, and note the
+        # failing one. TUR-505 A4 (rulings 39/40): the failing read now ALSO emits
+        # a loud state-unknown gate line, never a silent drop.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
@@ -3602,10 +3605,14 @@ class SweepGracefulDegradationTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             # The good carried issue still surfaces loudly.
             self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
-            # The failing issue was attempted (read) and then skipped + noted.
+            # The failing issue was attempted (read), noted, and surfaces LOUDLY
+            # as state-unknown in the gate block (A4 fail-loud law).
             calls = log.read_text().splitlines()
             self.assertTrue(any("TUR-BAD" in line and line.startswith("linear ") for line in calls))
-            self.assertNotIn("OPERATOR ACTION NEEDED: TUR-BAD", result.stdout)
+            self.assertIn(
+                "OPERATOR ACTION NEEDED: TUR-BAD state-unknown (read failed) - verify manually",
+                result.stdout,
+            )
             payload = _sweep_stdout_json(result.stdout)
             self.assertTrue(
                 any("TUR-BAD" in note for note in payload.get("degraded_reads", [])),
@@ -3615,9 +3622,10 @@ class SweepGracefulDegradationTests(unittest.TestCase):
                 all("OPERATOR ACTION NEEDED" not in note for note in payload.get("degraded_reads", [])),
             )
 
-    def test_only_carried_read_failure_completes_cleanly_with_no_gate_line(self) -> None:
+    def test_only_carried_read_failure_completes_cleanly_with_loud_state_unknown_line(self) -> None:
         # The ONLY carried issue's read fails: the sweep still completes cleanly
-        # (exit 0), surfaces NO gate line for it, and notes the degraded read.
+        # (exit 0), notes the degraded read, and (TUR-505 A4) surfaces the loud
+        # state-unknown gate line instead of silently dropping the gate.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
@@ -3638,12 +3646,177 @@ class SweepGracefulDegradationTests(unittest.TestCase):
             command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
             result = subprocess.run(command, env=env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertNotIn("OPERATOR ACTION NEEDED", result.stdout)
+            self.assertIn(
+                "OPERATOR ACTION NEEDED: TUR-BAD state-unknown (read failed) - verify manually",
+                result.stdout,
+            )
             payload = _sweep_stdout_json(result.stdout)
             self.assertTrue(
                 any("TUR-BAD" in note for note in payload.get("degraded_reads", [])),
                 payload,
             )
+
+
+class SweepReadFailureFailLoudTests(unittest.TestCase):
+    """TUR-505 A4 (rulings 39/40, sweep 58edf987): a carried-issue read failure
+    must NEVER silently drop a potential operator gate. Any carried issue whose
+    Linear state read fails emits a LOUD line in the gate block:
+    'OPERATOR ACTION NEEDED: <id> state-unknown (read failed) - verify manually'.
+    The diagnostics JSON note (degraded_reads) stays; healthy reads unchanged."""
+
+    STATE_UNKNOWN_487 = (
+        "OPERATOR ACTION NEEDED: TUR-487 state-unknown (read failed) - verify manually"
+    )
+
+    def _write_owner(self, base: Path, control: Path) -> Path:
+        owner = base / "operator-owner.toml"
+        owner.write_text(
+            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+        )
+        return owner
+
+    def _fake_bins(self, base: Path) -> tuple[Path, Path, dict]:
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        log = base / "calls.jsonl"
+        (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+        (fake_bin / "operator-say").write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
+        )
+        (fake_bin / "linear").write_text(FAKE_LINEAR_FAILS_FOR_ISSUE)
+        for name in ("claude", "operator-say", "linear"):
+            (fake_bin / name).chmod(0o755)
+        env = dict(
+            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+        )
+        return fake_bin, log, env
+
+    def test_a4a_envelope_declared_read_failure_emits_loud_line_on_changed_and_noop_paths(self) -> None:
+        # Exact 58edf987 shape: an ENVELOPE-declared carried issue (TUR-487,
+        # actually In Staging) whose linear read flakes rc=1 (empty stdout,
+        # stderr error). Pre-fix: graceful degradation skipped it with a JSON
+        # carried_read_errors note ONLY and the live gate line silently
+        # vanished. Post-fix: the loud state-unknown line is in the gate block
+        # on the CHANGED path (stdout + delta prepend via operator-say) AND on
+        # the unchanged-fingerprint NOOP path.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-envelope"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: shipping\n")
+            (stream / "shaping-review-envelope.toml").write_text(
+                'schema_version = 1\nissue = "TUR-487"\npurpose = "shaping-review"\n'
+            )
+            self.assertFalse((stream / "sources.toml").exists())
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["LINEAR_FAIL_ISSUE"] = "TUR-487"
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+
+            changed = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, changed.returncode, changed.stderr)
+            self.assertTrue(_sweep_stdout_json(changed.stdout)["changed"])
+            # Loud line on the changed path: stdout AND the delivered delta
+            # (gate lines prepended to the result artifact, echoed to the log).
+            self.assertIn(self.STATE_UNKNOWN_487, changed.stdout)
+            self.assertIn(self.STATE_UNKNOWN_487, log.read_text())
+            # The diagnostics note is kept alongside the loud line.
+            self.assertTrue(
+                any("TUR-487" in note for note in _sweep_stdout_json(changed.stdout).get("degraded_reads", [])),
+            )
+
+            noop = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, noop.returncode, noop.stderr)
+            payload = _sweep_stdout_json(noop.stdout)
+            self.assertFalse(payload["changed"])
+            # Unsuppressible on the noop path too, and part of the gate set.
+            self.assertIn(self.STATE_UNKNOWN_487, noop.stdout)
+            self.assertIn(self.STATE_UNKNOWN_487, payload.get("operator_gate", []))
+
+    def test_a4b_healthy_gated_read_emits_normal_line_and_no_state_unknown_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-healthy"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
+            self.assertNotIn("state-unknown", result.stdout)
+            self.assertNotIn("state-unknown", log.read_text())
+
+    def test_a4c_mixed_stream_surfaces_both_healthy_gate_and_state_unknown_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-mixed"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: ready\n")
+            (stream / "sources.toml").write_text(
+                'schema_version = 1\n\n[linear]\nissues = ["TUR-479", "TUR-487"]\n'
+            )
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["LINEAR_FAIL_ISSUE"] = "TUR-487"
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
+            self.assertIn(self.STATE_UNKNOWN_487, result.stdout)
+
+    def test_a4c2_same_failing_issue_across_streams_dedupes_to_one_line(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            for name in ("tf-one", "tf-two"):
+                stream = control / "streams" / name
+                stream.mkdir(parents=True)
+                (stream / "status.md").write_text("Outcome: ready\n")
+                (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-487"\n')
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            env["LINEAR_FAIL_ISSUE"] = "TUR-487"
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            changed = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, changed.returncode, changed.stderr)
+            # One loud line total on the changed-path stdout (deduped by issue id).
+            self.assertEqual(1, changed.stdout.splitlines().count(self.STATE_UNKNOWN_487))
+            noop = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, noop.returncode, noop.stderr)
+            payload = _sweep_stdout_json(noop.stdout)
+            self.assertFalse(payload["changed"])
+            gate = payload.get("operator_gate", [])
+            self.assertEqual(1, gate.count(self.STATE_UNKNOWN_487), gate)
 
 
 class SweepDeferredReconcileTests(unittest.TestCase):
@@ -4527,7 +4700,10 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
             'if [[ "$gate" == "1" ]]; then printf \'gate-pane-ping\\n\' >>"$CALL_LOG"; exit "${GATE_SAY_RC:-0}"; fi\n'
             'exit 0\n'
         )
-        (fake_bin / "linear").write_text(FAKE_PER_ISSUE_LINEAR)
+        # The fail-capable per-issue fake behaves exactly like FAKE_PER_ISSUE_LINEAR
+        # while LINEAR_FAIL_ISSUE is unset; the A4 edge test flips one issue's read
+        # to the real-CLI failure shape (rc=1, empty stdout, stderr error).
+        (fake_bin / "linear").write_text(FAKE_LINEAR_FAILS_FOR_ISSUE)
         (fake_bin / "gh").write_text(
             "#!/usr/bin/env bash\nprintf 'gh %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
             "cat <<'JSON'\n"
@@ -4718,6 +4894,57 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
             fourth = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
             self.assertFalse(_sweep_stdout_json(fourth.stdout)["changed"])
             self.assertEqual(3, self._ping_count(log))
+
+    def test_a4d_read_failure_line_participates_in_gate_set_fingerprint(self) -> None:
+        # TUR-505 A4: the state-unknown read-failure line is a full member of the
+        # edge-trigger gate SET: its APPEARANCE pings the operator pane once, an
+        # unchanged failing set does NOT re-ping, and its RESOLUTION (read heals,
+        # no gate left) clears the marker so the next gate re-pings (re-arm).
+        state_unknown = (
+            "OPERATOR ACTION NEEDED: TUR-479 state-unknown (read failed) - verify manually"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            self._stream(control)
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base)
+            state_map = base / "state-map.json"
+            # When the read heals, TUR-479 is in a NON-gated state: the gate set
+            # empties, proving resolution (not substitution by a normal gate line).
+            state_map.write_text(json.dumps({"TUR-479": "Live"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = self._sweep_cmd(control, owner, repo)
+            marker = control / self.MARKER_NAME
+            fail_env = dict(env, LINEAR_FAIL_ISSUE="TUR-479")
+
+            # Appearance: the failing read's state-unknown line settles to noop
+            # and pings the pane exactly once (it IS in the fingerprint).
+            settled = self._run_to_noop(command, fail_env)
+            self.assertIn(state_unknown, settled.stdout)
+            self.assertIn(state_unknown, _sweep_stdout_json(settled.stdout).get("operator_gate", []))
+            self.assertEqual(1, self._ping_count(log))
+            self.assertTrue(marker.is_file())
+
+            # Unchanged failing set: still loud on stdout, NO re-ping.
+            repeat = subprocess.run(command, env=fail_env, check=True, capture_output=True, text=True)
+            self.assertFalse(_sweep_stdout_json(repeat.stdout)["changed"])
+            self.assertIn(state_unknown, repeat.stdout)
+            self.assertEqual(1, self._ping_count(log))
+
+            # Resolution: the read heals (non-gated state) -> empty gate set,
+            # marker unlinked (re-arm), no new ping while clear.
+            healed = self._run_to_noop(command, env)
+            self.assertNotIn("OPERATOR ACTION NEEDED", healed.stdout)
+            self.assertFalse(marker.is_file())
+            self.assertEqual(1, self._ping_count(log))
+
+            # The read fails again: the re-armed edge pings anew.
+            back = self._run_to_noop(command, fail_env)
+            self.assertIn(state_unknown, back.stdout)
+            self.assertEqual(2, self._ping_count(log))
 
 
 class WorkspaceAdmitProvisionCliTests(unittest.TestCase):
