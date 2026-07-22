@@ -24,7 +24,11 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 FAKE_BOOTSTRAP_CLAUDE = r"""#!/usr/bin/env bash
 printf 'claude %s\n' "$*" >>"$CALL_LOG"
 prompt="$(cat)"
-receipt_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*receipt\.toml' | head -1)"
+# Extract the absolute receipt path from the prose prompt. The path may contain
+# spaces (e.g. an XDG_STATE_HOME with a space), so anchor on the known
+# receipt.toml suffix and the trailing comma delimiter rather than stopping at
+# the first space.
+receipt_path="$(printf '%s' "$prompt" | python3 -c 'import re,sys; m=re.search(r"(/.*?receipt\.toml)", sys.stdin.read()); print(m.group(1) if m else "")')"
 args=("$@")
 session=""
 for i in "${!args[@]}"; do
@@ -79,7 +83,7 @@ class HandoffMetaOperatorTests(unittest.TestCase):
     CURRENT_OWNER_SID = "sid-current-owner-0001"
     CURRENT_ROUTE = "operator-current"
 
-    def environment(self, td, *, revision=3, seed_owner=True, seed_handoff=True):
+    def environment(self, td, *, revision=3, seed_owner=True, seed_handoff=True, state_subdir="state"):
         base = Path(td)
         repo = base / "repo"
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -103,7 +107,7 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             (fake_bin / name).write_text(body)
             (fake_bin / name).chmod(0o755)
 
-        state_home = base / "state"
+        state_home = base / state_subdir
         state_root = state_home / "octo-lite"
         control_dir = state_root / "operators" / self.CURRENT_ROUTE
         owner_path = state_root / "operator-owner.toml"
@@ -285,6 +289,34 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             self.assertEqual(ctx["revision"] + 1, owner["handoff_revision"])
             self.assertEqual(str(ctx["control_dir"]), owner["control_dir"])
 
+    def test_emitted_commands_survive_paths_with_spaces(self) -> None:
+        # An XDG_STATE_HOME whose path contains a space makes the owner file,
+        # successor dir, and successor-readiness paths all contain a space. The
+        # emitted owner-transfer line must be a single runnable command whose
+        # space-containing values survive shell word-splitting verbatim.
+        with tempfile.TemporaryDirectory() as td:
+            ctx = self.environment(td, state_subdir="state dir with spaces")
+            result = self.run_launcher(ctx)
+            self.assertEqual(0, result.returncode, result.stderr)
+            line = self.owner_transfer_line(result.stdout)
+            self.assertIsNotNone(line, result.stdout)
+
+            tokens = shlex.split(line)
+            transfers = [
+                i for i in range(len(tokens) - 1)
+                if tokens[i].endswith("octo-control") and tokens[i + 1] == "owner-transfer"
+            ]
+            self.assertEqual(1, len(transfers), line)
+            # 2 leading tokens (octo-control owner-transfer) + 11 flags + 11 values.
+            self.assertEqual(2 + 22, len(tokens), tokens)
+
+            flags = self.flags(line)
+            succ = self.successor_dir(ctx)
+            self.assertIn(" ", str(ctx["owner_path"]))
+            self.assertEqual(str(ctx["owner_path"]), flags["--owner-file"])
+            self.assertEqual(str(ctx["handoff_doc"]), flags["--handoff"])
+            self.assertEqual(str(succ / "successor-ready.toml"), flags["--successor-readiness"])
+
     def test_refuses_when_owner_file_absent(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ctx = self.environment(td, seed_owner=False)
@@ -299,7 +331,8 @@ class HandoffMetaOperatorTests(unittest.TestCase):
                 ],
                 env=ctx["env"], capture_output=True, text=True,
             )
-            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(65, result.returncode, result.stderr)
+            self.assertIn("no owner record", result.stderr)
             self.assertFalse(self.successor_dir(ctx).exists())
 
     def test_refuses_when_handoff_basename_not_next_revision(self) -> None:
@@ -318,7 +351,8 @@ class HandoffMetaOperatorTests(unittest.TestCase):
                 ],
                 env=ctx["env"], capture_output=True, text=True,
             )
-            self.assertNotEqual(0, result.returncode, result.stdout)
+            self.assertEqual(65, result.returncode, result.stdout)
+            self.assertIn("basename must be", result.stderr)
             self.assertFalse(self.successor_dir(ctx).exists())
 
     def test_refuses_when_handoff_correct_basename_but_wrong_dir(self) -> None:
@@ -338,7 +372,8 @@ class HandoffMetaOperatorTests(unittest.TestCase):
                 ],
                 env=ctx["env"], capture_output=True, text=True,
             )
-            self.assertNotEqual(0, result.returncode, result.stdout)
+            self.assertEqual(65, result.returncode, result.stdout)
+            self.assertIn("must live under", result.stderr)
             self.assertFalse(self.successor_dir(ctx).exists())
 
     def test_dry_run_prints_receipt_and_makes_no_durable_mutation(self) -> None:
