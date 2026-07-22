@@ -394,6 +394,35 @@ class LaneProvisionTests(unittest.TestCase):
         numeric_offset_leap = dict(result.record, provisioned_at="1990-12-31T23:59:60+00:00")
         validate_provision_record(numeric_offset_leap)
 
+    # REG-12 (re-review finding, launch.py:506/579): the offset portion of
+    # _RFC3339_DATE_TIME_RE was loosely bound ([+-]\d{2}:\d{2}), so an
+    # out-of-range offset (minute >= 60 or hour >= 24) matched the regex and
+    # was then silently NORMALIZED by `datetime.fromisoformat`, which accepts
+    # and folds out-of-range offset components instead of rejecting them.
+    # RFC3339 section 5.6 bounds the offset hour to 00-23 and offset minute
+    # to 00-59; both invalid forms below must be REJECTED, and in-range
+    # numeric offsets (including the boundary values 23 and 59) must still
+    # be ACCEPTED.
+    def test_record_schema_rejects_out_of_range_offset(self) -> None:
+        result = self.provision()
+
+        invalid_offset_minute = dict(result.record, provisioned_at="2026-07-21T00:00:00+00:60")
+        with self.assertRaises(GateError):
+            validate_provision_record(invalid_offset_minute)
+
+        invalid_offset_hour = dict(result.record, provisioned_at="2026-07-21T00:00:00+24:00")
+        with self.assertRaises(GateError):
+            validate_provision_record(invalid_offset_hour)
+
+        boundary_offset = dict(result.record, provisioned_at="2026-07-21T00:00:00+23:59")
+        validate_provision_record(boundary_offset)
+
+        negative_offset = dict(result.record, provisioned_at="2026-07-21T00:00:00-08:00")
+        validate_provision_record(negative_offset)
+
+        half_hour_offset = dict(result.record, provisioned_at="2026-07-21T00:00:00+05:30")
+        validate_provision_record(half_hour_offset)
+
     # RED-6
     def test_lane_invocation_env_seam_frozen(self) -> None:
         result = self.provision()
