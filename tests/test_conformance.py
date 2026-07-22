@@ -113,7 +113,9 @@ class CutoverConformanceTests(unittest.TestCase):
         text = (ROOT / "skills/herdr-comms/SKILL.md").read_text()
         self.assertIn("leaving the message pending", text)
         self.assertIn("Queued and pending are not acknowledged or", text)
-        self.assertIn("never re-pastes text", text)
+        self.assertIn("re-fires the same atomic prompt", text)
+        self.assertIn("same message id", text)
+        self.assertIn("never double-submits", text)
 
     def test_qa_evidence_capture_skill_states_screenshot_default_wiring(self) -> None:
         text = (ROOT / "skills/qa-evidence-capture/SKILL.md").read_text()

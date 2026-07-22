@@ -452,6 +452,46 @@ exec {real_mv} "$@"
                 self.assertEqual("queued", tomllib.load(handle)["status"])
             self.assertTrue(inbox_item.is_file())
 
+    def test_drain_re_fires_the_full_multi_line_body_and_keeps_state_faithful(self):
+        # TUR-505 review round 1: herdr-drain must parse fields like herdr-ack
+        # (NUL-delimited key/value), never a positional line readarray. A 3-line
+        # body otherwise shifts status out of position, drain fires only the
+        # first line, and the rewritten state file corrupts message/created_at.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self.environment(td, "ready")
+            body = "line one: proceed\nline two: it's ready\nline three: ship"
+            queue = subprocess.run(
+                ["bash", str(SAY), "--kind", "command", "agent1", body],
+                env=dict(env, FAKE_PROMPT_FAIL="1"),
+                capture_output=True, text=True,
+            )
+            self.assertEqual(75, queue.returncode)
+            states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+            message_id = states[0].stem
+            with states[0].open("rb") as handle:
+                stored = tomllib.load(handle)
+            self.assertEqual("pending", stored["status"])
+            created_at = stored["created_at"]
+
+            log.write_text("")
+            capture = Path(td) / "prompt-capture"
+            drain_env = dict(env, FAKE_PROMPT_CAPTURE=str(capture))
+            result = subprocess.run(["bash", str(DRAIN), "agent1"], env=drain_env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(["prompt"], log.read_text().splitlines())
+            # The atomic prompt re-fires the FULL 3-line body, not line one only.
+            sent = capture.read_text()
+            self.assertTrue(sent.startswith(body), sent)
+            self.assertIn("line two: it's ready", sent)
+            self.assertIn("line three: ship", sent)
+            # State stays faithful: still pending, body and created_at intact.
+            self.assertFalse((Path(td) / "state/octo-lite/inbox/agent1" / message_id).exists())
+            with states[0].open("rb") as handle:
+                rewritten = tomllib.load(handle)
+            self.assertEqual("pending", rewritten["status"])
+            self.assertEqual(body, rewritten["message"])
+            self.assertEqual(created_at, rewritten["created_at"])
+
     def test_drain_locks_each_queued_item_to_prevent_duplicate_delivery(self):
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
@@ -606,9 +646,12 @@ exec {real_mv} "$@"
             self.assertEqual("pending", stored["status"])
             self.assertNotIn("Acknowledge with", stored["message"])
 
-    def test_send_queues_on_transport_failure_without_recording_false_pending(self):
-        # A hard atomic-prompt transport failure (not a modal) with no prior attempt
-        # leaves the message queued and retryable, never a false pending.
+    def test_send_defers_to_pending_and_stays_retryable_on_hard_transport_failure(self):
+        # A hard atomic-prompt failure (not a modal) is still an attempted
+        # transport: the prompt may have landed server-side despite the reported
+        # stall, so 0.7.5 records pending (never delivered, never a stale queued)
+        # and keeps the inbox retry item so herdr-drain re-fires the same atomic
+        # prompt, which never double-submits partially-pasted text.
         with tempfile.TemporaryDirectory() as td:
             env, log = self.environment(td, "ready")
             env["FAKE_PROMPT_FAIL"] = "1"

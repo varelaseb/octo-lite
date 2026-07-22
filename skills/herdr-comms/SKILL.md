@@ -21,15 +21,17 @@ herdr-say [--kind info|command|ruling|ownership|question] \
   [--artifact REF] TARGET MESSAGE
 ```
 
-Never hand-run raw send plus Enter. `herdr-say` reads the pane only to detect a
-modal, never to infer composer state, consumption, or delivery. At a safe
-prompt it pastes and presses Enter, leaving the message pending. At a modal it
-queues immediately and returns 75. Queued and pending are not acknowledged or
-completed.
+Never hand-run raw transport. `herdr-say` fires one atomic agent prompt,
+paste plus submit in one server-owned op, leaving the message pending.
+Multi-line bodies round-trip literally; the TUR-485 single-line discipline is
+retired. `herdr-say` reads the pane only to detect a modal, never to infer
+composer state, consumption, or delivery. Modal-safe: an open dialog defers,
+queues immediately, returns 75, never force-submits.
+Queued and pending are not acknowledged or completed.
 
-On every wake, run `herdr-drain <own-agent-name>`. It retries transport only
-when the prompt is safe, and for a pending message it only presses Enter,
-never re-pastes text that already landed.
+On every wake, run `herdr-drain <own-agent-name>`. It fires only when the
+prompt is safe, and a pending retry re-fires the same atomic prompt with the
+same message id, which never double-submits partially-pasted text.
 
 Commands, rulings, ownership transfers, and blocking questions require:
 

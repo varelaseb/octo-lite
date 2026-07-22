@@ -35,17 +35,28 @@ for queued in "$inbox"/*; do
     exec 9>&-
     continue
   fi
-  readarray -t values < <(python3 - "$state" <<'PY'
+  # TUR-505: a message body may be multi-line (herdr 0.7.5 atomic prompt sends
+  # arbitrary multi-line text). A positional readarray over line-delimited
+  # fields would let a message line masquerade as the status field, so drain
+  # would fire only the first line and corrupt the rewritten metadata. Read
+  # each field via NUL-delimited pairs, exactly like herdr-ack.
+  declare -A fields=()
+  while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+    fields["$key"]="$value"
+  done < <(python3 - "$state" <<'PY'
 import sys, tomllib
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
 for key in ('target', 'kind', 'artifact', 'message', 'created_at', 'status'):
-    print(data.get(key, ''))
+    sys.stdout.write(key)
+    sys.stdout.write('\0')
+    sys.stdout.write(str(data.get(key, '')))
+    sys.stdout.write('\0')
 PY
 )
   suffix=""
-  if [[ "${values[1]}" != "info" ]]; then
-    suffix=" [msg:$id kind:${values[1]}] Acknowledge with: herdr-ack $id acknowledged --by $target"
+  if [[ "${fields[kind]}" != "info" ]]; then
+    suffix=" [msg:$id kind:${fields[kind]}] Acknowledge with: herdr-ack $id acknowledged --by $target"
   fi
 
   clear_retry() {
@@ -59,12 +70,12 @@ PY
     {
       echo 'schema_version = 1'
       echo "message_id = $(quote "$id")"
-      echo "target = $(quote "${values[0]}")"
-      echo "kind = $(quote "${values[1]}")"
+      echo "target = $(quote "${fields[target]}")"
+      echo "kind = $(quote "${fields[kind]}")"
       echo "status = $(quote pending)"
-      echo "artifact = $(quote "${values[2]}")"
-      echo "message = $(quote "${values[3]}")"
-      echo "created_at = $(quote "${values[4]}")"
+      echo "artifact = $(quote "${fields[artifact]}")"
+      echo "message = $(quote "${fields[message]}")"
+      echo "created_at = $(quote "${fields[created_at]}")"
     } >"$temporary"
     mv "$temporary" "$state"
   }
@@ -76,19 +87,19 @@ PY
     exit 75
   fi
 
-  if [[ "${values[5]}" == "pending" ]]; then
+  if [[ "${fields[status]}" == "pending" ]]; then
     # herdr 0.7.5: an earlier atomic prompt may not have landed. Retry the exact
     # same atomic prompt (paste + submit in one op); the atomic op never
     # double-submits partially-pasted text. Stays pending, in the inbox, for the
     # next retry unless this attempt's own atomic prompt succeeds.
-    if herdr agent prompt "$pane" "${values[3]}$suffix" >/dev/null 2>&1; then
+    if herdr agent prompt "$pane" "${fields[message]}$suffix" >/dev/null 2>&1; then
       clear_retry
     fi
   else
     # A queued (never-transported) message: fire the atomic prompt now. Persist
     # pending before dropping the retry item so a later herdr-ack sees pending,
     # not the stale queued status.
-    if herdr agent prompt "$pane" "${values[3]}$suffix" >/dev/null 2>&1; then
+    if herdr agent prompt "$pane" "${fields[message]}$suffix" >/dev/null 2>&1; then
       write_pending
       clear_retry
     fi
