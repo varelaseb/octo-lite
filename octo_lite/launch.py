@@ -454,6 +454,75 @@ def _prepare_worktree(
         raise GateError("target AGENTS.md missing")
 
 
+# TUR-447 c4 F1a (workspace-cleanup-clean-abort, launch-provision-record):
+# the unique provision-instance stamp. Provisioning writes a uuid4 instance id
+# into the worktree's own worktree-scoped git config under this key (enabling
+# extensions.worktreeConfig so the stamp lives in the per-worktree
+# config.worktree file, which git removes with the worktree), and into the
+# schema_version 2 provision record. Ownership then binds to the provision
+# INSTANCE itself: a hand-recreated worktree at the same path, repo, branch,
+# and HEAD carries no stamp, so no stale record or journal can re-authorize
+# deleting it.
+PROVISION_INSTANCE_CONFIG_KEY = "octo.instanceId"
+
+# Sentinel distinct from "stamp absent" (None): the stamp could not be read at
+# all. Fail-closed everywhere: unreadable never equals any expected id and
+# never counts as absent, so an unreadable stamp always preserves.
+_INSTANCE_STAMP_UNREADABLE = object()
+
+
+def _stamp_worktree_instance(worktree: Path, instance_id: str) -> None:
+    """Write the provision-instance id into the live worktree's worktree-scoped
+    git config. extensions.worktreeConfig is enabled first so the stamp lands in
+    the per-worktree config.worktree file, never the shared repo config."""
+    try:
+        subprocess.run(
+            ["git", "-C", str(worktree), "config", "extensions.worktreeConfig", "true"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree), "config", "--worktree", PROVISION_INSTANCE_CONFIG_KEY, instance_id],
+            check=True, capture_output=True, text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise GateError("worktree instance stamp failed") from error
+
+
+def _worktree_instance_stamp(worktree: Path) -> Any:
+    """Read the live worktree's provision-instance stamp: the stamp string when
+    present, None when genuinely absent, or the unreadable sentinel on any
+    other failure. In a repo without extensions.worktreeConfig no
+    worktree-scoped stamp can exist (git refuses `config --worktree` outright
+    in a multi-worktree repo there), so an absent or false extension reads as
+    genuinely unstamped, the legacy v1 shape."""
+    try:
+        extension = subprocess.run(
+            ["git", "-C", str(worktree), "config", "--bool", "extensions.worktreeConfig"],
+            capture_output=True, text=True,
+        )
+    except OSError:
+        return _INSTANCE_STAMP_UNREADABLE
+    if extension.returncode == 1:
+        return None
+    if extension.returncode != 0:
+        return _INSTANCE_STAMP_UNREADABLE
+    if extension.stdout.strip() != "true":
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(worktree), "config", "--worktree", "--get", PROVISION_INSTANCE_CONFIG_KEY],
+            capture_output=True, text=True,
+        )
+    except OSError:
+        return _INSTANCE_STAMP_UNREADABLE
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        return _INSTANCE_STAMP_UNREADABLE
+    value = result.stdout.strip()
+    return value if value else _INSTANCE_STAMP_UNREADABLE
+
+
 def _owning_provision_record(worktree: Path) -> Path | None:
     """provision-record-guard (TUR-447 d1, workspace-cleanup-clean-abort,
     launch-provision-record-schema): prove workspace-admit created and owns THIS
@@ -462,7 +531,7 @@ def _owning_provision_record(worktree: Path) -> Path | None:
     proven only by a host-provision record at a host-known location, the
     OCTO_PROVISION_RECORD seam path or a workspace-admit-written
     .octo-provisions record beside the worktree, that passes the frozen schema
-    validation (source host-provisioned-worktree, schema_version 1, via
+    validation (source host-provisioned-worktree, schema_version 1 or 2, via
     validate_provision_record) and whose record.worktree is this worktree.
 
     TUR-447 cycle-2 P1-2b (provision-instance binding): a pathname match alone
@@ -472,7 +541,17 @@ def _owning_provision_record(worktree: Path) -> Path | None:
     equal the record's branch. A stale record plus a hand-recreated worktree at
     the same conventional path (a different branch, a different repo, or a
     detached HEAD) therefore proves nothing. Anything unreadable, malformed,
-    mismatched, or unprovable stays None and the worktree is preserved."""
+    mismatched, or unprovable stays None and the worktree is preserved.
+
+    TUR-447 c4 F1a (provision-INSTANCE identity): path, repo, branch, and HEAD
+    together are still not the instance. A schema_version 2 record additionally
+    requires the live worktree's octo.instanceId worktree-config stamp to equal
+    record.instance_id, so a hand-recreated worktree at the same
+    path+repo+branch+HEAD (which lacks the stamp) is PRESERVED even against an
+    unretired stale record. A legacy schema_version 1 record (provisioned
+    before stamping existed) proves ownership only over a worktree with NO
+    stamp at all, preserving legacy provisioned cleanup without letting a v1
+    record claim a foreign stamped instance."""
     resolved = Path(worktree).resolve()
     target = str(resolved)
     candidates: list[Path] = []
@@ -502,6 +581,12 @@ def _owning_provision_record(worktree: Path) -> Path | None:
             continue
         if actual_branch != str(record["branch"]):
             continue
+        stamp = _worktree_instance_stamp(resolved)
+        if record["schema_version"] == 2:
+            if not isinstance(stamp, str) or stamp != str(record["instance_id"]):
+                continue
+        elif stamp is not None:
+            continue
         return path
     return None
 
@@ -511,7 +596,7 @@ def _provision_record_owns_worktree(worktree: Path) -> bool:
 
 
 def cleanup_clean_abort(
-    repo: Path, worktree: Path, expected_head: str, *, gateway_provisioned: bool = False
+    repo: Path, worktree: Path, expected_head: str, *, expected_instance_id: str | None = None
 ) -> None:
     """workspace-cleanup-clean-abort: a pass failing before its acknowledgment
     echo is verified removes its worktree on the error path only when that
@@ -522,13 +607,21 @@ def cleanup_clean_abort(
     inspection instead of being force-removed.
 
     provision-record-guard (TUR-447 d1): removal is additionally gated on proven
-    host-provision ownership. The caller either provisioned this exact worktree
-    itself in the failing flow (gateway_provisioned=True, the reconcile gateway
-    whose prepare creates its worktree at a required-absent path), or a matching
-    host-provision record must prove workspace-admit created and owns it. A
-    foreign or hand-created worktree with no such matching record is PRESERVED,
-    never force-removed, even when clean and at the exact expected head; the
-    pristine-only checks below stay as additional guards, never the sole basis.
+    host-provision ownership. Either a matching host-provision record proves
+    workspace-admit created and owns this exact worktree, or the caller passes
+    the expected provision-instance id its own provisioning stamped into the
+    worktree it created at a required-absent path (the reconcile gateway), and
+    the LIVE worktree stamp must equal that id. A foreign or hand-created
+    worktree with no such matching proof is PRESERVED, never force-removed,
+    even when clean and at the exact expected head; the pristine-only checks
+    below stay as additional guards, never the sole basis.
+
+    TUR-447 c4 F1b (bypass retired): the former gateway_provisioned boolean,
+    which skipped ownership entirely, is GONE. No ownership-free deletion path
+    remains: a gateway caller must present the exact instance id it stamped,
+    and a wrong, missing, or unreadable live stamp preserves the worktree, so
+    a stale reusable journal replayed against a later hand-recreated worktree
+    at the same path can never remove it.
 
     TUR-447 cycle-2 P1-2: ownership is bound to the provision INSTANCE, not the
     pathname (_owning_provision_record checks control_repo and branch identity
@@ -548,7 +641,14 @@ def cleanup_clean_abort(
     if worktree == repo or not worktree.is_dir():
         return
     record_path: Path | None = None
-    if not gateway_provisioned:
+    if expected_instance_id is not None:
+        # Gateway-provisioned path: the caller must present the exact instance
+        # id it stamped at creation, and the LIVE worktree stamp must equal it.
+        # Absent, unreadable, or mismatched stamps preserve (fail-closed).
+        stamp = _worktree_instance_stamp(worktree)
+        if not isinstance(stamp, str) or stamp != expected_instance_id:
+            return
+    else:
         record_path = _owning_provision_record(worktree)
         if record_path is None:
             return
@@ -610,8 +710,12 @@ _RFC3339_DATE_TIME_RE = re.compile(
     r"([Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
 )
 
-# launch-provision-record-schema: exactly these keys, no more, no fewer.
-PROVISION_RECORD_KEYS = frozenset(
+# launch-provision-record-schema: exactly these keys per version, no more, no
+# fewer. schema_version 1 is the frozen legacy shape; schema_version 2 (TUR-447
+# c4 F1a) ADDITIVELY requires instance_id, the uuid4 provision-instance id also
+# stamped into the worktree's own worktree-scoped git config. New provisions
+# write v2; v1 records stay valid so legacy provisioned cleanup keeps working.
+PROVISION_RECORD_KEYS_V1 = frozenset(
     {
         "schema_version",
         "source",
@@ -627,6 +731,7 @@ PROVISION_RECORD_KEYS = frozenset(
         "provisioned_at",
     }
 )
+PROVISION_RECORD_KEYS = PROVISION_RECORD_KEYS_V1 | {"instance_id"}
 PROVISION_RECORD_ABSOLUTE_PATH_KEYS = ("control_repo", "worktree", "worktree_root", "resolver_root")
 PROVISION_RECORD_INSTALL_CHECK_VALUES = frozenset({"clean", "drifted"})
 
@@ -652,21 +757,28 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
     wrong source value fails closed."""
     if not isinstance(record, Mapping):
         raise GateError("provision record must be an object")
+    version = record.get("schema_version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise GateError("provision record schema_version must be an integer")
+    if version not in (1, 2):
+        raise GateError("provision record schema_version must be 1 or 2")
+    expected_keys = PROVISION_RECORD_KEYS_V1 if version == 1 else PROVISION_RECORD_KEYS
     keys = set(record)
-    extra = keys - PROVISION_RECORD_KEYS
-    missing = PROVISION_RECORD_KEYS - keys
+    extra = keys - expected_keys
+    missing = expected_keys - keys
     if extra or missing:
         raise GateError(f"provision record keys invalid: extra={sorted(extra)} missing={sorted(missing)}")
-    if not isinstance(record["schema_version"], int) or isinstance(record["schema_version"], bool):
-        raise GateError("provision record schema_version must be an integer")
-    if record["schema_version"] != 1:
-        raise GateError("provision record schema_version must be 1")
     if record["source"] != PROVISION_RECORD_SOURCE:
         raise GateError("provision record source must be host-provisioned-worktree")
-    for key in PROVISION_RECORD_KEYS - {"schema_version"}:
+    for key in expected_keys - {"schema_version"}:
         value = record[key]
         if not isinstance(value, str) or not value:
             raise GateError(f"provision record field must be a nonempty string: {key}")
+    if version == 2:
+        try:
+            uuid.UUID(record["instance_id"])
+        except ValueError as error:
+            raise GateError("provision record instance_id must be a UUID") from error
     for key in PROVISION_RECORD_ABSOLUTE_PATH_KEYS:
         if not os.path.isabs(record[key]):
             raise GateError(f"provision record {key} must be an absolute path")
@@ -916,9 +1028,16 @@ def provision_lane_worktree(
             raise GateError("install check must report clean or drifted")
         owner_route = INSTALLED_SURFACE_OWNER if check_state == "drifted" else None
 
+        # TUR-447 c4 F1a: stamp THIS provision instance into the worktree's own
+        # worktree-scoped git config and bind the same uuid4 into the v2 record,
+        # so cleanup ownership binds to the instance itself, never to
+        # path/repo/branch/HEAD identity a hand-recreation can reproduce.
+        provision_instance_id = str(uuid.uuid4())
+        _stamp_worktree_instance(worktree, provision_instance_id)
+
         provisioned_at = now() if now is not None else datetime.now(timezone.utc).isoformat()
         record = {
-            "schema_version": 1,
+            "schema_version": 2,
             "source": PROVISION_RECORD_SOURCE,
             "lane": lane,
             "control_repo": str(control_repo),
@@ -930,6 +1049,7 @@ def provision_lane_worktree(
             "resolver_root": str(resolver_root),
             "install_check": check_state,
             "provisioned_at": provisioned_at,
+            "instance_id": provision_instance_id,
         }
         validate_provision_record(record)
 
@@ -1401,7 +1521,13 @@ def prepare_reconcile_launch(
         conflicts=list(resource_conflicts or []),
         provider_overloaded=provider_overloaded,
     )
+    # TUR-447 c4 F1b: the gateway created this worktree at a required-absent
+    # path; stamp THIS provision instance into it and record the id in the
+    # journal, so every later reconcile cleanup must prove the live stamp
+    # still matches before removal (no ownership-free deletion path).
+    provision_instance_id = str(uuid.uuid4())
     try:
+        _stamp_worktree_instance(worktree, provision_instance_id)
         child_workspace = _child_workspace_check(repo, worktree_root, worktree, control_head, None)
 
         base = build_launch_receipt(
@@ -1420,6 +1546,7 @@ def prepare_reconcile_launch(
         _assert_reconcile_admission(resolved.role.name, "reconcile", read_restricted)
         workspace = dict(base["workspace"])
         workspace["child_containment_verified"] = child_workspace["contained"]
+        workspace["provision_instance_id"] = provision_instance_id
         persisted_snapshot_path = journal_path.parent / "snapshot.md"
         try:
             _atomic_write(persisted_snapshot_path, snapshot_bytes.decode("utf-8"))
@@ -1472,9 +1599,11 @@ def prepare_reconcile_launch(
         # provisioning its worktree but before any acknowledgment echo could be
         # verified, so remove the worktree only while pristine at the exact
         # control head; a dirty or diverged worktree stays for inspection.
-        # gateway_provisioned: THIS call created the worktree just above via
-        # _prepare_worktree at a required-absent path (provision-record-guard).
-        cleanup_clean_abort(repo, worktree, control_head, gateway_provisioned=True)
+        # Ownership proof: THIS call created the worktree just above via
+        # _prepare_worktree at a required-absent path and stamped it, so it
+        # passes the exact instance id it stamped; a failure before the stamp
+        # landed leaves the stamp missing and PRESERVES (fail-safe leak).
+        cleanup_clean_abort(repo, worktree, control_head, expected_instance_id=provision_instance_id)
         raise
     return PreparedReconcile(journal_path, bootstrap, mutation, resolved.contract_text)
 
@@ -1831,6 +1960,15 @@ def run_mutation(
     return mutation_session, message
 
 
+def _journal_instance_id(journal: Mapping[str, Any]) -> str | None:
+    """The provision-instance id the reconcile gateway recorded in its journal
+    at prepare time, or None for a legacy journal without one (which then
+    proves no gateway ownership and preserves the worktree)."""
+    workspace = journal.get("workspace")
+    value = workspace.get("provision_instance_id") if isinstance(workspace, Mapping) else None
+    return value if isinstance(value, str) and value else None
+
+
 def _cleanup_reconcile_worktree(journal_path: Path) -> None:
     """workspace-cleanup-reconcile: remove a completed, read-only reconcile
     worktree only after its result is bound and the journal entry is durably
@@ -1844,14 +1982,17 @@ def _cleanup_reconcile_worktree(journal_path: Path) -> None:
     if journal.get("result", {}).get("bound") is not True:
         raise GateError("reconcile cleanup requires a journal-bound result")
     workspace = journal["workspace"]
-    # gateway_provisioned: the reconcile gateway itself created this worktree at
-    # a required-absent path and bound it into the durable journal entry
-    # (provision-record-guard).
+    # Ownership proof (TUR-447 c4 F1b): the gateway stamped the worktree it
+    # created and recorded the instance id in this journal; removal requires
+    # the LIVE stamp to still equal it, so a stale reusable journal replayed
+    # against a hand-recreated worktree at the same path PRESERVES it. A
+    # legacy journal without a recorded instance id proves nothing and
+    # preserves (falls to record ownership, which such a worktree lacks).
     cleanup_clean_abort(
         Path(workspace["repo"]),
         Path(workspace["worktree"]),
         str(workspace["starting_head"]),
-        gateway_provisioned=True,
+        expected_instance_id=_journal_instance_id(journal),
     )
 
 
@@ -1909,14 +2050,14 @@ def run_reconcile_launch(
         # workspace-cleanup-clean-abort: everything above runs before the
         # acknowledgment echo is verified, so a failure here removes the
         # worktree only when it is still pristine at the exact starting head
-        # and preserves a dirty or diverged one for inspection.
-        # gateway_provisioned: the reconcile gateway created this journal-bound
-        # worktree at a required-absent path (provision-record-guard).
+        # and preserves a dirty or diverged one for inspection. Ownership
+        # proof: the journal-recorded provision instance id must match the
+        # LIVE worktree stamp (TUR-447 c4 F1b, no ownership-free deletion).
         cleanup_clean_abort(
             Path(journal["workspace"]["repo"]),
             Path(worktree),
             str(journal["workspace"]["starting_head"]),
-            gateway_provisioned=True,
+            expected_instance_id=_journal_instance_id(journal),
         )
         raise
     mutation = runner(

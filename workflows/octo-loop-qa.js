@@ -323,7 +323,7 @@ function assertContainment(worktreeRoot, worktreePath) {
 // with working directory == OCTO_WORKTREE and the frozen launch env set. A child cannot forge its
 // own launch env, and cwd == OCTO_WORKTREE is the anchor, so record + env + cwd is the non-forgeable
 // trust root (INV1-5). assertProvisionedWorkspaceBinding rejects unless the provision record is a
-// host-provisioned-worktree record with schema_version 1 and resolver_root == worktree, and the
+// host-provisioned-worktree record with schema_version 1 or 2 and resolver_root == worktree, and the
 // envelope repo_slug/worktree/starting_head/branch EXACTLY match BOTH the record AND the resolved
 // launch env, catching a forged envelope or an accidentally misrouted lane. The record fields are
 // shape-validated (canonical slug, real head, worktree) so a malformed record fails closed too.
@@ -357,8 +357,14 @@ function assertProvisionedWorkspaceBinding(envelope, provision, env) {
   if (provision.source !== HOST_PROVISION_SOURCE) {
     throw new Error('provision binding rejected: provision record source is not host-provisioned-worktree')
   }
-  if (provision.schema_version !== 1) {
-    throw new Error('provision binding rejected: provision record schema_version must be 1')
+  // schema_version 2 (TUR-447 c4 F1a) additively carries instance_id, the uuid4
+  // provision-instance id the host also stamped into the worktree's own git
+  // worktree config; schema_version 1 stays the accepted legacy shape.
+  if (provision.schema_version !== 1 && provision.schema_version !== 2) {
+    throw new Error('provision binding rejected: provision record schema_version must be 1 or 2')
+  }
+  if (provision.schema_version === 2) {
+    requiredNonEmptyString(provision.instance_id, 'provision record instance_id (schema_version 2)')
   }
   // The record fields are themselves shape-validated so a malformed host record fails closed.
   assertRepoSlug(provision.repo_slug, 'provision record repo_slug')
@@ -1930,7 +1936,7 @@ function ghRepoSlug() {
 // spawn and validates the envelope against:
 //   Trust root - the host-provisioned provision record read from $OCTO_PROVISION_RECORD plus the
 //     frozen launch env the reader resolves itself; assertProvisionedWorkspaceBinding rejects unless
-//     the record is a host-provisioned-worktree record (schema_version 1, resolver_root == worktree)
+//     the record is a host-provisioned-worktree record (schema_version 1 or 2, resolver_root == worktree)
 //     and the envelope repo_slug/worktree/starting_head/branch match BOTH the record AND the env.
 //   Anchor B (defense-in-depth, ruling-61C) - a LIVE git read of the PROVISIONED worktree (git -C
 //     <provision.worktree> rev-parse HEAD / --abbrev-ref HEAD / remote get-url origin); still runs as
@@ -1960,6 +1966,7 @@ const PROVISION_READ_SCHEMA = {
         resolver_root: { type: 'string' },
         install_check: { type: 'string' },
         provisioned_at: { type: 'string' },
+        instance_id: { type: 'string' },
       },
     },
     env: {
@@ -2014,7 +2021,7 @@ async function hostTrustedIdentity(role, phaseTitle) {
     'delivery envelope, the caller, a worker, or this prompt: the record location is the host env var',
     `${HOST_PROVISION_RECORD_ENV} ONLY. Parse the JSON and return it verbatim under "provision" (source`,
     '"host-provisioned-worktree", schema_version, lane, control_repo, worktree, worktree_root, repo_slug, branch,',
-    'starting_head, resolver_root, install_check, provisioned_at). ALSO resolve the frozen launch env the host set',
+    'starting_head, resolver_root, install_check, provisioned_at, and instance_id when present). ALSO resolve the frozen launch env the host set',
     'into this process and return it under "env": OCTO_WORKTREE, OCTO_WORKTREE_ROOT, OCTO_CONTROL_REPO, OCTO_REPO_SLUG,',
     'OCTO_STARTING_HEAD, OCTO_LANE (resolve each $NAME yourself; a child cannot forge its own launch env, and the',
     'process cwd equals OCTO_WORKTREE). If $' + HOST_PROVISION_RECORD_ENV + ' or any required env name is unset or the',
@@ -2028,7 +2035,7 @@ async function hostTrustedIdentity(role, phaseTitle) {
   const env = required(provisionRead.env, 'resolved launch env')
   // Trust-root gate: the identity envelope repo_slug/worktree/starting_head/branch MUST match BOTH the
   // host-provisioned record AND the resolved launch env (env == record == envelope), source
-  // host-provisioned-worktree, schema_version 1, resolver_root == worktree.
+  // host-provisioned-worktree, schema_version 1 or 2, resolver_root == worktree.
   assertProvisionedWorkspaceBinding(identityEnvelope, provision, env)
   // Anchor B (defense-in-depth): a host-controlled subagent does a LIVE git read of the PROVISIONED
   // worktree (never an envelope path). It returns the live HEAD, branch, and origin repo slug it read,

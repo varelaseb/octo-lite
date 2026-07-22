@@ -295,7 +295,7 @@ export function assertContainment(worktreeRoot, worktreePath) {
 // with working directory == OCTO_WORKTREE and the frozen launch env set. A child cannot forge its
 // own launch env, and cwd == OCTO_WORKTREE is the anchor, so record + env + cwd is the non-forgeable
 // trust root (INV1-5). assertProvisionedWorkspaceBinding rejects unless the provision record is a
-// host-provisioned-worktree record with schema_version 1 and resolver_root == worktree, and the
+// host-provisioned-worktree record with schema_version 1 or 2 and resolver_root == worktree, and the
 // envelope repo_slug/worktree/starting_head/branch EXACTLY match BOTH the record AND the resolved
 // launch env, catching a forged envelope or an accidentally misrouted lane. The record fields are
 // shape-validated (canonical slug, real head, worktree) so a malformed record fails closed too.
@@ -329,8 +329,14 @@ export function assertProvisionedWorkspaceBinding(envelope, provision, env) {
   if (provision.source !== HOST_PROVISION_SOURCE) {
     throw new Error('provision binding rejected: provision record source is not host-provisioned-worktree')
   }
-  if (provision.schema_version !== 1) {
-    throw new Error('provision binding rejected: provision record schema_version must be 1')
+  // schema_version 2 (TUR-447 c4 F1a) additively carries instance_id, the uuid4
+  // provision-instance id the host also stamped into the worktree's own git
+  // worktree config; schema_version 1 stays the accepted legacy shape.
+  if (provision.schema_version !== 1 && provision.schema_version !== 2) {
+    throw new Error('provision binding rejected: provision record schema_version must be 1 or 2')
+  }
+  if (provision.schema_version === 2) {
+    requiredNonEmptyString(provision.instance_id, 'provision record instance_id (schema_version 2)')
   }
   // The record fields are themselves shape-validated so a malformed host record fails closed.
   assertRepoSlug(provision.repo_slug, 'provision record repo_slug')
