@@ -604,6 +604,59 @@ class CleanupProvisionRecordGuardTests(unittest.TestCase):
 
         self.assertTrue(owned.is_dir(), "foreign worktree removed after record retirement")
 
+    def test_record_retired_before_worktree_removal(self) -> None:
+        # TUR-447 cycle-3 P1 (workspace-cleanup-clean-abort): the proving
+        # provision record is RETIRED before git worktree remove, so any crash
+        # or failure between the two steps biases fail-safe toward a worktree
+        # LEAK, never a re-openable deletion. When the removal itself fails,
+        # the record must ALREADY be gone and the worktree preserved; the
+        # surviving worktree is then recordless, so every later cleanup at the
+        # same path preserves it.
+        owned = self.worktree_root / "lane-1"
+        result = self.provision(owned, "lane-1", "octo-lite/lane-1")
+
+        real_run = subprocess.run
+
+        def failing_remove(args, **kwargs):
+            if isinstance(args, (list, tuple)) and "worktree" in args and "remove" in args:
+                raise subprocess.CalledProcessError(
+                    1, list(args), output="", stderr="simulated removal failure"
+                )
+            return real_run(args, **kwargs)
+
+        with mock.patch("octo_lite.launch.subprocess.run", side_effect=failing_remove):
+            cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertTrue(owned.is_dir(), "failed removal must leave the worktree in place")
+        self.assertFalse(
+            result.record_path.exists(),
+            "record survived a failed removal: retire-first ordering violated",
+        )
+
+        # Record gone + worktree present is the safe latched state: a
+        # subsequent cleanup attempt at this path treats it as foreign.
+        cleanup_clean_abort(self.control_repo, owned, self.head)
+        self.assertTrue(owned.is_dir(), "recordless surviving worktree removed by a later cleanup")
+
+    def test_unlink_failure_preserves_worktree(self) -> None:
+        # TUR-447 cycle-3 P1 (workspace-cleanup-clean-abort): a failed record
+        # retirement (any OSError) HALTS the removal entirely instead of being
+        # silently ignored. An unretirable record must never let its worktree
+        # be deleted, because the surviving record could later re-authorize
+        # deleting a hand-recreated worktree at the same path.
+        owned = self.worktree_root / "lane-1"
+        result = self.provision(owned, "lane-1", "octo-lite/lane-1")
+
+        with mock.patch.object(
+            Path, "unlink", autospec=True, side_effect=OSError("simulated unlink failure")
+        ):
+            cleanup_clean_abort(self.control_repo, owned, self.head)
+
+        self.assertTrue(owned.is_dir(), "unlink failure must preserve the worktree, never remove it")
+        self.assertTrue(result.record_path.is_file(), "record still present after failed retirement")
+        listing = _git(self.control_repo, "worktree", "list", "--porcelain")
+        self.assertEqual(1, listing.count(f"worktree {owned.resolve()}"))
+
 
 class InstallCheckOwnerRoutingTests(unittest.TestCase):
     # RED-8 (owner-routing half; the record-state half lives in
