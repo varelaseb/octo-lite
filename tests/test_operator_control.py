@@ -11,6 +11,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from octo_lite.runtime import GateError
 
@@ -2671,9 +2672,13 @@ class SweepStreamLivenessTests(unittest.TestCase):
             os.utime(transcript, (now - 9000, now - 9000))
             (stream / "status.md").write_text("# fresh status, no gate lines\n")
             os.utime(stream / "status.md", (now - 5, now - 5))
-            live = module.stream_liveness(
-                stream, base / "inbox", base / "messages", idle_seconds=3600, now=now, projects_root=projects
-            )
+            # Pin the dead-agent watchdog probe unavailable (TUR-505 C3): this
+            # test asserts the TIME-BASED fallback law, independent of whatever
+            # live herdr agents exist on the machine running the suite.
+            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
+                live = module.stream_liveness(
+                    stream, base / "inbox", base / "messages", idle_seconds=3600, now=now, projects_root=projects
+                )
             self.assertEqual("suspected-stuck", live["classification"])
 
     def test_reconciler_reads_current_liveness_at_launch_time(self) -> None:
@@ -3333,14 +3338,17 @@ class OperatorGateTests(unittest.TestCase):
             self.assertEqual("Approve promotion of TUR-479?", live_b["open_ask"])
 
             # Non-gated active stream: no operator owner, normal classification.
+            # Watchdog probe pinned unavailable (TUR-505 C3) so the taxonomy
+            # assertion stays time-based and machine-independent.
             stream_c = base / "streams" / "src-c"
             stream_c.mkdir(parents=True)
             (stream_c / "status.md").write_text("Outcome: working\n")
             os.utime(stream_c / "status.md", (now - 30, now - 30))
-            live_c = module.stream_liveness(
-                stream_c, inbox, messages, idle_seconds=3600, now=now,
-                projects_root=projects, operator_gated=False,
-            )
+            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
+                live_c = module.stream_liveness(
+                    stream_c, inbox, messages, idle_seconds=3600, now=now,
+                    projects_root=projects, operator_gated=False,
+                )
             self.assertEqual("", live_c["wait_owner"])
             self.assertEqual("", live_c["open_ask"])
             self.assertIn(live_c["classification"], {"active", "suspected-stuck"})
@@ -4357,3 +4365,317 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- TUR-505 C3: native dead-agent watchdog fakes ----
+# `herdr agent get <target>` is the probe: it exists with the same shape in BOTH
+# the live 0.7.1 grammar and the 0.7.5 grammar. Gone agent: rc 1 + error code
+# agent_not_found (0.7.1, live-verified) or agent_not_running (0.7.5). Live
+# agent: rc 0 + .result.agent.agent_status.
+def _fake_herdr_gone(code: str) -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        "printf 'herdr %s\\n' \"$*\" >>\"${CALL_LOG:-/dev/null}\"\n"
+        'if [[ "$1 $2" == "agent get" ]]; then\n'
+        f"  echo '{{\"error\":{{\"code\":\"{code}\",\"message\":\"agent target not found\"}},\"id\":\"cli:agent:get\"}}'\n"
+        "  exit 1\n"
+        "fi\n"
+        "exit 0\n"
+    )
+
+
+def _fake_herdr_live(agent_status: str) -> str:
+    return (
+        "#!/usr/bin/env bash\n"
+        "printf 'herdr %s\\n' \"$*\" >>\"${CALL_LOG:-/dev/null}\"\n"
+        'if [[ "$1 $2" == "agent get" ]]; then\n'
+        f"  echo '{{\"id\":\"cli:agent:get\",\"result\":{{\"agent\":{{\"agent_status\":\"{agent_status}\",\"name\":\"x\",\"pane_id\":\"w1:p1\"}}}}}}'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+
+
+# A hard herdr failure (socket down / crash): nonzero rc with a non-JSON body.
+FAKE_HERDR_ERRORING = (
+    "#!/usr/bin/env bash\n"
+    "printf 'herdr %s\\n' \"$*\" >>\"${CALL_LOG:-/dev/null}\"\n"
+    "echo 'herdr: cannot connect to socket' >&2\n"
+    "exit 3\n"
+)
+
+
+class SweepDeadAgentWatchdogTests(unittest.TestCase):
+    """TUR-505 C3: the sweep's native dead-agent watchdog. A stream whose herdr
+    agent pane is gone with no live transcript activity classifies 'dead' (never
+    perpetual suspected-stuck); a status.md anchored 'Outcome: superseded-closed'
+    stream classifies 'closed' and is excluded from stuck/dead flagging; probe
+    failure degrades gracefully to time-based classification; operator-gate
+    surfacing is never affected by dead/closed."""
+
+    def _idle_stream(self, base: Path, name: str, projects: Path, now: float) -> tuple[Path, Path]:
+        stream = base / "streams" / name
+        stream.mkdir(parents=True)
+        worktree = base / "wt" / name
+        worktree.mkdir(parents=True)
+        session_id = f"sess-{name}"
+        (stream / "receipt.toml").write_text(
+            f'[workspace]\nworktree = "{worktree}"\n[bootstrap]\nprovider_session_id = "{session_id}"\n'
+        )
+        module = _load_operator_sweep_module()
+        sanitized = module.sanitize_project_dir(str(worktree))
+        transcript_dir = projects / sanitized
+        transcript_dir.mkdir(parents=True)
+        transcript = transcript_dir / f"{session_id}.jsonl"
+        transcript.write_text("{}\n")
+        os.utime(transcript, (now - 9000, now - 9000))
+        return stream, transcript
+
+    def _fake_herdr_bin(self, base: Path, script: str) -> Path:
+        fake_bin = base / "watchdog-bin"
+        fake_bin.mkdir(exist_ok=True)
+        herdr = fake_bin / "herdr"
+        herdr.write_text(script)
+        herdr.chmod(0o755)
+        return herdr
+
+    def test_dead_pane_classifies_dead_not_suspected_stuck(self) -> None:
+        # RED core: a closed pane (agent gone) on an idle stream must classify
+        # 'dead', not trip suspected-stuck forever. Both grammar spellings of the
+        # gone code are covered: agent_not_found (0.7.1 live) and
+        # agent_not_running (0.7.5).
+        module = _load_operator_sweep_module()
+        for code in ("agent_not_found", "agent_not_running"):
+            with self.subTest(code=code):
+                with tempfile.TemporaryDirectory() as td:
+                    base = Path(td)
+                    now = 1_000_000.0
+                    projects = base / "projects"
+                    stream, _ = self._idle_stream(base, "tur-dead", projects, now)
+                    (stream / "status.md").write_text("Outcome: shipping\n")
+                    herdr = self._fake_herdr_bin(base, _fake_herdr_gone(code))
+                    log = base / "herdr-calls.log"
+                    with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr), "CALL_LOG": str(log)}):
+                        live = module.stream_liveness(
+                            stream, base / "inbox", base / "messages",
+                            idle_seconds=3600, now=now, projects_root=projects,
+                        )
+                    self.assertEqual("dead", live["classification"])
+                    self.assertNotEqual("suspected-stuck", live["classification"])
+                    self.assertIs(False, live["agent_running"])
+                    # The probe target is the stream name (herdr-spawn --name).
+                    self.assertIn("herdr agent get tur-dead", log.read_text())
+
+    def test_agent_gone_with_live_transcript_activity_is_not_dead(self) -> None:
+        # Dead requires BOTH: agent gone AND no live transcript activity.
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            projects = base / "projects"
+            stream, transcript = self._idle_stream(base, "tur-fresh", projects, now)
+            os.utime(transcript, (now - 60, now - 60))
+            (stream / "status.md").write_text("Outcome: shipping\n")
+            herdr = self._fake_herdr_bin(base, _fake_herdr_gone("agent_not_running"))
+            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr)}):
+                live = module.stream_liveness(
+                    stream, base / "inbox", base / "messages",
+                    idle_seconds=3600, now=now, projects_root=projects,
+                )
+            self.assertEqual("active", live["classification"])
+
+    def test_live_agent_keeps_time_based_classification_and_surfaces_agent_status(self) -> None:
+        # A live agent never flips classification; its agent_status (idle,
+        # working, blocked) is surfaced in the liveness dict so a blocked agent
+        # is noted.
+        module = _load_operator_sweep_module()
+        for status, expected in (("idle", "suspected-stuck"), ("blocked", "suspected-stuck")):
+            with self.subTest(status=status):
+                with tempfile.TemporaryDirectory() as td:
+                    base = Path(td)
+                    now = 1_000_000.0
+                    projects = base / "projects"
+                    stream, _ = self._idle_stream(base, "tur-live", projects, now)
+                    (stream / "status.md").write_text("Outcome: shipping\n")
+                    herdr = self._fake_herdr_bin(base, _fake_herdr_live(status))
+                    with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr)}):
+                        live = module.stream_liveness(
+                            stream, base / "inbox", base / "messages",
+                            idle_seconds=3600, now=now, projects_root=projects,
+                        )
+                    self.assertEqual(expected, live["classification"])
+                    self.assertIs(True, live["agent_running"])
+                    self.assertEqual(status, live["agent_status"])
+
+    def test_closed_stream_classifies_closed_and_is_excluded_from_stuck_and_dead(self) -> None:
+        # Anchored '^Outcome:' line matching superseded-closed (case-insensitive)
+        # classifies 'closed' even when the agent is gone and the stream is idle.
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            projects = base / "projects"
+            stream, _ = self._idle_stream(base, "tur-old", projects, now)
+            (stream / "status.md").write_text(
+                "# tur-old shaping (retained)\n\nOutcome: Superseded-Closed by tur-505\n"
+            )
+            herdr = self._fake_herdr_bin(base, _fake_herdr_gone("agent_not_found"))
+            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr)}):
+                live = module.stream_liveness(
+                    stream, base / "inbox", base / "messages",
+                    idle_seconds=3600, now=now, projects_root=projects,
+                )
+            self.assertEqual("closed", live["classification"])
+            self.assertNotIn(live["classification"], {"suspected-stuck", "dead"})
+
+    def test_prose_superseded_closed_mention_never_classifies_closed(self) -> None:
+        # Only the ANCHORED '^Outcome:' line counts; a free-prose mention of
+        # superseded-closed never closes the stream (noise guard).
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            now = 1_000_000.0
+            projects = base / "projects"
+            stream, _ = self._idle_stream(base, "tur-prose", projects, now)
+            (stream / "status.md").write_text(
+                "# notes\n\nOutcome: shipping\nThe old lane recorded Outcome: superseded-closed once.\n"
+            )
+            herdr = self._fake_herdr_bin(base, _fake_herdr_gone("agent_not_found"))
+            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr)}):
+                live = module.stream_liveness(
+                    stream, base / "inbox", base / "messages",
+                    idle_seconds=3600, now=now, projects_root=projects,
+                )
+            self.assertNotEqual("closed", live["classification"])
+            self.assertEqual("dead", live["classification"])
+
+    def test_probe_unavailable_or_erroring_degrades_to_time_based_classification(self) -> None:
+        # Missing herdr binary or a hard herdr error (socket down): the watchdog
+        # degrades gracefully to the current time-based classification with a
+        # noted error, never a crash and never a dead flag.
+        module = _load_operator_sweep_module()
+        cases = ("absent", "erroring")
+        for case in cases:
+            with self.subTest(case=case):
+                with tempfile.TemporaryDirectory() as td:
+                    base = Path(td)
+                    now = 1_000_000.0
+                    projects = base / "projects"
+                    stream, _ = self._idle_stream(base, "tur-degraded", projects, now)
+                    (stream / "status.md").write_text("Outcome: shipping\n")
+                    if case == "absent":
+                        target = str(base / "no-such-herdr")
+                    else:
+                        target = str(self._fake_herdr_bin(base, FAKE_HERDR_ERRORING))
+                    with mock.patch.dict(os.environ, {"OCTO_HERDR": target}):
+                        live = module.stream_liveness(
+                            stream, base / "inbox", base / "messages",
+                            idle_seconds=3600, now=now, projects_root=projects,
+                        )
+                    self.assertEqual("suspected-stuck", live["classification"])
+                    self.assertIsNone(live["agent_running"])
+                    self.assertNotEqual("", live["watchdog_error"])
+
+    # ---- full-sweep coverage (fake-bin harness) ----
+
+    def _write_owner(self, base: Path, control: Path) -> Path:
+        owner = base / "operator-owner.toml"
+        owner.write_text(
+            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
+            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+        )
+        return owner
+
+    def _fake_bins(self, base: Path, herdr_script: str) -> tuple[Path, Path, dict]:
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        log = base / "calls.jsonl"
+        (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
+        (fake_bin / "operator-say").write_text(
+            "#!/usr/bin/env bash\n"
+            "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
+        )
+        (fake_bin / "linear").write_text(FAKE_PER_ISSUE_LINEAR)
+        (fake_bin / "herdr").write_text(herdr_script)
+        for name in ("claude", "operator-say", "linear", "herdr"):
+            (fake_bin / name).chmod(0o755)
+        env = dict(
+            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+            OCTO_HERDR=str(fake_bin / "herdr"),
+        )
+        env["HOME"] = str(base)
+        return fake_bin, log, env
+
+    def test_gated_issue_on_dead_and_closed_streams_still_surfaces_operator_gate(self) -> None:
+        # Precedence: waiting-on-operator > closed > dead. A dead stream and a
+        # closed stream each carrying an operator-gated issue STILL surface the
+        # loud gate lines; a closed stream with no gate classifies 'closed'.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            dead_stream = control / "streams/tf-dead"
+            dead_stream.mkdir(parents=True)
+            (dead_stream / "status.md").write_text("Outcome: shipping\n")
+            (dead_stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
+            closed_gated = control / "streams/tf-closed-gated"
+            closed_gated.mkdir(parents=True)
+            (closed_gated / "status.md").write_text("Outcome: superseded-closed\n")
+            (closed_gated / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-454"\n')
+            closed_plain = control / "streams/tf-closed-plain"
+            closed_plain.mkdir(parents=True)
+            (closed_plain / "status.md").write_text("Outcome: superseded-closed by tur-505\n")
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base, _fake_herdr_gone("agent_not_running"))
+            state_map = base / "state-map.json"
+            state_map.write_text(json.dumps({"TUR-479": "In Staging", "TUR-454": "Awaiting Accept"}))
+            env["LINEAR_STATE_MAP"] = str(state_map)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            # Operator gates are NEVER affected by dead/closed.
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
+            self.assertIn("OPERATOR ACTION NEEDED: TUR-454 Awaiting Accept", result.stdout)
+            liveness = json.loads((control / "liveness.json").read_text())
+            self.assertEqual("waiting-on-operator", liveness["tf-dead"]["classification"])
+            self.assertEqual("waiting-on-operator", liveness["tf-closed-gated"]["classification"])
+            self.assertEqual("closed", liveness["tf-closed-plain"]["classification"])
+
+    def test_dead_stream_without_gate_classifies_dead_in_full_sweep(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-gone"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: shipping\n")
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base, _fake_herdr_gone("agent_not_running"))
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            liveness = json.loads((control / "liveness.json").read_text())
+            self.assertEqual("dead", liveness["tf-gone"]["classification"])
+
+    def test_erroring_herdr_never_crashes_the_sweep_and_falls_back_time_based(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = base / "repo"
+            _init_target_repo(repo)
+            control = base / "control"
+            stream = control / "streams/tf-fallback"
+            stream.mkdir(parents=True)
+            (stream / "status.md").write_text("Outcome: shipping\n")
+            owner = self._write_owner(base, control)
+            fake_bin, log, env = self._fake_bins(base, FAKE_HERDR_ERRORING)
+            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            liveness = json.loads((control / "liveness.json").read_text())
+            # No transcript at all + probe degraded: time-based fallback, never dead.
+            self.assertEqual("suspected-stuck", liveness["tf-fallback"]["classification"])
+            self.assertNotEqual("", liveness["tf-fallback"]["watchdog_error"])

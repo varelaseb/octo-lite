@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -435,11 +436,74 @@ def _stream_transcript_paths(stream_dir: Path, projects_root: Path) -> list[Path
     return paths
 
 
+# ---- Native dead-agent watchdog (sweep-dead-agent, TUR-505 C3) ----
+#
+# Streams are spawned through herdr-spawn with `--name <stream name>` (the
+# receipt-verified spawn path passes the stream name as the herdr agent name),
+# so the stream name IS the herdr agent target for the watchdog probe.
+#
+# `herdr agent get <target>` is deliberately the probe command because it exists
+# with the same shape in BOTH the live 0.7.1 grammar and the 0.7.5 grammar
+# (grammar-compatible across the handoff): found -> rc 0 with
+# .result.agent.agent_status; gone -> rc 1 with .error.code agent_not_found
+# (0.7.1, live-verified) or agent_not_running (0.7.5). The 0.7.5-only
+# `herdr agent wait <target> --status <s> [--timeout MS]` is the BLOCKING
+# variant and is deliberately not used here.
+_HERDR_PROBE_TIMEOUT_SECONDS = 1.5
+_HERDR_AGENT_GONE_CODES = {"agent_not_found", "agent_not_running"}
+
+# Closed-stream class (sweep-closed-stream): only the ANCHORED `^Outcome:` line
+# of status.md is consulted, case-insensitive, never free prose, mirroring the
+# `Issues:` noise guard.
+_OUTCOME_CLOSED = re.compile(r"^Outcome:.*superseded-closed", re.MULTILINE | re.IGNORECASE)
+
+
+def herdr_agent_probe(target: str) -> dict:
+    """Cheap, bounded, non-fatal per-stream agent probe (sweep-watchdog-degrade):
+    a missing herdr binary, an unreachable socket, a timeout, or an unrecognized
+    payload degrades to {"available": False, "error": ...} and the caller falls
+    back to the time-based classification, same discipline as the carried
+    Linear-read graceful degradation. Never raises; watchdog failure must never
+    crash the sweep. OCTO_HERDR overrides the binary for tests."""
+    herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
+    if not herdr:
+        return {"available": False, "error": "herdr binary absent"}
+    try:
+        result = subprocess.run(
+            [herdr, "agent", "get", target],
+            capture_output=True, text=True, timeout=_HERDR_PROBE_TIMEOUT_SECONDS,
+        )
+    except (subprocess.SubprocessError, OSError) as error:
+        return {"available": False, "error": str(error)}
+    try:
+        payload = json.loads(result.stdout) if result.stdout.strip() else {}
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if result.returncode == 0:
+        result_obj = payload.get("result")
+        agent = result_obj.get("agent") if isinstance(result_obj, dict) else None
+        if isinstance(agent, dict):
+            return {"available": True, "running": True, "agent_status": str(agent.get("agent_status") or "")}
+        return {"available": False, "error": "unrecognized agent get payload"}
+    error_obj = payload.get("error")
+    error_code = str(error_obj.get("code") or "") if isinstance(error_obj, dict) else ""
+    if error_code in _HERDR_AGENT_GONE_CODES:
+        return {"available": True, "running": False}
+    return {
+        "available": False,
+        "error": result.stderr.strip() or result.stdout.strip() or f"herdr agent get rc={result.returncode}",
+    }
+
+
 def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, idle_seconds: int, now: float | None = None, projects_root: Path | None = None, operator_gated: bool = False, operator_gate_reason: str = "") -> dict:
     """Per-stream liveness report (sweep-stream-liveness): real surfaces only,
-    session transcript mtime from the stream receipts, status gate lines, and
-    the Herdr XDG inbox and message state. Classification is time-derived and
-    advisory; the report never enters the digested reconcile snapshot.
+    session transcript mtime from the stream receipts, status gate lines, the
+    Herdr XDG inbox and message state, plus the native dead-agent watchdog
+    probe (sweep-dead-agent) and the anchored Outcome closed-stream class
+    (sweep-closed-stream). Classification is advisory; the report never enters
+    the digested reconcile snapshot.
 
     """
     current = time.time() if now is None else now
@@ -497,10 +561,37 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
                 undelivered_set.add(str(state.get("message_id") or state_path.stem))
     undelivered = sorted(undelivered_set)
 
-    # An operator gate (a carried operator-gated issue or an open operator ask)
-    # classifies the stream waiting-on-operator regardless of transcript activity
-    # (sweep-operator-gate-classify): it takes precedence over active and
-    # suspected-stuck, and is never silenced by ask_consumed.
+    # Closed-stream class (sweep-closed-stream): a status.md anchored
+    # `^Outcome:` line recording superseded-closed classifies the stream
+    # 'closed' and excludes it from suspected-stuck/dead flagging, so a
+    # dead-but-retained lane stops tripping cosmetic needs_fable forever.
+    closed = bool(_OUTCOME_CLOSED.search(status_text))
+
+    # Native dead-agent watchdog probe (sweep-dead-agent): skipped for closed
+    # streams (already excluded from dead/stuck flagging) so the per-sweep
+    # probe latency stays bounded.
+    agent_running: bool | None = None
+    agent_status = ""
+    watchdog_error = ""
+    if not closed:
+        probe = herdr_agent_probe(stream_dir.name)
+        if probe.get("available"):
+            agent_running = bool(probe.get("running"))
+            agent_status = str(probe.get("agent_status") or "")
+        else:
+            # Probe unavailable (herdr absent, socket down, timeout): degrade
+            # gracefully to the time-based classification with a noted error
+            # (sweep-watchdog-degrade); never crash the sweep.
+            watchdog_error = str(probe.get("error") or "")
+
+    transcript_idle = transcript_mtime is None or (current - transcript_mtime) > idle_seconds
+
+    # Classification precedence: waiting-on-operator > closed > dead > waiting
+    # > suspected-stuck > active. An operator gate (a carried operator-gated
+    # issue or an open operator ask) classifies the stream waiting-on-operator
+    # regardless of transcript activity or dead/closed standing
+    # (sweep-operator-gate-classify): it takes precedence over every other
+    # class and is never silenced by ask_consumed.
     if operator_gated:
         classification = "waiting-on-operator"
         # Unify the waiting-on-operator taxonomy (ruling-46): a Source-A gate wait
@@ -512,9 +603,16 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
         wait_owner = "operator"
         if not open_ask:
             open_ask = operator_gate_reason
+    elif closed:
+        classification = "closed"
+    elif agent_running is False and transcript_idle:
+        # Pane closed / agent gone AND no live transcript activity: 'dead'
+        # (sweep-dead-agent), a distinct class so a dead lane stops perpetually
+        # re-flagging suspected-stuck.
+        classification = "dead"
     elif wait_owner:
         classification = "waiting"
-    elif transcript_mtime is None or (current - transcript_mtime) > idle_seconds:
+    elif transcript_idle:
         classification = "suspected-stuck"
     else:
         classification = "active"
@@ -526,6 +624,9 @@ def stream_liveness(stream_dir: Path, inbox_root: Path, messages_root: Path, *, 
         "ask_consumed": ask_consumed,
         "inflight_workflows": inflight,
         "undelivered_queue": undelivered,
+        "agent_running": agent_running,
+        "agent_status": agent_status,
+        "watchdog_error": watchdog_error,
         "classification": classification,
     }
 
@@ -775,7 +876,9 @@ def main() -> int:
         f"Bootstrap verified. Read snapshot {snapshot_path}. The pinned per-stream liveness "
         f"report is at {control / 'liveness.json'}: transcript activity only, never status age; "
         "idle without a recorded wait-owner is suspected-stuck; an ask older than later activity "
-        "is consumed. Classify facts as changed, missing, stale, contradictory, or needs_fable. "
+        "is consumed; a 'dead' stream's agent pane is gone and a 'closed' stream is retained but "
+        "superseded, and neither needs a stuck or needs_fable flag. "
+        "Classify facts as changed, missing, stale, contradictory, or needs_fable. "
         "Read only. Never mutate. Return a compact delta for the operator as plain text."
     )
     message = run_reconcile_launch(prepared, judgment_prompt)
