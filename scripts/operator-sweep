@@ -488,6 +488,16 @@ def herdr_agent_probe(target: str) -> dict:
             return {"available": True, "running": True, "agent_status": str(agent.get("agent_status") or "")}
         return {"available": False, "error": "unrecognized agent get payload"}
     error_obj = payload.get("error")
+    if not isinstance(error_obj, dict):
+        # Live-verified (herdr 0.7.1): the error JSON is printed to STDERR with
+        # empty stdout (rc 1). Success payloads stay stdout-only; error payloads
+        # may arrive on either stream, so fall back to parsing stderr here.
+        try:
+            stderr_payload = json.loads(result.stderr) if result.stderr.strip() else {}
+        except ValueError:
+            stderr_payload = {}
+        if isinstance(stderr_payload, dict):
+            error_obj = stderr_payload.get("error")
     error_code = str(error_obj.get("code") or "") if isinstance(error_obj, dict) else ""
     if error_code in _HERDR_AGENT_GONE_CODES:
         return {"available": True, "running": False}

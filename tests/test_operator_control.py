@@ -4371,13 +4371,19 @@ if __name__ == "__main__":
 # `herdr agent get <target>` is the probe: it exists with the same shape in BOTH
 # the live 0.7.1 grammar and the 0.7.5 grammar. Gone agent: rc 1 + error code
 # agent_not_found (0.7.1, live-verified) or agent_not_running (0.7.5). Live
-# agent: rc 0 + .result.agent.agent_status.
-def _fake_herdr_gone(code: str) -> str:
+# agent: rc 0 + .result.agent.agent_status on STDOUT.
+# LIVE-VERIFIED (herdr 0.7.1): the ERROR JSON goes to STDERR with EMPTY stdout:
+#   rc=1, stdout='', stderr='{"error":{"code":"agent_not_found","message":
+#   "agent target tur-443 not found"},"id":"cli:agent:get"}'
+# The fake mirrors that reality by default; stream="stdout" keeps an
+# older/other-version tolerance variant where the error JSON arrives on stdout.
+def _fake_herdr_gone(code: str, stream: str = "stderr") -> str:
+    redirect = " >&2" if stream == "stderr" else ""
     return (
         "#!/usr/bin/env bash\n"
         "printf 'herdr %s\\n' \"$*\" >>\"${CALL_LOG:-/dev/null}\"\n"
         'if [[ "$1 $2" == "agent get" ]]; then\n'
-        f"  echo '{{\"error\":{{\"code\":\"{code}\",\"message\":\"agent target not found\"}},\"id\":\"cli:agent:get\"}}'\n"
+        f"  printf '{{\"error\":{{\"code\":\"{code}\",\"message\":\"agent target %s not found\"}},\"id\":\"cli:agent:get\"}}\\n' \"$3\"{redirect}\n"
         "  exit 1\n"
         "fi\n"
         "exit 0\n"
@@ -4443,21 +4449,27 @@ class SweepDeadAgentWatchdogTests(unittest.TestCase):
         # RED core: a closed pane (agent gone) on an idle stream must classify
         # 'dead', not trip suspected-stuck forever. Both grammar spellings of the
         # gone code are covered: agent_not_found (0.7.1 live) and
-        # agent_not_running (0.7.5).
+        # agent_not_running (0.7.5). The real 0.7.1 binary prints the error JSON
+        # to STDERR with empty stdout (live-verified); the stdout variant keeps
+        # older/other-version tolerance so both streams parse.
         module = _load_operator_sweep_module()
-        for code in ("agent_not_found", "agent_not_running"):
-            with self.subTest(code=code):
+        for code, stream in (
+            ("agent_not_found", "stderr"),
+            ("agent_not_running", "stderr"),
+            ("agent_not_found", "stdout"),
+        ):
+            with self.subTest(code=code, stream=stream):
                 with tempfile.TemporaryDirectory() as td:
                     base = Path(td)
                     now = 1_000_000.0
                     projects = base / "projects"
-                    stream, _ = self._idle_stream(base, "tur-dead", projects, now)
-                    (stream / "status.md").write_text("Outcome: shipping\n")
-                    herdr = self._fake_herdr_bin(base, _fake_herdr_gone(code))
+                    stream_dir, _ = self._idle_stream(base, "tur-dead", projects, now)
+                    (stream_dir / "status.md").write_text("Outcome: shipping\n")
+                    herdr = self._fake_herdr_bin(base, _fake_herdr_gone(code, stream))
                     log = base / "herdr-calls.log"
                     with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr), "CALL_LOG": str(log)}):
                         live = module.stream_liveness(
-                            stream, base / "inbox", base / "messages",
+                            stream_dir, base / "inbox", base / "messages",
                             idle_seconds=3600, now=now, projects_root=projects,
                         )
                     self.assertEqual("dead", live["classification"])
