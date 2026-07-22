@@ -426,6 +426,71 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             self.assertEqual(owner_before, ctx["owner_path"].read_text())
             fake = Path(ctx["env"]["FAKE_LOG"]).read_text() if Path(ctx["env"]["FAKE_LOG"]).exists() else ""
             self.assertNotIn("tab create", fake)
+            # A dry-run must also install NO timer. The prior assertions only cover
+            # the successor dir, owner file, and herdr tab create; a dry-run timer
+            # install (operator-timer / systemd-run) would leave all three clean yet
+            # still be a durable mutation. Reuse the TIMER_MARKER wiring: both timer
+            # boundaries are shadowed by fakes that append a marker if crossed, so
+            # the marker file must be absent/empty under --dry-run.
+            marker = ctx["timer_marker"]
+            marker_text = marker.read_text() if marker.exists() else ""
+            self.assertEqual("", marker_text.strip(), marker_text)
+            self.assertNotIn("TIMER-INSTALL-INVOKED", marker_text)
+
+    @staticmethod
+    def _strip_shell_comments(source: str) -> str:
+        # Return the script body with whole-line comments removed so the static
+        # source scan matches only meaningful command usage. Every forbidden-word
+        # occurrence in the real launcher lives in a whole-line comment (e.g. the
+        # header "installs NO timer, and never probes owner liveness."), so we drop
+        # any line whose first non-whitespace character is '#' (this also drops the
+        # shebang). We deliberately do NOT strip inline "code # trailing" comments:
+        # the launcher has none carrying forbidden words, and a naive inline strip
+        # would corrupt in-string '#' characters. If a future edit adds a forbidden
+        # word only inside an inline comment, this scan errs on the safe side by
+        # flagging it, which is the correct fail-closed direction.
+        kept = []
+        for line in source.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            kept.append(line)
+        return "\n".join(kept)
+
+    def test_script_source_has_no_liveness_probe_or_timer_install(self) -> None:
+        # CATEGORICAL closure (primary): read the ACTUAL bytes of the launcher and
+        # prove it contains NO liveness-probe and NO timer-install command usage at
+        # all. This is independent of PATH-fake interception limits: a 'kill' Bash
+        # builtin bypasses a PATH-fake 'kill', and a timer install can route through
+        # boundaries a runtime fake never sees. A source scan closes the entire
+        # class regardless of how the probe/install would be dispatched at runtime.
+        source = HANDOFF.read_text()
+        body = self._strip_shell_comments(source)
+
+        # (pattern, human description). Word-boundary regex so we match the command
+        # token, not an unrelated identifier substring (e.g. 'skill_dir' must not
+        # trip the 'kill' rule, 'spawn' must not trip anything). \b anchors on token
+        # edges; where a literal contains non-word chars we anchor explicitly.
+        forbidden = [
+            (r"\bkill\b", "kill invocation (builtin or external liveness probe)"),
+            (r"kill\s+-0\b", "kill -0 liveness probe"),
+            (r"\bps\b", "ps process probe"),
+            (r"/proc/", "/proc/ liveness inspection"),
+            (r"\bpgrep\b", "pgrep process probe"),
+            (r"\bsystemd-run\b", "systemd-run timer install"),
+            (r"\boperator-timer\b", "operator-timer install entrypoint"),
+            (r"herdr\b[^\n]*\bpane\s+read\b", "herdr pane read owner discovery"),
+            (r"herdr\b[^\n]*\bpane\s+list\b", "herdr pane list owner discovery"),
+            (r"\btimer\s+install\b", "timer install command"),
+        ]
+        offenders = []
+        for pattern, desc in forbidden:
+            for m in re.finditer(pattern, body):
+                offenders.append(f"{desc}: matched {m.group(0)!r} at offset {m.start()}")
+        self.assertEqual(
+            [], offenders,
+            "launcher source must contain no liveness-probe or timer-install "
+            "command usage; offenders:\n" + "\n".join(offenders),
+        )
 
     def test_never_probes_owner_liveness(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -451,8 +516,43 @@ class HandoffMetaOperatorTests(unittest.TestCase):
             # with "claude "); herdr invocations are every other logged line.
             herdr_lines = [ln for ln in log_lines if not ln.startswith("claude ")]
             self.assertTrue(herdr_lines, log_lines)  # herdr WAS used (on the successor).
+
+            def normalize(line):
+                # Normalize a herdr command line into a flat token list where an
+                # attached-value flag ("--flag=value") is split into TWO tokens
+                # ("--flag", "value"), so owner-routing hidden as "--target=OWNER"
+                # is caught exactly like the "--target OWNER" spaced form. Without
+                # this split, shlex keeps "--target=OWNER" as one token and the
+                # owner-routing bans below silently miss the attached form.
+                out = []
+                for tok in shlex.split(line):
+                    if tok.startswith("--") and "=" in tok:
+                        flag, _, value = tok.partition("=")
+                        out.append(flag)
+                        out.append(value)
+                    else:
+                        out.append(tok)
+                return out
+
+            route_flags = ("--name", "--route", "--session", "--session-id", "--target")
             for ln in herdr_lines:
-                tokens = shlex.split(ln)
+                tokens = normalize(ln)
+                # A herdr pane list/read that references the OWNER identity is an
+                # owner-discovery probe and is banned. herdr-spawn (the REAL wrapper,
+                # only the herdr CLI is faked) legitimately pane-reads the SUCCESSOR
+                # pane for readiness, so a blanket pane-read ban is wrong; the ban is
+                # scoped to pane ops that name the owner session id or route. The
+                # owner-identity assertions below already cover the general case,
+                # but this makes the pane-discovery form explicit and fail-closed.
+                is_pane_op = any(
+                    tok == "pane" and i + 1 < len(tokens) and tokens[i + 1] in ("list", "read")
+                    for i, tok in enumerate(tokens)
+                )
+                if is_pane_op:
+                    self.assertNotIn(self.CURRENT_OWNER_SID, tokens,
+                                     f"herdr pane op references the owner session: {ln}")
+                    self.assertNotIn(self.CURRENT_ROUTE, tokens,
+                                     f"herdr pane op references the owner route: {ln}")
                 # The owner's immutable session id must never appear in ANY herdr
                 # invocation: it is never a legitimate path segment or successor
                 # target, so any occurrence means the launcher probed/messaged the
@@ -462,15 +562,17 @@ class HandoffMetaOperatorTests(unittest.TestCase):
                 # inside the invariant control-dir path embedded in the spawn
                 # prompt (the launcher reads the owner TOML / handoff doc). It must
                 # never be a herdr ROUTING TARGET: a bare route token, or a
-                # session/route/pane target argument naming the owner. Any herdr
-                # token that IS the owner route (not merely containing it inside a
-                # filesystem path) is an owner-targeted call and is banned.
+                # session/route/pane target argument naming the owner, in EITHER the
+                # spaced ("--target OWNER") or attached ("--target=OWNER") form
+                # (both are normalized above). Any herdr token that IS the owner
+                # route (not merely containing it inside a filesystem path) is an
+                # owner-targeted call and is banned.
                 for i, tok in enumerate(tokens):
                     self.assertNotEqual(
                         self.CURRENT_ROUTE, tok,
                         f"owner route used as a bare herdr target token: {ln}",
                     )
-                    if tok in ("--name", "--route", "--session", "--session-id", "--target"):
+                    if tok in route_flags:
                         value = tokens[i + 1] if i + 1 < len(tokens) else ""
                         self.assertNotEqual(
                             self.CURRENT_ROUTE, value,
