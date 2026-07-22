@@ -80,29 +80,50 @@ PY
     mv "$temporary" "$state"
   }
 
-  # Modal-safe: never fire an atomic prompt while a trust or safety dialog is
-  # open; leave the pending/queued message in the inbox for the next retry.
-  if dialog_open; then
-    exec 9>&-
-    exit 75
-  fi
-
-  if [[ "${fields[status]}" == "pending" ]]; then
-    # herdr 0.7.5: an earlier atomic prompt may not have landed. Retry the exact
-    # same atomic prompt (paste + submit in one op); the atomic op never
-    # double-submits partially-pasted text. Stays pending, in the inbox, for the
-    # next retry unless this attempt's own atomic prompt succeeds.
-    if herdr agent prompt "$pane" "${fields[message]}$suffix" >/dev/null 2>&1; then
-      clear_retry
-    fi
-  else
-    # A queued (never-transported) message: fire the atomic prompt now. Persist
-    # pending before dropping the retry item so a later herdr-ack sees pending,
-    # not the stale queued status.
-    if herdr agent prompt "$pane" "${fields[message]}$suffix" >/dev/null 2>&1; then
-      write_pending
-      clear_retry
-    fi
-  fi
+  # TUR-505 review round 2: drain branches on the ACTUAL durable status, never
+  # a binary pending/other split. A terminal message (acknowledged, rejected,
+  # completed) with a lingering retry item gets the stale item removed with no
+  # transport and no state rewrite; only pending and queued ever transport.
+  case "${fields[status]}" in
+    acknowledged|rejected|completed)
+      # The message already finished its lifecycle while its retry item
+      # lingered. Never re-fire a duplicate atomic prompt and never drag the
+      # terminal state back to pending; just drop the stale inbox item.
+      rm -f "$queued" "$lock"
+      echo "message_id=$id status=${fields[status]} stale_retry_removed=1"
+      ;;
+    pending)
+      # Modal-safe: never fire an atomic prompt while a trust or safety dialog
+      # is open; leave the pending message in the inbox for the next retry.
+      if dialog_open; then
+        exec 9>&-
+        exit 75
+      fi
+      # herdr 0.7.5: an earlier atomic prompt may not have landed. Retry the
+      # exact same atomic prompt (paste + submit in one op); the atomic op
+      # never double-submits partially-pasted text. Stays pending, in the
+      # inbox, for the next retry unless this attempt's own prompt succeeds.
+      if herdr agent prompt "$pane" "${fields[message]}$suffix" >/dev/null 2>&1; then
+        clear_retry
+      fi
+      ;;
+    queued)
+      # Modal-safe: same guard before the first transport of a queued message.
+      if dialog_open; then
+        exec 9>&-
+        exit 75
+      fi
+      # A queued (never-transported) message: fire the atomic prompt now.
+      # Persist pending before dropping the retry item so a later herdr-ack
+      # sees pending, not the stale queued status.
+      if herdr agent prompt "$pane" "${fields[message]}$suffix" >/dev/null 2>&1; then
+        write_pending
+        clear_retry
+      fi
+      ;;
+    *)
+      # Unknown status: never transport and keep the item for inspection.
+      ;;
+  esac
   exec 9>&-
 done

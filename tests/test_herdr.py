@@ -119,10 +119,13 @@ fi
 #                                    topology change); argv recorded so tests
 #                                    can assert the exact 0.7.5 launch grammar
 #   agent get <target>            -> the adopted pane (same id tab create gave)
-#   agent send-keys <target> ...  -> literal keystrokes (trust-dialog accept)
+#   agent send-keys <target> ...  -> literal keystrokes (trust-dialog accept);
+#                                    fails non-zero with FAKE_SEND_KEYS_FAIL
 #   pane read <pane> ...          -> visible transcript; with FAKE_DIALOG_FIRST
 #                                    the FIRST read shows the trust dialog and
-#                                    later reads show a ready pane
+#                                    later reads show a ready pane; with
+#                                    FAKE_DIALOG_ALWAYS every read shows the
+#                                    trust dialog (it never clears)
 #   pane close                    -> still recorded, but 0.7.5 spawn must never
 #                                    call it: there is no phantom pane to close
 FAKE_HERDR_075_SPAWN = r"""#!/usr/bin/env bash
@@ -136,7 +139,9 @@ elif [[ "$sub" == "agent start" ]]; then
 elif [[ "$sub" == "agent get" ]]; then
   echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
 elif [[ "$sub" == "agent send-keys" ]]; then
-  :
+  if [[ -n "${FAKE_SEND_KEYS_FAIL:-}" ]]; then
+    exit 1
+  fi
 elif [[ "$sub" == "pane close" ]]; then
   :
 elif [[ "$sub" == "pane read" ]]; then
@@ -144,7 +149,9 @@ elif [[ "$sub" == "pane read" ]]; then
   [[ -n "${FAKE_READ_COUNT_FILE:-}" && -f "${FAKE_READ_COUNT_FILE:-}" ]] && n="$(cat "$FAKE_READ_COUNT_FILE")"
   n=$((n + 1))
   [[ -n "${FAKE_READ_COUNT_FILE:-}" ]] && echo "$n" >"$FAKE_READ_COUNT_FILE"
-  if [[ -n "${FAKE_DIALOG_FIRST:-}" && "$n" -eq 1 ]]; then
+  if [[ -n "${FAKE_DIALOG_ALWAYS:-}" ]]; then
+    printf 'Quick safety check: trust this folder\n'
+  elif [[ -n "${FAKE_DIALOG_FIRST:-}" && "$n" -eq 1 ]]; then
     printf 'Quick safety check: trust this folder\n'
   else
     printf 'ready\n'
@@ -491,6 +498,48 @@ exec {real_mv} "$@"
             self.assertEqual("pending", rewritten["status"])
             self.assertEqual(body, rewritten["message"])
             self.assertEqual(created_at, rewritten["created_at"])
+
+    def test_drain_removes_a_stale_inbox_item_for_a_terminal_message_without_refiring(self):
+        # TUR-505 review round 2 finding 1: a message may reach a TERMINAL state
+        # (acknowledged, rejected, completed) while its inbox retry item lingers,
+        # for example when the recipient acks between transport failure and the
+        # next drain. Drain must branch on the actual status: for a terminal
+        # message it removes the stale inbox item WITHOUT firing any duplicate
+        # atomic prompt and WITHOUT rewriting the terminal state back to pending.
+        terminal_cases = {
+            "acknowledged": [],
+            "rejected": [],
+            "completed": ["--artifact", "ref/1"],
+        }
+        for terminal, extra in terminal_cases.items():
+            with self.subTest(terminal), tempfile.TemporaryDirectory() as td:
+                env, log = self.environment(td, "ready")
+                queue = subprocess.run(
+                    ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
+                    env=dict(env, FAKE_PROMPT_FAIL="1"),
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(75, queue.returncode)
+                states = list((Path(td) / "state/octo-lite/messages").glob("*.toml"))
+                message_id = states[0].stem
+                inbox_item = Path(td) / "state/octo-lite/inbox/agent1" / message_id
+                self.assertTrue(inbox_item.is_file())
+
+                acked = subprocess.run(
+                    ["bash", str(ACK), message_id, terminal, "--by", "agent1", *extra],
+                    env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(0, acked.returncode, acked.stderr)
+
+                log.write_text("")
+                result = subprocess.run(["bash", str(DRAIN), "agent1"], env=env, capture_output=True, text=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+                # No duplicate transport of any kind for a terminal message.
+                self.assertEqual([], log.read_text().splitlines())
+                # The stale retry item is gone and the terminal state is untouched.
+                self.assertFalse(inbox_item.exists())
+                with states[0].open("rb") as handle:
+                    self.assertEqual(terminal, tomllib.load(handle)["status"])
 
     def test_drain_locks_each_queued_item_to_prevent_duplicate_delivery(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1033,6 +1082,47 @@ exec {real_mv} "$@"
             self.assertIn("w1:p1", accepts[0])
             self.assertFalse(any(call.startswith("agent prompt") for call in calls), calls)
             self.assertFalse(any(call.startswith("pane close") for call in calls), calls)
+
+    def test_spawn_fails_closed_when_the_trust_dialog_never_clears(self):
+        # TUR-505 review round 2 finding 2: spawn must verify the trust dialog
+        # actually CLEARED after the accept keystrokes. When every pane re-read
+        # still shows the dialog, spawn must exit non-zero with no success
+        # report instead of reporting a session trapped at the dialog as spawned.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            env["FAKE_DIALOG_ALWAYS"] = "1"
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode, result.stdout)
+            self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn("trust dialog", result.stderr)
+            calls = log.read_text().splitlines()
+            # The accept was attempted, so the failure is the dialog persisting.
+            self.assertTrue(any(call.startswith("agent send-keys") for call in calls), calls)
+
+    def test_spawn_fails_closed_when_the_trust_dialog_accept_keystroke_fails(self):
+        # TUR-505 review round 2 finding 2: a failed `agent send-keys` accept
+        # must fail closed, never be swallowed while spawn reports success.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            env["FAKE_DIALOG_FIRST"] = "1"
+            env["FAKE_SEND_KEYS_FAIL"] = "1"
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode, result.stdout)
+            self.assertNotIn("bootstrap=acknowledged", result.stdout)
 
     def test_spawn_creates_no_pane_on_any_bootstrap_mismatch(self):
         scenarios = {

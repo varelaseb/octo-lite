@@ -50,7 +50,9 @@
 <section data-anchor="decision-herdr">
 <h3>Herdr delivery proof</h3>
 <p data-anchor="decision-no-transcript-inference">herdr-say and herdr-drain never read pane transcript text to infer composer state, consumption, or delivery.</p>
-<p data-anchor="decision-pending">A send or Enter transport attempt leaves a message <code>pending</code>; only the tool call's own exit status decides retry, never a text match.</p>
+<p data-anchor="decision-pending">Superseded 2026-07-22 by the herdr 0.7.5 atomic-prompt amendment in the sibling anchor below.
+Historical rule as originally signed: a send or Enter transport attempt leaves a message <code>pending</code>; only the tool call's own exit status decides retry, never a text match.</p>
+<p data-anchor="decision-pending-supersession">Since herdr 0.7.5 the transport attempt is one server-owned atomic prompt, and an atomic prompt transport attempt leaves a message <code>pending</code>; only the tool call's own exit status decides retry, never a text match.</p>
 <p data-anchor="decision-ack-only">Only an explicit herdr-ack from the exact recipient proves delivery for a correctness-bearing message.</p>
 <p data-anchor="decision-retry-same-id">Superseded 2026-07-22 by the herdr 0.7.5 atomic-prompt amendment in the sibling anchor below.
 Historical rule as originally signed: retry reuses the same message ID, presses Enter or retries transport only, and never re-pastes text that already landed.</p>

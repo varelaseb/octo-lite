@@ -135,15 +135,36 @@ done
 # readiness from pane text. 0.7.5 grammar: accept the dialog with a literal
 # `agent send-keys` Enter, never an atomic `agent prompt`, which would submit
 # text into the modal.
+# TUR-505 review round 2: the accept is verified, never assumed. After each
+# accept keystroke the pane is re-read (bounded retries) to check the dialog
+# actually cleared; a failed send-keys or a dialog that persists after the
+# bounded attempts fails closed with no success report, so a session trapped
+# at the trust dialog is never reported as spawned.
+dialog_showing() {
+  herdr pane read "$pane" --source visible --lines 50 2>/dev/null \
+    | grep -qiE 'Quick safety check|trust this folder'
+}
 retries="${HERDR_SPAWN_BOOTSTRAP_RETRIES:-10}"
+dialog_cleared=1
 for _ in $(seq 1 "$retries"); do
-  text="$(herdr pane read "$pane" --source visible --lines 50 2>/dev/null)"
-  if grep -qiE 'Quick safety check|trust this folder' <<<"$text"; then
-    herdr agent send-keys "$pane" Enter >/dev/null 2>&1 || true
+  if dialog_showing; then
+    dialog_cleared=0
+    herdr agent send-keys "$pane" Enter >/dev/null 2>&1 || {
+      echo "herdr-spawn: trust-dialog accept keystroke failed; session may be trapped at the trust dialog" >&2
+      exit 69
+    }
     sleep 1
     continue
   fi
+  dialog_cleared=1
   break
 done
+if [[ "$dialog_cleared" != 1 ]]; then
+  # One final re-read after the last accept attempt before failing closed.
+  if dialog_showing; then
+    echo "herdr-spawn: trust dialog did not clear after $retries accept attempts; failing closed" >&2
+    exit 69
+  fi
+fi
 
 echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=acknowledged provider_session_id=$provider_session_id receipt=$receipt"
