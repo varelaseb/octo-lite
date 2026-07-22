@@ -128,7 +128,49 @@ pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
 # topology change: no split, no phantom root pane, so the old split-tab-close
 # hack (`pane close` on the leftover pane) stays gone. The adopted pane already
 # sits at the receipt-verified cwd above, so no duplicated `--cwd` either.
-herdr agent start "$name" --kind claude --pane "$pane" -- "${resumed[@]}" >/dev/null
+#
+# TUR-505 hotfix r2 (live verify): the freshly created root pane may not have
+# reached its interactive shell prompt yet when agent start fires. The real
+# 0.7.5 binary then exits 1 with the structured stderr error
+#   {"error":{"code":"agent_pane_busy","message":"agent target pane <id> is
+#    not an available shell"},"id":"cli:agent:start"}
+# ONLY that structural error code retries, with bounded backoff: up to
+# HERDR_SPAWN_START_RETRIES (default 8) attempts, sleeping 0.5s doubling to a
+# 2s max between attempts (~10s total). Any OTHER agent start failure fails
+# immediately. On final failure (retries exhausted or non-busy error) the tab
+# created above is closed (real 0.7.5 grammar `tab close <tab_id>`, verified
+# via `herdr tab close --help`) so a failed spawn leaves no orphan tab, then
+# spawn exits non-zero with no success report.
+close_orphan_tab() {
+  herdr tab close "$tab" >/dev/null 2>&1 || true
+}
+start_retries="${HERDR_SPAWN_START_RETRIES:-8}"
+start_delay="0.5"
+start_attempt=0
+while :; do
+  start_attempt=$((start_attempt + 1))
+  start_rc=0
+  start_err="$(herdr agent start "$name" --kind claude --pane "$pane" -- "${resumed[@]}" 2>&1 >/dev/null)" || start_rc=$?
+  [[ "$start_rc" == 0 ]] && break
+  start_code="$(jq -r '.error.code // empty' <<<"$start_err" 2>/dev/null || true)"
+  if [[ "$start_code" != agent_pane_busy ]]; then
+    [[ -n "$start_err" ]] && printf '%s\n' "$start_err" >&2
+    echo "herdr-spawn: agent start failed with a non-busy error; closing the created tab $tab" >&2
+    close_orphan_tab
+    exit "$start_rc"
+  fi
+  if (( start_attempt >= start_retries )); then
+    printf '%s\n' "$start_err" >&2
+    echo "herdr-spawn: agent start still agent_pane_busy after $start_retries attempts; closing the created tab $tab" >&2
+    close_orphan_tab
+    exit "$start_rc"
+  fi
+  sleep "$start_delay"
+  case "$start_delay" in
+    0.5) start_delay=1 ;;
+    *) start_delay=2 ;;
+  esac
+done
 
 # Bootstrap is already verified. This loop only dismisses the one-time trusted-folder
 # dialog that Claude onboarding still shows on a fresh pane; it never infers

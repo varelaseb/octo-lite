@@ -228,6 +228,25 @@ fi
 #                                    topology change); argv recorded so tests
 #                                    can assert the exact launch grammar
 #   agent get <target>            -> the adopted pane (same id tab create gave)
+#     FAKE_START_BUSY_COUNT=N     -> TUR-505 hotfix r2 (ruling-93 fidelity):
+#                                    the first N `agent start` invocations exit
+#                                    non-zero printing the REAL 0.7.5 error
+#                                    shape on stderr (verified live: the CLI
+#                                    emits {"error":{"code":...,"message":...},
+#                                    "id":"cli:agent:start"} and exit 1; the
+#                                    live spawn failure printed code
+#                                    agent_pane_busy with message "agent target
+#                                    pane <id> is not an available shell");
+#                                    invocation N+1 onward succeeds. Counting
+#                                    persists in $FAKE_START_COUNT_FILE and
+#                                    per-invocation timestamps land in
+#                                    $FAKE_START_TIMES when set.
+#     FAKE_START_FAIL_OTHER=1     -> every `agent start` fails with a NON-busy
+#                                    real-shape error (agent_pane_not_found)
+#   tab close <tab_id>            -> REAL 0.7.5 grammar (verified live via
+#                                    `herdr tab close --help`: positional
+#                                    <tab_id>, no flags); recorded so tests can
+#                                    assert orphan-tab cleanup
 #   agent send-keys <target> ...  -> literal keystrokes (trust-dialog accept);
 #                                    fails non-zero with FAKE_SEND_KEYS_FAIL
 #   pane read <pane> ...          -> visible transcript; with FAKE_DIALOG_FIRST
@@ -264,6 +283,23 @@ elif [[ "$sub" == "agent start" ]]; then
     echo "error: the following required arguments were not provided: --kind --pane" >&2
     exit 2
   fi
+  [[ -n "${FAKE_START_TIMES:-}" ]] && date +%s.%N >>"$FAKE_START_TIMES"
+  n=0
+  if [[ -n "${FAKE_START_COUNT_FILE:-}" ]]; then
+    [[ -f "$FAKE_START_COUNT_FILE" ]] && n="$(cat "$FAKE_START_COUNT_FILE")"
+    n=$((n + 1))
+    echo "$n" >"$FAKE_START_COUNT_FILE"
+  fi
+  if [[ -n "${FAKE_START_FAIL_OTHER:-}" ]]; then
+    printf '{"error":{"code":"agent_pane_not_found","message":"agent target pane %s not found"},"id":"cli:agent:start"}\n' "$pane" >&2
+    exit 1
+  fi
+  if [[ -n "${FAKE_START_BUSY_COUNT:-}" && "$n" -le "$FAKE_START_BUSY_COUNT" ]]; then
+    printf '{"error":{"code":"agent_pane_busy","message":"agent target pane %s is not an available shell"},"id":"cli:agent:start"}\n' "$pane" >&2
+    exit 1
+  fi
+elif [[ "$sub" == "tab close" ]]; then
+  :
 elif [[ "$sub" == "agent get" ]]; then
   echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
 elif [[ "$sub" == "agent send-keys" ]]; then
@@ -1255,6 +1291,7 @@ exec {real_mv} "$@"
             FAKE_LOG=str(log),
             CALL_LOG=str(log),
             FAKE_READ_COUNT_FILE=str(root / "read-count"),
+            FAKE_START_COUNT_FILE=str(root / "start-count"),
             HERDR_SPAWN_BOOTSTRAP_RETRIES="2",
         )
         if ack_override:
@@ -1357,6 +1394,92 @@ exec {real_mv} "$@"
             # The receipt-verified cwd is still anchored where the tab is made.
             tab_call = next(call for call in calls if call.startswith("tab create"))
             self.assertIn(f"--cwd {repo}", tab_call)
+
+    def test_spawn_retries_agent_start_on_agent_pane_busy_until_the_shell_is_ready(self):
+        # TUR-505 hotfix r2: live verify showed `agent start` firing before the
+        # freshly created root pane reaches its shell prompt; the real binary
+        # answers exit 1 with the structured stderr error code agent_pane_busy
+        # ("pane ... is not an available shell"). Spawn must retry ONLY that
+        # error with bounded backoff (0.5s doubling to max 2s) and succeed once
+        # the pane is ready, instead of failing the whole spawn immediately.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            env["FAKE_START_BUSY_COUNT"] = "2"
+            env["FAKE_START_TIMES"] = str(Path(td) / "start-times")
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("bootstrap=acknowledged", result.stdout)
+            calls = log.read_text().splitlines()
+            start_calls = [call for call in calls if call.startswith("agent start")]
+            self.assertEqual(3, len(start_calls), calls)
+            # Backoff sleeps actually happened between attempts: 0.5s then 1s.
+            times = [float(line) for line in Path(env["FAKE_START_TIMES"]).read_text().split()]
+            self.assertEqual(3, len(times))
+            self.assertGreaterEqual(times[1] - times[0], 0.4, times)
+            self.assertGreaterEqual(times[2] - times[1], 0.9, times)
+            # A successful retry leaves no cleanup artifacts behind.
+            self.assertFalse(any(call.startswith("tab close") for call in calls), calls)
+
+    def test_spawn_closes_the_orphan_tab_when_agent_pane_busy_retries_exhaust(self):
+        # TUR-505 hotfix r2 orphan cleanup: when the pane never reaches a shell
+        # prompt and every bounded retry answers agent_pane_busy, spawn must
+        # exit non-zero with NO success report and close the tab it created
+        # (real 0.7.5 grammar `tab close <tab_id>`), leaving no orphan tab.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            env["FAKE_START_BUSY_COUNT"] = "99"
+            env["HERDR_SPAWN_START_RETRIES"] = "3"
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode, result.stdout)
+            self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn("agent_pane_busy", result.stderr)
+            calls = log.read_text().splitlines()
+            start_calls = [call for call in calls if call.startswith("agent start")]
+            self.assertEqual(3, len(start_calls), calls)
+            self.assertIn("tab close w1:t1", calls, calls)
+            # Cleanup happens after the final failed start, and the spawn never
+            # proceeds to the trust-dialog flow on a failed start.
+            self.assertFalse(any(call.startswith("agent send-keys") for call in calls), calls)
+            self.assertFalse(any(call.startswith("pane read") for call in calls), calls)
+
+    def test_spawn_fails_immediately_and_cleans_up_on_a_non_busy_agent_start_error(self):
+        # TUR-505 hotfix r2: ONLY agent_pane_busy retries. Any other structured
+        # `agent start` failure (here the real-shape agent_pane_not_found) must
+        # fail immediately with exactly one start attempt, no backoff, no
+        # success report, and still close the created tab.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            self.spawn_git_repo(repo)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            env["FAKE_START_FAIL_OTHER"] = "1"
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode, result.stdout)
+            self.assertNotIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn("agent_pane_not_found", result.stderr)
+            calls = log.read_text().splitlines()
+            start_calls = [call for call in calls if call.startswith("agent start")]
+            self.assertEqual(1, len(start_calls), calls)
+            self.assertIn("tab close w1:t1", calls, calls)
+            self.assertFalse(any(call.startswith("agent send-keys") for call in calls), calls)
 
     def test_spawn_auto_accepts_the_trust_dialog_with_literal_send_keys(self):
         # The Claude onboarding trust dialog still appears on a fresh pane. The
