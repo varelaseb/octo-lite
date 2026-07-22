@@ -454,17 +454,25 @@ def _prepare_worktree(
         raise GateError("target AGENTS.md missing")
 
 
-def _provision_record_owns_worktree(worktree: Path) -> bool:
+def _owning_provision_record(worktree: Path) -> Path | None:
     """provision-record-guard (TUR-447 d1, workspace-cleanup-clean-abort,
     launch-provision-record-schema): prove workspace-admit created and owns THIS
-    exact worktree before any error-path removal. Ownership is proven only by a
-    host-provision record at a host-known location, the OCTO_PROVISION_RECORD
-    seam path or a workspace-admit-written .octo-provisions record beside the
-    worktree, that passes the frozen schema validation (source
-    host-provisioned-worktree, schema_version 1, via validate_provision_record)
-    and whose record.worktree is this worktree. Anything unreadable, malformed,
-    or bound to a different worktree proves nothing, so the answer stays False
-    and the worktree is preserved."""
+    exact worktree before any error-path removal, returning the proving record's
+    path (for retirement after a successful removal) or None. Ownership is
+    proven only by a host-provision record at a host-known location, the
+    OCTO_PROVISION_RECORD seam path or a workspace-admit-written
+    .octo-provisions record beside the worktree, that passes the frozen schema
+    validation (source host-provisioned-worktree, schema_version 1, via
+    validate_provision_record) and whose record.worktree is this worktree.
+
+    TUR-447 cycle-2 P1-2b (provision-instance binding): a pathname match alone
+    is NOT ownership. The record must also match the LIVE worktree's identity
+    through non-destructive checks: the worktree's git common dir must resolve
+    to the record's control_repo, and the worktree's checked-out branch must
+    equal the record's branch. A stale record plus a hand-recreated worktree at
+    the same conventional path (a different branch, a different repo, or a
+    detached HEAD) therefore proves nothing. Anything unreadable, malformed,
+    mismatched, or unprovable stays None and the worktree is preserved."""
     resolved = Path(worktree).resolve()
     target = str(resolved)
     candidates: list[Path] = []
@@ -484,9 +492,22 @@ def _provision_record_owns_worktree(worktree: Path) -> bool:
             validate_provision_record(record)
         except GateError:
             continue
-        if str(record["worktree"]) == target:
-            return True
-    return False
+        if str(record["worktree"]) != target:
+            continue
+        try:
+            if _worktree_common_dir(resolved) != _worktree_common_dir(Path(str(record["control_repo"]))):
+                continue
+            actual_branch = _git(resolved, "symbolic-ref", "--short", "HEAD")
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        if actual_branch != str(record["branch"]):
+            continue
+        return path
+    return None
+
+
+def _provision_record_owns_worktree(worktree: Path) -> bool:
+    return _owning_provision_record(worktree) is not None
 
 
 def cleanup_clean_abort(
@@ -507,13 +528,22 @@ def cleanup_clean_abort(
     host-provision record must prove workspace-admit created and owns it. A
     foreign or hand-created worktree with no such matching record is PRESERVED,
     never force-removed, even when clean and at the exact expected head; the
-    pristine-only checks below stay as additional guards, never the sole basis."""
+    pristine-only checks below stay as additional guards, never the sole basis.
+
+    TUR-447 cycle-2 P1-2: ownership is bound to the provision INSTANCE, not the
+    pathname (_owning_provision_record checks control_repo and branch identity
+    against the live worktree), and a successful record-authorized removal
+    RETIRES the proving record, so a stale record can never re-authorize
+    deleting a later hand-created worktree at the same conventional path."""
     repo = Path(repo)
     worktree = Path(worktree)
     if worktree == repo or not worktree.is_dir():
         return
-    if not gateway_provisioned and not _provision_record_owns_worktree(worktree):
-        return
+    record_path: Path | None = None
+    if not gateway_provisioned:
+        record_path = _owning_provision_record(worktree)
+        if record_path is None:
+            return
     try:
         if _worktree_common_dir(worktree) != _worktree_common_dir(repo):
             return
@@ -530,6 +560,13 @@ def cleanup_clean_abort(
         )
     except subprocess.CalledProcessError:
         return
+    # Record retirement (TUR-447 cycle-2 P1-2a): the worktree this record
+    # authorized removing is gone, so the record's authority ends with it.
+    if record_path is not None:
+        try:
+            record_path.unlink()
+        except OSError:
+            pass
 
 
 # gh#8 host-provisioned isolated worktree (spec launch-provisioning-trust-root,
@@ -1666,7 +1703,14 @@ def run_bootstrap(
     under the full receipt revalidation and the same acknowledgment-fact checks,
     instead of being forced through a fresh --session-id create the provider
     refuses as a duplicate session; nothing about revalidation or the ack and
-    session re-checks is weakened."""
+    session re-checks is weakened.
+
+    TUR-447 cycle-2 P1-1a: a receipt claiming bootstrap verified=true with a
+    MISSING or BLANK provider_session_id is INCONSISTENT (the partially-written
+    shape a crashed prior run leaves behind). It is rejected fail-closed BEFORE
+    any provider invocation, never misclassified as FRESH into a fresh-session
+    attempt the provider refuses as a duplicate, and its previously-verified
+    worktree is never touched."""
     with prepared.receipt_path.open("rb") as handle:
         receipt = tomllib.load(handle)
     # Pre-provider boundary: revalidate manifest shape and launch revision
@@ -1676,8 +1720,13 @@ def run_bootstrap(
     worktree = receipt["workspace"]["worktree"]
     provider = receipt["runtime"]["provider"]
     bootstrap_state = receipt.get("bootstrap") or {}
-    recorded_session = str(bootstrap_state.get("provider_session_id") or "")
-    reverify = bootstrap_state.get("verified") is True and bool(recorded_session)
+    recorded_session = str(bootstrap_state.get("provider_session_id") or "").strip()
+    prior_verified = bootstrap_state.get("verified") is True
+    if prior_verified and not recorded_session:
+        raise GateError(
+            "inconsistent bootstrap state: verified without provider_session_id"
+        )
+    reverify = prior_verified
     argv = _reverify_argv(prepared, provider, recorded_session) if reverify else prepared.bootstrap_argv
     try:
         bootstrap = runner(
@@ -1706,11 +1755,12 @@ def run_bootstrap(
         # acknowledgment echo is verified, so a fresh-bootstrap failure removes
         # the worktree only when it is still pristine at the exact starting head
         # AND host-provision ownership is proven (provision-record-guard); a
-        # foreign or hand-created worktree is preserved. A RE-VERIFY failure
-        # happens after a previously verified acknowledgment, so it never
-        # removes the session's worktree at all
-        # (launch-bootstrap-reverify-idempotent).
-        if not reverify:
+        # foreign or hand-created worktree is preserved. Any failure on a
+        # receipt claiming PRIOR VERIFICATION (verified=true, TUR-447 cycle-2
+        # P1-1b) happens against a previously-verified workspace, so it never
+        # removes the session's worktree at all; the worktree is preserved for
+        # inspection (launch-bootstrap-reverify-idempotent).
+        if not prior_verified:
             cleanup_clean_abort(
                 Path(receipt["workspace"]["repo"]),
                 Path(worktree),
