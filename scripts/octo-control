@@ -16,6 +16,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from octo_lite.launch import provision_lane_worktree, verify_relay_verbatim  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflows" / "lib"))
+
+from role_resolver import load_registry  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
     GateError,
     admit_workspace,
@@ -146,10 +150,24 @@ def _read_shaping_verdict_journal(path: Path, issue: str) -> dict:
         raise GateError(
             "journalled shaping verdict lacks rollout-record provenance: interim ack-echo authority retired"
         )
+    # F5-r2 fix 2: the EXPECTED model/effort come from the CANONICAL roles.toml
+    # shaping-reviewer role runtime via the role resolver, NOT from the journal's
+    # self-reported codex_model/codex_effort. A forged journal that names its own
+    # (weaker) model/effort and points at a matching rollout would otherwise
+    # self-attest; verifying like-with-like against the canonical reviewer
+    # runtime closes that. The journal's self-reported fields must ALSO equal the
+    # canonical values (a divergent self-report signals a mis-provisioned or
+    # tampered journal and is rejected before the rollout readback).
+    expected_model, expected_effort = _canonical_shaping_reviewer_identity()
+    if entry["codex_model"] != expected_model or entry["codex_effort"] != expected_effort:
+        raise GateError(
+            "journalled shaping verdict self-reported model/effort does not match the canonical "
+            "roles.toml shaping-reviewer runtime"
+        )
     # Rollout readback (role-runtime launch-shaping-authority, role-openai-fail-closed,
     # decision-identity-source): the declared provenance session id must resolve to
     # an ACTUAL codex rollout record under CODEX_HOME/sessions proving effective
-    # provider=openai and the declared model/effort, and the verdict payload +
+    # provider=openai and the CANONICAL model/effort, and the verdict payload +
     # its sha256 must match that rollout's own final assistant message. An
     # arbitrary session id or hash with no resolvable rollout record, or a
     # non-OpenAI provider or wrong model/effort, is rejected fail-closed. The
@@ -159,14 +177,121 @@ def _read_shaping_verdict_journal(path: Path, issue: str) -> dict:
             entry["codex_session_id"],
             entry["verdict_payload"],
             entry["verdict_sha256"],
-            entry["codex_model"],
-            entry["codex_effort"],
+            expected_model,
+            expected_effort,
         )
     except GateError as error:
         raise GateError(
             f"journalled shaping verdict rollout readback failed: {error}"
         ) from error
     return entry
+
+
+def _canonical_shaping_reviewer_identity() -> tuple[str, str]:
+    # Derive the expected reviewer provider identity from the canonical
+    # roles.toml shaping-reviewer runtime (decision-identity-source): the
+    # readback verifies the rollout matches THIS canonical value, like-with-like,
+    # so a journal cannot name its own model/effort and self-authorize.
+    registry = load_registry(Path(__file__).resolve().parents[1])
+    role = registry.roles.get("shaping-reviewer")
+    if role is None:
+        raise GateError("canonical roles.toml has no shaping-reviewer role")
+    if role.provider != "openai":
+        raise GateError("canonical shaping-reviewer provider is not openai")
+    return role.model, role.effort
+
+
+# D4 shaping-verdict journal PRODUCER (role-runtime launch-shaping-authority,
+# role-openai-relay, role-openai-fail-closed; delivery-lifecycle
+# shaping-operator-approval-order; operating-model decision-identity-source):
+# the production writer that persists the journalled clear shaping verdict Unit
+# J's _read_shaping_verdict_journal consumes. It does NOT trust caller-supplied
+# payload/sha256/model/effort: it resolves the shaping-reviewer relay's exact
+# codex session id to codex's OWN rollout record under CODEX_HOME/sessions
+# (verify_relay_verbatim), proving effective provider=openai and the CANONICAL
+# roles.toml shaping-reviewer model/effort, and takes the VERBATIM final
+# assistant message and its sha256 from that record. The persisted journal
+# therefore carries only rollout-record-grade provenance, and reading it back
+# through the consumer proves the round-trip is authority-satisfying.
+def command_shaping_verdict_journal_write(args) -> dict:
+    path = Path(args.journal)
+    head = args.head.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise GateError("shaping verdict journal requires a 40-hex --head")
+    if not isinstance(args.pr, int):
+        raise GateError("shaping verdict journal requires --pr")
+    repo_slug = _canonical_slug(args.repo_slug)
+    if not isinstance(args.codex_session_id, str) or not args.codex_session_id.strip():
+        raise GateError("shaping verdict journal requires --codex-session-id")
+    session_id = args.codex_session_id.strip()
+    # Canonical reviewer identity (never caller-supplied): the readback verifies
+    # the rollout matches THIS canonical value, like-with-like.
+    expected_model, expected_effort = _canonical_shaping_reviewer_identity()
+    # Rollout readback: resolve the relay session id to codex's OWN rollout
+    # record, prove provider=openai and the canonical model/effort, and take the
+    # VERBATIM final assistant message from that record. Caller-supplied
+    # payload/sha256 are never a source; an absent or wrong-identity rollout
+    # fails closed here. The producer commits to exactly the record's own final
+    # message and its digest, then re-verifies via verify_relay_verbatim so the
+    # persisted payload/sha256 are the SAME the consumer independently reproves.
+    payload = _rollout_final_message(session_id)
+    verdict_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    record = verify_relay_verbatim(
+        session_id, payload, verdict_sha256, expected_model, expected_effort,
+    )
+    # The persisted verdict must genuinely clear THIS exact issue, PR, and head,
+    # exactly as Unit J's rollout-message binding requires; a rollout that
+    # cleared a different issue, blocked, or named a different PR/head is
+    # rejected before the journal is written, so a mis-provisioned pipeline
+    # never persists an unusable journal.
+    _verify_rollout_message_binds_verdict(payload, issue=args.issue, pr=args.pr, head=head)
+    entry = {
+        "schema_version": 1,
+        "review_type": "shaping",
+        "verdict": "clear",
+        "issue": args.issue,
+        "repo": repo_slug,
+        "pr": args.pr,
+        "head": head,
+        "codex_session_id": args.codex_session_id.strip(),
+        "verdict_payload": payload,
+        "verdict_sha256": verdict_sha256,
+        "codex_model": record["model"],
+        "codex_effort": record["effort"],
+        "provenance": "relay-verbatim-rollout",
+    }
+    _atomic_write_text(path, json.dumps(entry, sort_keys=True))
+    # Consumer round-trip: read the persisted journal back through the exact
+    # consumer Unit J uses, so a journal this producer writes is proven
+    # authority-satisfying before success is reported.
+    verified = _read_shaping_verdict_journal(path, args.issue)
+    return {
+        "journal": str(path.resolve()),
+        "issue": verified["issue"],
+        "repo": verified["repo"],
+        "pr": verified["pr"],
+        "head": verified["head"],
+        "verdict": verified["verdict"],
+        "codex_session_id": verified["codex_session_id"],
+        "verdict_sha256": verified["verdict_sha256"],
+        "codex_model": verified["codex_model"],
+        "codex_effort": verified["codex_effort"],
+        "provenance": verified["provenance"],
+    }
+
+
+def _rollout_final_message(session_id: str) -> str:
+    # Resolve the verbatim final assistant message from codex's own rollout
+    # record. This is the SAME record verify_relay_verbatim proves; reading it
+    # first lets the producer commit to exactly that verbatim payload and its
+    # digest rather than trusting any caller-supplied text.
+    from octo_lite.launch import _read_codex_rollout_record  # noqa: E402
+
+    record = _read_codex_rollout_record(session_id)
+    message = record.get("final_message") or ""
+    if not message:
+        raise GateError("shaping verdict journal: rollout record has no final assistant message")
+    return message
 
 
 def _verify_shaped_transition_authority(args) -> dict:
@@ -241,11 +366,79 @@ def _verify_shaped_transition_authority(args) -> dict:
     record = _verify_intent_record(
         stream_dir / "intent-record.toml", args.repo, cli_slug, args.trusted_publisher
     )
+    # F5-r2 fix 3: bind the journalled verdict tuple (verdict=clear, issue, PR,
+    # HEAD) to the actual rollout final message the verdict provenance resolves
+    # to, so an unrelated / different-issue / blocking real rollout cannot back
+    # an arbitrary clear Shaped transition for THIS issue and head. The verdict
+    # journal already proved (in _read_shaping_verdict_journal) that its payload
+    # equals the rollout record's own final assistant message; here that same
+    # payload must COMMIT to this exact issue, PR, and clear-verdict HEAD.
     if record["head"] != verdict["head"]:
         raise GateError("operator-intent record head mismatch with journalled verdict")
     if record["pr"] != verdict["pr"]:
         raise GateError("operator-intent record pr mismatch with journalled verdict")
+    _verify_rollout_message_binds_verdict(
+        verdict["verdict_payload"], issue=args.issue, pr=verdict["pr"], head=verdict["head"]
+    )
     return {"repo_slug": cli_slug, "pr": verdict["pr"], "head": verdict["head"]}
+
+
+def _verify_rollout_message_binds_verdict(payload: str, *, issue: str, pr: int, head: str) -> None:
+    # F5-r2 fix 3: the rollout final assistant message (proven verbatim equal to
+    # the verdict payload in the rollout readback) must itself COMMIT to this
+    # exact clear verdict on this exact issue, PR, and HEAD. Verbatim-payload
+    # equality alone is insufficient: without this, a real rollout that cleared a
+    # DIFFERENT issue, or blocked, or named a different PR/HEAD, could back an
+    # arbitrary clear Shaped transition for this issue and head. The reviewer
+    # rollout message must name the issue, the PR (`PR <n>` / `#<n>`), the exact
+    # 40-hex HEAD, and a clear-verdict marker; a mis-provisioned pipeline that
+    # pointed at an unrelated rollout is rejected fail-closed.
+    #
+    # D3 cycle2 (F5): the shaping-reviewer final message is PROSE (roles/
+    # shaping-reviewer.md: "one exact-revision clear or blocking PR verdict
+    # artifact"), not structured JSON, so this scans anchored lexically. But the
+    # binding must be EXACT, not merely lexical:
+    #   - issue: whole-token match, else `TUR-10` (or `TUR-4470`) backs `TUR-1`
+    #     (or `TUR-447`) via substring, and `PR 60` backs `PR 6`.
+    #   - verdict: a GENUINE clear assertion; a blocking message or negated clear
+    #     (`not clear`, `cannot clear`, `unclear`, `blocking`) is rejected, since
+    #     a bare `\bclear\b` matches "Not clear to proceed".
+    text = payload if isinstance(payload, str) else ""
+    missing: list[str] = []
+    # Whole-token identifier: no alphanumeric or hyphen adjacent, so TUR-1 does
+    # not match TUR-10 and TUR-447 does not match TUR-4470.
+    if not re.search(
+        rf"(?<![A-Za-z0-9-]){re.escape(issue)}(?![A-Za-z0-9-])", text
+    ):
+        missing.append("issue")
+    # Exact PR token: the `PR `/`#` prefix anchors the front and the trailing
+    # `(?![0-9])` anchors the back, so PR 6 does not match PR 60 or PR 16.
+    if not re.search(rf"(?:PR\s*|#)0*{pr}(?![0-9])", text):
+        missing.append("pr")
+    if head not in text:
+        missing.append("head")
+    # Genuine clear verdict: an explicit clear assertion AND no blocking/negated
+    # -clear marker. A blocking message that merely contains the word clear (e.g.
+    # "Not clear to proceed") is rejected fail-closed.
+    blocking = re.search(
+        r"\b(?:blocking|blocked|unclear|not\s+clear|cannot\s+clear|can't\s+clear|"
+        r"no[nt]-?\s*clear)\b",
+        text,
+        re.IGNORECASE,
+    )
+    genuine_clear = re.search(
+        r"(?:^|(?<![A-Za-z]))(?:verdict\s*[:=]\s*clear|VERDICT\s+clear)"
+        r"(?![A-Za-z])",
+        text,
+        re.IGNORECASE,
+    )
+    if blocking is not None or genuine_clear is None:
+        missing.append("clear-verdict")
+    if missing:
+        raise GateError(
+            "journalled verdict rollout message does not bind this issue/pr/head/clear verdict: "
+            + ", ".join(missing)
+        )
 
 
 def _verify_fresh_shaping_head(repo: str, pr: object, expected_head: str) -> None:
@@ -312,8 +505,14 @@ def command_linear_transition(args) -> dict:
 
 
 def command_verdict(args) -> dict:
+    # F5-r2 fix 4 (the --repo dual-use bug): --repo is the LOCAL git path,
+    # --repo-slug is the canonical owner/repo gh identity used for gh pr view /
+    # gh api, exactly like linear-transition. A filesystem path is never a valid
+    # gh slug, so the two are separate arguments and a local path can no longer
+    # leak into gh calls.
+    slug = _canonical_slug(args.repo_slug)
     current = run_json(
-        ["gh", "pr", "view", str(args.pr), "--repo", args.repo, "--json", "headRefOid"]
+        ["gh", "pr", "view", str(args.pr), "--repo", slug, "--json", "headRefOid"]
     )["headRefOid"]
     if current != args.head:
         raise GateError("PR HEAD mismatch")
@@ -329,14 +528,14 @@ def command_verdict(args) -> dict:
     )
     marker = f"<!-- octo-lite-verdict:{args.review_type} -->"
     comments = run_json(
-        ["gh", "api", f"repos/{args.repo}/issues/{args.pr}/comments", "--paginate"]
+        ["gh", "api", f"repos/{slug}/issues/{args.pr}/comments", "--paginate"]
     )
     existing = next((item for item in comments if marker in item.get("body", "")), None)
     if existing:
         published = run_json(
             [
                 "gh", "api", "--method", "PATCH",
-                f"repos/{args.repo}/issues/comments/{existing['id']}",
+                f"repos/{slug}/issues/comments/{existing['id']}",
                 "-f", f"body={body}",
             ]
         )
@@ -344,12 +543,12 @@ def command_verdict(args) -> dict:
         published = run_json(
             [
                 "gh", "api", "--method", "POST",
-                f"repos/{args.repo}/issues/{args.pr}/comments",
+                f"repos/{slug}/issues/{args.pr}/comments",
                 "-f", f"body={body}",
             ]
         )
     readback = run_json(
-        ["gh", "api", f"repos/{args.repo}/issues/comments/{published['id']}"]
+        ["gh", "api", f"repos/{slug}/issues/comments/{published['id']}"]
     )
     if readback.get("body") != body:
         raise GateError("verdict comment readback mismatch")
@@ -598,11 +797,27 @@ def _fetch_intent_comment(repo_slug: str, comment_id: int) -> dict | None:
     return comment
 
 
+def _derive_trusted_publisher() -> str:
+    # F5-r2 fix 1 (delivery-tdd-trusted-command-source discipline applied to the
+    # operator-intent surface): the trusted publisher is DERIVED from a
+    # non-caller source, the authenticated gh actor of the control identity that
+    # actually posts the intent surface, NEVER a caller-supplied flag. A caller
+    # cannot self-authorize by naming a forged identity because it cannot forge
+    # the authenticated `gh api user` login of the control CLI. This is the same
+    # identity command_intent_record stamps as `publisher` at publication time.
+    try:
+        user = run_json(["gh", "api", "user"])
+    except subprocess.CalledProcessError as error:
+        raise GateError("trusted publisher underivable: gh authenticated identity unavailable") from error
+    login = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(login, str) or not login.strip():
+        raise GateError("trusted publisher underivable: gh authenticated identity has no login")
+    return login
+
+
 def _verify_intent_record(
-    path: Path, repo_local: str, repo_slug: str, trusted_publisher: str
+    path: Path, repo_local: str, repo_slug: str, caller_publisher: str | None = None
 ) -> dict:
-    if not isinstance(trusted_publisher, str) or not trusted_publisher.strip():
-        raise GateError("intent record verify requires a trusted publisher identity")
     record = _read_intent_record(path)
     head = record["head"]
     if not re.fullmatch(r"[0-9a-f]{40}", head):
@@ -626,6 +841,18 @@ def _verify_intent_record(
     )
     if record["surface_sha256"] != _surface_digest(expected_body):
         raise GateError("intent record surface digest does not bind its own fields")
+    # F5-r2 fix 1: the trusted publisher is DERIVED here from the authenticated
+    # gh actor of the control identity, a NON-caller source, only after the
+    # local record self-checks pass (so a missing/malformed record still fails
+    # before any gh call). A caller-supplied value is never the source; when
+    # present it is only a misconfiguration cross-check and must equal the
+    # derived identity, else the pipeline is mis-provisioned and fails closed.
+    trusted_publisher = _derive_trusted_publisher()
+    if caller_publisher is not None and caller_publisher.strip() and caller_publisher != trusted_publisher:
+        raise GateError(
+            "caller-supplied trusted publisher differs from the derived control identity: "
+            "trusted publisher is derived, not caller-selected"
+        )
     # Unforgeable publication identity: fetch the EXACT bound comment id off the
     # live PR surface and require (a) it actually exists, (b) its body digest
     # equals the record digest, and (c) its author login equals the trusted
@@ -656,8 +883,9 @@ def command_intent_record(args) -> dict:
     # canonical owner/repo gh identity. A single value cannot serve both.
     repo_slug = _canonical_slug(args.repo_slug)
     if args.verify:
-        if not isinstance(args.trusted_publisher, str) or not args.trusted_publisher.strip():
-            raise GateError("intent record verify requires --trusted-publisher")
+        # --trusted-publisher is no longer required and is never the authority
+        # source: it is derived from the authenticated control identity. A
+        # supplied value is only a cross-check against that derived identity.
         record = _verify_intent_record(path, args.repo, repo_slug, args.trusted_publisher)
         return {
             "record": str(path.resolve()),
@@ -871,7 +1099,8 @@ def parser() -> argparse.ArgumentParser:
     transition.set_defaults(run=command_linear_transition)
 
     verdict = sub.add_parser("verdict-publish")
-    verdict.add_argument("--repo", required=True)
+    verdict.add_argument("--repo", required=True, help="local repo path")
+    verdict.add_argument("--repo-slug", required=True, help="canonical owner/repo slug for gh api / gh pr view")
     verdict.add_argument("--pr", type=int, required=True)
     verdict.add_argument("--review-type", choices=["shaping", "code"], required=True)
     verdict.add_argument("--verdict", choices=["clear", "blocking"], required=True)
@@ -1013,6 +1242,18 @@ def parser() -> argparse.ArgumentParser:
     cleanup.add_argument("--expected-head", required=True)
     cleanup.add_argument("--remote-ref", required=True)
     cleanup.set_defaults(run=command_workspace_cleanup)
+
+    shaping_journal = sub.add_parser("shaping-verdict-journal-write")
+    shaping_journal.add_argument("--journal", required=True, help="output journal path Unit J consumes")
+    shaping_journal.add_argument("--issue", required=True)
+    shaping_journal.add_argument("--repo-slug", required=True, help="canonical owner/repo slug")
+    shaping_journal.add_argument("--pr", type=int, required=True)
+    shaping_journal.add_argument("--head", required=True, help="40-hex clear-verdict head")
+    shaping_journal.add_argument(
+        "--codex-session-id", required=True,
+        help="shaping-reviewer relay codex session id whose rollout record backs the verdict",
+    )
+    shaping_journal.set_defaults(run=command_shaping_verdict_journal_write)
     return root
 
 

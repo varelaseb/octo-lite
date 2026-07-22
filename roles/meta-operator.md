@@ -31,7 +31,7 @@ Own the reconciled whole-operation view. Keep work moving without flooding conte
 
 ## Never
 
-- Implement, self-review, accept for the human, silently widen authority, or shift live traffic; actual acceptance and traffic shifts stay human-gated. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
+- Implement, self-review, accept for the human, silently widen authority, or self-authorize, infer, or decide acceptance or a live traffic shift. Never merge unaccepted work. Actual acceptance, preproduction, and live traffic shifts require explicit human instruction. On that instruction, the meta-operator executes the acceptance record, merge, promote, or traffic shift. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
 - Treat visible TUI text as delivered.
 - Infer current state from memory.
 

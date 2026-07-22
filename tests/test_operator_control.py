@@ -2157,11 +2157,14 @@ class OperatorControlTests(unittest.TestCase):
         pr: int = 7, verdict: str = "clear", provenance: bool = True,
         ack_echo: bool = False, codex_home: Path | None = None,
         session_id: str = "codex-session-1", model: str = "gpt-5.6-sol",
-        effort: str = "high", write_rollout: bool = True,
+        effort: str = "xhigh", write_rollout: bool = True,
         rollout_provider: str = "openai", rollout_model: str | None = None,
-        rollout_effort: str | None = None,
+        rollout_effort: str | None = None, payload: str | None = None,
     ) -> None:
-        payload = "SHAPING VERDICT: clear at exact head " + head
+        # F5-r2 fix 3: the reviewer rollout final message (== verdict payload)
+        # must COMMIT to this exact clear verdict on this issue, PR, and HEAD.
+        if payload is None:
+            payload = f"SHAPING VERDICT clear for {issue} PR {pr} at exact head {head}"
         entry: dict = {
             "schema_version": 1, "review_type": "shaping", "verdict": verdict,
             "issue": issue, "repo": repo, "pr": pr, "head": head,
@@ -2573,26 +2576,30 @@ class OperatorControlTests(unittest.TestCase):
                         env=env, capture_output=True, text=True,
                     )
                     calls = call_log.read_text().splitlines() if call_log.exists() else []
-                    # The operator-intent surface fetch precedes the compare
-                    # read, then fresh-head, mutate, readback, notify.
-                    self.assertTrue(calls[0].startswith("gh api"), calls)
-                    self.assertIn("/comments", calls[0])
+                    # F5-r2 fix 1: the trusted publisher is derived from the
+                    # authenticated gh actor (gh api user) before the intent
+                    # comment fetch, so the intent verification opens with that
+                    # derivation, then the surface fetch, then the compare read,
+                    # fresh-head, mutate, readback, notify.
+                    self.assertEqual("gh api user", calls[0], calls)
+                    self.assertTrue(calls[1].startswith("gh api"), calls)
+                    self.assertIn("/comments", calls[1])
                     if expect_ok:
                         self.assertEqual(0, result.returncode, result.stderr)
                         self.assertEqual("Shaped", state_file.read_text())
-                        self.assertEqual(6, len(calls), calls)
-                        self.assertTrue(calls[1].startswith("linear issue view"), calls)
-                        self.assertTrue(calls[2].startswith("gh pr view 7"), calls)
-                        self.assertIn("headRefOid", calls[2])
-                        self.assertTrue(calls[3].startswith("linear issue update"), calls)
-                        self.assertTrue(calls[4].startswith("linear issue view"), calls)
-                        self.assertTrue(calls[5].startswith("herdr-say "), calls)
+                        self.assertEqual(7, len(calls), calls)
+                        self.assertTrue(calls[2].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[3].startswith("gh pr view 7"), calls)
+                        self.assertIn("headRefOid", calls[3])
+                        self.assertTrue(calls[4].startswith("linear issue update"), calls)
+                        self.assertTrue(calls[5].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[6].startswith("herdr-say "), calls)
                     else:
                         self.assertNotEqual(0, result.returncode)
                         self.assertEqual("Todo", state_file.read_text())
-                        self.assertEqual(3, len(calls), calls)
-                        self.assertTrue(calls[1].startswith("linear issue view"), calls)
-                        self.assertTrue(calls[2].startswith("gh pr view 7"), calls)
+                        self.assertEqual(4, len(calls), calls)
+                        self.assertTrue(calls[2].startswith("linear issue view"), calls)
+                        self.assertTrue(calls[3].startswith("gh pr view 7"), calls)
 
 
 if __name__ == "__main__":
@@ -2784,6 +2791,10 @@ def field(flag):
 
 if argv[:2] == ["pr", "view"]:
     print(json.dumps({"headRefOid": os.environ.get("GH_HEAD", "")}))
+    sys.exit(0)
+
+if argv[:2] == ["api", "user"]:
+    print(json.dumps({"login": os.environ.get("GH_ACTOR", os.environ.get("GH_PUBLISHER", "octo-lite-bot"))}))
     sys.exit(0)
 
 if argv[0] == "api":

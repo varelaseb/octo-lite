@@ -85,6 +85,23 @@ Do not create extra workflow labels unless the operator explicitly asks.
 - Do not depend on the formal Review API, reviewer identity, checks, or labels.
 - Never merge or approve as the human reviewer.
 
+## Merge And Linear Sync
+
+- Merge to the main branch is not a separate carve-out; it is the operator
+  agent's mechanical execution of an accepted PR, bound to the human acceptance
+  instruction. The operator or meta-operator agent executes the merge on that
+  acceptance instruction. No worker merges, no agent decides acceptance, and no
+  agent merges unaccepted work.
+  Once a merge lands, its tracked issue owes the `In Staging` transition: the
+  merge is not complete until Linear reflects that the merge-sha is genuinely
+  an ancestor of the deployed main branch.
+- Do not rely on a human remembering that move. Where the target repo provides
+  a post-merge hook that records `In Staging` from the merge-sha reality check,
+  that hook is the enforcement; state the expectation, let the hook fire it, and
+  verify it landed.
+- Only advance, never regress: leave an issue already at or beyond `In Staging`
+  untouched, and never claim a rung the repository reality has not reached.
+
 ## Boundaries
 
 - Do not create, update, close, label, or comment on GitHub issues for
@@ -92,5 +109,7 @@ Do not create extra workflow labels unless the operator explicitly asks.
 - Do not create workflow labels beyond `octo-lite:ready` in GitHub-first work
   unless the operator explicitly asks.
 - Do not create extra PRs for the same issue.
-- Do not merge.
-- Do not approve as the human reviewer.
+- No worker or reviewer role merges or approves as the human reviewer.
+- Only the operator or meta-operator agent executes a merge, and only on
+  explicit human acceptance and instruction, per Merge And Linear Sync above;
+  no agent merges unaccepted work or decides acceptance itself.

@@ -80,6 +80,18 @@ const BREAK_OBSERVER = (src) => removeSeamGate(
   'assertObservedCommittedStates(observation, binding, boundTest)',
   'void observation; void binding; void boundTest',
 )
+// TUR-447 ruling-61: break the pre-push live-worktree RE-ANCHOR. With assertPrePushWorktreeReAnchor
+// removed from hostGatedPushCommittedBranch, the receipt-pinned worktree's live branch/origin are no
+// longer re-checked immediately before the push, so a branch checkout / origin change between the
+// initial identity check and the push (the tur-456 accidental-misrouting shape) is no longer caught.
+const BREAK_PREPUSH_REANCHOR = (src) => removeSeamGate(
+  src,
+  `    assertPrePushWorktreeReAnchor(
+      { branch: envelope.branch, repo_slug: ghRepoSlug() },
+      reAnchor,
+    )`,
+  '    void reAnchor',
+)
 
 // --- Composed-harness fixtures (mirrors loop_composed.test.mjs) --------------------------------
 const REPO = '/root/octo-lite'
@@ -229,7 +241,7 @@ function implementScript({
   fireState = 'Todo', fireFingerprint = fingerprintFor('Todo'),
   mutationOverrides = {}, prePush, gitRead = gitReadFor(), observation = observationFor(), postPush,
   liveness = { linear_state: 'Todo', linear_fingerprint: fingerprintFor('Todo'), branch: BRANCH },
-  receipt = receiptFor(), reality = worktreeRealityFor(),
+  receipt = receiptFor(), reality = worktreeRealityFor(), prePushReAnchor = worktreeRealityFor({ head: FINAL_COMMIT }),
 } = {}) {
   const goodRed = red ?? {
     command: VALIDATION_COMMAND, exit_status: 1, outcome: 'FAIL: behavior wrong',
@@ -265,6 +277,9 @@ function implementScript({
     ['workspace-abandon:', { abandoned: true, pushed: false, dirty: false, head: FINAL_COMMIT, status: '' }],
     ['workspace-cleanup:', { cleaned: true, head: HEAD, status: '' }],
     ['implementer-prepush-readback:', goodPrePush],
+    // TUR-447 ruling-61 pre-push live-worktree RE-ANCHOR: the receipt-pinned reader re-reads the live
+    // branch/origin of the pinned worktree immediately before the push (TOCTOU close).
+    ['implementer-prepush-reanchor:', prePushReAnchor],
     ['host-push:', { pushed: true, head: FINAL_COMMIT }],
     ['implementer-postpush-readback:', postPush ?? { remote_head: FINAL_COMMIT, remote_source: 'git-ls-remote' }],
   ]
@@ -414,6 +429,79 @@ test('seam-fail-closed: REMOVING the observer confirmation also drops the not-gr
   assert.match(intact.error.message, /the final pushed HEAD is not green/)
   const broken = await driveSeam(BREAK_OBSERVER, { observation: observationFor({ final_exit: 1 }) })
   assert.equal(broken.error, undefined, 'removing assertObservedCommittedStates drops the not-green final-HEAD rejection')
+  assert.ok(broken.calls.some((c) => c.label.startsWith('host-push:')), 'the broken seam reaches the push it should have gated')
+})
+
+// === TUR-447 ruling-61 pre-push live-worktree RE-ANCHOR: the REAL TOCTOU close on the push seam =====
+// The receipt+live-read identity gate runs ONCE before the worker path; the pre-push readback then
+// reconfirms Linear/PR/HEAD but NOT the live local branch/origin of the receipt-pinned worktree, and
+// the push targets the mutable remote. So a branch checkout / origin change on the receipt-pinned
+// worktree AFTER the initial identity check but BEFORE the push (the tur-456 ACCIDENTAL-MISROUTING
+// shape) could reach and satisfy the push. These drive the PRODUCTION seam: the re-anchor reader runs
+// immediately before the push and assertPrePushWorktreeReAnchor REJECTS a foreign live branch/origin
+// at push time. Fail-closed: removing the re-anchor from hostGatedPushCommittedBranch drops the
+// rejection and the push proceeds, proving the gate is LOAD-BEARING on the production push path.
+
+test('reanchor-order: the pre-push live-worktree re-anchor runs AFTER the pre-push readback and immediately BEFORE the host push', async () => {
+  const { result, error, calls } = await driveSeam(IDENTITY)
+  assert.equal(error, undefined, 'healthy path with a matching re-anchor is accepted')
+  assert.equal(result.stage, 'code-review-required')
+  const readbackIdx = calls.findIndex((c) => c.label.startsWith('implementer-prepush-readback:'))
+  const reAnchorIdx = calls.findIndex((c) => c.label.startsWith('implementer-prepush-reanchor:'))
+  const pushIdx = calls.findIndex((c) => c.label.startsWith('host-push:'))
+  assert.ok(reAnchorIdx > readbackIdx, 're-anchor runs after the pre-push readback')
+  assert.ok(pushIdx > reAnchorIdx, 're-anchor runs immediately before the host push')
+  // The re-anchor reader is a read-only receipt-pinned reader that re-reads the live branch/origin.
+  const reAnchorCall = calls[reAnchorIdx]
+  assert.equal(reAnchorCall.agentType, 'Explore', 're-anchor reader is read-only')
+  assert.ok(/git -C .+ rev-parse --abbrev-ref HEAD/.test(reAnchorCall.prompt), 're-anchor re-reads the live branch of the pinned worktree')
+  assert.ok(/git -C .+ remote get-url origin/.test(reAnchorCall.prompt), 're-anchor re-reads the live origin of the pinned worktree')
+})
+
+test('reanchor-reject (tur-456): a receipt-pinned worktree switched to a FOREIGN BRANCH between the identity check and the push is REJECTED, nothing pushed', async () => {
+  // The initial identity anchors passed (reality is the healthy branch); only the PRE-PUSH re-anchor
+  // read reveals the worktree was checked out onto a foreign branch after the check. The push is gated.
+  const { error, calls } = await driveSeam(IDENTITY, {
+    prePushReAnchor: worktreeRealityFor({ head: FINAL_COMMIT, branch: 'someone-elses/lane' }),
+  })
+  assert.match(error.message, /pre-push re-anchor rejected: receipt-pinned worktree is on a foreign branch at push time/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed when the worktree is on a foreign branch at push time')
+})
+
+test('reanchor-reject (tur-456): a receipt-pinned worktree whose origin CHANGED to a different remote between the identity check and the push is REJECTED, nothing pushed', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, {
+    prePushReAnchor: worktreeRealityFor({ head: FINAL_COMMIT, repo_slug: 'attacker/other' }),
+  })
+  assert.match(error.message, /pre-push re-anchor rejected: receipt-pinned worktree origin is a foreign remote at push time/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed when the origin changed to a foreign remote at push time')
+})
+
+test('reanchor-provenance: a pre-push re-anchor read NOT stamped by the host-controlled receipt-pinned reader is REJECTED at the seam', async () => {
+  const { error, calls } = await driveSeam(IDENTITY, {
+    prePushReAnchor: worktreeRealityFor({ head: FINAL_COMMIT, source: 'worker' }),
+  })
+  assert.match(error.message, /pre-push re-anchor rejected: not from the host-controlled receipt-pinned reader/)
+  assert.ok(!calls.some((c) => c.label.startsWith('host-push:')), 'nothing pushed on a forged re-anchor provenance')
+})
+
+test('reanchor-fail-closed: REMOVING assertPrePushWorktreeReAnchor lets a FOREIGN-BRANCH-at-push-time worktree flow through to the push (rejection disappears)', async () => {
+  const foreign = { prePushReAnchor: worktreeRealityFor({ head: FINAL_COMMIT, branch: 'someone-elses/lane' }) }
+  // First confirm the intact seam rejects the foreign branch at push time.
+  const intact = await driveSeam(IDENTITY, foreign)
+  assert.match(intact.error.message, /receipt-pinned worktree is on a foreign branch at push time/)
+  // Now break the wiring: with the re-anchor removed, the foreign live branch is no longer re-checked
+  // before the push, so the rejection is gone and the (mutable) push is reached: the TOCTOU is open.
+  const broken = await driveSeam(BREAK_PREPUSH_REANCHOR, foreign)
+  assert.equal(broken.error, undefined, 'removing the pre-push re-anchor drops the foreign-branch-at-push-time rejection')
+  assert.ok(broken.calls.some((c) => c.label.startsWith('host-push:')), 'the broken seam reaches the push it should have gated')
+})
+
+test('reanchor-fail-closed: REMOVING assertPrePushWorktreeReAnchor also drops the FOREIGN-ORIGIN-at-push-time rejection', async () => {
+  const foreign = { prePushReAnchor: worktreeRealityFor({ head: FINAL_COMMIT, repo_slug: 'attacker/other' }) }
+  const intact = await driveSeam(IDENTITY, foreign)
+  assert.match(intact.error.message, /receipt-pinned worktree origin is a foreign remote at push time/)
+  const broken = await driveSeam(BREAK_PREPUSH_REANCHOR, foreign)
+  assert.equal(broken.error, undefined, 'removing the pre-push re-anchor drops the foreign-origin-at-push-time rejection')
   assert.ok(broken.calls.some((c) => c.label.startsWith('host-push:')), 'the broken seam reaches the push it should have gated')
 })
 

@@ -409,6 +409,45 @@ function assertHostTrustedIdentity(envelope, receipt, live) {
   return { binding, reality }
 }
 
+// TUR-447 ruling-61 pre-push live-worktree re-anchor (delivery-lifecycle delivery-tdd-host-gated-push,
+// launch-readback; role-runtime launch-identity, launch-entrypoint-revalidation). The receipt+live-read
+// identity gate (assertLiveWorktreeIdentity) runs ONCE before the worker path. The pre-push readback
+// then reconfirms Linear/PR/HEAD but NOT the live local branch/origin of the receipt-pinned worktree,
+// and the push itself (git -C <worktree> push origin; ls-remote origin) targets the mutable remote. So
+// a branch checkout or an origin remote change on the receipt-pinned worktree AFTER the initial identity
+// check but BEFORE the push could reach and satisfy the push (a TOCTOU window). The interim threat is
+// ACCIDENTAL MISROUTING (tur-456: a shared dir switched to a foreign branch / different remote between
+// check and push), not a malicious forger (the non-forgeable trust root is the SEPARATE per-lane
+// host-provisioned worktree effort). This gate RE-ANCHORS the live branch/origin of the receipt-pinned
+// worktree immediately before the push: the host re-reads git -C <worktree> rev-parse --abbrev-ref HEAD
+// and remote get-url origin and rejects the push if the live branch no longer equals the envelope branch
+// or the live origin no longer resolves to the envelope repo_slug. reAnchor is the fresh live read
+// (same host-controlled receipt-pinned reader provenance as Anchor B); it is NOT envelope-derived.
+function assertPrePushWorktreeReAnchor(envelope, reAnchor) {
+  required(envelope, 'launch envelope')
+  required(reAnchor, 'pre-push live worktree re-anchor read')
+  // Provenance: the re-anchor read must be stamped by the host-controlled receipt-pinned reader, the
+  // same non-forgeable reality source as Anchor B, not any worker/envelope-supplied value.
+  if (reAnchor.source !== HOST_WORKTREE_READ_SOURCE) {
+    throw new Error('pre-push re-anchor rejected: not from the host-controlled receipt-pinned reader')
+  }
+  const liveBranch = requiredNonEmptyString(reAnchor.branch, 'pre-push live worktree branch')
+  const liveSlug = requiredNonEmptyString(reAnchor.repo_slug, 'pre-push live worktree origin repo slug')
+  // The live branch of the receipt-pinned worktree must STILL equal the envelope branch at push time.
+  // A checkout to a foreign branch between the initial identity check and the push is caught here.
+  requiredNonEmptyString(envelope.branch, 'envelope branch')
+  if (liveBranch !== envelope.branch) {
+    throw new Error('pre-push re-anchor rejected: receipt-pinned worktree is on a foreign branch at push time')
+  }
+  // The live origin remote of the receipt-pinned worktree must STILL resolve to the envelope repo_slug.
+  // An origin remote change between the initial identity check and the push is caught here.
+  assertRepoSlug(liveSlug, 'pre-push live origin repo slug')
+  if (liveSlug !== envelope.repo_slug) {
+    throw new Error('pre-push re-anchor rejected: receipt-pinned worktree origin is a foreign remote at push time')
+  }
+  return { branch: liveBranch, repo_slug: liveSlug }
+}
+
 function assertReadyEnvelope(envelope) {
   for (const field of [
     'issue',
@@ -1352,6 +1391,15 @@ function acceptShapingReviewRelay(role, resolvedRuntime, relay, rollout) {
 }
 // GATES-EMBED-END
 
+// TUR-447 D2 F2 residual 1 (ARGS QUOTED; role-machine-map, role-resolver, role-openai-relay). POSIX
+// single-quote one shell argument so a value carrying a space or a shell metacharacter (; | $ ` etc.)
+// cannot break the command or inject: wrap in single quotes and escape an embedded single quote as
+// the standard '\'' sequence (close-quote, escaped-quote, reopen-quote). Every interpolated value in
+// a resolver command or a codex exec command a subagent runs is passed through this.
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`
+}
+
 // Decision 109 (operating-model decision-109-workflow-native and decision-109-binding;
 // role-runtime launch-correctness-path and role-worker-migration): this Workflow spawns
 // every worker role pass natively as a fresh subagent. The retired CLI pass launcher
@@ -1751,24 +1799,37 @@ function resolverCommand(role, worktreeAbs) {
   const replyRoute = A.reply_route ?? A.pr_url ?? required(A.pr, 'pr')
   const executionLocation = A.execution_location ?? 'local'
   const reviewDelivery = A.review_delivery ?? A.pr_url ?? required(A.pr, 'pr')
+  // TUR-447 D2 F2 residual 4 (RESOLVER FROM CONTROL REPO; role-machine-map, role-resolver): resolve
+  // role_resolver.py from the CONTROL REPO when the frozen-contract env OCTO_CONTROL_REPO names one
+  // (an absolute control-repo path), falling back to the current worktree-relative path when unset.
+  // The loop cannot read env, so it emits a command whose SHELL performs the ${OCTO_CONTROL_REPO:-.}
+  // expansion at run time. #8 provisioning guarantees INV5 (the resolver root is the provisioned
+  // worktree with the canonical roles.toml + roles/*.md), so this only CONSUMES the env, it does not
+  // reinvent resolver-path correctness. The '.' fallback and the resolver-root arg are not quoted so
+  // the shell expands them; every INTERPOLATED value below is single-quoted (residual 1).
+  const resolverPath = '"${OCTO_CONTROL_REPO:-.}/workflows/lib/role_resolver.py"'
+  // TUR-447 D2 F2 residual 1 (ARGS QUOTED; role-openai-relay, loop-correctness single-writer): a value
+  // carrying a space or a shell metacharacter must NOT break or inject the resolver command, so every
+  // interpolated argument is POSIX single-quoted (wrap in single quotes, escape an embedded single
+  // quote as '\''). role and the flag names are loop-controlled literals and stay bare.
   const parts = [
-    'python3', 'workflows/lib/role_resolver.py', 'resolve', role,
-    '--spawn-id', spawnId,
-    '--parent', parent,
-    '--reply-route', replyRoute,
-    '--repo', repo,
-    '--worktree', worktreeAbs,
-    '--execution-location', executionLocation,
-    '--review-delivery', reviewDelivery,
+    'python3', resolverPath, 'resolve', role,
+    '--spawn-id', shellQuote(spawnId),
+    '--parent', shellQuote(parent),
+    '--reply-route', shellQuote(replyRoute),
+    '--repo', shellQuote(repo),
+    '--worktree', shellQuote(worktreeAbs),
+    '--execution-location', shellQuote(executionLocation),
+    '--review-delivery', shellQuote(reviewDelivery),
     // Emit the canonical contract text (as a valid TOML [contract] table) so the relay and the
     // native worker carry the exact contract prose; the durable persistent-launch path omits it.
     '--emit-contract',
   ]
   if (A.operator_loopback === true || A.operator_loopback === false) {
-    parts.push('--operator-loopback', String(A.operator_loopback))
+    parts.push('--operator-loopback', shellQuote(String(A.operator_loopback)))
   }
   const capabilities = Array.isArray(A.capabilities) ? A.capabilities : []
-  for (const capability of capabilities) parts.push('--capability', capability)
+  for (const capability of capabilities) parts.push('--capability', shellQuote(capability))
   return parts.join(' ')
 }
 
@@ -2057,6 +2118,12 @@ async function spawnReconciler(phaseTitle) {
   // it (never blind), and re-echoes the verified ack.
   assertContainment(worktreeRoot, worktree)
   const brief = required(A.brief, 'reconcile brief')
+  // TUR-447 D2 F2 residual 3 (RECONCILE CLASSIFIER UNDER RESOLVED MODEL/EFFORT; role-runtime
+  // role-machine-map, role-reconciler-input, role-reconciler-authority): the reconcile classifier must
+  // run under the reconciler runtime resolved FROM roles.toml through the role resolver, not an
+  // unconfigured/default agent. Resolve it through the COMPLETE resolver command exactly as a native
+  // worker does, then spawn the classifier under the resolved model and effort.
+  const runtime = await resolveRuntime('reconciler', phaseTitle, worktree, WORKER_RUNTIME_SCHEMA, issue)
   const classified = await agent([
     'You are a fresh READ-ONLY octo-lite reconciler in the classification phase. Never mutate a source,',
     'never override a deterministic mismatch, never investigate open-endedly, never silently resolve',
@@ -2066,12 +2133,15 @@ async function spawnReconciler(phaseTitle) {
     'needs_fable. Missing or unparseable input and semantic ambiguity return needs_fable so Fable judges',
     'the case. Re-echo the verified ack object (its snapshot_path and snapshot_digest included) and return',
     'the classification, needs_fable, and the concrete deltas.',
+    'CANONICAL ROLE CONTRACT (resolved from roles.toml; follow it exactly):',
+    runtime.contract_text,
     `journal path: ${journalPath}`,
     `verified snapshot_path: ${verifiedPath}`,
     `verified snapshot_digest: ${verifiedDigest}`,
     `\n${brief}`,
   ].join('\n'), {
     label: `reconciler:${issue}`, phase: phaseTitle, schema: RECONCILE_RESULT_SCHEMA, agentType: 'Explore',
+    model: runtime.model, effort: runtime.effort,
   })
   if (classified === null) throw new Error('reconciler classification phase returned no result')
   // The classification is BOUND to the verified snapshot: the classifier's re-echoed ack must carry the
@@ -2566,6 +2636,44 @@ async function hostGatedPushCommittedBranch(role, phaseTitle, envelope, bound, r
     )
   } catch (error) {
     await abandonUnpushedBranchOrStop(`${role} pre-push stale race`, phaseTitle, bound, result, worktree)
+    throw error
+  }
+  // (2b) TUR-447 ruling-61 pre-push live-worktree RE-ANCHOR (delivery-tdd-host-gated-push; launch-identity,
+  // launch-entrypoint-revalidation). The receipt+live-read identity gate ran ONCE before the worker path;
+  // the pre-push readback above reconfirms Linear/PR/HEAD but NOT the live local branch/origin of the
+  // receipt-pinned worktree, and the push below targets the mutable remote. A branch checkout or an origin
+  // remote change on the receipt-pinned worktree AFTER the initial identity check but BEFORE the push
+  // (the tur-456 accidental-misrouting shape) could otherwise reach the push. A host-controlled
+  // receipt-pinned reader re-reads the LIVE branch and origin of the pinned worktree NOW, immediately
+  // before the push, and assertPrePushWorktreeReAnchor rejects if the live branch no longer equals the
+  // envelope branch or the live origin no longer resolves to the envelope repo_slug.
+  const reAnchor = await agent([
+    `You are a fresh HOST-CONTROLLED, READ-ONLY octo-lite pre-push worktree re-anchor reader for the ${role} pass.`,
+    'One pass; never mutate. Perform a LIVE git read of the receipt-pinned host issue worktree below NOW,',
+    'immediately before the host pushes, so the host can reject a branch/origin change since the identity check.',
+    'Operate ONLY on this exact path; do NOT rely on the ambient current working directory (a foreign lane',
+    'worktree on a shared box):',
+    `  receipt-pinned worktree: ${worktree}`,
+    `- head: \`git -C ${worktree} rev-parse HEAD\`.`,
+    `- branch: \`git -C ${worktree} rev-parse --abbrev-ref HEAD\` (expected ${branch}).`,
+    `- repo_slug: \`git -C ${worktree} remote get-url origin\`, normalized to the canonical owner/repo slug.`,
+    'Return source "host-receipt-pinned-worktree-read", read_worktree set to the exact worktree path above,',
+    'and head, branch, and repo_slug as you actually read them from git. Never fabricate a value.',
+  ].join('\n'), {
+    label: `${role}-prepush-reanchor:${issue}`, phase: phaseTitle, schema: LIVE_WORKTREE_READ_SCHEMA,
+    agentType: 'Explore', effort: 'low',
+  })
+  if (reAnchor === null) {
+    await abandonUnpushedBranchOrStop(`${role} pre-push re-anchor missing`, phaseTitle, bound, result, worktree)
+    throw new Error(`${role} pre-push worktree re-anchor returned no result`)
+  }
+  try {
+    assertPrePushWorktreeReAnchor(
+      { branch: envelope.branch, repo_slug: ghRepoSlug() },
+      reAnchor,
+    )
+  } catch (error) {
+    await abandonUnpushedBranchOrStop(`${role} pre-push re-anchor foreign branch/remote`, phaseTitle, bound, result, worktree)
     throw error
   }
   // (3) Only now: the host pushes the already-committed isolated branch. No new commit is authored; the
