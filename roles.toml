@@ -77,7 +77,7 @@ when = "workflow-blocker"
 [roles.implementer]
 contract = "roles/implementer.md"
 provider = "anthropic"
-model = "claude-sonnet-5"
+model = "claude-opus-4-8[1m]"
 effort = "xhigh"
 mode = "auto"
 session = "fresh"

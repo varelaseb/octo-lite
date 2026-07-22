@@ -80,7 +80,7 @@ class RoleResolverTest(unittest.TestCase):
             "meta-operator": ("anthropic", "claude-fable-5", "xhigh", "auto", "persistent", "default"),
             "orchestrator": ("anthropic", "claude-opus-4-8[1m]", "high", "auto", "persistent", "default"),
             "shaping-reviewer": ("openai", "gpt-5.6-sol", "xhigh", "never", "fresh", "fast"),
-            "implementer": ("anthropic", "claude-sonnet-5", "xhigh", "auto", "fresh", "default"),
+            "implementer": ("anthropic", "claude-opus-4-8[1m]", "xhigh", "auto", "fresh", "default"),
             "code-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "default"),
             "qa-capture": ("anthropic", "claude-sonnet-5", "high", "auto", "fresh", "default"),
             "qa-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "fast"),
@@ -264,7 +264,7 @@ class RoleResolverTest(unittest.TestCase):
             acknowledgment = self.resolver.dry_run_child(resolved, receipt)
             parsed = tomllib.loads(self.resolver.render_receipt(receipt))
         self.assertEqual(parsed["role"]["name"], "implementer")
-        self.assertEqual(parsed["runtime"]["model"], "claude-sonnet-5")
+        self.assertEqual(parsed["runtime"]["model"], "claude-opus-4-8[1m]")
         self.assertEqual(parsed["runtime"]["effort"], "xhigh")
         self.assertEqual(parsed["runtime"]["mode"], "auto")
         self.assertEqual(parsed["skills"]["resolved"], ["tdd", "octo-lite-github", "python"])
@@ -287,7 +287,7 @@ class RoleResolverTest(unittest.TestCase):
         self.assertEqual(acknowledgment["role"], "implementer")
         self.assertEqual(acknowledgment["contract_blob"], parsed["role"]["contract_blob"])
         self.assertEqual(acknowledgment["mapping_revision"], parsed["role"]["mapping_revision"])
-        self.assertEqual(acknowledgment["model"], "claude-sonnet-5")
+        self.assertEqual(acknowledgment["model"], "claude-opus-4-8[1m]")
         self.assertEqual(acknowledgment["mode"], "auto")
         self.assertEqual(acknowledgment["skills"], parsed["skills"]["resolved"])
         self.assertEqual(acknowledgment["skill_blobs"], parsed["skills"]["blobs"])
