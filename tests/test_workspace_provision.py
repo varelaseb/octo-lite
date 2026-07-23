@@ -411,8 +411,9 @@ class LaneProvisionTests(unittest.TestCase):
     def test_record_schema_frozen(self) -> None:
         result = self.provision()
         expected_keys = {
-            "schema_version", "source", "lane", "control_repo", "worktree", "worktree_root",
-            "repo_slug", "branch", "starting_head", "resolver_root", "install_check", "provisioned_at",
+            "schema_version", "source", "lane", "control_repo", "worktree_repo", "worktree",
+            "worktree_root", "repo_slug", "branch", "starting_head", "resolver_root",
+            "install_check", "provisioned_at",
         }
         self.assertEqual(expected_keys, set(result.record))
         self.assertEqual(1, result.record["schema_version"])
@@ -912,6 +913,8 @@ class TargetLaneProvisionTests(unittest.TestCase):
         result = self.provision()
         # OCTO_CONTROL_REPO (record.control_repo) is the octo-lite tooling repo...
         self.assertEqual(str(self.octo_control_repo.resolve()), result.record["control_repo"])
+        # ...worktree_repo is the target git-owner (used by cleanup ownership)...
+        self.assertEqual(str(self.control_repo.resolve()), result.record["worktree_repo"])
         # ...while the worktree, resolver_root, and slug are the target's.
         self.assertEqual(str(self.worktree), result.record["worktree"])
         self.assertEqual(str(self.worktree), result.record["resolver_root"])
@@ -931,6 +934,15 @@ class TargetLaneProvisionTests(unittest.TestCase):
         self.assertEqual(str(self.octo_control_repo.resolve()), result.record["control_repo"])
         self.assertEqual(str(self.worktree), result.record["resolver_root"])
         validate_provision_record(result.record)
+
+    def test_cleanup_recognizes_target_lane_ownership_via_worktree_repo(self) -> None:
+        # Cleanup must prove ownership against the target git-owner (worktree_repo),
+        # even though the record's control_repo is the octo-lite tooling repo, so a
+        # clean aborted target worktree is not leaked.
+        from octo_lite.launch import _owning_provision_record
+
+        result = self.provision()
+        self.assertEqual(Path(result.record_path), _owning_provision_record(self.worktree))
 
     def test_target_worktree_without_octo_control_repo_fails_closed(self) -> None:
         # Omitting octo_control_repo defaults it to the target control_repo, which

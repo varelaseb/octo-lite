@@ -468,7 +468,8 @@ def _owning_provision_record(worktree: Path) -> Path | None:
     TUR-447 cycle-2 P1-2b (provision-instance binding): a pathname match alone
     is NOT ownership. The record must also match the LIVE worktree's identity
     through non-destructive checks: the worktree's git common dir must resolve
-    to the record's control_repo, and the worktree's checked-out branch must
+    to the record's worktree_repo (the git-owner; control_repo for legacy
+    self-hosting records), and the worktree's checked-out branch must
     equal the record's branch. A stale record plus a hand-recreated worktree at
     the same conventional path (a different branch, a different repo, or a
     detached HEAD) therefore proves nothing. Anything unreadable, malformed,
@@ -495,7 +496,12 @@ def _owning_provision_record(worktree: Path) -> Path | None:
         if str(record["worktree"]) != target:
             continue
         try:
-            if _worktree_common_dir(resolved) != _worktree_common_dir(Path(str(record["control_repo"]))):
+            # Ownership is proven against the git repo the worktree belongs to
+            # (worktree_repo, the git-owner), which for a target lane differs from
+            # control_repo (the octo-lite tooling repo). Legacy self-hosting records
+            # without worktree_repo fall back to control_repo, where the two coincide.
+            owner_repo = str(record.get("worktree_repo") or record["control_repo"])
+            if _worktree_common_dir(resolved) != _worktree_common_dir(Path(owner_repo)):
                 continue
             actual_branch = _git(resolved, "symbolic-ref", "--short", "HEAD")
         except (OSError, subprocess.CalledProcessError):
@@ -628,6 +634,13 @@ PROVISION_RECORD_KEYS = frozenset(
     }
 )
 PROVISION_RECORD_ABSOLUTE_PATH_KEYS = ("control_repo", "worktree", "worktree_root", "resolver_root")
+# worktree_repo is the git repository the worktree is a worktree OF (the delivery
+# target). It is optional for backward compatibility with self-hosting records that
+# predate the octo-lite-control-repo decoupling, where control_repo is the git-owner
+# and cleanup can fall back to it; when present it lets cleanup prove ownership of a
+# target lane whose control_repo is the octo-lite tooling repo, not the git-owner.
+PROVISION_RECORD_OPTIONAL_KEYS = frozenset({"worktree_repo"})
+PROVISION_RECORD_OPTIONAL_ABSOLUTE_PATH_KEYS = frozenset({"worktree_repo"})
 PROVISION_RECORD_INSTALL_CHECK_VALUES = frozenset({"clean", "drifted"})
 
 # launch-provision-wiring-liveness: a genuine install drift is recorded truthfully
@@ -653,7 +666,7 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
     if not isinstance(record, Mapping):
         raise GateError("provision record must be an object")
     keys = set(record)
-    extra = keys - PROVISION_RECORD_KEYS
+    extra = keys - PROVISION_RECORD_KEYS - PROVISION_RECORD_OPTIONAL_KEYS
     missing = PROVISION_RECORD_KEYS - keys
     if extra or missing:
         raise GateError(f"provision record keys invalid: extra={sorted(extra)} missing={sorted(missing)}")
@@ -663,11 +676,12 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
         raise GateError("provision record schema_version must be 1")
     if record["source"] != PROVISION_RECORD_SOURCE:
         raise GateError("provision record source must be host-provisioned-worktree")
-    for key in PROVISION_RECORD_KEYS - {"schema_version"}:
+    present_string_keys = (PROVISION_RECORD_KEYS - {"schema_version"}) | (keys & PROVISION_RECORD_OPTIONAL_KEYS)
+    for key in present_string_keys:
         value = record[key]
         if not isinstance(value, str) or not value:
             raise GateError(f"provision record field must be a nonempty string: {key}")
-    for key in PROVISION_RECORD_ABSOLUTE_PATH_KEYS:
+    for key in PROVISION_RECORD_ABSOLUTE_PATH_KEYS + tuple(sorted(keys & PROVISION_RECORD_OPTIONAL_ABSOLUTE_PATH_KEYS)):
         if not os.path.isabs(record[key]):
             raise GateError(f"provision record {key} must be an absolute path")
     if record["resolver_root"] != record["worktree"]:
@@ -992,6 +1006,7 @@ def provision_lane_worktree(
             "source": PROVISION_RECORD_SOURCE,
             "lane": lane,
             "control_repo": str(octo_control_repo),
+            "worktree_repo": str(control_repo),
             "worktree": str(worktree),
             "worktree_root": str(worktree_root),
             "repo_slug": repo_slug,
