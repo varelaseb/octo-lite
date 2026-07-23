@@ -96,10 +96,14 @@ def _verify_transition_authority(args) -> None:
             raise GateError("stream_id does not match requested issue")
         return
     receipt = load_toml(Path(args.receipt))
-    # Recompute the launch revision (which excludes only ready and [bootstrap], so
-    # a bootstrap-verified receipt still matches) so a lane that edits its receipt
-    # after bootstrap, including swapping [issue].identifier onto another issue,
-    # fails closed here exactly as the Shaped-target gate rejects it.
+    # Defense in depth: recompute the launch revision (which excludes only ready
+    # and [bootstrap], so a bootstrap-verified receipt still matches) so a receipt
+    # whose [issue] or other bound field was edited after bootstrap without
+    # recomputing the stored digest fails closed here. This is NOT the issue
+    # authority boundary: launch_revision is an unkeyed self-digest a receipt
+    # writer can recompute, so canonical exact-issue authority comes from the
+    # host-owned stream registry via the --stream branch above, not this
+    # file-based receipt self-assertion.
     if not isinstance(receipt.get("launch_revision"), str) or receipt["launch_revision"] != launch_revision(receipt):
         raise GateError("caller receipt launch revision mismatch")
     if receipt.get("bootstrap", {}).get("verified") is not True:

@@ -995,10 +995,11 @@ def lane_env_from_record(
         )
     )
     # A frozen seam value carrying a newline or NUL could inject an extra host
-    # environment variable when a launcher serializes env line by line, so reject
-    # any control character in the derived values (launch-provision-env-seam).
+    # environment variable when a launcher serializes env line by line; reject any
+    # C0/C1 control character (including TAB, ESC, DEL) so no control byte reaches
+    # the launched process environment (launch-provision-env-seam).
     for key, value in env.items():
-        if any(char in value for char in ("\n", "\r", "\0")):
+        if any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in value):
             raise GateError(f"provision record field has an illegal control character: {key}")
     return env
 

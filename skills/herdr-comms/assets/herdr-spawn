@@ -82,8 +82,10 @@ esac
 # and workspace.worktree before any bootstrap call or pane creation. This never
 # trusts the CLI-supplied role or cwd on their own. An unreadable receipt or
 # missing required field fails closed with the same code as a bootstrap
-# verification failure; it never mutates the receipt.
-python3 - "$receipt" "$role" "$cwd" <<'PY'
+# verification failure; it never mutates the receipt. `-P` keeps the process cwd
+# and script dir off sys.path so a cwd-controlled stdlib shadow (e.g. tomllib.py)
+# cannot execute inside this host-trusted verification.
+python3 -P - "$receipt" "$role" "$cwd" <<'PY'
 import os
 import sys
 import tomllib
