@@ -715,14 +715,19 @@ def default_install_check(control_repo: Path, *, prefix: Path | None = None) -> 
     --check and report clean or drifted. Never repairs; the installer itself
     refuses to replace a nonmatching target.
 
-    octo-lite is installed foreground tooling and is NEVER a target dependency,
-    so a target-repo control repo carries no installer to run. When the installer
-    is absent the installed octo-lite surface is not this repo's to check (it is
-    the global foreground install, verified at install time), so report clean
-    rather than crashing or falsely flagging drift on a target lane."""
-    installer = Path(control_repo) / "scripts" / "install-octo-lite"
-    if not installer.is_file():
+    octo-lite is installed foreground tooling and is NEVER a target dependency, so
+    only an octo-lite control repo (identified by its canonical roles.toml) carries
+    an installer to run, and a target control repo's scripts must NEVER be executed
+    here. A control repo without roles.toml is a target lane: its installed
+    octo-lite surface is the global foreground install, verified at install time,
+    not this repo's to check, so report clean without executing anything. An
+    octo-lite control repo that is missing its installer is genuine drift."""
+    control_repo = Path(control_repo)
+    if not (control_repo / "roles.toml").is_file():
         return "clean"
+    installer = control_repo / "scripts" / "install-octo-lite"
+    if not installer.is_file():
+        return "drifted"
     argv = [str(installer), "--check"]
     if prefix is not None:
         argv += ["--prefix", str(prefix)]
@@ -958,6 +963,14 @@ def provision_lane_worktree(
             if resolver_root != worktree:
                 raise GateError("role resolver root must be the provisioned worktree")
         else:
+            # Target lane. KNOWN LIMITATION (tracked follow-up): the delivery loop
+            # resolves role_resolver.py from OCTO_CONTROL_REPO, which is this
+            # record's control_repo (the target git repo), so a target lane is
+            # provisioning-complete but NOT yet loop-runnable and must not be
+            # loop-spawned until OCTO_CONTROL_REPO is decoupled from the target git
+            # repo and points at the trusted octo-lite control repo. This record
+            # supports adoption/tooling-completeness (identity + out-of-tree record)
+            # only; it never makes the loop execute target-supplied resolver code.
             resolver_root = worktree
 
         check_state = install_check(control_repo)

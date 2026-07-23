@@ -924,6 +924,17 @@ class TargetLaneProvisionTests(unittest.TestCase):
     def test_default_install_check_reports_clean_when_control_repo_has_no_installer(self) -> None:
         self.assertEqual("clean", default_install_check(self.control_repo))
 
+    def test_default_install_check_never_executes_a_target_repos_installer(self) -> None:
+        # Safety: a target control repo (no roles.toml) that happens to carry an
+        # executable scripts/install-octo-lite must NOT be executed; report clean.
+        scripts = self.control_repo / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        booby = scripts / "install-octo-lite"
+        booby.write_text("#!/bin/sh\ntouch " + str(self.control_repo / "EXECUTED") + "\nexit 7\n")
+        booby.chmod(0o755)
+        self.assertEqual("clean", default_install_check(self.control_repo))
+        self.assertFalse((self.control_repo / "EXECUTED").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
