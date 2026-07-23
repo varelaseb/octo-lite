@@ -159,11 +159,15 @@ class RoleResolverTest(unittest.TestCase):
             self.assertIn("BOOTSTRAP_ACK", text, name)
             self.assertIn("before mutation", text, name)
 
-    def test_meta_operator_contract_text_contains_direct_marker_removal_wiring(self) -> None:
+    def test_meta_operator_contract_text_contains_dialogue_attention_wiring(self) -> None:
+        # Ruling 4 (issue #25): retired label/focus model removed; dialogue-based attention is canonical.
         registry = self.resolver.load_registry(ROOT)
         text = (ROOT / registry.roles["meta-operator"].contract).read_text()
-        self.assertIn("Own compact Herdr labels", text)
-        self.assertIn("Remove `🎤` as soon as an Opus can work autonomously", text)
+        # New canonical: attention from dialogue, not pane/tab focus.
+        self.assertIn("dialogue", text)
+        # Retired rule must be absent.
+        self.assertNotIn("Own compact Herdr labels", text)
+        self.assertNotIn("\U0001f3a4", text)
 
     def test_orchestrator_contract_text_contains_fresh_probe_wiring(self) -> None:
         registry = self.resolver.load_registry(ROOT)

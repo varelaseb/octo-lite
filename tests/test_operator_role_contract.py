@@ -99,6 +99,30 @@ class AttentionModelTests(unittest.TestCase):
             "meta-operator.md must explicitly contrast dialogue vs focus/pane/tab"
         )
 
+    def test_meta_operator_retired_mic_glyph_label_framing_absent(self) -> None:
+        # AC-C ruling 4: the retired focus/label attention rule must be REMOVED.
+        # "Own compact Herdr labels; mark direct conversations with mic glyph" must be gone.
+        # "Remove the mic glyph as soon as an Opus can work autonomously" must be gone.
+        raw = _text(META_OPERATOR)
+        self.assertNotIn(
+            "Own compact Herdr labels",
+            raw,
+            "Retired label/focus rule 'Own compact Herdr labels' must be deleted from roles/meta-operator.md"
+        )
+        self.assertNotIn(
+            "\U0001f3a4",
+            raw,
+            "Mic-glyph emoji must be deleted from roles/meta-operator.md (global no-emoji + ruling 4)"
+        )
+        self.assertFalse(
+            re.search(r"[Rr]emove.*[Oo]pus.*autonomously", raw),
+            "Retired rule 'Remove mic glyph as soon as Opus can work autonomously' must be deleted"
+        )
+        self.assertFalse(
+            re.search(r"mark direct conversations", raw, re.IGNORECASE),
+            "Retired rule 'mark direct conversations' with glyph must be deleted"
+        )
+
 
 class StrandAndDeliveryMonitoringTests(unittest.TestCase):
     """AC-D: rulings 5,6,7,10,11 -- strand, delivery-cadence, one-layer-down, escalation."""
