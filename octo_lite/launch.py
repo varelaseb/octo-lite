@@ -972,21 +972,34 @@ def lane_env_from_record(
     does not equal the spawn worktree, so a spawn can never inject a foreign
     lane's env or a forged record. The launcher owns this read; a lane agent
     never self-writes or self-reads its own trust root."""
-    record_path = Path(record_path)
+    record_path = Path(record_path).resolve()
+    expected_worktree = Path(expected_worktree).resolve()
     try:
         record = json.loads(record_path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise GateError("provision record unreadable") from error
     validate_provision_record(record)
-    if Path(record["worktree"]).resolve() != Path(expected_worktree).resolve():
+    if Path(record["worktree"]).resolve() != expected_worktree:
         raise GateError("provision record worktree does not match spawn worktree")
+    # launch-provision-record-out-of-tree: a genuine host record lives OUTSIDE the
+    # worktree tree. Reject a record path inside the worktree so a lane can never
+    # author a self-consistent record under its own tree and have it trusted as the
+    # host trust root (defense in depth over the host-supplied path).
+    if record_path == expected_worktree or expected_worktree in record_path.parents:
+        raise GateError("provision record must live outside the worktree tree")
     _, env = lane_invocation_env(
         LaneProvision(
             record=record,
-            record_path=record_path.resolve(),
+            record_path=record_path,
             install_check_owner_route=None,
         )
     )
+    # A frozen seam value carrying a newline or NUL could inject an extra host
+    # environment variable when a launcher serializes env line by line, so reject
+    # any control character in the derived values (launch-provision-env-seam).
+    for key, value in env.items():
+        if any(char in value for char in ("\n", "\r", "\0")):
+            raise GateError(f"provision record field has an illegal control character: {key}")
     return env
 
 

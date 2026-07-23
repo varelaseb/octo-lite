@@ -102,39 +102,25 @@ if receipt_role != role or os.path.realpath(cwd) != os.path.realpath(receipt_wor
     sys.exit(65)
 PY
 
-# Parent-controlled two-phase bootstrap. octo-launch runs a read-only print-mode
-# bootstrap for the exact receipt and verifies the full BOOTSTRAP_ACK (schema,
-# spawn, provider session, launch revision, role, worktree, starting HEAD, ready,
-# blocker) before any pane exists. A spoofed ack, wrong session, wrong
-# role/worktree/HEAD/revision, or unverified receipt fails here and creates no tab
-# or pane. The child never runs bootstrap-ack and never mutates the receipt.
-bootstrap_output="$(octo-launch bootstrap --receipt "$receipt")" || {
-  echo "herdr-spawn: parent bootstrap verification failed" >&2
-  exit 2
-}
-provider_session_id="$(jq -r '.provider_session_id // empty' <<<"$bootstrap_output")"
-[[ -n "$provider_session_id" ]] || { echo "herdr-spawn: bootstrap verification returned no session" >&2; exit 2; }
-
-# Resume the exact verified provider session; never start a fresh unverified one.
-resumed=("$1" "--resume" "$provider_session_id" "${@:2}")
-
 # launch-provision-env-seam: the host STARTS the loop process with the frozen
-# OCTO_* launch env a child cannot forge. An issue-orchestrator lane MUST carry a
-# host-authored provision record; herdr-spawn reads it (never a child) and injects
-# the exact seam vars into the launched process via `herdr tab create --env`, cwd
-# already pinned to the provisioned worktree. Fail closed: a missing record for an
-# orchestrator, or a record that is unreadable, non-host, malformed, or bound to a
-# different worktree, creates no tab or pane. meta-operator is the control root, not
-# a provisioned lane, so it carries no record.
+# OCTO_* launch env a child cannot forge. This runs BEFORE any provider bootstrap
+# or session creation, so a missing, unreadable, non-host, malformed, in-tree, or
+# worktree-mismatched record fails closed before a tab, pane, provider session, or
+# receipt mutation exists. An issue-orchestrator lane MUST carry a host-authored
+# provision record; herdr-spawn reads it (never a child). `python3 -P` keeps the
+# process cwd and script dir off sys.path so the trusted octo_root import can never
+# be shadowed by a lane worktree copy of octo_lite. lane_env_from_record guarantees
+# the values carry no control character, so the line-by-line read cannot be tricked
+# into injecting an extra --env. meta-operator is the control root, not a
+# provisioned lane, so it carries no record.
 env_args=()
 if [[ "$role" == orchestrator ]]; then
   [[ -n "$provision_record" ]] || {
     echo "herdr-spawn: orchestrator spawn requires --provision-record (host provision-record trust root)" >&2
     exit 64
   }
-  if ! env_block="$(PYTHONPATH="$octo_root" python3 - "$provision_record" "$cwd" <<'PY'
+  if ! env_block="$(PYTHONPATH="$octo_root" python3 -P - "$provision_record" "$cwd" <<'PY'
 import sys
-from pathlib import Path
 
 from octo_lite.launch import GateError, lane_env_from_record
 
@@ -155,6 +141,22 @@ PY
     [[ -n "$kv" ]] && env_args+=(--env "$kv")
   done <<<"$env_block"
 fi
+
+# Parent-controlled two-phase bootstrap. octo-launch runs a read-only print-mode
+# bootstrap for the exact receipt and verifies the full BOOTSTRAP_ACK (schema,
+# spawn, provider session, launch revision, role, worktree, starting HEAD, ready,
+# blocker) before any pane exists. A spoofed ack, wrong session, wrong
+# role/worktree/HEAD/revision, or unverified receipt fails here and creates no tab
+# or pane. The child never runs bootstrap-ack and never mutates the receipt.
+bootstrap_output="$(octo-launch bootstrap --receipt "$receipt")" || {
+  echo "herdr-spawn: parent bootstrap verification failed" >&2
+  exit 2
+}
+provider_session_id="$(jq -r '.provider_session_id // empty' <<<"$bootstrap_output")"
+[[ -n "$provider_session_id" ]] || { echo "herdr-spawn: bootstrap verification returned no session" >&2; exit 2; }
+
+# Resume the exact verified provider session; never start a fresh unverified one.
+resumed=("$1" "--resume" "$provider_session_id" "${@:2}")
 
 # The tab is created at the receipt-verified cwd; that is the sole cwd anchor.
 # The real 0.7.5 tab-create result (bundled API schema, `tab_created`) carries

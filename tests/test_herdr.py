@@ -1399,10 +1399,13 @@ exec {real_mv} "$@"
             self.assertNotEqual(0, result.returncode)
             calls = log.read_text().splitlines() if log.is_file() else []
             self.assertFalse(any(line.startswith("tab create") for line in calls))
+            # Fail closed BEFORE any provider bootstrap or session creation.
+            self.assertFalse(any(line.startswith("agent start") for line in calls))
+            self.assertFalse(tomllib.loads(receipt_path.read_text())["bootstrap"]["verified"])
 
     def test_spawn_rejects_provision_record_bound_to_a_different_worktree(self):
         # Fail closed: a record whose worktree does not equal the spawn worktree
-        # can never inject a foreign lane's env.
+        # can never inject a foreign lane's env, and it fails before bootstrap.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -1423,6 +1426,44 @@ exec {real_mv} "$@"
             self.assertNotEqual(0, result.returncode)
             calls = log.read_text().splitlines() if log.is_file() else []
             self.assertFalse(any(line.startswith("tab create") for line in calls))
+            self.assertFalse(tomllib.loads(receipt_path.read_text())["bootstrap"]["verified"])
+
+    def test_spawn_provision_import_is_not_hijackable_by_the_process_cwd(self):
+        # gh#13 codex P0: `python3 -P` keeps the process cwd off sys.path so a
+        # poisoned octo_lite in the invocation cwd cannot shadow the trusted
+        # octo_root import of lane_env_from_record. Run herdr-spawn from a cwd
+        # holding a hostile octo_lite; the spawn must still resolve the real module
+        # and inject the genuine frozen env.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            poison = Path(td) / "poison"
+            (poison / "octo_lite").mkdir(parents=True)
+            (poison / "octo_lite" / "__init__.py").write_text("")
+            (poison / "octo_lite" / "launch.py").write_text(
+                "class GateError(Exception):\n    pass\n\n\n"
+                "def lane_env_from_record(*a, **k):\n"
+                "    raise RuntimeError('hijacked octo_lite import')\n"
+            )
+
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env,
+                capture_output=True, text=True, cwd=str(poison),
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            tab_call = next(
+                line for line in log.read_text().splitlines() if line.startswith("tab create")
+            )
+            self.assertIn(f"--env OCTO_WORKTREE={repo}", tab_call)
 
     def test_spawn_verifies_bootstrap_before_any_pane_and_resumes_the_exact_verified_session(self):
         with tempfile.TemporaryDirectory() as td:
