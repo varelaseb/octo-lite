@@ -676,7 +676,10 @@ class CutoverConformanceTests(unittest.TestCase):
             self.assertTrue((prefix / ".claude/CLAUDE.md").is_symlink())
             self.assertTrue((prefix / ".claude/workflows/octo-loop-qa.js").is_symlink())
             self.assertEqual((ROOT / "roles").resolve(), (prefix / ".claude/octo-lite/roles").resolve())
-            self.assertEqual((ROOT / "skills/tdd").resolve(), (prefix / ".codex/skills/tdd").resolve())
+            # ADR 0002: tdd is a skillfile-managed skill living under agents/skills.
+            self.assertEqual(
+                (ROOT / "agents/skills/tdd").resolve(), (prefix / ".codex/skills/tdd").resolve()
+            )
 
     LEGACY_LINKS = (
         ".codex/octo-lite-role-skills.json",

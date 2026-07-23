@@ -12,11 +12,19 @@ target repositories.
 - `roles.toml` records every role's runtime and skill mapping.
 - `roles/` contains the sole canonical prose contract for each LLM role.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
-- `skills/` contains reusable octo-lite skills and their bundled templates.
-- `agents/` contains generated Claude Markdown launch adapters only. OpenAI
-  roles use a direct `codex exec` relay with no generated Codex custom-agent
-  file. Never edit or spawn `agents/` raw. Regenerate through the role
-  resolver.
+- `skills/` contains reusable octo-lite skills authored locally and their
+  bundled templates.
+- `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` are the skillfile
+  (eljulians/skillfile) manifest, lockfile, and pinned patches that manage
+  skills per ADR 0002: they pin the vendored upstream tdd skill at an exact SHA
+  and carry the single seam-gate patch across upstream updates.
+- `agents/` contains generated Claude Markdown launch adapters plus the managed
+  skillfile install target `agents/skills/`. Never edit or spawn adapters raw;
+  regenerate through the role resolver. Never hand-edit `agents/skills/`; it is
+  materialized by skillfile from the `Skillfile`, and `scripts/install-octo-lite
+  --check` verifies every managed skill there resolves identically from
+  `.claude/skills` and `.codex/skills`. OpenAI roles use a direct `codex exec`
+  relay with no generated Codex custom-agent file.
 - `workflows/` contains target-neutral native Claude Workflow scripts.
 
 ## Target Spec Format Capability
