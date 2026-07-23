@@ -90,13 +90,43 @@ for base in "$prefix/.codex/octo-lite" "$prefix/.claude/octo-lite"; do
 done
 link_one "$root/workflows/octo-loop-qa.js" "$prefix/.claude/workflows/octo-loop-qa.js"
 
+# Managed skills live in the skillfile install target agents/skills (ADR 0002).
+# They mirror into every platform skills dir. Locally authored skills/ skills
+# that a managed entry does not shadow install alongside them.
+managed_skills=""
+if [[ -d "$root/agents/skills" ]]; then
+  for source in "$root"/agents/skills/*; do
+    [[ -d "$source" ]] || continue
+    name="$(basename "$source")"
+    managed_skills+=" $name"
+    link_one "$source" "$prefix/.codex/skills/$name"
+    link_one "$source" "$prefix/.agents/skills/$name"
+    link_one "$source" "$prefix/.claude/skills/$name"
+  done
+fi
+
 for source in "$root"/skills/*; do
   [[ -d "$source" ]] || continue
   name="$(basename "$source")"
+  [[ " $managed_skills " == *" $name "* ]] && continue
   link_one "$source" "$prefix/.codex/skills/$name"
   link_one "$source" "$prefix/.agents/skills/$name"
   link_one "$source" "$prefix/.claude/skills/$name"
 done
+
+# ADR 0002 mirror invariant: every managed skill present in agents/skills must
+# resolve identically from .claude/skills and .codex/skills.
+if [[ "$check" == true ]]; then
+  for name in $managed_skills; do
+    claude_skill="$prefix/.claude/skills/$name"
+    codex_skill="$prefix/.codex/skills/$name"
+    [[ -e "$claude_skill" && -e "$codex_skill" &&
+       "$(readlink -f "$claude_skill")" == "$(readlink -f "$codex_skill")" ]] || {
+      echo "managed skill mirror broken: $name" >&2
+      exit 1
+    }
+  done
+fi
 
 for source in "$root"/agents/*.md; do
   name="$(basename "$source")"

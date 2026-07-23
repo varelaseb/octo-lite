@@ -1,0 +1,59 @@
+{
+  "github/skill/tdd": {
+    "owner_repo": "mattpocock/skills",
+    "path": "skills/engineering/tdd",
+    "ref": "ed37663cc5fbef691ddfecd080dff42f7e7e350d",
+    "sha": "ed37663cc5fbef691ddfecd080dff42f7e7e350d"
+  },
+  "local/skill/commit": {
+    "path": "skills/commit"
+  },
+  "local/skill/frontend-design": {
+    "path": "skills/frontend-design"
+  },
+  "local/skill/grill-with-docs": {
+    "path": "skills/grill-with-docs"
+  },
+  "local/skill/herdr-comms": {
+    "path": "skills/herdr-comms"
+  },
+  "local/skill/launch-meta-operator": {
+    "path": "skills/launch-meta-operator"
+  },
+  "local/skill/nodejs": {
+    "path": "skills/nodejs"
+  },
+  "local/skill/octo-lite-debug": {
+    "path": "skills/octo-lite-debug"
+  },
+  "local/skill/octo-lite-github": {
+    "path": "skills/octo-lite-github"
+  },
+  "local/skill/octo-lite-issue-shaper": {
+    "path": "skills/octo-lite-issue-shaper"
+  },
+  "local/skill/octo-lite-loop": {
+    "path": "skills/octo-lite-loop"
+  },
+  "local/skill/pnpm": {
+    "path": "skills/pnpm"
+  },
+  "local/skill/pnpm-patching": {
+    "path": "skills/pnpm-patching"
+  },
+  "local/skill/pull": {
+    "path": "skills/pull"
+  },
+  "local/skill/push": {
+    "path": "skills/push"
+  },
+  "local/skill/python": {
+    "path": "skills/python"
+  },
+  "local/skill/qa-evidence-capture": {
+    "path": "skills/qa-evidence-capture"
+  },
+  "local/skill/typescript": {
+    "path": "skills/typescript"
+  }
+}

@@ -1,0 +1,32 @@
+# octo-lite skill management (ADR 0002: spec/adr/0002-tdd-skill-vendoring.spec.html).
+#
+# skillfile (github.com/eljulians/skillfile) owns all skill management: it pins
+# the vendored upstream tdd skill at an exact SHA, preserves the single seam-gate
+# patch across upstream updates (.skillfile/patches), and registers octo-lite's
+# own skills. The managed tree materializes into agents/skills; the platform
+# install lines that mirror it into .claude/skills and .codex/skills, plus the
+# mirror-invariant verification, live in scripts/install-octo-lite --check.
+
+install-path  octo-lite  skill  agents/skills
+
+# Vendored upstream: Matt Pocock's TDD skill, pinned SHA, one seam-gate patch.
+github  skill  tdd  mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d  skills/engineering/tdd
+
+# octo-lite's own skills, authored locally under skills/.
+local  skill  commit                  skills/commit
+local  skill  frontend-design         skills/frontend-design
+local  skill  grill-with-docs         skills/grill-with-docs
+local  skill  herdr-comms             skills/herdr-comms
+local  skill  launch-meta-operator    skills/launch-meta-operator
+local  skill  nodejs                  skills/nodejs
+local  skill  octo-lite-debug         skills/octo-lite-debug
+local  skill  octo-lite-github        skills/octo-lite-github
+local  skill  octo-lite-issue-shaper  skills/octo-lite-issue-shaper
+local  skill  octo-lite-loop          skills/octo-lite-loop
+local  skill  pnpm                    skills/pnpm
+local  skill  pnpm-patching           skills/pnpm-patching
+local  skill  pull                    skills/pull
+local  skill  push                    skills/push
+local  skill  python                  skills/python
+local  skill  qa-evidence-capture     skills/qa-evidence-capture
+local  skill  typescript              skills/typescript
