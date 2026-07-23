@@ -12,6 +12,32 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from workflows.lib.role_resolver import build_launch_receipt, load_registry, render_receipt, resolve_role
+from octo_lite.launch import PROVISION_RECORD_SOURCE, validate_provision_record
+
+
+def _write_spawn_record(path: Path, worktree: Path) -> Path:
+    # gh#13 Blocker B: a valid host-authored provision record for the spawn
+    # worktree, exercising herdr-spawn's launch-provision-env-seam injection
+    # without a full git provisioning round-trip (validate_provision_record is
+    # pure schema; herdr-spawn trusts the host-authored record it is handed).
+    worktree = Path(worktree)
+    record = {
+        "schema_version": 1,
+        "source": PROVISION_RECORD_SOURCE,
+        "lane": "spawn-test",
+        "control_repo": str(worktree.parent / "control"),
+        "worktree": str(worktree),
+        "worktree_root": str(worktree.parent),
+        "repo_slug": "acme/widgets",
+        "branch": "octo-lite/spawn-test",
+        "starting_head": "0" * 40,
+        "resolver_root": str(worktree),
+        "install_check": "clean",
+        "provisioned_at": "2026-07-23T00:00:00+00:00",
+    }
+    validate_provision_record(record)
+    path.write_text(json.dumps(record))
+    return path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1298,14 +1324,105 @@ exec {real_mv} "$@"
             env["FAKE_ACK_OVERRIDE"] = ack_override
         return env, log
 
-    def spawn_base_command(self, receipt, cwd=None):
-        return [
-            str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(cwd or ROOT),
+    def spawn_base_command(self, receipt, cwd=None, provision_record=None, inject_record=True):
+        # gh#13 Blocker B: an orchestrator spawn now REQUIRES a host-authored
+        # provision record so herdr-spawn injects the frozen OCTO_* launch env.
+        # By default the shared helper auto-provisions a valid record for the
+        # spawn worktree so every existing bootstrap-contract test keeps passing;
+        # a test drives the fail-closed paths with inject_record=False.
+        worktree = cwd or ROOT
+        if provision_record is None and inject_record:
+            provision_record = _write_spawn_record(Path(receipt).parent / "provision.json", worktree)
+        command = [
+            str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(worktree),
             "--role", "orchestrator", "--label", "443/6 · operating model",
-            "--receipt", str(receipt), "--",
-            "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
+            "--receipt", str(receipt),
+        ]
+        if provision_record is not None:
+            command += ["--provision-record", str(provision_record)]
+        command += [
+            "--", "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
             "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
         ]
+        return command
+
+    def test_spawn_injects_frozen_provision_env_into_tab_create(self):
+        # gh#13 Blocker B (spec launch-provision-env-seam): herdr-spawn reads the
+        # host-authored provision record (never the child) and starts the loop
+        # process with the frozen OCTO_* env via `herdr tab create --env`, cwd
+        # pinned to the provisioned worktree.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo), env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            calls = log.read_text().splitlines()
+            tab_call = next(line for line in calls if line.startswith("tab create"))
+            for key in (
+                "OCTO_WORKTREE", "OCTO_WORKTREE_ROOT", "OCTO_CONTROL_REPO", "OCTO_REPO_SLUG",
+                "OCTO_STARTING_HEAD", "OCTO_LANE", "OCTO_PROVISION_RECORD",
+            ):
+                self.assertIn(f"--env {key}=", tab_call)
+            self.assertIn(f"--env OCTO_WORKTREE={repo}", tab_call)
+            self.assertIn(f"--env OCTO_PROVISION_RECORD={receipt_path.parent / 'provision.json'}", tab_call)
+
+    def test_spawn_requires_provision_record_for_orchestrator(self):
+        # Fail closed: an orchestrator lane with no provision record creates no
+        # tab or pane and reports no success.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo, inject_record=False),
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            calls = log.read_text().splitlines() if log.is_file() else []
+            self.assertFalse(any(line.startswith("tab create") for line in calls))
+
+    def test_spawn_rejects_provision_record_bound_to_a_different_worktree(self):
+        # Fail closed: a record whose worktree does not equal the spawn worktree
+        # can never inject a foreign lane's env.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+            foreign = _write_spawn_record(Path(td) / "foreign.json", Path(td) / "other-lane")
+
+            env, log = self.spawn_environment(td)
+            result = subprocess.run(
+                self.spawn_base_command(receipt_path, cwd=repo, provision_record=foreign),
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            calls = log.read_text().splitlines() if log.is_file() else []
+            self.assertFalse(any(line.startswith("tab create") for line in calls))
 
     def test_spawn_verifies_bootstrap_before_any_pane_and_resumes_the_exact_verified_session(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1675,10 +1792,12 @@ exec {real_mv} "$@"
             "--model", "claude-opus-4-8[1m]", "--effort", "high",
             "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
         ]
+        worktree = cwd or ROOT
+        record = _write_spawn_record(Path(receipt).parent / "provision.json", worktree)
         return [
-            str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(cwd or ROOT),
+            str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(worktree),
             "--role", "orchestrator", "--label", "🎤 443/6 · operating model",
-            "--receipt", str(receipt), "--", *claude,
+            "--receipt", str(receipt), "--provision-record", str(record), "--", *claude,
         ]
 
     def spawn_git_repo(self, path):

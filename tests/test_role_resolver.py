@@ -298,6 +298,58 @@ class RoleResolverTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bootstrap acknowledgment mismatch"):
             self.resolver.verify_bootstrap_ack(receipt, bad_ack)
 
+    # gh#13 Blocker A (spec launch-receipt-issue-binding, launch-shaping-authority-issue):
+    # an issue-orchestrator persistent receipt binds its exact issue identifier so the
+    # octo-control Shaped-transition gate that requires receipt[issue][identifier] admits it;
+    # a receipt built with no issue emits no [issue] table (meta-operator / epic bind none),
+    # and the issue participates in the launch_revision fingerprint.
+    def test_build_launch_receipt_binds_issue_identifier_when_requested(self) -> None:
+        from octo_lite.runtime import launch_revision as launch_rev
+
+        registry = self.resolver.load_registry(ROOT)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(target)], check=True)
+            subprocess.run(["git", "-C", str(target), "config", "user.email", "t@e.com"], check=True)
+            subprocess.run(["git", "-C", str(target), "config", "user.name", "T"], check=True)
+            (target / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(target), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(target), "commit", "-qm", "t"], check=True)
+            resolved = self.resolver.resolve_role(registry, "orchestrator", set())
+            common = dict(
+                spawn_id="s", parent="p", reply_route="r", repo=target, worktree=target,
+                execution_location="remote", operator_loopback=False,
+                review_delivery="reachable_url_required",
+            )
+            bound = self.resolver.build_launch_receipt(ROOT, resolved, issue="GH-13", **common)
+            unbound = self.resolver.build_launch_receipt(ROOT, resolved, **common)
+        parsed = tomllib.loads(self.resolver.render_receipt(bound))
+        self.assertEqual(parsed["issue"]["identifier"], "GH-13")
+        self.assertEqual(parsed["launch_revision"], launch_rev(parsed))
+        unbound_parsed = tomllib.loads(self.resolver.render_receipt(unbound))
+        self.assertNotIn("issue", unbound_parsed)
+        self.assertNotEqual(bound["launch_revision"], unbound["launch_revision"])
+        with self.assertRaises(ValueError):
+            self.resolver.build_launch_receipt(ROOT, resolved, issue="  ", **common)
+
+    def test_resolve_cli_binds_issue_identifier(self) -> None:
+        from octo_lite.runtime import launch_revision as launch_rev
+
+        result = subprocess.run(
+            [
+                "python3", str(MODULE_PATH), "resolve", "orchestrator",
+                "--spawn-id", "cli-issue", "--parent", "operator",
+                "--reply-route", "herdr://route", "--repo", str(ROOT),
+                "--worktree", str(ROOT), "--execution-location", "local",
+                "--review-delivery", "pr-comment", "--issue", "GH-13",
+            ],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = tomllib.loads(result.stdout)
+        self.assertEqual(parsed["issue"]["identifier"], "GH-13")
+        self.assertEqual(parsed["launch_revision"], launch_rev(parsed))
+
     # TUR-447 cycle1 pass2 F2/P0 (role-runtime role-machine-map, role-openai-relay,
     # role-no-prompt-copy). The `resolve` CLI a workflow resolver subagent invokes must exit 0
     # and PRINT the resolved runtime (provider, model, effort, service_tier, contract_blob) in a

@@ -962,6 +962,34 @@ def lane_invocation_env(provision: LaneProvision) -> tuple[Path, dict[str, str]]
     return cwd, env
 
 
+def lane_env_from_record(
+    record_path: Path | str, *, expected_worktree: Path | str
+) -> dict[str, str]:
+    """launch-provision-env-seam: read the host-authored OUT-OF-TREE provision
+    record and return exactly the frozen OCTO_* env a host injects into the loop
+    process it starts. Fails closed on an unreadable record, a non-host source or
+    missing/extra field (validate_provision_record), or a record whose worktree
+    does not equal the spawn worktree, so a spawn can never inject a foreign
+    lane's env or a forged record. The launcher owns this read; a lane agent
+    never self-writes or self-reads its own trust root."""
+    record_path = Path(record_path)
+    try:
+        record = json.loads(record_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateError("provision record unreadable") from error
+    validate_provision_record(record)
+    if Path(record["worktree"]).resolve() != Path(expected_worktree).resolve():
+        raise GateError("provision record worktree does not match spawn worktree")
+    _, env = lane_invocation_env(
+        LaneProvision(
+            record=record,
+            record_path=record_path.resolve(),
+            install_check_owner_route=None,
+        )
+    )
+    return env
+
+
 def run_lane_loop(
     provision: LaneProvision,
     envelope: Mapping[str, Any],
