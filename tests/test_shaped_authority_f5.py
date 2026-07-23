@@ -790,5 +790,61 @@ class VerdictPublishRepoSlugTests(unittest.TestCase):
             self.assertNotIn(str(repo), calls)
 
 
+class TransitionReceiptRevisionRecomputeTests(unittest.TestCase):
+    # gh#13 codex P1: the non-Shaped transition authority gate (used by loop-fire
+    # Shaped -> Todo) recomputes launch_revision so a lane that edits its receipt
+    # after bootstrap, including swapping [issue].identifier onto another issue,
+    # fails closed exactly as the Shaped-target gate rejects tampering.
+    def _write_verified_receipt(self, td: Path, issue: str, caller: str) -> Path:
+        import sys as _sys
+
+        _sys.path.insert(0, str(ROOT / "workflows" / "lib"))
+        _sys.path.insert(0, str(ROOT))
+        from role_resolver import build_launch_receipt, load_registry, render_receipt, resolve_role
+
+        repo = td / "repo"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.com"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
+        (repo / "AGENTS.md").write_text("# Target\n")
+        subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "t"], check=True)
+        resolved = resolve_role(load_registry(ROOT), "orchestrator", set())
+        receipt = build_launch_receipt(
+            ROOT, resolved, spawn_id="s", parent="p", reply_route="r", repo=repo, worktree=repo,
+            execution_location="remote", operator_loopback=False,
+            review_delivery="reachable_url_required", issue=issue,
+        )
+        receipt["bootstrap"] = {"verified": True, "provider_session_id": caller}
+        path = td / "receipt.toml"
+        path.write_text(render_receipt(receipt))
+        return path
+
+    def _args(self, receipt: Path, issue: str, caller: str):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(stream=None, receipt=str(receipt), issue=issue, caller=caller)
+
+    def test_unmodified_verified_receipt_passes(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            td = Path(tmp)
+            receipt = self._write_verified_receipt(td, "GH-13", "caller-1")
+            module._verify_transition_authority(self._args(receipt, "GH-13", "caller-1"))
+
+    def test_post_bootstrap_issue_swap_fails_closed(self) -> None:
+        module = _load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            td = Path(tmp)
+            receipt = self._write_verified_receipt(td, "GH-13", "caller-1")
+            text = receipt.read_text().replace('identifier = "GH-13"', 'identifier = "GH-99"')
+            receipt.write_text(text)
+            # The issue field now matches the requested issue, but launch_revision
+            # no longer matches the tampered receipt.
+            with self.assertRaises(module.GateError):
+                module._verify_transition_authority(self._args(receipt, "GH-99", "caller-1"))
+
+
 if __name__ == "__main__":
     unittest.main()

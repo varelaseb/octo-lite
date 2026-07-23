@@ -352,6 +352,7 @@ def build_launch_receipt(
     execution_location: str,
     operator_loopback: bool,
     review_delivery: str,
+    issue: str | None = None,
 ) -> dict[str, Any]:
     root = Path(root).resolve()
     repo = Path(repo).resolve()
@@ -410,6 +411,14 @@ def build_launch_receipt(
         },
         "bootstrap": {"verified": False, "provider_session_id": ""},
     }
+    # launch-receipt-issue-binding: an issue orchestrator's persistent receipt
+    # additionally binds its exact issue identifier so the Shaped-transition gate
+    # that requires the caller receipt name that exact issue admits it. A
+    # meta-operator or epic orchestrator receipt binds no issue and omits it.
+    if issue is not None:
+        if not issue.strip():
+            raise ValueError("issue identifier must be nonempty when provided")
+        receipt["issue"] = {"identifier": issue}
     receipt["launch_revision"] = _launch_revision(receipt)
     return receipt
 
@@ -423,7 +432,11 @@ def render_receipt(receipt: dict[str, Any]) -> str:
         f"ready = {str(receipt['ready']).lower()}",
         f"launch_revision = {_toml_string(receipt['launch_revision'])}",
     ]
-    for section in ("role", "runtime", "skills", "workspace", "access", "bootstrap"):
+    sections = ["role", "runtime", "skills", "workspace"]
+    if "issue" in receipt:
+        sections.append("issue")
+    sections.extend(["access", "bootstrap"])
+    for section in sections:
         lines.extend(["", f"[{section}]"])
         for key, value in receipt[section].items():
             if isinstance(value, bool):
@@ -553,6 +566,11 @@ def main(argv: list[str] | None = None) -> int:
     resolve.add_argument("--execution-location", choices=("local", "remote"), required=True)
     resolve.add_argument("--operator-loopback", choices=("true", "false"), default="false")
     resolve.add_argument("--review-delivery", required=True)
+    # launch-receipt-issue-binding: the launcher binds the exact issue identifier
+    # onto an issue-orchestrator persistent receipt so the octo-control
+    # Shaped-transition gate that requires receipt[issue][identifier] admits it.
+    # Absent for meta-operator and epic-orchestrator receipts, which bind no issue.
+    resolve.add_argument("--issue")
     # TUR-447 cycle1 pass2 P0 (role-runtime role-openai-relay): a relay resolver run opts in to
     # the canonical contract text so the relay carries it as the codex exec prompt. Off by
     # default so a durable launch-receipt consumer (the persistent launch path writes this
@@ -581,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
         execution_location=args.execution_location,
         operator_loopback=args.operator_loopback == "true",
         review_delivery=args.review_delivery,
+        issue=args.issue,
     )
     print(render_receipt(receipt), end="")
     # TUR-447 cycle1 pass2 P0 (role-runtime role-openai-relay, role-no-prompt-copy): with

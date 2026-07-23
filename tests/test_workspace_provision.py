@@ -12,17 +12,37 @@ from pathlib import Path
 from unittest import mock
 
 from octo_lite.launch import (
+    LANE_ENV_KEYS,
+    PROVISION_RECORD_SOURCE,
     GateError,
     LaneProvision,
     _prepare_worktree,
     cleanup_clean_abort,
     default_install_check,
+    lane_env_from_record,
     lane_invocation_env,
     provision_lane_worktree,
     run_lane_loop,
     validate_provision_record,
     verify_lane_worktree_reality,
 )
+
+
+def _valid_record(worktree: Path, worktree_root: Path) -> dict:
+    return {
+        "schema_version": 1,
+        "source": PROVISION_RECORD_SOURCE,
+        "lane": "issue13",
+        "control_repo": str(worktree_root / "control"),
+        "worktree": str(worktree),
+        "worktree_root": str(worktree_root),
+        "repo_slug": "acme/widgets",
+        "branch": "octo-lite/issue13",
+        "starting_head": "0" * 40,
+        "resolver_root": str(worktree),
+        "install_check": "clean",
+        "provisioned_at": "2026-07-23T00:00:00+00:00",
+    }
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_SLUG = "acme/widgets"
@@ -683,6 +703,86 @@ class InstallCheckOwnerRoutingTests(unittest.TestCase):
             self.assertEqual("drifted", default_install_check(ROOT, prefix=prefix))
             self.assertEqual(before, target.readlink())
             self.assertEqual("foreign\n", foreign.read_text())
+
+
+class LaneEnvFromRecordTests(unittest.TestCase):
+    # gh#13 Blocker B (spec launch-provision-env-seam): the host reads the
+    # out-of-tree host-authored record and derives exactly the 7 frozen OCTO_*
+    # vars it injects into the loop process, failing closed on a worktree
+    # mismatch or a non-host / malformed record.
+    def test_returns_the_seven_frozen_seam_vars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "wt"
+            worktree.mkdir()
+            record = _valid_record(worktree, root)
+            path = root / "issue13.json"
+            path.write_text(json.dumps(record))
+            env = lane_env_from_record(path, expected_worktree=worktree)
+        self.assertEqual(set(env), set(LANE_ENV_KEYS))
+        self.assertEqual(env["OCTO_WORKTREE"], str(worktree))
+        self.assertEqual(env["OCTO_WORKTREE_ROOT"], str(root))
+        self.assertEqual(env["OCTO_CONTROL_REPO"], str(root / "control"))
+        self.assertEqual(env["OCTO_REPO_SLUG"], "acme/widgets")
+        self.assertEqual(env["OCTO_STARTING_HEAD"], "0" * 40)
+        self.assertEqual(env["OCTO_LANE"], "issue13")
+        self.assertEqual(env["OCTO_PROVISION_RECORD"], str(path.resolve()))
+
+    def test_rejects_worktree_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "wt"
+            worktree.mkdir()
+            other = root / "other"
+            other.mkdir()
+            path = root / "issue13.json"
+            path.write_text(json.dumps(_valid_record(worktree, root)))
+            with self.assertRaises(GateError):
+                lane_env_from_record(path, expected_worktree=other)
+
+    def test_rejects_non_host_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "wt"
+            worktree.mkdir()
+            record = _valid_record(worktree, root)
+            record["source"] = "child-supplied"
+            path = root / "issue13.json"
+            path.write_text(json.dumps(record))
+            with self.assertRaises(GateError):
+                lane_env_from_record(path, expected_worktree=worktree)
+
+    def test_rejects_unreadable_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nope.json"
+            with self.assertRaises(GateError):
+                lane_env_from_record(missing, expected_worktree=Path(tmp))
+
+    def test_rejects_record_inside_the_worktree_tree(self) -> None:
+        # launch-provision-record-out-of-tree: a record authored inside the lane's
+        # own worktree can never be trusted as the host trust root.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "wt"
+            (worktree / "nested").mkdir(parents=True)
+            path = worktree / "nested" / "record.json"
+            path.write_text(json.dumps(_valid_record(worktree, root)))
+            with self.assertRaises(GateError):
+                lane_env_from_record(path, expected_worktree=worktree)
+
+    def test_rejects_control_character_in_a_seam_value(self) -> None:
+        # A newline in a record field would inject an extra host env variable when
+        # a launcher serializes the env line by line.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worktree = root / "wt"
+            worktree.mkdir()
+            record = _valid_record(worktree, root)
+            record["control_repo"] = "/ctl\nPATH=/attacker"
+            path = root / "issue13.json"
+            path.write_text(json.dumps(record))
+            with self.assertRaises(GateError):
+                lane_env_from_record(path, expected_worktree=worktree)
 
 
 if __name__ == "__main__":
