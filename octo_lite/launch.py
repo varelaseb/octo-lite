@@ -893,22 +893,30 @@ def provision_lane_worktree(
 
         require_clean = True
         if worktree.exists():
-            if existing_lane_record is None:
-                if not adopt_existing:
-                    raise GateError("worktree path exists but is not provisioned for this lane")
-                # Adoption backfill for a pre-fix hand-created worktree: take the
-                # live worktree as-is. Derive the head from it, verify its identity,
-                # and tolerate a mid-delivery dirty tree, since adoption only writes
-                # the out-of-tree record and never touches the worktree.
-                head = _git(worktree, "rev-parse", "HEAD")
-                require_clean = False
-            else:
+            if existing_lane_record is not None:
                 if existing_lane_record["worktree"] != str(worktree):
                     raise GateError("lane already provisioned at a different worktree path")
                 if existing_lane_record["branch"] != branch:
                     raise GateError("lane already provisioned on a different branch")
-                # Idempotent reuse: skip worktree creation and fall through to the same
-                # reality verification the fresh-create path runs.
+            if adopt_existing:
+                # Adoption backfill for a pre-fix hand-created worktree: take the
+                # live worktree as-is. Derive the head from it (so the caller need
+                # not name a starting commit and re-adoption is idempotent), verify
+                # its identity, and tolerate a mid-delivery dirty tree since adoption
+                # only writes the out-of-tree record and never touches the worktree.
+                # Trade-off (documented): relaxing the clean check means the
+                # wiring-liveness check attests only that AGENTS.md/CLAUDE.md and the
+                # resolver root are PRESENT, not that they are unmodified versus HEAD;
+                # role and instruction wiring is live-read from the worktree at spawn
+                # regardless of this record, and a self-repo lane whose deliverable is
+                # editing that wiring must remain adoptable, so no new trust is
+                # conferred that the live read did not already grant.
+                head = _git(worktree, "rev-parse", "HEAD")
+                require_clean = False
+            elif existing_lane_record is None:
+                raise GateError("worktree path exists but is not provisioned for this lane")
+            # else: idempotent reuse of an already-provisioned worktree; fall through
+            # to the same reality verification the fresh-create path runs.
         else:
             if adopt_existing:
                 raise GateError("adopt-existing requires an existing worktree")

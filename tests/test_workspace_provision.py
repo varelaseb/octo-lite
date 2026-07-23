@@ -143,6 +143,16 @@ class LaneProvisionTests(unittest.TestCase):
         self.assertEqual("in progress\n", dirty.read_text())
         self.assertIn("wip.txt", _git(self.worktree, "status", "--porcelain"))
 
+    def test_adopt_existing_is_idempotent(self) -> None:
+        self._make_unrecorded_worktree()
+        first = self.provision(adopt_existing=True, head=None)
+        # Re-running the same adoption (still no starting commit, record now
+        # present) must succeed and yield the same record, not fail HEAD checks.
+        second = self.provision(adopt_existing=True, head=None)
+        self.assertEqual(first.record["starting_head"], second.record["starting_head"])
+        self.assertEqual(first.record["worktree"], second.record["worktree"])
+        validate_provision_record(second.record)
+
     def test_adopt_existing_still_enforces_branch_identity(self) -> None:
         self._make_unrecorded_worktree()
         with self.assertRaises(GateError):
