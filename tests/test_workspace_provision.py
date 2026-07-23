@@ -864,5 +864,66 @@ class LaneEnvFromRecordTests(unittest.TestCase):
                 lane_env_from_record(path, expected_worktree=worktree)
 
 
+class TargetLaneProvisionTests(unittest.TestCase):
+    # gh#13: a TARGET repo lane carries no roles.toml and no installer, because
+    # octo-lite is installed foreground tooling and never a target dependency.
+    # Fresh provisioning and adoption must succeed via the installed surface with
+    # resolver_root == worktree and a clean install-check, not crash on the missing
+    # roles.toml (load_registry) or missing control-repo installer.
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.control_repo = base / "target"
+        self.worktree_root = base / "worktrees"
+        self.head = self._init_target_repo(self.control_repo)
+        self.lane = "tur-x"
+        self.branch = "tur-x-shaping"
+        self.worktree = self.worktree_root / self.lane
+
+    def _init_target_repo(self, repo: Path) -> str:
+        repo.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.com"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", REMOTE], check=True)
+        # A target repo: AGENTS.md + CLAUDE.md but NO roles.toml and NO installer.
+        (repo / "AGENTS.md").write_text("# Target\n")
+        (repo / "CLAUDE.md").write_text("# Target\n")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+        return _git(repo, "rev-parse", "HEAD")
+
+    def provision(self, **overrides):
+        # No install_check override: exercise the real default_install_check, which
+        # must tolerate the target control repo carrying no installer.
+        values = dict(
+            control_repo=self.control_repo, worktree_root=self.worktree_root,
+            worktree=self.worktree, lane=self.lane, branch=self.branch,
+            head=self.head, repo_slug=REPO_SLUG, now=lambda: "2026-07-23T00:00:00+00:00",
+        )
+        values.update(overrides)
+        return provision_lane_worktree(**values)
+
+    def test_fresh_provision_of_target_repo_without_roles_toml(self) -> None:
+        result = self.provision()
+        self.assertEqual(str(self.worktree), result.record["resolver_root"])
+        self.assertEqual(str(self.worktree), result.record["worktree"])
+        self.assertEqual("clean", result.record["install_check"])
+        validate_provision_record(result.record)
+
+    def test_adopt_existing_target_repo_without_roles_toml(self) -> None:
+        first = self.provision()
+        Path(first.record_path).unlink()
+        result = self.provision(adopt_existing=True, head=None)
+        self.assertTrue(Path(result.record_path).is_file())
+        self.assertEqual(str(self.worktree), result.record["resolver_root"])
+        self.assertEqual("clean", result.record["install_check"])
+        validate_provision_record(result.record)
+
+    def test_default_install_check_reports_clean_when_control_repo_has_no_installer(self) -> None:
+        self.assertEqual("clean", default_install_check(self.control_repo))
+
+
 if __name__ == "__main__":
     unittest.main()

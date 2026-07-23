@@ -713,8 +713,16 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
 def default_install_check(control_repo: Path, *, prefix: Path | None = None) -> str:
     """launch-provision-wiring-liveness: run the real installer's read-only
     --check and report clean or drifted. Never repairs; the installer itself
-    refuses to replace a nonmatching target."""
+    refuses to replace a nonmatching target.
+
+    octo-lite is installed foreground tooling and is NEVER a target dependency,
+    so a target-repo control repo carries no installer to run. When the installer
+    is absent the installed octo-lite surface is not this repo's to check (it is
+    the global foreground install, verified at install time), so report clean
+    rather than crashing or falsely flagging drift on a target lane."""
     installer = Path(control_repo) / "scripts" / "install-octo-lite"
+    if not installer.is_file():
+        return "clean"
     argv = [str(installer), "--check"]
     if prefix is not None:
         argv += ["--prefix", str(prefix)]
@@ -938,9 +946,19 @@ def provision_lane_worktree(
             control_repo, worktree, head, branch, repo_slug, require_clean=require_clean
         )
 
-        resolver_root = load_registry(worktree).root
-        if resolver_root != worktree:
-            raise GateError("role resolver root must be the provisioned worktree")
+        # launch-provision-wiring-liveness. An octo-lite SELF-hosting lane carries
+        # its own canonical roles.toml in the worktree, so verify the resolver
+        # resolves there rather than through a drift-prone shared symlink. A TARGET
+        # repo lane never carries roles.toml (octo-lite is installed foreground
+        # tooling, never a target dependency), so core role spawns resolve through
+        # the installed octo-lite surface and the provisioned worktree is still the
+        # workspace/resolver root of record.
+        if (worktree / "roles.toml").is_file():
+            resolver_root = load_registry(worktree).root
+            if resolver_root != worktree:
+                raise GateError("role resolver root must be the provisioned worktree")
+        else:
+            resolver_root = worktree
 
         check_state = install_check(control_repo)
         if check_state not in PROVISION_RECORD_INSTALL_CHECK_VALUES:
