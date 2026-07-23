@@ -1012,6 +1012,45 @@ def command_workspace_admit(args) -> dict:
     # conflict/containment guard only, no worktree created), so an existing
     # admit-only caller is never silently broken by this additive
     # subcommand-family (code-review finding 9).
+    # Adoption backfill: adopt an EXISTING pre-fix hand-created worktree that
+    # carries no lane record. --starting-commit is optional (the head is derived
+    # from the live worktree) and a mid-delivery dirty tree is tolerated; the
+    # worktree is never touched, only the out-of-tree record is written.
+    if getattr(args, "adopt_existing", False):
+        required = {
+            "control_repo": args.control_repo,
+            "lane": args.lane,
+            "branch": args.branch,
+            "repo_slug": args.repo_slug,
+        }
+        missing = sorted(name for name, value in required.items() if value is None)
+        if missing:
+            flags = ", ".join(f"--{name.replace('_', '-')}" for name in missing)
+            raise GateError(
+                "workspace-admit --adopt-existing requires --control-repo, --lane, "
+                f"--branch, and --repo-slug; missing: {flags}"
+            )
+        provision = provision_lane_worktree(
+            control_repo=Path(args.control_repo),
+            worktree_root=Path(args.worktree_root),
+            worktree=Path(args.worktree),
+            lane=args.lane,
+            branch=args.branch,
+            head=args.starting_commit,
+            repo_slug=args.repo_slug,
+            minimum_free_bytes=args.minimum_free_bytes,
+            conflicts=args.conflict,
+            provider_overloaded=args.provider_overloaded,
+            adopt_existing=True,
+        )
+        return {
+            "admitted": True,
+            "adopted": True,
+            "worktree": provision.record["worktree"],
+            "record_path": str(provision.record_path),
+            "install_check_owner_route": provision.install_check_owner_route,
+            "record": provision.record,
+        }
     provisioning_flags = {
         "control_repo": args.control_repo,
         "lane": args.lane,
@@ -1242,6 +1281,10 @@ def parser() -> argparse.ArgumentParser:
     admission.add_argument("--minimum-free-bytes", type=int, required=True)
     admission.add_argument("--conflict", action="append", default=[])
     admission.add_argument("--provider-overloaded", action="store_true")
+    # Backfill an existing pre-fix hand-created worktree that carries no lane
+    # record: verify its identity, derive its head, tolerate mid-delivery work,
+    # and write only the out-of-tree record.
+    admission.add_argument("--adopt-existing", action="store_true")
     admission.set_defaults(run=command_workspace_admit)
 
     cleanup = sub.add_parser("workspace-cleanup")

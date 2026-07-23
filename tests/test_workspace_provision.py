@@ -114,6 +114,75 @@ class LaneProvisionTests(unittest.TestCase):
         self.assertEqual(self.branch, _git(self.worktree, "branch", "--show-current"))
         self.assertEqual(self.lane, result.record["lane"])
 
+    # gh#13 backfill: adopt an EXISTING pre-fix hand-created worktree that carries
+    # no lane record. `_make_unrecorded_worktree` provisions once then removes the
+    # record to model a worktree that predates the record machinery.
+    def _make_unrecorded_worktree(self):
+        result = self.provision()
+        record_path = Path(result.record_path)
+        record_path.unlink()
+        return record_path
+
+    def test_adopt_existing_writes_record_without_recreating(self) -> None:
+        record_path = self._make_unrecorded_worktree()
+        head_before = _git(self.worktree, "rev-parse", "HEAD")
+        result = self.provision(adopt_existing=True, head=None)
+        self.assertTrue(record_path.is_file())
+        self.assertEqual(str(self.worktree), result.record["worktree"])
+        self.assertEqual(head_before, result.record["starting_head"])
+        self.assertEqual(self.branch, result.record["branch"])
+        validate_provision_record(result.record)
+
+    def test_adopt_existing_tolerates_and_preserves_mid_delivery_dirty_tree(self) -> None:
+        self._make_unrecorded_worktree()
+        dirty = self.worktree / "wip.txt"
+        dirty.write_text("in progress\n")
+        result = self.provision(adopt_existing=True, head=None)
+        self.assertTrue(Path(result.record_path).is_file())
+        # The uncommitted mid-delivery work is untouched.
+        self.assertEqual("in progress\n", dirty.read_text())
+        self.assertIn("wip.txt", _git(self.worktree, "status", "--porcelain"))
+
+    def test_adopt_existing_still_enforces_branch_identity(self) -> None:
+        self._make_unrecorded_worktree()
+        with self.assertRaises(GateError):
+            self.provision(adopt_existing=True, head=None, branch="octo-lite/wrong")
+
+    def test_adopt_existing_rejects_a_missing_worktree(self) -> None:
+        absent = self.worktree_root / "absent"
+        with self.assertRaises(GateError):
+            self.provision(
+                adopt_existing=True, head=None, worktree=absent,
+                lane="absent-lane", branch="octo-lite/absent-lane",
+            )
+
+    def test_non_adopt_still_rejects_an_unprovisioned_existing_worktree(self) -> None:
+        self._make_unrecorded_worktree()
+        with self.assertRaises(GateError) as ctx:
+            self.provision()
+        self.assertIn("not provisioned", str(ctx.exception))
+
+    def test_workspace_admit_adopt_cli_requires_identity_flags(self) -> None:
+        # The octo-control --adopt-existing branch requires the four identity
+        # flags (starting-commit optional) and fails closed when one is missing.
+        import importlib.machinery
+        import importlib.util
+        from types import SimpleNamespace
+
+        control = ROOT / "scripts/octo-control"
+        loader = importlib.machinery.SourceFileLoader("octo_control_adopt", str(control))
+        spec = importlib.util.spec_from_file_location("octo_control_adopt", control, loader=loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        args = SimpleNamespace(
+            adopt_existing=True, control_repo=str(self.control_repo), lane=None,
+            branch="octo-lite/lane-1", repo_slug=REPO_SLUG, worktree=str(self.worktree),
+            worktree_root=str(self.worktree_root), starting_commit=None,
+            minimum_free_bytes=1, conflict=[], provider_overloaded=False,
+        )
+        with self.assertRaises(module.GateError):
+            module.command_workspace_admit(args)
+
     # REG-1 (code-review finding 1, launch.py:694): an unsanitized lane must
     # never control the record path. A traversal, nested, or absolute lane is
     # rejected before any disk mutation, and never escapes .octo-provisions.
