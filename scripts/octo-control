@@ -1038,6 +1038,7 @@ def command_workspace_admit(args) -> dict:
             branch=args.branch,
             head=args.starting_commit,
             repo_slug=args.repo_slug,
+            octo_control_repo=Path(args.octo_control_repo) if args.octo_control_repo else None,
             minimum_free_bytes=args.minimum_free_bytes,
             conflicts=args.conflict,
             provider_overloaded=args.provider_overloaded,
@@ -1086,6 +1087,7 @@ def command_workspace_admit(args) -> dict:
         branch=args.branch,
         head=args.starting_commit,
         repo_slug=args.repo_slug,
+        octo_control_repo=Path(args.octo_control_repo) if args.octo_control_repo else None,
         minimum_free_bytes=args.minimum_free_bytes,
         conflicts=args.conflict,
         provider_overloaded=args.provider_overloaded,
@@ -1285,6 +1287,11 @@ def parser() -> argparse.ArgumentParser:
     # record: verify its identity, derive its head, tolerate mid-delivery work,
     # and write only the out-of-tree record.
     admission.add_argument("--adopt-existing", action="store_true")
+    # The octo-lite TOOLING repo (role_resolver.py, roles.toml, installer) that
+    # becomes OCTO_CONTROL_REPO for role resolution. Optional; defaults to
+    # --control-repo for a self-hosting lane. A TARGET lane sets it to the octo-lite
+    # control repo so the loop resolves octo-lite tooling, not the target worktree.
+    admission.add_argument("--octo-control-repo")
     admission.set_defaults(run=command_workspace_admit)
 
     cleanup = sub.add_parser("workspace-cleanup")

@@ -820,6 +820,7 @@ def provision_lane_worktree(
     branch: str,
     head: str | None = None,
     repo_slug: str,
+    octo_control_repo: Path | None = None,
     minimum_free_bytes: int = 1,
     conflicts: list[str] | None = None,
     provider_overloaded: bool = False,
@@ -833,8 +834,22 @@ def provision_lane_worktree(
     repo/branch/head without error, and refusing the control repository path
     itself and any path already bound to a different lane or branch. Emits the
     host-authored provisioning record OUT of the worktree tree
-    (launch-provision-record-out-of-tree)."""
+    (launch-provision-record-out-of-tree).
+
+    control_repo is the git repo the worktree is a worktree OF (the delivery
+    target: octo-lite itself for a self-hosting lane, or a target repo like Turbo
+    for a target lane); it drives worktree creation and the git identity checks.
+    octo_control_repo is the octo-lite TOOLING repo that owns role_resolver.py,
+    roles.toml, and the installer; it becomes the record's control_repo and thus
+    OCTO_CONTROL_REPO, from which the loop resolves the worker role, and it is the
+    install-check + registry-verification target. It defaults to control_repo so a
+    self-hosting lane (where the two coincide) is unchanged; a target lane sets it
+    to the octo-lite control repo so the loop resolves octo-lite tooling rather
+    than looking for it inside the target worktree."""
     control_repo = Path(control_repo).resolve()
+    octo_control_repo = (
+        Path(octo_control_repo).resolve() if octo_control_repo is not None else control_repo
+    )
     worktree_root = Path(worktree_root).resolve()
     worktree = Path(worktree).resolve()
     if not lane or not lane.strip():
@@ -951,29 +966,22 @@ def provision_lane_worktree(
             control_repo, worktree, head, branch, repo_slug, require_clean=require_clean
         )
 
-        # launch-provision-wiring-liveness. An octo-lite SELF-hosting lane carries
-        # its own canonical roles.toml in the worktree, so verify the resolver
-        # resolves there rather than through a drift-prone shared symlink. A TARGET
-        # repo lane never carries roles.toml (octo-lite is installed foreground
-        # tooling, never a target dependency), so core role spawns resolve through
-        # the installed octo-lite surface and the provisioned worktree is still the
-        # workspace/resolver root of record.
-        if (worktree / "roles.toml").is_file():
-            resolver_root = load_registry(worktree).root
-            if resolver_root != worktree:
-                raise GateError("role resolver root must be the provisioned worktree")
-        else:
-            # Target lane. KNOWN LIMITATION (tracked follow-up): the delivery loop
-            # resolves role_resolver.py from OCTO_CONTROL_REPO, which is this
-            # record's control_repo (the target git repo), so a target lane is
-            # provisioning-complete but NOT yet loop-runnable and must not be
-            # loop-spawned until OCTO_CONTROL_REPO is decoupled from the target git
-            # repo and points at the trusted octo-lite control repo. This record
-            # supports adoption/tooling-completeness (identity + out-of-tree record)
-            # only; it never makes the loop execute target-supplied resolver code.
-            resolver_root = worktree
+        # launch-provision-wiring-liveness. The loop resolves the worker role by
+        # running role_resolver.py from OCTO_CONTROL_REPO, which is this record's
+        # control_repo == octo_control_repo, so verify THAT repo carries a canonical
+        # registry (roles.toml + role files) rather than the target worktree, which
+        # for a target lane holds no octo-lite tooling. The resolver root of record
+        # is always the provisioned worktree (the loop's resolver_root == worktree
+        # identity invariant); role resolution reads roles from OCTO_CONTROL_REPO.
+        try:
+            load_registry(octo_control_repo)
+        except (OSError, ValueError) as error:
+            raise GateError(
+                f"octo control repo has no canonical role registry: {octo_control_repo}"
+            ) from error
+        resolver_root = worktree
 
-        check_state = install_check(control_repo)
+        check_state = install_check(octo_control_repo)
         if check_state not in PROVISION_RECORD_INSTALL_CHECK_VALUES:
             raise GateError("install check must report clean or drifted")
         owner_route = INSTALLED_SURFACE_OWNER if check_state == "drifted" else None
@@ -983,7 +991,7 @@ def provision_lane_worktree(
             "schema_version": 1,
             "source": PROVISION_RECORD_SOURCE,
             "lane": lane,
-            "control_repo": str(control_repo),
+            "control_repo": str(octo_control_repo),
             "worktree": str(worktree),
             "worktree_root": str(worktree_root),
             "repo_slug": repo_slug,
