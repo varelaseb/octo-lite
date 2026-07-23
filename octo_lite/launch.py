@@ -748,12 +748,15 @@ def _find_foreign_lane_record(records_dir: Path, worktree: Path, lane: str, *, e
 
 
 def verify_lane_worktree_reality(
-    control_repo: Path, worktree: Path, head: str, branch: str, repo_slug: str
+    control_repo: Path, worktree: Path, head: str, branch: str, repo_slug: str,
+    *, require_clean: bool = True,
 ) -> None:
     """launch-provision-verify + workspace-provision-shares-create-verify: verify
     the worktree by reality (top-level, common-dir, HEAD, branch, clean tree),
     plus the ADDED origin-slug reality check and the own-CLAUDE.md wiring check
-    (launch-provision-wiring-liveness)."""
+    (launch-provision-wiring-liveness). require_clean is relaxed only when adopting
+    an existing mid-delivery worktree, whose in-progress uncommitted work must not
+    be disturbed; every identity check still holds."""
     control_repo = Path(control_repo)
     worktree = Path(worktree)
     try:
@@ -774,7 +777,7 @@ def verify_lane_worktree_reality(
         raise GateError("worktree starting HEAD mismatch")
     if actual_branch != branch:
         raise GateError("worktree branch mismatch")
-    if dirty:
+    if require_clean and dirty:
         raise GateError("fresh worktree is dirty")
     try:
         origin = _git(worktree, "remote", "get-url", "origin")
@@ -802,11 +805,12 @@ def provision_lane_worktree(
     worktree: Path,
     lane: str,
     branch: str,
-    head: str,
+    head: str | None = None,
     repo_slug: str,
     minimum_free_bytes: int = 1,
     conflicts: list[str] | None = None,
     provider_overloaded: bool = False,
+    adopt_existing: bool = False,
     install_check: Callable[[Path], str] = default_install_check,
     now: Callable[[], str] | None = None,
 ) -> LaneProvision:
@@ -844,10 +848,16 @@ def provision_lane_worktree(
     # creation, and an ANNOTATED TAG must be peeled to the commit it points
     # at (plain `rev-parse <ref>` returns the tag OBJECT sha, but
     # `git worktree add` checks out the peeled commit).
-    try:
-        head = _git(control_repo, "rev-parse", "--verify", f"{head}^{{commit}}")
-    except subprocess.CalledProcessError as error:
-        raise GateError(f"starting commit unresolvable: {head}") from error
+    # When adopting an existing worktree the head is derived from that live
+    # worktree below, so the caller need not name a starting commit; otherwise the
+    # provided ref is peeled to a commit sha for the fresh-create path.
+    if not adopt_existing:
+        if head is None:
+            raise GateError("starting commit required")
+        try:
+            head = _git(control_repo, "rev-parse", "--verify", f"{head}^{{commit}}")
+        except subprocess.CalledProcessError as error:
+            raise GateError(f"starting commit unresolvable: {head}") from error
 
     worktree_root.mkdir(parents=True, exist_ok=True)
     admit_workspace(
@@ -881,16 +891,27 @@ def provision_lane_worktree(
             existing_lane_record = json.loads(lane_record_path.read_text())
             validate_provision_record(existing_lane_record)
 
+        require_clean = True
         if worktree.exists():
             if existing_lane_record is None:
-                raise GateError("worktree path exists but is not provisioned for this lane")
-            if existing_lane_record["worktree"] != str(worktree):
-                raise GateError("lane already provisioned at a different worktree path")
-            if existing_lane_record["branch"] != branch:
-                raise GateError("lane already provisioned on a different branch")
-            # Idempotent reuse: skip worktree creation and fall through to the same
-            # reality verification the fresh-create path runs.
+                if not adopt_existing:
+                    raise GateError("worktree path exists but is not provisioned for this lane")
+                # Adoption backfill for a pre-fix hand-created worktree: take the
+                # live worktree as-is. Derive the head from it, verify its identity,
+                # and tolerate a mid-delivery dirty tree, since adoption only writes
+                # the out-of-tree record and never touches the worktree.
+                head = _git(worktree, "rev-parse", "HEAD")
+                require_clean = False
+            else:
+                if existing_lane_record["worktree"] != str(worktree):
+                    raise GateError("lane already provisioned at a different worktree path")
+                if existing_lane_record["branch"] != branch:
+                    raise GateError("lane already provisioned on a different branch")
+                # Idempotent reuse: skip worktree creation and fall through to the same
+                # reality verification the fresh-create path runs.
         else:
+            if adopt_existing:
+                raise GateError("adopt-existing requires an existing worktree")
             if existing_lane_record is not None:
                 raise GateError("lane record exists but its provisioned worktree is missing")
             _prepare_worktree(
@@ -905,7 +926,9 @@ def provision_lane_worktree(
                 provider_overloaded=provider_overloaded,
             )
 
-        verify_lane_worktree_reality(control_repo, worktree, head, branch, repo_slug)
+        verify_lane_worktree_reality(
+            control_repo, worktree, head, branch, repo_slug, require_clean=require_clean
+        )
 
         resolver_root = load_registry(worktree).root
         if resolver_root != worktree:
@@ -936,8 +959,10 @@ def provision_lane_worktree(
         _atomic_write(lane_record_path, json.dumps(record, indent=2, sort_keys=True) + "\n")
 
         # launch-provision-record-out-of-tree: the record lives outside the worktree
-        # tree, so the verified-clean tree stays clean.
-        if _git(worktree, "status", "--porcelain"):
+        # tree, so a freshly provisioned verified-clean tree stays clean. Adoption of
+        # a mid-delivery worktree legitimately carries uncommitted work, so this
+        # post-write clean assertion applies only when a clean tree was required.
+        if require_clean and _git(worktree, "status", "--porcelain"):
             raise GateError("worktree unexpectedly dirty after provisioning")
 
         return LaneProvision(record=record, record_path=lane_record_path, install_check_owner_route=owner_route)
