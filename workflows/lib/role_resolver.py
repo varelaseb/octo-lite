@@ -232,10 +232,13 @@ def load_registry(root: Path | str) -> Registry:
 
 
 def _skill_blob(root: Path, skill: str) -> str:
-    path = _inside(root, f"skills/{skill}/SKILL.md", "skills")
-    if not path.is_file():
-        raise ValueError(f"skill contract missing: {skill}")
-    return _git_blob(path)
+    # Managed skills (skillfile install target agents/skills, ADR 0002) shadow
+    # locally authored skills/ skills of the same name.
+    for base in ("agents/skills", "skills"):
+        path = _inside(root, f"{base}/{skill}/SKILL.md", base)
+        if path.is_file():
+            return _git_blob(path)
+    raise ValueError(f"skill contract missing: {skill}")
 
 
 def resolve_role(registry: Registry, role_name: str, capabilities: set[str] | None = None) -> ResolvedRole:

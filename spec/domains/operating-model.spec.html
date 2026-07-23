@@ -438,7 +438,8 @@
 <p data-anchor="intent-source" id="intent-source">Linear owns high-level issue identity, decisions, context, non-goals, dependencies, and lifecycle state.</p>
 <p data-anchor="intent-spec" id="intent-spec">Canonical specs and ADRs own detailed behavior, acceptance rules, interfaces, edge cases, and constraints.</p>
 <p data-anchor="intent-pr" id="intent-pr">One evolving draft pull request carries shaping and implementation without creating divergent branches of truth.</p>
-<p data-anchor="intent-tdd" id="intent-tdd">Every behavior-changing implementation follows spec-driven red, green, refactor unless shaping records a narrow operator-approved waiver.</p>
+<p data-anchor="intent-tdd" id="intent-tdd">Every behavior-changing implementation follows spec-driven red then green unless shaping records a narrow operator-approved waiver.</p>
+<p data-anchor="intent-refactor-review" id="intent-refactor-review">Refactoring is not part of the implementation loop; it arrives through reviewer-flagged refactor-only fix passes verified green-stays-green per the delivery lifecycle.</p>
 </section>
 
 <section data-anchor="domain-concepts" id="domain-concepts">

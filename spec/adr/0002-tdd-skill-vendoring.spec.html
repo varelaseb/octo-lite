@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0002: vendored TDD skill and skill management</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header">
+<h1>ADR 0002: vendored TDD skill and skill management</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/delivery-lifecycle.spec.html">delivery lifecycle</a> / ADR 0002</nav>
+<p>Decisions closing the operator grill on octo-lite issue 11, 2026-07-23.</p>
+</header>
+
+<section data-anchor="status">
+<h2>Status</h2>
+<p data-anchor="status-value">Accepted.</p>
+</section>
+
+<section data-anchor="context">
+<h2>Context</h2>
+<p data-anchor="context-two-skills">octo-lite carried a 51-line governance tdd skill while mattpocock/skills carries a craft tdd skill with test-quality guidance octo-lite lacked.</p>
+<p data-anchor="context-duplication">The octo-lite skill duplicated waiver, evidence, and prompt-TDD rules that already live canonically in the operating-model and delivery-lifecycle specs.</p>
+<p data-anchor="context-conflict">The upstream skill states refactoring is not part of the red-green loop, contradicting the then-current spec language spec-driven red, green, refactor.</p>
+<p data-anchor="context-drift">Hand-copied third-party skills drift silently; local edits die on upstream update.</p>
+</section>
+
+<section data-anchor="decision">
+<h2>Decision</h2>
+
+<section data-anchor="decision-vendor">
+<h3>Vendored TDD skill</h3>
+<p data-anchor="decision-replace-skill">The octo-lite tdd skill is replaced completely by mattpocock/skills skills/engineering/tdd at a pinned upstream SHA, the blessed pristine version.</p>
+<p data-anchor="decision-single-patch">Exactly one content patch is carried: the seam gate confirms seams against the canonical spec, never the user, and spec-named seams must conform to deep-module seams; a spec whose seams are not deep-module shaped is a shaping defect bounced to shaping, never a license to invent seams.</p>
+<p data-anchor="decision-refactor-verbatim">The upstream rule that refactoring is not part of the loop is kept verbatim; the operating-model and delivery-lifecycle specs are amended to match, and refactoring arrives only through reviewer-flagged refactor-only fix passes verified green-stays-green.</p>
+<p data-anchor="decision-honest-red-dropped">The prior honest-red rule, a failing test is not red when it fails for setup, syntax, or dependency reasons, is deliberately dropped by operator ruling; observer machinery is the only red guard, and no relocation compensates.</p>
+<p data-anchor="decision-no-duplication">Waiver, evidence, and prompt-TDD rules are not restored to the skill; the specs remain their sole canonical home.</p>
+</section>
+
+<section data-anchor="decision-management">
+<h3>Skill management</h3>
+<p data-anchor="decision-skillfile-owns-all">skillfile owns all skill installation and management: one committed Skillfile lists the vendored upstream tdd entry and local entries for octo-lite's own skills, Skillfile.lock pins exact upstream revisions, and skillfile pin preserves the seam-gate patch across upstream updates.</p>
+<p data-anchor="decision-install-targets">install-path targets place managed skills into agents/skills, and platform install lines place a copy or symlink into .claude/skills and .codex/skills on every install.</p>
+<p data-anchor="decision-npx-rejected">The npx skills installer is rejected: for this use it is a strict subset of skillfile with no lockfile and no patch preservation, and adopting both would split ownership of the same files.</p>
+<p data-anchor="decision-agents-contract">The agents directory contract is amended: agents/skills is a managed skillfile install target, while the rest of agents remains generated adapters only.</p>
+<p data-anchor="decision-install-check">scripts/install-octo-lite --check verifies the mirror invariant: every managed skill present in agents/skills resolves identically from .claude/skills and .codex/skills.</p>
+</section>
+</section>
+
+<section data-anchor="consequences">
+<h2>Consequences</h2>
+<p data-anchor="consequence-craft">Implementers gain upstream test-craft guidance, seams, anti-patterns, and vertical slicing, at the cost of octo-lite-specific prose the specs already carry.</p>
+<p data-anchor="consequence-red-weaker">A red that fails for an unintended reason is no longer textually forbidden; this is an accepted weakening, revisit only on observed regression.</p>
+<p data-anchor="consequence-update-path">Upstream skill updates become skillfile install --update with the patch re-applied, replacing manual re-copying.</p>
+<p data-anchor="consequence-refactor-latency">Standalone cleanup waits for a reviewer flag; refactor latency is bounded by review cadence rather than implementer discretion.</p>
+</section>
+
+<section data-anchor="related">
+<h2>Related</h2>
+<p data-anchor="related-issue">Origin: octo-lite issue 11.</p>
+<p data-anchor="related-specs">Amended: <a href="../domains/operating-model.spec.html#intent-tdd">operating-model intent-tdd</a>, <a href="../domains/delivery-lifecycle.spec.html#delivery-refactor-out-of-loop">delivery-lifecycle refactor-pass contract</a>.</p>
+<p data-anchor="related-upstream">Upstream: mattpocock/skills skills/engineering/tdd; manager: eljulians/skillfile.</p>
+</section>
+</article>
+</body>
+</html>

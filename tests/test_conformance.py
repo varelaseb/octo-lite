@@ -676,7 +676,10 @@ class CutoverConformanceTests(unittest.TestCase):
             self.assertTrue((prefix / ".claude/CLAUDE.md").is_symlink())
             self.assertTrue((prefix / ".claude/workflows/octo-loop-qa.js").is_symlink())
             self.assertEqual((ROOT / "roles").resolve(), (prefix / ".claude/octo-lite/roles").resolve())
-            self.assertEqual((ROOT / "skills/tdd").resolve(), (prefix / ".codex/skills/tdd").resolve())
+            # ADR 0002: tdd is a skillfile-managed skill living under agents/skills.
+            self.assertEqual(
+                (ROOT / "agents/skills/tdd").resolve(), (prefix / ".codex/skills/tdd").resolve()
+            )
 
     LEGACY_LINKS = (
         ".codex/octo-lite-role-skills.json",
@@ -950,11 +953,14 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertIn("the green commit changes production only and never the bound test", delivery)
         self.assertIn("a green that removes, weakens, or edits the red's failing test is rejected", delivery)
 
-        # F3 final-HEAD verification: the exact final pushed HEAD after any refactor is
-        # independently executed green by the observer before the push is accepted.
+        # F3 final-HEAD verification: the exact final pushed HEAD is independently
+        # executed green by the observer before the push is accepted. (Issue #11
+        # ruling: the implementation pass ends at green; refactor arrives only via
+        # reviewer-flagged refactor-only passes.)
         self.assertIn('data-anchor="delivery-tdd-final-head-verification"', delivery)
         self.assertIn('id="delivery-tdd-final-head-verification"', delivery)
-        self.assertIn("exact final pushed HEAD, after any refactor", delivery)
+        self.assertIn("The implementation pass ends at green and contains no refactor commits", delivery)
+        self.assertIn("exact final pushed HEAD is independently checked out and executed by the observer", delivery)
         self.assertIn("nothing is pushed whose final HEAD is not independently verified", delivery)
         self.assertIn('data-anchor="delivery-loop-final-head-observed"', delivery)
         self.assertIn('id="delivery-loop-final-head-observed"', delivery)
@@ -1012,6 +1018,35 @@ class CutoverConformanceTests(unittest.TestCase):
         # No Markdown counterpart is generated for either spec-chat canonical document.
         self.assertFalse((ROOT / "spec/domains/delivery-lifecycle.spec.md").exists())
         self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
+
+    def test_refactor_out_of_loop_ruling_conformance(self) -> None:
+        # Issue #11 rulings (operator grill 2026-07-23, ADR 0002): refactoring leaves
+        # the implementation loop; reviewer-flagged refactor-only passes are verified
+        # green-stays-green; the diagram renames Red green refactor to Red green.
+        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
+        operating = (ROOT / "spec/domains/operating-model.spec.html").read_text()
+        index = (ROOT / "spec/index.spec.html").read_text()
+
+        for anchor in ("delivery-refactor-out-of-loop", "delivery-refactor-pass-contract",
+                       "delivery-tdd-named-test-refactor-pass"):
+            self.assertIn(f'data-anchor="{anchor}"', delivery, anchor)
+            self.assertIn(f'id="{anchor}"', delivery, anchor)
+        self.assertIn("Refactoring is not part of the implementation loop", delivery)
+        self.assertIn("reviewer-flagged refactor-only fix passes", delivery)
+        self.assertIn("verified green-stays-green", delivery)
+        self.assertIn("<code>test_refactor_pass_green_stays_green</code>", delivery)
+
+        self.assertIn('data-anchor="intent-refactor-review"', operating)
+        self.assertIn("spec-driven red then green", operating)
+        self.assertIn("Refactoring is not part of the implementation loop", operating)
+
+        # Diagram island: node renamed; the old label is fully gone from the suite.
+        self.assertIn('"Red green"', delivery)
+        self.assertNotIn("Red green refactor", delivery)
+
+        # ADR 0002 exists and is indexed.
+        self.assertTrue((ROOT / "spec/adr/0002-tdd-skill-vendoring.spec.html").is_file())
+        self.assertIn('data-anchor="adr-0002"', index)
 
     def test_observer_execution_inputs_are_host_journalled_not_worker_authored(self) -> None:
         # TUR-447 reshape observer-inputs host-sourced (ruling gap-1 sharpening):
@@ -1129,7 +1164,7 @@ class CutoverConformanceTests(unittest.TestCase):
         )
         self.assertIn("not merely that tests pass", delivery)
         self.assertIn(
-            "a final HEAD whose bound test a refactor weakened, edited, or removed",
+            "a final HEAD whose bound test any commit weakened, edited, or removed",
             delivery,
         )
         # The delivery-loop mirror also carries the final-HEAD test-identity confirmation.

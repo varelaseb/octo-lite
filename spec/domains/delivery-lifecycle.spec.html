@@ -538,8 +538,10 @@
 <p data-anchor="delivery-tdd-trusted-command-source" id="delivery-tdd-trusted-command-source">The observer derives its test invocation only from a trusted source, the committed test files themselves and the canonical validation command declared in the target <code>AGENTS.md</code>, and never from any worker-supplied string; worker-controlled command or scenario strings never enter the observer's prompt or execution inputs, only its own trusted-source-derived invocation runs.</p>
 <p data-anchor="delivery-tdd-observer-inputs-host-sourced" id="delivery-tdd-observer-inputs-host-sourced">The observer's execution inputs, both the red, green, and final-HEAD commit identifiers it checks out AND the test command, are supplied by the host from the journal binding of the worker's committed delivery branch, and never from any worker-authored claim.</p>
 <p data-anchor="delivery-tdd-observer-inputs-host-journal-record" id="delivery-tdd-observer-inputs-host-journal-record">The host records the committed branch and its red, green, and final commit ids in the journal, and the observer checks out exactly those host-journalled commits, so a worker-authored commit identifier is never a source of what the observer executes.</p>
-<p data-anchor="delivery-tdd-final-head-verification" id="delivery-tdd-final-head-verification">Refactor commits after green are allowed, and the exact final pushed HEAD, after any refactor, is independently checked out and executed by the observer and confirmed green before the host push is accepted, so nothing is pushed whose final HEAD is not independently verified.</p>
-<p data-anchor="delivery-tdd-final-head-test-identity" id="delivery-tdd-final-head-test-identity">The final-HEAD observation also confirms the bound test is present unchanged at the final pushed HEAD by the same path and content digest as the red and green bound test, not merely that tests pass, so a green execution alone never accepts a final HEAD whose bound test a refactor weakened, edited, or removed; a final HEAD whose bound test path is absent or whose content digest differs from the bound identity is rejected.</p>
+<p data-anchor="delivery-tdd-final-head-verification" id="delivery-tdd-final-head-verification">The implementation pass ends at green and contains no refactor commits, and the exact final pushed HEAD is independently checked out and executed by the observer and confirmed green before the host push is accepted, so nothing is pushed whose final HEAD is not independently verified.</p>
+<p data-anchor="delivery-tdd-final-head-test-identity" id="delivery-tdd-final-head-test-identity">The final-HEAD observation also confirms the bound test is present unchanged at the final pushed HEAD by the same path and content digest as the red and green bound test, not merely that tests pass, so a green execution alone never accepts a final HEAD whose bound test any commit weakened, edited, or removed; a final HEAD whose bound test path is absent or whose content digest differs from the bound identity is rejected.</p>
+<p data-anchor="delivery-refactor-out-of-loop" id="delivery-refactor-out-of-loop">Refactoring is not part of the implementation loop; it arrives only through reviewer-flagged refactor-only fix passes that preserve behavior.</p>
+<p data-anchor="delivery-refactor-pass-contract" id="delivery-refactor-pass-contract">A refactor-only pass has no red phase; the host journals the bound test suite, and the observer checks out the final pushed HEAD and confirms every bound test still passes with unchanged path and content digest, so a refactor pass is verified green-stays-green and can never weaken, edit, or remove a bound test.</p>
 <p data-anchor="delivery-tdd-host-gated-push" id="delivery-tdd-host-gated-push">The mutating worker never pushes, and the host pushes the verified branch only after the independent observer confirmation of the red, the green, and the final HEAD, the acknowledgment echo, and a fresh pre-push readback, then confirms the pushed HEAD by a live remote read, <code>gh api</code> or <code>git ls-remote</code>, not a local tracking ref.</p>
 <p data-anchor="delivery-tdd-host-gated-push-reject" id="delivery-tdd-host-gated-push-reject">A rejection abandons the unpushed branch.</p>
 <p data-anchor="delivery-tdd-no-forgeable-attestation" id="delivery-tdd-no-forgeable-attestation">Only the observer re-run of the committed states is proof, and worker-controlled command or scenario strings are never interpolated into the observer's prompt, execution inputs, or verdict so independence cannot be forged.</p>
@@ -555,8 +557,9 @@
 <li data-anchor="delivery-tdd-named-test-identity-binding" id="delivery-tdd-named-test-identity-binding"><code>test_test_identity_binding_green_may_not_weaken_red</code> rejects a green that removes, weakens, or edits the red's failing test by path and content digest.</li>
 <li data-anchor="delivery-tdd-named-test-push-ordering" id="delivery-tdd-named-test-push-ordering"><code>test_push_ordering_host_push_only_after_observation_echo_readback</code> proves the host push runs only after observation, ack echo, and the fresh pre-push readback, and the worker never pushes.</li>
 <li data-anchor="delivery-tdd-named-test-rejection-unpushed" id="delivery-tdd-named-test-rejection-unpushed"><code>test_rejection_abandons_unpushed_branch</code> proves a rejected pass leaves its isolated branch unpushed with no destructive reset.</li>
-<li data-anchor="delivery-tdd-named-test-final-head" id="delivery-tdd-named-test-final-head"><code>test_final_head_independently_verified_green</code> proves the exact final pushed HEAD, after any refactor, is independently executed green by the observer before the push is accepted.</li>
-<li data-anchor="delivery-tdd-named-test-final-head-test-identity" id="delivery-tdd-named-test-final-head-test-identity"><code>test_final_head_binds_test_identity</code> proves the final-HEAD observation confirms the bound test is present unchanged at the final pushed HEAD by the same path and content digest as the red and green bound test, and rejects a final HEAD whose bound test a refactor weakened, edited, or removed.</li>
+<li data-anchor="delivery-tdd-named-test-final-head" id="delivery-tdd-named-test-final-head"><code>test_final_head_independently_verified_green</code> proves the exact final pushed HEAD is independently executed green by the observer before the push is accepted.</li>
+<li data-anchor="delivery-tdd-named-test-final-head-test-identity" id="delivery-tdd-named-test-final-head-test-identity"><code>test_final_head_binds_test_identity</code> proves the final-HEAD observation confirms the bound test is present unchanged at the final pushed HEAD by the same path and content digest as the red and green bound test, and rejects a final HEAD whose bound test any commit weakened, edited, or removed.</li>
+<li data-anchor="delivery-tdd-named-test-refactor-pass" id="delivery-tdd-named-test-refactor-pass"><code>test_refactor_pass_green_stays_green</code> proves a refactor-only pass binds no red, and the observer confirms every bound test passes at the final pushed HEAD with unchanged path and content digest.</li>
 <li data-anchor="delivery-tdd-named-test-live-remote-readback" id="delivery-tdd-named-test-live-remote-readback"><code>test_push_readback_uses_live_remote</code> proves the pushed-HEAD confirmation reads the live remote through <code>gh api</code> or <code>git ls-remote</code>, never a local tracking ref.</li>
 </ul>
 </section>
@@ -630,7 +633,7 @@
           }
         },
         {
-          "name": "Red green refactor",
+          "name": "Red green",
           "x": 450,
           "y": 80,
           "symbolSize": [
@@ -729,14 +732,14 @@
       "links": [
         {
           "source": "Shaped",
-          "target": "Red green refactor",
+          "target": "Red green",
           "value": "implement",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Red green refactor",
+          "source": "Red green",
           "target": "Fresh code review",
           "value": "exact HEAD",
           "lineStyle": {
@@ -825,7 +828,7 @@
 <p data-anchor="delivery-entry-gate" id="delivery-entry-gate">This is the single canonical delivery entry gate: delivery enters only from the <code>Shaped</code> readiness gate, loop fire performs the one mechanical <code>Shaped -&gt; Todo</code> transition making <code>Todo</code> the first delivery step, and delivery then proceeds through <code>Todo</code>, <code>In Progress</code>, and <code>Awaiting Accept</code>.</p>
 <p data-anchor="delivery-entry-gate-authority" id="delivery-entry-gate-authority">The <code>octo-lite-loop</code> skill, the launcher <code>launch-linear-state-gate</code>, and <code>profile/AGENTS.md</code> all defer to this definition and never restate a divergent entry rule.</p>
 <p data-anchor="delivery-fix-review" id="delivery-fix-review">Every fix changes HEAD and requires a fresh code review before QA.</p>
-<p data-anchor="delivery-loop-final-head-observed" id="delivery-loop-final-head-observed">The exact final pushed HEAD of a delivery pass, after any refactor commit, is the HEAD the independent observer executes and confirms green under <code>delivery-tdd-final-head-verification</code>, and the observer also confirms the bound test is present unchanged at that final HEAD by the same path and content digest as the red and green bound test under <code>delivery-tdd-final-head-test-identity</code>, so no delivery pass pushes a HEAD the observer did not independently verify or whose bound test a refactor weakened, edited, or removed.</p>
+<p data-anchor="delivery-loop-final-head-observed" id="delivery-loop-final-head-observed">The exact final pushed HEAD of a delivery pass is the HEAD the independent observer executes and confirms green under <code>delivery-tdd-final-head-verification</code>, and the observer also confirms the bound test is present unchanged at that final HEAD by the same path and content digest as the red and green bound test under <code>delivery-tdd-final-head-test-identity</code>, so no delivery pass pushes a HEAD the observer did not independently verify or whose bound test any commit weakened, edited, or removed.</p>
 <p data-anchor="delivery-cycle-limit" id="delivery-cycle-limit">At most three fresh review and fix cycles may run before the issue returns to shaping.</p>
 <p data-anchor="delivery-invalidation" id="delivery-invalidation">Behavior or contract changes invalidate review and QA while packet-only wording changes do not.</p>
 <p data-anchor="delivery-merge" id="delivery-merge">Actual acceptance of delivered work stays a human-gated operator carve-out gated on the human instruction: no agent infers human acceptance, decides acceptance as the human, or merges unaccepted work, and no worker delivery role merges at all, while on an explicit human acceptance instruction the operator agent executes the merge against the operator-owned acceptance artifact for the same verdict and HEAD, and every earlier gate on the way to <code>Awaiting Accept</code> runs act-then-notify with prepared rollback under prior explicit operator intent.</p>

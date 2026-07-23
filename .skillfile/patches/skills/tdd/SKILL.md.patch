@@ -1,0 +1,14 @@
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -19,9 +19,9 @@
+ 
+ A **seam** is the public boundary you test at: the interface where you observe behavior without reaching inside. Tests live at seams, never against internals.
+ 
+-**Test only at pre-agreed seams.** Before writing any test, write down the seams under test and confirm them with the user. No test is written at an unconfirmed seam. You can't test everything — agreeing the seams up front is how testing effort lands on the critical paths and complex logic instead of every edge case.
++**Test only at spec-named seams.** Before writing any test, take the seams from the canonical spec, never from the user; octo-lite runs no mid-implementation human loop. A spec-named seam must be a deep-module seam (see the `codebase-design` skill: a seam is where a module interface lives, and a deep module is a small interface over large behavior). Write no test at a seam the spec does not name. If the spec's seams are not deep-module shaped, that is a shaping defect: bounce it to shaping, never invent seams.
+ 
+-Ask: "What's the public interface, and which seams should we test?"
++Ask of the spec, not the user: "Which seams does the spec name, and is each one a deep-module boundary?"
+ 
+ ## Anti-patterns
+ 
