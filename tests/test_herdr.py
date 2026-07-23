@@ -384,7 +384,7 @@ fi
 """
 
 
-def build_orchestrator_receipt(repo: Path, receipt_path: Path) -> dict:
+def build_orchestrator_receipt(repo: Path, receipt_path: Path, *, model=None, effort=None) -> dict:
     registry = load_registry(ROOT)
     resolved = resolve_role(registry, "orchestrator", set())
     receipt = build_launch_receipt(
@@ -398,6 +398,8 @@ def build_orchestrator_receipt(repo: Path, receipt_path: Path) -> dict:
         execution_location="remote",
         operator_loopback=False,
         review_delivery="reachable_url_required",
+        model=model,
+        effort=effort,
     )
     receipt_path.write_text(render_receipt(receipt))
     return receipt
@@ -1484,6 +1486,59 @@ exec {real_mv} "$@"
                 line for line in log.read_text().splitlines() if line.startswith("tab create")
             )
             self.assertIn(f"--env OCTO_WORKTREE={repo}", tab_call)
+
+    def test_spawn_accepts_a_fable_orchestrator_runtime(self):
+        # Operator choice at spawn: a Fable orchestrator (claude-fable-5/xhigh) is a
+        # sanctioned orchestrator runtime and spawns like the default opus one.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            receipt = build_orchestrator_receipt(repo, receipt_path, model="claude-fable-5", effort="xhigh")
+            record = _write_spawn_record(Path(td) / "provision.json", repo)
+            env, log = self.spawn_environment(td)
+            cmd = [
+                str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(repo),
+                "--role", "orchestrator", "--label", "443/6 · operating model",
+                "--receipt", str(receipt_path), "--provision-record", str(record), "--",
+                "claude", "--model", "claude-fable-5", "--effort", "xhigh",
+                "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
+            ]
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn(f"provider_session_id={receipt['spawn_id']}", result.stdout)
+
+    def test_spawn_rejects_an_unsanctioned_orchestrator_runtime(self):
+        # A runtime that is neither the default opus nor the sanctioned Fable fails
+        # closed at the role gate, before any bootstrap or pane.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+            record = _write_spawn_record(Path(td) / "provision.json", repo)
+            env, log = self.spawn_environment(td)
+            cmd = [
+                str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(repo),
+                "--role", "orchestrator", "--label", "443/6 · operating model",
+                "--receipt", str(receipt_path), "--provision-record", str(record), "--",
+                "claude", "--model", "claude-sonnet-5", "--effort", "high",
+                "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
+            ]
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertEqual(65, result.returncode)
+            self.assertFalse(any(line.startswith("tab create") for line in (log.read_text().splitlines() if log.is_file() else [])))
 
     def test_spawn_verifies_bootstrap_before_any_pane_and_resumes_the_exact_verified_session(self):
         with tempfile.TemporaryDirectory() as td:

@@ -71,7 +71,11 @@ case "$role" in
     require_remote_control "$@"
     ;;
   orchestrator)
-    [[ "$model" == 'claude-opus-4-8[1m]' && "$effort" == high && "$mode" == auto && "$agent" == "$role" ]] || exit 65
+    # Operator choice at spawn: the default opus orchestrator OR a sanctioned Fable
+    # orchestrator. Any other runtime fails closed.
+    [[ "$mode" == auto && "$agent" == "$role" ]] || exit 65
+    [[ ( "$model" == 'claude-opus-4-8[1m]' && "$effort" == high ) \
+      || ( "$model" == claude-fable-5 && "$effort" == xhigh ) ]] || exit 65
     grep -Eq '^(🎤 )?(◆)?[0-9]+(/[0-9]+)? · .+$' <<<"$label" || exit 65
     [[ "$label" == 🎤* ]] && require_remote_control "$@"
     ;;

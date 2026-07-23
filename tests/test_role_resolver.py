@@ -332,6 +332,41 @@ class RoleResolverTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.resolver.build_launch_receipt(ROOT, resolved, issue="  ", **common)
 
+    def test_orchestrator_fable_alt_runtime_resolves_and_gates(self) -> None:
+        # Operator choice at spawn: an orchestrator may run on the sanctioned Fable
+        # runtime; the default stays opus and an unsanctioned runtime fails closed.
+        registry = self.resolver.load_registry(ROOT)
+        orch = registry.roles["orchestrator"]
+        self.assertIn(("claude-fable-5", "xhigh"), orch.alt_runtimes)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(target)], check=True)
+            subprocess.run(["git", "-C", str(target), "config", "user.email", "t@e.com"], check=True)
+            subprocess.run(["git", "-C", str(target), "config", "user.name", "T"], check=True)
+            (target / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(target), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(target), "commit", "-qm", "t"], check=True)
+            resolved = self.resolver.resolve_role(registry, "orchestrator", set())
+            common = dict(
+                spawn_id="s", parent="p", reply_route="r", repo=target, worktree=target,
+                execution_location="remote", operator_loopback=False,
+                review_delivery="reachable_url_required",
+            )
+            fable = self.resolver.build_launch_receipt(
+                ROOT, resolved, model="claude-fable-5", effort="xhigh", **common
+            )
+            self.assertEqual(fable["runtime"]["model"], "claude-fable-5")
+            self.assertEqual(fable["runtime"]["effort"], "xhigh")
+            default = self.resolver.build_launch_receipt(ROOT, resolved, **common)
+            self.assertEqual(default["runtime"]["model"], "claude-opus-4-8[1m]")
+            self.assertEqual(default["runtime"]["effort"], "high")
+            with self.assertRaises(ValueError):
+                self.resolver.build_launch_receipt(
+                    ROOT, resolved, model="claude-sonnet-5", effort="high", **common
+                )
+            with self.assertRaises(ValueError):
+                self.resolver.build_launch_receipt(ROOT, resolved, model="claude-fable-5", **common)
+
     def test_resolve_cli_binds_issue_identifier(self) -> None:
         from octo_lite.runtime import launch_revision as launch_rev
 
