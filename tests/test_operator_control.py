@@ -1514,10 +1514,24 @@ class OperatorControlTests(unittest.TestCase):
             self.assertFalse(any(line.startswith("claude ") for line in calls))
 
     def _write_receipt(self, path: Path, *, role: str, issue: str, provider_session_id: str, verified: bool = True) -> None:
+        from octo_lite.runtime import launch_revision
+        # launch_revision is the unkeyed self-digest the octo-control gate now
+        # requires (#13 c1a2dcc): compute it from the exact receipt the TOML
+        # parses to, mirroring _write_persistent_orchestrator_receipt.
+        receipt = {
+            "schema_version": 1,
+            "spawn_id": provider_session_id,
+            "ready": True,
+            "role": {"name": role},
+            "issue": {"identifier": issue},
+            "bootstrap": {"verified": verified, "provider_session_id": provider_session_id},
+        }
+        revision = launch_revision(receipt)
         path.write_text(
             "schema_version = 1\n"
             f'spawn_id = "{provider_session_id}"\n'
-            "ready = true\n\n"
+            "ready = true\n"
+            f'launch_revision = "{revision}"\n\n'
             f'[role]\nname = "{role}"\n\n'
             f'[issue]\nidentifier = "{issue}"\n\n'
             "[bootstrap]\n"
