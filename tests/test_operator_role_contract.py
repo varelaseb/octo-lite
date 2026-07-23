@@ -265,11 +265,25 @@ class TransportDoctrineTests(unittest.TestCase):
         )
 
     def test_meta_operator_delivery_is_ack_confirmed_not_exit_code(self) -> None:
-        # Delivery is ack/observed-state confirmed, never the exit code.
+        # Delivery confirmed by ack/observed-state, NOT the exit code; stalled mandate surfaced.
+        # Tightened: bare 'ack' substring matches BOOTSTRAP_ACK and is insufficient.
+        # Requires EITHER (exit code near never/not) OR (observed-state explicitly present).
         text = _lower(META_OPERATOR)
+        ack_or_obs = bool(
+            re.search(
+                r"(exit.code.{0,30}(never|not)|(never|not).{0,30}exit.code|observed.state)",
+                text,
+            )
+        )
         self.assertTrue(
-            "exit code" in text or "ack" in text or "observed-state" in text or "observed state" in text,
-            "meta-operator.md must state delivery is ack/observed-state confirmed, not exit code"
+            ack_or_obs,
+            "meta-operator.md must state delivery is ack/observed-state confirmed and NOT the exit code"
+            " (not bare 'ack' which matches BOOTSTRAP_ACK)"
+        )
+        self.assertIn(
+            "stalled",
+            text,
+            "meta-operator.md must state stalled mandate is surfaced not assumed delivered"
         )
 
     def test_meta_operator_stalled_mandate_surfaced_not_assumed(self) -> None:
@@ -341,8 +355,54 @@ class LaunchSkillAccuracyTests(unittest.TestCase):
         self.assertNotIn("installs one lifecycle-bound host timer that runs `operator-sweep` directly", text)
 
 
-# AC-B DEFERRED: no test for sweep-line reconcile; sequenced after #23 lands.
-# (deferred: the contract Rule "On sweep, run operator-sweep" reconciles after #23 lands)
+class HeartbeatSweepReconcileTests(unittest.TestCase):
+    """AC-B (now unblocked): heartbeat invocation surface reconciled after #23 lands."""
+
+    def test_meta_operator_heartbeat_hands_fresh_snapshot(self) -> None:
+        # Gap B: the heartbeat hands the operator a FRESH snapshot each wake.
+        # The operator reads that fresh snapshot and applies role judgment.
+        # Must NOT just say "judge the compact delta" (old tool-coupled wording).
+        text = _lower(META_OPERATOR)
+        self.assertTrue(
+            "fresh snapshot" in text or "snapshot.json" in text or "heartbeat-fresh-snapshot" in text,
+            "meta-operator.md must state the heartbeat hands a fresh snapshot each wake"
+        )
+        self.assertTrue(
+            "judgment" in text or "apply" in text,
+            "meta-operator.md must state the operator applies judgment to the fresh snapshot"
+        )
+
+    def test_meta_operator_heartbeat_references_canonical_anchor(self) -> None:
+        # Gap B: must reference at least one of the four spec anchors added by PR26.
+        text = _lower(META_OPERATOR)
+        anchors = [
+            "heartbeat-fresh-snapshot",
+            "one-layer",
+            "operator-gate",
+            "judgment-in-roles",
+        ]
+        found = [a for a in anchors if a in text]
+        self.assertTrue(
+            len(found) >= 1,
+            f"meta-operator.md must reference at least one of {anchors}; found none"
+        )
+
+    def test_meta_operator_heartbeat_carries_no_judgment(self) -> None:
+        # Gap B: the heartbeat carries NO judgment; judgment stays in roles.
+        text = _lower(META_OPERATOR)
+        self.assertTrue(
+            "no judgment" in text or "carries no judgment" in text
+            or "judgment-in-roles" in text or "judgment in roles" in text,
+            "meta-operator.md must state the heartbeat carries no judgment / judgment stays in roles"
+        )
+
+    def test_meta_operator_sweep_rule_not_operator_sweep_literal(self) -> None:
+        # Gap B: the old literal 'run operator-sweep' instruction must be gone.
+        raw = _text(META_OPERATOR)
+        self.assertFalse(
+            re.search(r"\brun\s+`?operator-sweep`?\b", raw),
+            "meta-operator.md must NOT contain 'run operator-sweep' (old tool-coupled sweep rule)"
+        )
 
 
 if __name__ == "__main__":
