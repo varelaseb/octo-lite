@@ -143,6 +143,16 @@ class LaneProvisionTests(unittest.TestCase):
         self.assertEqual("in progress\n", dirty.read_text())
         self.assertIn("wip.txt", _git(self.worktree, "status", "--porcelain"))
 
+    def test_adopt_existing_is_idempotent(self) -> None:
+        self._make_unrecorded_worktree()
+        first = self.provision(adopt_existing=True, head=None)
+        # Re-running the same adoption (still no starting commit, record now
+        # present) must succeed and yield the same record, not fail HEAD checks.
+        second = self.provision(adopt_existing=True, head=None)
+        self.assertEqual(first.record["starting_head"], second.record["starting_head"])
+        self.assertEqual(first.record["worktree"], second.record["worktree"])
+        validate_provision_record(second.record)
+
     def test_adopt_existing_still_enforces_branch_identity(self) -> None:
         self._make_unrecorded_worktree()
         with self.assertRaises(GateError):
@@ -401,8 +411,9 @@ class LaneProvisionTests(unittest.TestCase):
     def test_record_schema_frozen(self) -> None:
         result = self.provision()
         expected_keys = {
-            "schema_version", "source", "lane", "control_repo", "worktree", "worktree_root",
-            "repo_slug", "branch", "starting_head", "resolver_root", "install_check", "provisioned_at",
+            "schema_version", "source", "lane", "control_repo", "worktree_repo", "worktree",
+            "worktree_root", "repo_slug", "branch", "starting_head", "resolver_root",
+            "install_check", "provisioned_at",
         }
         self.assertEqual(expected_keys, set(result.record))
         self.assertEqual(1, result.record["schema_version"])
@@ -852,6 +863,107 @@ class LaneEnvFromRecordTests(unittest.TestCase):
             path.write_text(json.dumps(record))
             with self.assertRaises(GateError):
                 lane_env_from_record(path, expected_worktree=worktree)
+
+
+class TargetLaneProvisionTests(unittest.TestCase):
+    # gh#13: a TARGET repo lane's worktree belongs to the target git repo (no
+    # octo-lite tooling), and octo_control_repo names the separate octo-lite
+    # tooling repo. The record's control_repo (== OCTO_CONTROL_REPO, from which the
+    # loop resolves role_resolver.py) must be the octo-lite tooling repo, while the
+    # worktree/resolver_root is the target worktree and repo_slug is the target's.
+    # This is what makes a target lane loop-RUNNABLE, not merely provisioned.
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name)
+        self.control_repo = base / "target"
+        self.worktree_root = base / "worktrees"
+        self.head = self._init_target_repo(self.control_repo)
+        self.lane = "tur-x"
+        self.branch = "tur-x-shaping"
+        self.worktree = self.worktree_root / self.lane
+        # ROOT is a real octo-lite repo (roles.toml + roles/ + installer): the
+        # octo-lite tooling repo a target lane resolves its roles from.
+        self.octo_control_repo = ROOT
+
+    def _init_target_repo(self, repo: Path) -> str:
+        repo.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.com"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", REMOTE], check=True)
+        # A target repo: AGENTS.md + CLAUDE.md but NO roles.toml and NO installer.
+        (repo / "AGENTS.md").write_text("# Target\n")
+        (repo / "CLAUDE.md").write_text("# Target\n")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+        return _git(repo, "rev-parse", "HEAD")
+
+    def provision(self, **overrides):
+        values = dict(
+            control_repo=self.control_repo, octo_control_repo=self.octo_control_repo,
+            worktree_root=self.worktree_root, worktree=self.worktree, lane=self.lane,
+            branch=self.branch, head=self.head, repo_slug=REPO_SLUG,
+            install_check=lambda repo: "clean", now=lambda: "2026-07-23T00:00:00+00:00",
+        )
+        values.update(overrides)
+        return provision_lane_worktree(**values)
+
+    def test_fresh_provision_points_octo_control_repo_at_the_tooling_repo(self) -> None:
+        result = self.provision()
+        # OCTO_CONTROL_REPO (record.control_repo) is the octo-lite tooling repo...
+        self.assertEqual(str(self.octo_control_repo.resolve()), result.record["control_repo"])
+        # ...worktree_repo is the target git-owner (used by cleanup ownership)...
+        self.assertEqual(str(self.control_repo.resolve()), result.record["worktree_repo"])
+        # ...while the worktree, resolver_root, and slug are the target's.
+        self.assertEqual(str(self.worktree), result.record["worktree"])
+        self.assertEqual(str(self.worktree), result.record["resolver_root"])
+        self.assertEqual(REPO_SLUG, result.record["repo_slug"])
+        validate_provision_record(result.record)
+        # The frozen env a target lane launches with resolves tooling from octo-lite
+        # and cwd from the target worktree: loop-runnable, not target-code-executing.
+        _, env = lane_invocation_env(result)
+        self.assertEqual(str(self.octo_control_repo.resolve()), env["OCTO_CONTROL_REPO"])
+        self.assertEqual(str(self.worktree), env["OCTO_WORKTREE"])
+
+    def test_adopt_existing_target_repo_points_octo_control_repo_at_tooling(self) -> None:
+        first = self.provision()
+        Path(first.record_path).unlink()
+        result = self.provision(adopt_existing=True, head=None)
+        self.assertTrue(Path(result.record_path).is_file())
+        self.assertEqual(str(self.octo_control_repo.resolve()), result.record["control_repo"])
+        self.assertEqual(str(self.worktree), result.record["resolver_root"])
+        validate_provision_record(result.record)
+
+    def test_cleanup_recognizes_target_lane_ownership_via_worktree_repo(self) -> None:
+        # Cleanup must prove ownership against the target git-owner (worktree_repo),
+        # even though the record's control_repo is the octo-lite tooling repo, so a
+        # clean aborted target worktree is not leaked.
+        from octo_lite.launch import _owning_provision_record
+
+        result = self.provision()
+        self.assertEqual(Path(result.record_path), _owning_provision_record(self.worktree))
+
+    def test_target_worktree_without_octo_control_repo_fails_closed(self) -> None:
+        # Omitting octo_control_repo defaults it to the target control_repo, which
+        # carries no roles.toml, so registry verification fails closed rather than
+        # silently producing a record that cannot resolve roles.
+        with self.assertRaises(GateError):
+            self.provision(octo_control_repo=None)
+
+    def test_default_install_check_reports_clean_when_control_repo_has_no_installer(self) -> None:
+        self.assertEqual("clean", default_install_check(self.control_repo))
+
+    def test_default_install_check_never_executes_a_target_repos_installer(self) -> None:
+        # Safety: a target control repo (no roles.toml) that happens to carry an
+        # executable scripts/install-octo-lite must NOT be executed; report clean.
+        scripts = self.control_repo / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        booby = scripts / "install-octo-lite"
+        booby.write_text("#!/bin/sh\ntouch " + str(self.control_repo / "EXECUTED") + "\nexit 7\n")
+        booby.chmod(0o755)
+        self.assertEqual("clean", default_install_check(self.control_repo))
+        self.assertFalse((self.control_repo / "EXECUTED").exists())
 
 
 if __name__ == "__main__":

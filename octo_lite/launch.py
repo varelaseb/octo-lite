@@ -468,7 +468,8 @@ def _owning_provision_record(worktree: Path) -> Path | None:
     TUR-447 cycle-2 P1-2b (provision-instance binding): a pathname match alone
     is NOT ownership. The record must also match the LIVE worktree's identity
     through non-destructive checks: the worktree's git common dir must resolve
-    to the record's control_repo, and the worktree's checked-out branch must
+    to the record's worktree_repo (the git-owner; control_repo for legacy
+    self-hosting records), and the worktree's checked-out branch must
     equal the record's branch. A stale record plus a hand-recreated worktree at
     the same conventional path (a different branch, a different repo, or a
     detached HEAD) therefore proves nothing. Anything unreadable, malformed,
@@ -495,7 +496,12 @@ def _owning_provision_record(worktree: Path) -> Path | None:
         if str(record["worktree"]) != target:
             continue
         try:
-            if _worktree_common_dir(resolved) != _worktree_common_dir(Path(str(record["control_repo"]))):
+            # Ownership is proven against the git repo the worktree belongs to
+            # (worktree_repo, the git-owner), which for a target lane differs from
+            # control_repo (the octo-lite tooling repo). Legacy self-hosting records
+            # without worktree_repo fall back to control_repo, where the two coincide.
+            owner_repo = str(record.get("worktree_repo") or record["control_repo"])
+            if _worktree_common_dir(resolved) != _worktree_common_dir(Path(owner_repo)):
                 continue
             actual_branch = _git(resolved, "symbolic-ref", "--short", "HEAD")
         except (OSError, subprocess.CalledProcessError):
@@ -628,6 +634,13 @@ PROVISION_RECORD_KEYS = frozenset(
     }
 )
 PROVISION_RECORD_ABSOLUTE_PATH_KEYS = ("control_repo", "worktree", "worktree_root", "resolver_root")
+# worktree_repo is the git repository the worktree is a worktree OF (the delivery
+# target). It is optional for backward compatibility with self-hosting records that
+# predate the octo-lite-control-repo decoupling, where control_repo is the git-owner
+# and cleanup can fall back to it; when present it lets cleanup prove ownership of a
+# target lane whose control_repo is the octo-lite tooling repo, not the git-owner.
+PROVISION_RECORD_OPTIONAL_KEYS = frozenset({"worktree_repo"})
+PROVISION_RECORD_OPTIONAL_ABSOLUTE_PATH_KEYS = frozenset({"worktree_repo"})
 PROVISION_RECORD_INSTALL_CHECK_VALUES = frozenset({"clean", "drifted"})
 
 # launch-provision-wiring-liveness: a genuine install drift is recorded truthfully
@@ -653,7 +666,7 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
     if not isinstance(record, Mapping):
         raise GateError("provision record must be an object")
     keys = set(record)
-    extra = keys - PROVISION_RECORD_KEYS
+    extra = keys - PROVISION_RECORD_KEYS - PROVISION_RECORD_OPTIONAL_KEYS
     missing = PROVISION_RECORD_KEYS - keys
     if extra or missing:
         raise GateError(f"provision record keys invalid: extra={sorted(extra)} missing={sorted(missing)}")
@@ -663,11 +676,12 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
         raise GateError("provision record schema_version must be 1")
     if record["source"] != PROVISION_RECORD_SOURCE:
         raise GateError("provision record source must be host-provisioned-worktree")
-    for key in PROVISION_RECORD_KEYS - {"schema_version"}:
+    present_string_keys = (PROVISION_RECORD_KEYS - {"schema_version"}) | (keys & PROVISION_RECORD_OPTIONAL_KEYS)
+    for key in present_string_keys:
         value = record[key]
         if not isinstance(value, str) or not value:
             raise GateError(f"provision record field must be a nonempty string: {key}")
-    for key in PROVISION_RECORD_ABSOLUTE_PATH_KEYS:
+    for key in PROVISION_RECORD_ABSOLUTE_PATH_KEYS + tuple(sorted(keys & PROVISION_RECORD_OPTIONAL_ABSOLUTE_PATH_KEYS)):
         if not os.path.isabs(record[key]):
             raise GateError(f"provision record {key} must be an absolute path")
     if record["resolver_root"] != record["worktree"]:
@@ -713,8 +727,21 @@ def validate_provision_record(record: Mapping[str, Any]) -> None:
 def default_install_check(control_repo: Path, *, prefix: Path | None = None) -> str:
     """launch-provision-wiring-liveness: run the real installer's read-only
     --check and report clean or drifted. Never repairs; the installer itself
-    refuses to replace a nonmatching target."""
-    installer = Path(control_repo) / "scripts" / "install-octo-lite"
+    refuses to replace a nonmatching target.
+
+    octo-lite is installed foreground tooling and is NEVER a target dependency, so
+    only an octo-lite control repo (identified by its canonical roles.toml) carries
+    an installer to run, and a target control repo's scripts must NEVER be executed
+    here. A control repo without roles.toml is a target lane: its installed
+    octo-lite surface is the global foreground install, verified at install time,
+    not this repo's to check, so report clean without executing anything. An
+    octo-lite control repo that is missing its installer is genuine drift."""
+    control_repo = Path(control_repo)
+    if not (control_repo / "roles.toml").is_file():
+        return "clean"
+    installer = control_repo / "scripts" / "install-octo-lite"
+    if not installer.is_file():
+        return "drifted"
     argv = [str(installer), "--check"]
     if prefix is not None:
         argv += ["--prefix", str(prefix)]
@@ -807,6 +834,7 @@ def provision_lane_worktree(
     branch: str,
     head: str | None = None,
     repo_slug: str,
+    octo_control_repo: Path | None = None,
     minimum_free_bytes: int = 1,
     conflicts: list[str] | None = None,
     provider_overloaded: bool = False,
@@ -820,8 +848,22 @@ def provision_lane_worktree(
     repo/branch/head without error, and refusing the control repository path
     itself and any path already bound to a different lane or branch. Emits the
     host-authored provisioning record OUT of the worktree tree
-    (launch-provision-record-out-of-tree)."""
+    (launch-provision-record-out-of-tree).
+
+    control_repo is the git repo the worktree is a worktree OF (the delivery
+    target: octo-lite itself for a self-hosting lane, or a target repo like Turbo
+    for a target lane); it drives worktree creation and the git identity checks.
+    octo_control_repo is the octo-lite TOOLING repo that owns role_resolver.py,
+    roles.toml, and the installer; it becomes the record's control_repo and thus
+    OCTO_CONTROL_REPO, from which the loop resolves the worker role, and it is the
+    install-check + registry-verification target. It defaults to control_repo so a
+    self-hosting lane (where the two coincide) is unchanged; a target lane sets it
+    to the octo-lite control repo so the loop resolves octo-lite tooling rather
+    than looking for it inside the target worktree."""
     control_repo = Path(control_repo).resolve()
+    octo_control_repo = (
+        Path(octo_control_repo).resolve() if octo_control_repo is not None else control_repo
+    )
     worktree_root = Path(worktree_root).resolve()
     worktree = Path(worktree).resolve()
     if not lane or not lane.strip():
@@ -893,22 +935,30 @@ def provision_lane_worktree(
 
         require_clean = True
         if worktree.exists():
-            if existing_lane_record is None:
-                if not adopt_existing:
-                    raise GateError("worktree path exists but is not provisioned for this lane")
-                # Adoption backfill for a pre-fix hand-created worktree: take the
-                # live worktree as-is. Derive the head from it, verify its identity,
-                # and tolerate a mid-delivery dirty tree, since adoption only writes
-                # the out-of-tree record and never touches the worktree.
-                head = _git(worktree, "rev-parse", "HEAD")
-                require_clean = False
-            else:
+            if existing_lane_record is not None:
                 if existing_lane_record["worktree"] != str(worktree):
                     raise GateError("lane already provisioned at a different worktree path")
                 if existing_lane_record["branch"] != branch:
                     raise GateError("lane already provisioned on a different branch")
-                # Idempotent reuse: skip worktree creation and fall through to the same
-                # reality verification the fresh-create path runs.
+            if adopt_existing:
+                # Adoption backfill for a pre-fix hand-created worktree: take the
+                # live worktree as-is. Derive the head from it (so the caller need
+                # not name a starting commit and re-adoption is idempotent), verify
+                # its identity, and tolerate a mid-delivery dirty tree since adoption
+                # only writes the out-of-tree record and never touches the worktree.
+                # Trade-off (documented): relaxing the clean check means the
+                # wiring-liveness check attests only that AGENTS.md/CLAUDE.md and the
+                # resolver root are PRESENT, not that they are unmodified versus HEAD;
+                # role and instruction wiring is live-read from the worktree at spawn
+                # regardless of this record, and a self-repo lane whose deliverable is
+                # editing that wiring must remain adoptable, so no new trust is
+                # conferred that the live read did not already grant.
+                head = _git(worktree, "rev-parse", "HEAD")
+                require_clean = False
+            elif existing_lane_record is None:
+                raise GateError("worktree path exists but is not provisioned for this lane")
+            # else: idempotent reuse of an already-provisioned worktree; fall through
+            # to the same reality verification the fresh-create path runs.
         else:
             if adopt_existing:
                 raise GateError("adopt-existing requires an existing worktree")
@@ -930,11 +980,22 @@ def provision_lane_worktree(
             control_repo, worktree, head, branch, repo_slug, require_clean=require_clean
         )
 
-        resolver_root = load_registry(worktree).root
-        if resolver_root != worktree:
-            raise GateError("role resolver root must be the provisioned worktree")
+        # launch-provision-wiring-liveness. The loop resolves the worker role by
+        # running role_resolver.py from OCTO_CONTROL_REPO, which is this record's
+        # control_repo == octo_control_repo, so verify THAT repo carries a canonical
+        # registry (roles.toml + role files) rather than the target worktree, which
+        # for a target lane holds no octo-lite tooling. The resolver root of record
+        # is always the provisioned worktree (the loop's resolver_root == worktree
+        # identity invariant); role resolution reads roles from OCTO_CONTROL_REPO.
+        try:
+            load_registry(octo_control_repo)
+        except (OSError, ValueError) as error:
+            raise GateError(
+                f"octo control repo has no canonical role registry: {octo_control_repo}"
+            ) from error
+        resolver_root = worktree
 
-        check_state = install_check(control_repo)
+        check_state = install_check(octo_control_repo)
         if check_state not in PROVISION_RECORD_INSTALL_CHECK_VALUES:
             raise GateError("install check must report clean or drifted")
         owner_route = INSTALLED_SURFACE_OWNER if check_state == "drifted" else None
@@ -944,7 +1005,8 @@ def provision_lane_worktree(
             "schema_version": 1,
             "source": PROVISION_RECORD_SOURCE,
             "lane": lane,
-            "control_repo": str(control_repo),
+            "control_repo": str(octo_control_repo),
+            "worktree_repo": str(control_repo),
             "worktree": str(worktree),
             "worktree_root": str(worktree_root),
             "repo_slug": repo_slug,
