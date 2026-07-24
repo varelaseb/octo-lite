@@ -183,16 +183,3 @@ tools = ["Read"]
 required_skills = []
 conditional_skills = []
 
-[roles.tdd-observer]
-contract = "roles/tdd-observer.md"
-provider = "anthropic"
-model = "claude-sonnet-5"
-effort = "high"
-mode = "never"
-session = "fresh"
-execution = "workflow-subagent"
-subagent_access = "read-restricted"
-service_tier = "default"
-tools = ["Read", "Grep", "Glob", "Bash"]
-required_skills = []
-conditional_skills = []

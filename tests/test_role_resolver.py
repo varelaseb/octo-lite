@@ -20,7 +20,6 @@ ROLES = {
     "qa-capture",
     "qa-reviewer",
     "reconciler",
-    "tdd-observer",
 }
 WORKER_ROLES = {
     "shaping-reviewer",
@@ -29,9 +28,8 @@ WORKER_ROLES = {
     "qa-capture",
     "qa-reviewer",
     "reconciler",
-    "tdd-observer",
 }
-READ_RESTRICTED_ROLES = {"shaping-reviewer", "code-reviewer", "qa-reviewer", "reconciler", "tdd-observer"}
+READ_RESTRICTED_ROLES = {"shaping-reviewer", "code-reviewer", "qa-reviewer", "reconciler"}
 REVIEWER_ROLES = {"shaping-reviewer", "code-reviewer", "qa-reviewer"}
 
 
@@ -85,7 +83,6 @@ class RoleResolverTest(unittest.TestCase):
             "qa-capture": ("anthropic", "claude-sonnet-5", "high", "auto", "fresh", "default"),
             "qa-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "fast"),
             "reconciler": ("anthropic", "claude-sonnet-5", "high", "auto", "fresh", "default"),
-            "tdd-observer": ("anthropic", "claude-sonnet-5", "high", "never", "fresh", "default"),
         }
         actual = {
             name: (
