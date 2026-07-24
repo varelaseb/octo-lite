@@ -34,19 +34,28 @@ SCANNED_DIRS = ("skills", "workflows", "roles")
 # allowlisted below.
 HELPER_SOURCE = Path("scripts") / "octo-control"
 
-# A raw Linear state change: `linear issue update ... --state`. This is the exact
-# CLI the verified helper wraps; used anywhere else it skips compare-mutate-readback.
+# A raw Linear issue-state mutate: `linear issue update ...`. This is the exact
+# CLI the verified helper wraps; used anywhere else it skips
+# compare-mutate-readback. adv2: trip on `linear issue update` ITSELF (any state
+# syntax) rather than requiring `--state` on the same physical line, since a
+# positional state (`linear issue update TUR-1 Done`) and a line-continuation
+# `--state` both evaded the old --state-coupled, per-physical-line detector.
 _RAW_LINEAR = re.compile(r"linear[\s,\"'\]]+issue[\s,\"'\]]+update\b")
-_STATE_FLAG = re.compile(r"--state\b")
 
 # A direct write to the operator-read visibility surface outside the publication
 # helper: the served-evidence root or the builder-read verdict index. A skill or
 # workflow that hand-creates the uploads symlink or hand-writes the verdict card
-# (as the incident lanes did in prose) is a raw operator-surface write.
+# (as the incident lanes did in prose) is a raw operator-surface write. adv2:
+# broadened beyond the two hard-coded tokens to a declared operator-visibility
+# gallery/verdict-index path (`gallery`, `verdict-index`, `served-evidence`) so a
+# hand-write into a target-declared surface path is caught too. This is a
+# heuristic tripwire for the documented raw class + common surface writes, not an
+# attempt to chase unbounded arbitrary code.
+_SURFACE_WRITE_VERB = r"(?:ln\s+-s|ln\s+-sf|symlink|os\.symlink|shutil\.copy|cp\s+|>\s|>>\s|write_text|write\()"
+_SURFACE_TARGET = r"(?:codex-uploads|qa-verdicts|verdict-index|served-evidence|operator-visibility)"
 _RAW_SURFACE_WRITE = re.compile(
-    r"(?:ln\s+-s|ln\s+-sf|symlink|os\.symlink|shutil\.copy|cp\s+)"
-    r".*(?:codex-uploads|qa-verdicts)"
-    r"|(?:codex-uploads|qa-verdicts).*(?:ln\s+-s|symlink|os\.symlink|>\s|write)"
+    rf"(?:{_SURFACE_WRITE_VERB}).*{_SURFACE_TARGET}"
+    rf"|{_SURFACE_TARGET}.*(?:{_SURFACE_WRITE_VERB})"
 )
 
 # Allowlist: the ONE verified wrapped mutate inside the transition helper. It is
@@ -58,18 +67,40 @@ _ALLOWED_HELPER_MUTATE = re.compile(
 )
 
 
+def _logical_lines(text: str):
+    # adv2: join shell/backslash line-continuations into ONE logical line so a
+    # `--state` (or any token) placed on a continuation is scanned together with
+    # its `linear issue update`. Yields (start_lineno, joined_text) pairs.
+    physical = text.splitlines()
+    i = 0
+    n = len(physical)
+    while i < n:
+        start = i + 1
+        parts = []
+        while i < n and physical[i].rstrip().endswith("\\"):
+            parts.append(physical[i].rstrip()[:-1])
+            i += 1
+        if i < n:
+            parts.append(physical[i])
+            i += 1
+        else:
+            # Trailing backslash at EOF: emit what we have.
+            pass
+        yield start, " ".join(part.strip() for part in parts) if len(parts) > 1 else (parts[0] if parts else "")
+
+
 def _scan_file(path: Path, rel: str, is_helper: bool) -> list[str]:
     findings: list[str] = []
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return findings
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    for lineno, line in _logical_lines(text):
         if is_helper and _ALLOWED_HELPER_MUTATE.search(line):
             # The verified helper's wrapped mutate: the sole legitimate raw call.
             continue
-        if _RAW_LINEAR.search(line) and _STATE_FLAG.search(line):
-            findings.append(f"{rel}:{lineno}: raw Linear state change (bypasses verified helper): {line.strip()}")
+        if _RAW_LINEAR.search(line):
+            findings.append(f"{rel}:{lineno}: raw Linear state change (issue-state mutate bypasses verified helper): {line.strip()}")
         if _RAW_SURFACE_WRITE.search(line):
             findings.append(f"{rel}:{lineno}: direct operator-surface write outside publication helper: {line.strip()}")
     return findings

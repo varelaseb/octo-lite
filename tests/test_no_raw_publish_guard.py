@@ -58,6 +58,36 @@ class NoRawPublishGuardTests(unittest.TestCase):
             self.assertIn("direct operator-surface write", result.stderr)
             self.assertIn("bad-workflow.md", result.stderr)
 
+    def test_seeded_positional_state_raw_linear_update_fails(self) -> None:
+        # adv2: `linear issue update TUR-1 Done` uses a POSITIONAL state (no
+        # --state flag). The old detector required --state on the same line, so
+        # this evaded. The guard must trip on `linear issue update` itself.
+        with tempfile.TemporaryDirectory() as td:
+            base = self._seed_repo(Path(td))
+            skill = base / "skills" / "positional-skill.md"
+            skill.write_text(
+                "# Bad skill\n\nMove it:\n\n    linear issue update TUR-1 Done\n"
+            )
+            result = subprocess.run([str(GUARD), "--root", str(base)], capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("positional-skill.md", result.stderr)
+
+    def test_seeded_line_continuation_state_raw_linear_update_fails(self) -> None:
+        # adv2: `--state` on a shell line-continuation after `linear issue update
+        # ... \` split the tokens across physical lines, evading a per-physical-
+        # line detector. The guard must join logical (continued) lines first.
+        with tempfile.TemporaryDirectory() as td:
+            base = self._seed_repo(Path(td))
+            wf = base / "workflows" / "continued-workflow.md"
+            wf.write_text(
+                "# Bad workflow\n\nMove it:\n\n"
+                "    linear issue update TUR-1 \\\n"
+                "        --state 'Awaiting Accept'\n"
+            )
+            result = subprocess.run([str(GUARD), "--root", str(base)], capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("continued-workflow.md", result.stderr)
+
     def test_seeded_clean_tree_with_helper_passes(self) -> None:
         # A seeded tree with the real octo-control (exempt wrapped mutate) and no
         # raw paths in the scanned dirs passes, proving the allowlist works.
