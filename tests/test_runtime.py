@@ -250,6 +250,44 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertEqual(1, calls.count(("status", "In Progress")))
             self.assertEqual(1, calls.count(("notify", "In Progress")))
 
+    def test_transition_silent_no_op_mutate_raises_loud_and_reports_no_success(self):
+        # AC2 (delivery-lifecycle linear-transition-sole-path): a mutate that
+        # RETURNS SUCCESS (no exception) but leaves Linear state unchanged -- the
+        # known raw `linear issue update` silent-no-op mode -- must be caught by
+        # the post-mutate readback and fail loud. NO delivery step (status/notify)
+        # runs, so no path reports readiness on a no-op.
+        with tempfile.TemporaryDirectory() as td:
+            progress = Path(td) / "transition.toml"
+            calls = []
+            state = {"value": "Todo"}
+
+            def read():
+                return {"identifier": "TUR-1", "state": state["value"]}
+
+            def mutate(_target):
+                # Silent no-op: succeeds but never changes state.
+                calls.append("mutate")
+
+            def status(_issue):
+                calls.append("status")
+
+            def notify(_issue):
+                calls.append("notify")
+
+            with self.assertRaises(GateError) as caught:
+                transition_linear(
+                    "TUR-1", "Todo", "In Progress", progress, read, mutate, status, notify
+                )
+            self.assertIn("readback mismatch", str(caught.exception).lower())
+            # No delivery path reported success on the no-op.
+            self.assertNotIn("status", calls)
+            self.assertNotIn("notify", calls)
+            # And the progress record never marked the mutation done.
+            if progress.exists():
+                import tomllib as _tomllib
+                recorded = _tomllib.loads(progress.read_text())
+                self.assertNotEqual(True, recorded.get("mutation_done"))
+
     def test_failure_record_accepts_only_five_categories(self):
         self.assertEqual(5, len(FAILURE_CATEGORIES))
         record = record_failure(2, "boom", "environment", "commit abc", "opus", "retry")

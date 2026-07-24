@@ -92,8 +92,18 @@ def _verify_transition_authority(args) -> None:
             raise GateError("caller is not the exact stream owner")
         if stream_state.get("child_role") != "orchestrator":
             raise GateError("caller is not the exact issue-orchestrator role")
-        if stream_state.get("stream_id") != args.issue:
-            raise GateError("stream_id does not match requested issue")
+        # gh#28 leg1 (delivery-lifecycle linear-transition-issue-binding,
+        # operator-control stream-issue-binding): authority binds to the
+        # host-owned registry `issue` field, NOT the descriptive stream name, so
+        # a name-keyed owned stream (stream_id "onb-chips-default") whose registry
+        # entry binds issue=X still reaches compare-mutate-readback for X, and a
+        # caller not bound as that issue's exact owner is rejected. A stream whose
+        # registry never recorded the binding fails closed.
+        registry_issue = stream_state.get("issue")
+        if not isinstance(registry_issue, str) or not registry_issue.strip():
+            raise GateError("stream registry entry records no delivered issue binding")
+        if registry_issue != args.issue:
+            raise GateError("stream registry issue binding does not match requested issue")
         return
     receipt = load_toml(Path(args.receipt))
     # Defense in depth: recompute the launch revision (which excludes only ready
@@ -641,6 +651,32 @@ def command_label(args) -> dict:
     }
 
 
+def command_publish_evidence(args) -> dict:
+    # gh#28 leg2/leg3 (delivery-lifecycle qa-publication-single-writer,
+    # qa-publication-surface-target/-required, qa-served, qa-publication-readback,
+    # edge-evidence-missing): the SOLE writer of an issue's operator-visibility
+    # surface. Reads the target-declared surface from AGENTS.md, creates+verifies
+    # the served link, writes the verdict card from the ONE durable home into the
+    # operator-read index, and reads back the RENDERED card for exact fields.
+    from octo_lite.publish import publish_evidence
+
+    expected = {
+        "issue": args.issue,
+        "pr": args.pr,
+        "head": args.head,
+        "verdict": args.verdict,
+        "story_ids": list(args.story_id),
+        "criterion_coverage": args.criterion_coverage,
+    }
+    return publish_evidence(
+        issue=args.issue,
+        agents_path=Path(args.agents),
+        durable_home=Path(args.durable_home),
+        target_root=Path(args.target_root),
+        expected=expected,
+    )
+
+
 def command_stream_init(args) -> dict:
     return initialize_stream(
         Path(args.path),
@@ -650,6 +686,7 @@ def command_stream_init(args) -> dict:
         child_role=args.child_role,
         caller=args.caller,
         brief=Path(args.brief_file).read_text(),
+        issue=args.issue,
     )
 
 
@@ -1224,6 +1261,18 @@ def parser() -> argparse.ArgumentParser:
     label.add_argument("--direct", action="store_true")
     label.set_defaults(run=command_label)
 
+    publish = sub.add_parser("publish-evidence")
+    publish.add_argument("--issue", required=True)
+    publish.add_argument("--agents", required=True, help="target repo AGENTS.md declaring the surface")
+    publish.add_argument("--durable-home", required=True, help="single durable evidence home root")
+    publish.add_argument("--target-root", required=True, help="target repo root for resolving declared relative paths")
+    publish.add_argument("--pr", type=int, required=True)
+    publish.add_argument("--head", required=True)
+    publish.add_argument("--verdict", required=True)
+    publish.add_argument("--story-id", action="append", default=[])
+    publish.add_argument("--criterion-coverage", required=True)
+    publish.set_defaults(run=command_publish_evidence)
+
     stream_init = sub.add_parser("stream-init")
     stream_init.add_argument("--path", required=True)
     stream_init.add_argument("--stream-id", required=True)
@@ -1232,6 +1281,11 @@ def parser() -> argparse.ArgumentParser:
     stream_init.add_argument("--child-role", required=True)
     stream_init.add_argument("--caller", required=True)
     stream_init.add_argument("--brief-file", required=True)
+    # gh#28 leg1: the exact delivered issue the verified transition binds
+    # authority to (delivery-lifecycle linear-transition-issue-binding). Optional
+    # so a non-delivery stream (epic/qa) need not record one; a delivery
+    # orchestrator stream records it so its name-keyed transition is authorized.
+    stream_init.add_argument("--issue")
     stream_init.set_defaults(run=command_stream_init)
 
     stream_brief = sub.add_parser("stream-brief")

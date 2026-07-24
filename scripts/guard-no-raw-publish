@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""gh#28 AC3 mechanized no-raw-publish guard (delivery-lifecycle
+qa-publication-no-raw-guard, linear-transition-sole-path,
+qa-publication-single-writer).
+
+The sole-path and single-writer guarantees are checked mechanically, not by
+prose: this guard scans skill, workflow, and role text (and the octo-control
+helper source) and FAILS if any text directs a raw Linear state change or a
+direct write to the operator-read visibility surface OUTSIDE the verified
+helpers. A clean tree passes.
+
+The only legitimate raw Linear mutate is the one WRAPPED by the verified
+transition helper (compare-mutate-readback) in scripts/octo-control; that exact
+site is exempted by a path + function allowlist so a clean tree passes while any
+new raw mutate in a skill/workflow/role is rejected.
+
+Usage: guard-no-raw-publish [--root <repo-root>]
+Exit 0 = clean, 1 = a raw publish path was found (details on stderr).
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+# Directories whose TEXT (agent instructions, workflows, role prose) must never
+# direct a raw Linear state change or a direct operator-surface write. These are
+# the non-helper surfaces the incident routed around the verified helper from.
+SCANNED_DIRS = ("skills", "workflows", "roles")
+
+# The octo-control helper source is also scanned so a NEW raw mutate added there
+# outside the verified wrapper is caught; the single legitimate wrapped mutate is
+# allowlisted below.
+HELPER_SOURCE = Path("scripts") / "octo-control"
+
+# A raw Linear issue-state mutate: `linear issue update ...`. This is the exact
+# CLI the verified helper wraps; used anywhere else it skips
+# compare-mutate-readback. adv2: trip on `linear issue update` ITSELF (any state
+# syntax) rather than requiring `--state` on the same physical line, since a
+# positional state (`linear issue update TUR-1 Done`) and a line-continuation
+# `--state` both evaded the old --state-coupled, per-physical-line detector.
+_RAW_LINEAR = re.compile(r"linear[\s,\"'\]]+issue[\s,\"'\]]+update\b")
+
+# A direct write to the operator-read visibility surface outside the publication
+# helper: the served-evidence root or the builder-read verdict index. A skill or
+# workflow that hand-creates the uploads symlink or hand-writes the verdict card
+# (as the incident lanes did in prose) is a raw operator-surface write. adv2:
+# broadened beyond the two hard-coded tokens to a declared operator-visibility
+# gallery/verdict-index path (`gallery`, `verdict-index`, `served-evidence`) so a
+# hand-write into a target-declared surface path is caught too. This is a
+# heuristic tripwire for the documented raw class + common surface writes, not an
+# attempt to chase unbounded arbitrary code.
+_SURFACE_WRITE_VERB = r"(?:ln\s+-s|ln\s+-sf|symlink|os\.symlink|shutil\.copy|cp\s+|>\s|>>\s|write_text|write\()"
+_SURFACE_TARGET = r"(?:codex-uploads|qa-verdicts|verdict-index|served-evidence|operator-visibility)"
+_RAW_SURFACE_WRITE = re.compile(
+    rf"(?:{_SURFACE_WRITE_VERB}).*{_SURFACE_TARGET}"
+    rf"|{_SURFACE_TARGET}.*(?:{_SURFACE_WRITE_VERB})"
+)
+
+# Allowlist: the ONE verified wrapped mutate inside the transition helper. It is
+# keyed on the exact helper path plus the verified-command argv shape, so a clean
+# tree passes but a second raw mutate anywhere (even elsewhere in octo-control)
+# is not exempt.
+_ALLOWED_HELPER_MUTATE = re.compile(
+    r"\[\s*\"linear\"\s*,\s*\"issue\"\s*,\s*\"update\"\s*,\s*args\.issue\s*,\s*\"--state\"\s*,\s*target\s*\]"
+)
+
+
+def _logical_lines(text: str):
+    # adv2: join shell/backslash line-continuations into ONE logical line so a
+    # `--state` (or any token) placed on a continuation is scanned together with
+    # its `linear issue update`. Yields (start_lineno, joined_text) pairs.
+    physical = text.splitlines()
+    i = 0
+    n = len(physical)
+    while i < n:
+        start = i + 1
+        parts = []
+        while i < n and physical[i].rstrip().endswith("\\"):
+            parts.append(physical[i].rstrip()[:-1])
+            i += 1
+        if i < n:
+            parts.append(physical[i])
+            i += 1
+        else:
+            # Trailing backslash at EOF: emit what we have.
+            pass
+        yield start, " ".join(part.strip() for part in parts) if len(parts) > 1 else (parts[0] if parts else "")
+
+
+def _scan_file(path: Path, rel: str, is_helper: bool) -> list[str]:
+    findings: list[str] = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return findings
+    for lineno, line in _logical_lines(text):
+        if is_helper and _ALLOWED_HELPER_MUTATE.search(line):
+            # The verified helper's wrapped mutate: the sole legitimate raw call.
+            continue
+        if _RAW_LINEAR.search(line):
+            findings.append(f"{rel}:{lineno}: raw Linear state change (issue-state mutate bypasses verified helper): {line.strip()}")
+        if _RAW_SURFACE_WRITE.search(line):
+            findings.append(f"{rel}:{lineno}: direct operator-surface write outside publication helper: {line.strip()}")
+    return findings
+
+
+def scan(root: Path) -> list[str]:
+    findings: list[str] = []
+    for name in SCANNED_DIRS:
+        base = root / name
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            findings.extend(_scan_file(path, str(path.relative_to(root)), is_helper=False))
+    helper = root / HELPER_SOURCE
+    if helper.is_file():
+        findings.extend(_scan_file(helper, str(HELPER_SOURCE), is_helper=True))
+    return findings
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="gh#28 no-raw-publish guard")
+    ap.add_argument("--root", default=None, help="repo root to scan (default: this repo)")
+    args = ap.parse_args()
+    root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[1]
+    findings = scan(root)
+    if findings:
+        print("no-raw-publish guard FAILED: raw operator-visibility publish path(s) found:", file=sys.stderr)
+        for finding in findings:
+            print(f"  {finding}", file=sys.stderr)
+        return 1
+    print("no-raw-publish guard OK: no raw Linear state change or direct operator-surface write outside verified helpers")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
