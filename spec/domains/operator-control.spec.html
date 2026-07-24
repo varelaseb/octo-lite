@@ -521,12 +521,12 @@ An advanced <code>state_change_seq</code> (read via <code>agent get</code> as a 
 </section>
 
 <section data-anchor="diagram-sweep" id="diagram-sweep">
-<h2>Session-durable reconciliation sweep</h2>
+<h2>Session-durable heartbeat sweep</h2>
 <script type="application/spec+json" data-render="chart" data-lib="echarts">
 {
   "aria": {
     "enabled": true,
-    "description": "One host timer runs the deterministic sweep directly. No change is a silent no-op. Material deltas receive fresh read-only Sonnet classification and only then message the verified operator route for the Fable update."
+    "description": "One host timer runs the lean heartbeat directly. No change is a silent no-op. A material delta regenerates a fresh operator snapshot and messages the verified operator route for the Fable update. The heartbeat spawns no reconciler and binds no target canonical specs."
   },
   "tooltip": {
     "trigger": "item"
@@ -637,7 +637,7 @@ An advanced <code>state_change_seq</code> (read via <code>agent get</code> as a 
           }
         },
         {
-          "name": "Fresh Sonnet reconcile",
+          "name": "Fresh operator snapshot",
           "x": 1000,
           "y": 420,
           "symbolSize": [
@@ -683,9 +683,9 @@ An advanced <code>state_change_seq</code> (read via <code>agent get</code> as a 
           }
         },
         {
-          "source": "Fresh Sonnet reconcile",
+          "source": "Fresh operator snapshot",
           "target": "operator-say",
-          "value": "classified delta",
+          "value": "fresh delta",
           "lineStyle": {
             "curveness": 0
           }
@@ -700,8 +700,8 @@ An advanced <code>state_change_seq</code> (read via <code>agent get</code> as a 
         },
         {
           "source": "Deterministic exact checks",
-          "target": "Fresh Sonnet reconcile",
-          "value": "compact snapshot",
+          "target": "Fresh operator snapshot",
+          "value": "regenerate",
           "lineStyle": {
             "curveness": 0
           }
@@ -759,13 +759,12 @@ An advanced <code>state_change_seq</code> (read via <code>agent get</code> as a 
 <p data-anchor="supervision-files" id="supervision-files">Each stream uses one parent-owned <code>brief.md</code> and one child-owned <code>status.md</code> in the operator control directory.</p>
 <p data-anchor="supervision-compaction" id="supervision-compaction">Status compacts upward one parent at a time, and leaf workers do not all message Fable.</p>
 <p data-anchor="supervision-timer" id="supervision-timer">One session-durable host timer runs the deterministic sweep directly throughout the operator lifecycle, including idle periods, primed to fire without a manual first start; only a changed sweep messages the operator, so no periodic wake message ever enters the operator context.</p>
-<p data-anchor="supervision-sweep" id="supervision-sweep">A wake runs deterministic exact checks and may spawn one fresh Sonnet reconciler over the compact normalized snapshot.</p>
-<p data-anchor="sweep-stream-liveness" id="sweep-stream-liveness">The sweep reports per stream, from real surfaces only (receipt-derived session transcript mtimes, status gate lines, the Herdr inbox and message state, the herdr agent probe, and the status.md anchored <code>Outcome:</code> closed marker): waiting-on-whom with the verbatim open ask, in-flight workflow ids, the undelivered message queue, and an advisory classification.</p>
-<p data-anchor="sweep-undelivered-derivation" id="sweep-undelivered-derivation">Undelivered derivation admits only id-shaped fully-published inbox entries, never lock files, dot-temporaries, or foreign files; an item whose state is non-retryable (any terminal, stalled, or an ACK-WAIT path such as promoted-direct residue) is not undelivered and is noted once as residue awaiting drain's uniform removal; a missing or malformed state is noted undelivered-unknown without crashing; and itemless retryable or legacy no-path states stay surfaced while ACK-WAIT states awaiting acknowledgment do not.</p>
-<p data-anchor="sweep-liveness-probe-input" id="sweep-liveness-probe-input">The herdr agent probe input is the grammar-stable non-blocking <code>agent get</code> of the delivery-lifecycle sweep-dead-agent law, bounded per stream, and a probe failure degrades gracefully to the time-based classification with a noted error per sweep-watchdog-degrade.</p>
-<p data-anchor="sweep-classification-order" id="sweep-classification-order">Classification precedence is <code>waiting-on-operator</code> over <code>closed</code> over <code>dead</code> over <code>waiting</code> over <code>suspected-stuck</code> over <code>active</code>, with <code>closed</code> and <code>dead</code> defined by the delivery-lifecycle sweep-closed-stream and sweep-dead-agent laws.</p>
-<p data-anchor="sweep-suspected-stuck" id="sweep-suspected-stuck">Activity means session-transcript activity only and status-file age never counts; an idle stream without a recorded wait-owner is <code>suspected-stuck</code> only when it is neither <code>closed</code> nor <code>dead</code>, and an ask older than later session activity is presumed consumed.</p>
-<p data-anchor="sweep-liveness-outside-digest" id="sweep-liveness-outside-digest">The liveness report lives in the sweep output and one control-level file, never inside the digested reconcile snapshot, so digests verify byte-exactly and active streams never churn the fingerprint.</p>
+<p data-anchor="supervision-sweep" id="supervision-sweep">A wake is a lean heartbeat: it regenerates a fresh operator snapshot with deterministic exact checks, spawns no reconciler subprocess, and binds no target canonical specs, so it never fails closed on target-repo shape.</p>
+<p data-anchor="heartbeat-fresh-snapshot" id="heartbeat-fresh-snapshot">The snapshot is regenerated from current facts on every wake and nothing persisted is trusted as current state, so a stale record can never survive to mislead the operator; freshness is structural, not a timestamp or expiry protocol.</p>
+<p data-anchor="heartbeat-one-layer" id="heartbeat-one-layer">The heartbeat reports one layer down only, per orchestrator: its stream, its last delivery or forward-progress marker, and any operator-gated state; worker-level liveness is the orchestrator's own duty and is never probed or classified by the heartbeat.</p>
+<p data-anchor="heartbeat-operator-gate" id="heartbeat-operator-gate">Operator-gated states (awaiting acceptance, preproduction promotion, live traffic shift) surface loudly on every wake regardless of any other delta, so a parked gate is never silently missed.</p>
+<p data-anchor="heartbeat-judgment-in-roles" id="heartbeat-judgment-in-roles">The heartbeat carries no classification or judgment of its own; the operator applies its role to the fresh snapshot, poking a stale orchestrator to investigate and relaunching a dead one, and the poked orchestrator applies its own role to its workers.</p>
+<p data-anchor="heartbeat-outside-digest" id="heartbeat-outside-digest">The snapshot is an operator report living in the heartbeat output and one control-level file, never a persisted current-state record that downstream roles read as authoritative.</p>
 <p data-anchor="supervision-noop" id="supervision-noop">A wake with no delta is a cheap no-op and does not remove the timer.</p>
 <p data-anchor="supervision-direct" id="supervision-direct">The human may converse directly with an orchestrator, and stream-local rulings apply after durable status capture while cross-stream effects wait for Fable reconciliation.</p>
 </section>
