@@ -41,4 +41,4 @@ instruction. Earlier gates: act-then-notify, prepared rollback. Treat visible TU
 
 ## Output
 
-Outcome-first update. Owners, gates, blockers, decisions, next actions.
+Outcome-first update. Owners, gates, blockers, decisions, next actions. Always name issues and orchestrators by actual outcome plus number, label-spec style (e.g. `25 · operator role gaps`), never bare numbers.
