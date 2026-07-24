@@ -30,138 +30,13 @@ def _load_operator_sweep_module():
     loader.exec_module(module)
     return module
 
-# Fakes the two-phase reconciler launch: a --session-id call actually opens
-# and hashes the journal-bound reconcile.snapshot_path before answering a
-# BOOTSTRAP_ACK, echoing the actual observed digest and refusing (ready false,
-# non-empty blocker) when that file is missing or its digest does not match
-# reconcile.snapshot_digest, so a regression that persists the final snapshot
-# late, corrupts its bytes, or leaves the pending digest-verification input
-# behind is caught by every test that reuses this fake rather than only by
-# assertions made after the sweep has already finished. A --resume call echoes
-# the exact session it was resumed with in its own read-only judgment message,
-# proving the resumed session is the exact bootstrap-verified one, never a
-# self-attested or spoofed identity.
-FAKE_RECONCILER_CLAUDE = r"""#!/usr/bin/env bash
-printf 'claude %s\n' "$*" >>"$CALL_LOG"
-printf 'worktree-check %s|%s|%s\n' "$(pwd)" "$(git rev-parse --show-toplevel)" "$(git branch --show-current)" >>"$CALL_LOG"
-prompt="$(cat)"
-if [[ "$*" == *"--resume"* ]]; then
-  args=("$@")
-  session=""
-  for i in "${!args[@]}"; do
-    if [[ "${args[$i]}" == "--resume" ]]; then
-      session="${args[$((i+1))]}"
-    fi
-  done
-  python3 -c 'import json, sys; print(json.dumps({"session_id": sys.argv[1], "result": "changed"}))' "$session"
-else
-  journal_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*journal\.json' | head -1)"
-  args=("$@")
-  session=""
-  for i in "${!args[@]}"; do
-    if [[ "${args[$i]}" == "--session-id" ]]; then
-      session="${args[$((i+1))]}"
-    fi
-  done
-  python3 - "$journal_path" "$session" <<'PY'
-import hashlib
-import json
-import os
-import sys
-from pathlib import Path
-
-journal_path, session_id = sys.argv[1], sys.argv[2]
-with open(journal_path) as handle:
-    journal = json.load(handle)
-reconcile = journal.get("reconcile", {})
-snapshot_path = Path(reconcile["snapshot_path"])
-expected_digest = reconcile["snapshot_digest"]
-
-snapshot_exists = snapshot_path.is_file()
-actual_digest = hashlib.sha256(snapshot_path.read_bytes()).hexdigest() if snapshot_exists else ""
-snapshot_bytes_match = snapshot_exists and actual_digest == expected_digest
-
-# The pending digest-verification input lives outside the final sweep
-# directory as .sweep-pending-<digest>.md directly under the control dir
-# (parents[2] of journal.json: sweeps/<digest>/journal.json), so bootstrap can
-# independently observe whether the caller already removed it.
-control_dir = Path(journal_path).resolve().parents[2]
-pending_files = sorted(str(path) for path in control_dir.glob(".sweep-pending-*.md"))
-
-observations_file = os.environ.get("BOOTSTRAP_OBSERVATIONS_FILE")
-if observations_file:
-    Path(observations_file).write_text(json.dumps({
-        "snapshot_exists": snapshot_exists,
-        "snapshot_bytes_match": snapshot_bytes_match,
-        "pending_files": pending_files,
-    }))
-
-ready = snapshot_bytes_match
-blocker = "" if ready else "reconcile.snapshot_path missing or digest mismatch"
-ack = {
-    "schema_version": journal["schema_version"],
-    "spawn_id": journal["spawn_id"],
-    "provider_session_id": session_id,
-    "launch_revision": journal["launch_revision"],
-    "role": journal["role"]["name"],
-    "worktree": journal["workspace"]["worktree"],
-    "starting_head": journal["workspace"]["starting_head"],
-    "snapshot_path": str(snapshot_path),
-    "snapshot_digest": actual_digest if snapshot_exists else expected_digest,
-    "ready": ready,
-    "blocker": blocker,
-}
-print(json.dumps({"session_id": session_id, "result": json.dumps(ack)}))
-PY
-fi
-"""
-
-
-# Same two-phase shape as FAKE_RECONCILER_CLAUDE, but the resumed judgment call
-# reports a fixed spoofed session_id instead of the exact session it was resumed
-# with. Proves the sweep never accepts a mutation response from an unverified
-# or mismatched session, matching the reconcile gateway's own identity check.
-FAKE_RECONCILER_CLAUDE_SPOOFED_RESUME = r"""#!/usr/bin/env bash
-printf 'claude %s\n' "$*" >>"$CALL_LOG"
-prompt="$(cat)"
-if [[ "$*" == *"--resume"* ]]; then
-  cat <<'JSON'
-{"session_id": "spoofed-session-not-the-resumed-one", "result": "changed"}
-JSON
-else
-  journal_path="$(printf '%s' "$prompt" | grep -oE '/[^ ]*journal\.json' | head -1)"
-  args=("$@")
-  session=""
-  for i in "${!args[@]}"; do
-    if [[ "${args[$i]}" == "--session-id" ]]; then
-      session="${args[$((i+1))]}"
-    fi
-  done
-  python3 - "$journal_path" "$session" <<'PY'
-import json
-import sys
-
-journal_path, session_id = sys.argv[1], sys.argv[2]
-with open(journal_path) as handle:
-    journal = json.load(handle)
-reconcile = journal.get("reconcile", {})
-ack = {
-    "schema_version": journal["schema_version"],
-    "spawn_id": journal["spawn_id"],
-    "provider_session_id": session_id,
-    "launch_revision": journal["launch_revision"],
-    "role": journal["role"]["name"],
-    "worktree": journal["workspace"]["worktree"],
-    "starting_head": journal["workspace"]["starting_head"],
-    "snapshot_path": reconcile["snapshot_path"],
-    "snapshot_digest": reconcile["snapshot_digest"],
-    "ready": True,
-    "blocker": "",
-}
-print(json.dumps({"session_id": session_id, "result": json.dumps(ack)}))
-PY
-fi
-"""
+# The lean heartbeat (#23) spawns NO reconciler subprocess. Surviving tests
+# install this decoy `claude` bin only to prove it is NEVER invoked: any call
+# is logged so a regression that reintroduces a reconcile spawn is caught.
+FAKE_RECONCILER_CLAUDE = (
+    "#!/usr/bin/env bash\n"
+    "printf 'claude %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
+)
 
 
 # TUR-447 F5: a canonical owner/repo slug (gh identity) distinct from the local
@@ -224,14 +99,22 @@ def _init_target_repo(
 
 
 class OperatorControlTests(unittest.TestCase):
-    def test_sweep_imports_only_the_shared_reconcile_gateway_never_low_level_launch_helpers(self) -> None:
+    def test_heartbeat_imports_only_the_fact_read_never_reconcile_or_low_level_launch_helpers(self) -> None:
+        # #23 STRIP: the lean heartbeat spawns no reconciler subprocess and binds
+        # no target canonical specs, so it imports ONLY the non-reconcile Linear
+        # fact read (fetch_stream_binding) - never prepare_reconcile_launch /
+        # run_reconcile_launch or any low-level launch helper.
         source = SWEEP.read_text()
         launch_import = next(line for line in source.splitlines() if line.startswith("from octo_lite.launch import"))
         imported = {name.strip() for name in launch_import.split("import", 1)[1].split("#")[0].split(",")}
-        self.assertEqual({"fetch_stream_binding", "prepare_reconcile_launch", "run_reconcile_launch"}, imported)
+        self.assertEqual({"fetch_stream_binding"}, imported)
         for forbidden in (
+            "prepare_reconcile_launch", "run_reconcile_launch",
             "prepared_from_receipt", "run_bootstrap", "run_mutation",
             "build_launch_receipt", "resolve_role", "load_registry",
+            # No canonical spec/ADR binding (the live crash cause) survives.
+            "CANONICAL_SPEC_SIGNAL", "CANONICAL_ADR_SIGNAL", "canonical_blobs",
+            "no canonical", "GateError",
         ):
             self.assertNotIn(forbidden, source)
         self.assertNotIn("worktree=repo", source)
@@ -241,11 +124,23 @@ class OperatorControlTests(unittest.TestCase):
         # target's root AGENTS.md; reusing the sweep's own signal parser (rather
         # than a bespoke count) proves the template cannot silently ship without
         # both canonical declarations the sweep will later require.
-        module = _load_operator_sweep_module()
+        # The heartbeat no longer parses canonical signals (they were the live
+        # crash), but the shaper template must still ship both declarations for
+        # spec-chat targets; assert directly on the template text.
+        def _signal_lines(text: str, signal: str) -> list[str]:
+            values = []
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    stripped = stripped[2:].strip()
+                if stripped.startswith(signal):
+                    values.append(stripped[len(signal):].strip())
+            return values
+
         text = TARGET_AGENTS_TEMPLATE.read_text()
         self.assertIn("Spec format:", text)
-        self.assertEqual(1, len(module._signal_lines(text, module.CANONICAL_SPEC_SIGNAL)))
-        self.assertEqual(1, len(module._signal_lines(text, module.CANONICAL_ADR_SIGNAL)))
+        self.assertEqual(1, len(_signal_lines(text, "Canonical spec paths:")))
+        self.assertEqual(1, len(_signal_lines(text, "Canonical ADR paths:")))
 
     def test_timer_runs_the_sweep_directly_and_never_messages_a_periodic_wake(self) -> None:
         # Operator directive: no periodic wake messages; the timer runs the
@@ -293,16 +188,20 @@ class OperatorControlTests(unittest.TestCase):
             self.assertIn("--setenv=PATH=", call)
             self.assertNotIn("operator-say --kind info sweep", call)
 
-    def test_changed_sweep_is_fresh_and_unchanged_sweep_is_noop(self) -> None:
+    def test_heartbeat_is_fresh_and_unchanged_wake_is_noop_and_spawns_no_reconciler(self) -> None:
+        # #23 heartbeat-fresh-snapshot: a wake regenerates a fresh snapshot and
+        # reports changed on the first wake, noop when nothing moved. It spawns NO
+        # reconciler subprocess (no `claude` call) and binds NO canonical specs, so
+        # a Markdown/no-canonical target never crashes it.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
-            _init_target_repo(repo)
+            _init_target_repo(repo, with_canonical_sources=False)
 
             control = base / "control"
             status = control / "streams/TUR-1/status.md"
             status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
+            status.write_text("Outcome: ready\nNext operator action: inspect\n")
             owner = base / "operator-owner.toml"
             owner.write_text(
                 f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
@@ -311,14 +210,22 @@ class OperatorControlTests(unittest.TestCase):
             fake_bin = base / "bin"
             fake_bin.mkdir()
             log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
+            # A `claude` fake that would LOG any invocation: the heartbeat must
+            # never call it. operator-say still logs pane pushes.
+            (fake_bin / "claude").write_text(
+                '#!/usr/bin/env bash\nprintf \'claude %s\\n\' "$*" >>"$CALL_LOG"\n'
+            )
+            (fake_bin / "operator-say").write_text(
+                '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n'
+            )
+            for name in ("claude", "operator-say"):
+                (fake_bin / name).chmod(0o755)
+            xdg = base / "xdg"
+            env = dict(
+                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
+                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"), XDG_STATE_HOME=str(xdg),
+                HOME=str(base),
+            )
 
             command = [
                 str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
@@ -326,60 +233,20 @@ class OperatorControlTests(unittest.TestCase):
             ]
             first = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
             second = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertTrue(json.loads(first.stdout)["changed"])
-            self.assertFalse(json.loads(second.stdout)["changed"])
-            calls = log.read_text().splitlines()
-            claude_calls = [line for line in calls if line.startswith("claude ")]
-            self.assertEqual(2, len(claude_calls))
-            self.assertEqual(1, sum(line.startswith("operator ") for line in calls))
-            self.assertIn("--session-id", claude_calls[0])
-            self.assertIn("--resume", claude_calls[1])
-            self.assertIn("--model claude-sonnet-5", claude_calls[0])
-            self.assertIn("--tools Read", claude_calls[0])
+            self.assertTrue(_sweep_stdout_json(first.stdout)["changed"])
+            self.assertFalse(_sweep_stdout_json(second.stdout)["changed"])
+            calls = log.read_text().splitlines() if log.exists() else []
+            # No reconciler subprocess ever spawned.
+            self.assertFalse(any(line.startswith("claude ") for line in calls))
+            # The fresh snapshot lives in one control-level file (heartbeat-outside-digest).
+            self.assertTrue((control / "snapshot.json").is_file())
             with (control / "sweep-state.toml").open("rb") as handle:
                 state = tomllib.load(handle)
             self.assertEqual("operator-1", state["owner_route"])
-            journal = json.loads(Path(state["journal"]).read_text())
-            self.assertTrue(journal["bootstrap"]["verified"])
-            self.assertTrue(journal["result"]["bound"])
-
-    def test_sweep_fails_closed_when_resumed_judgment_reports_a_different_session(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE_SPOOFED_RESUME,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse(any((control / "sweeps").rglob("result.md")))
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("operator ") for line in calls))
+            # No persisted authoritative current-state record: no reconcile journal,
+            # no sweeps/ tree, no worktrees.
+            self.assertFalse((control / "sweeps").exists())
+            self.assertFalse((control / "worktrees").exists())
 
     def test_result_bind_produces_exact_output_binding_for_verified_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -409,1109 +276,6 @@ class OperatorControlTests(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(0, wrong_role.returncode)
-
-    def test_sweep_refetches_declared_linear_and_pr_facts_with_verified_bootstrap(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-
-            control = base / "control"
-            stream = control / "streams/TUR-1"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text(
-                "Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n"
-            )
-            (stream / "sources.toml").write_text(
-                'schema_version = 1\n\n[linear]\nissue = "TUR-1"\n\n'
-                '[pull_request]\nrepo = "org/repo"\nnumber = 6\n'
-            )
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            linear_state_file = base / "linear-state.txt"
-            linear_state_file.write_text("Todo")
-            (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
-            (fake_bin / "operator-say").write_text(
-                "#!/usr/bin/env bash\nprintf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-            )
-            (fake_bin / "linear").write_text(
-                "#!/usr/bin/env bash\n"
-                "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-                'state="$(cat "$LINEAR_STATE_FILE")"\n'
-                "cat <<JSON\n"
-                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "2026-07-19T00:00:00Z"}\n'
-                "JSON\n"
-            )
-            (fake_bin / "gh").write_text(
-                "#!/usr/bin/env bash\n"
-                "printf 'gh %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-                "cat <<'JSON'\n"
-                '{"url": "https://github.com/org/repo/pull/6", "headRefOid": "abc123", '
-                '"headRefName": "feature", "baseRefName": "main", '
-                '"state": "OPEN", "reviewDecision": "", "statusCheckRollup": []}\n'
-                "JSON\n"
-            )
-            for name in ("claude", "operator-say", "linear", "gh"):
-                (fake_bin / name).chmod(0o755)
-            env = dict(
-                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
-                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
-                LINEAR_STATE_FILE=str(linear_state_file),
-            )
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo),
-            ]
-            first = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertTrue(json.loads(first.stdout)["changed"])
-            calls = log.read_text().splitlines()
-            self.assertTrue(any(line.startswith("linear ") for line in calls))
-            self.assertTrue(any(line.startswith("gh ") for line in calls))
-
-            with (control / "sweep-state.toml").open("rb") as handle:
-                state = tomllib.load(handle)
-            journal = json.loads(Path(state["journal"]).read_text())
-            self.assertTrue(journal["bootstrap"]["verified"])
-            self.assertEqual(journal["spawn_id"], journal["bootstrap"]["provider_session_id"])
-            self.assertTrue(journal["result"]["bound"])
-
-            second = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertFalse(json.loads(second.stdout)["changed"])
-
-            log.write_text("")
-            linear_state_file.write_text("In Progress")
-            third = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertTrue(json.loads(third.stdout)["changed"])
-
-    def test_sweep_runs_the_reconciler_in_a_detached_worktree_never_the_control_checkout(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-
-            with (control / "sweep-state.toml").open("rb") as handle:
-                state = tomllib.load(handle)
-            journal = json.loads(Path(state["journal"]).read_text())
-
-            # The worktree is a genuine detached checkout in worktree_root, never the
-            # control checkout, while the reconciler pass runs inside it; a successful
-            # pass then removes it, so its live state is captured from the fake
-            # reconciler's own worktree-check log line rather than probed afterward.
-            worktree = Path(journal["workspace"]["worktree"])
-            self.assertNotEqual(str(repo), journal["workspace"]["worktree"])
-            self.assertEqual(str((control / "worktrees").resolve()), str(worktree.resolve().parent))
-            self.assertTrue(journal["workspace"]["child_containment_verified"])
-            checks = [line for line in log.read_text().splitlines() if line.startswith("worktree-check ")]
-            self.assertTrue(checks)
-            for check in checks:
-                pwd, top, branch = check.removeprefix("worktree-check ").split("|")
-                self.assertEqual(str(worktree.resolve()), pwd)
-                self.assertEqual(str(worktree.resolve()), top)
-                self.assertEqual("", branch)
-            self.assertFalse(worktree.exists())
-
-    def test_completed_changed_sweep_persists_a_journal_entry_with_exact_bindings_and_no_reconcile_receipt(self) -> None:
-        # Unit I (launch-receipt-manifest-shapes, role-reconciler-snapshot-receipt-binding,
-        # decision-109-binding): the reconcile binding artifact is <sweep>/journal.json
-        # carrying role reconciler, purpose reconcile with read-restricted access, the
-        # final persisted snapshot path plus digest, the expected control HEAD, spec and
-        # ADR blobs, and streams; no reconcile receipt.toml is written anywhere.
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            head = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            spec_blob = subprocess.run(
-                ["git", "-C", str(repo), "hash-object", "spec/domains/operating-model.spec.html"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            adr_blob = subprocess.run(
-                ["git", "-C", str(repo), "hash-object", "spec/adr/0001-operating-model-boundaries.spec.html"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            fingerprint = json.loads(result.stdout)["fingerprint"]
-
-            sweep_dir = control / "sweeps" / fingerprint
-            journal_path = sweep_dir / "journal.json"
-            with (control / "sweep-state.toml").open("rb") as handle:
-                state = tomllib.load(handle)
-            self.assertEqual(str(journal_path), state["journal"])
-            journal = json.loads(journal_path.read_text())
-            self.assertEqual("worker-journal", journal["manifest_shape"])
-            self.assertEqual("reconcile", journal["purpose"])
-            self.assertIs(True, journal["read_restricted"])
-            self.assertEqual("reconciler", journal["role"]["name"])
-            reconcile = journal["reconcile"]
-            self.assertEqual(str(sweep_dir / "snapshot.md"), reconcile["snapshot_path"])
-            self.assertEqual(fingerprint, reconcile["snapshot_digest"])
-            self.assertEqual(head, reconcile["control_head"])
-            self.assertEqual([f"spec/domains/operating-model.spec.html:{spec_blob}"], reconcile["spec_blobs"])
-            self.assertEqual([f"spec/adr/0001-operating-model-boundaries.spec.html:{adr_blob}"], reconcile["adr_blobs"])
-            self.assertIn("streams/TUR-1/status.md", reconcile["conversation_state_refs"])
-            self.assertFalse((sweep_dir / "receipt.toml").exists())
-            self.assertEqual([], list(sweep_dir.glob("*.toml")))
-            self.assertEqual([], list(control.rglob("receipt.toml")))
-
-    def test_sweep_journal_snapshot_path_binds_the_final_persisted_snapshot_bootstrap_can_read(self) -> None:
-        # Bootstrap only checks bound sources it can actually read. If the journal
-        # binds the temporary digest-verification input instead of the final
-        # persisted snapshot, that path is already deleted by the time bootstrap
-        # runs, so a real reconciler can neither verify nor honestly acknowledge it.
-        # The fake bootstrap itself opens and hashes reconcile.snapshot_path and
-        # records what it actually observed, at the exact moment it runs, into
-        # BOOTSTRAP_OBSERVATIONS_FILE, so this proves the pre-bootstrap state
-        # directly rather than inferring it from post-sweep filesystem probing.
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            observations_file = base / "bootstrap-observations.json"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(
-                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
-                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
-                BOOTSTRAP_OBSERVATIONS_FILE=str(observations_file),
-            )
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            fingerprint = json.loads(result.stdout)["fingerprint"]
-
-            with (control / "sweep-state.toml").open("rb") as handle:
-                state = tomllib.load(handle)
-            journal = json.loads(Path(state["journal"]).read_text())
-            self.assertTrue(journal["bootstrap"]["verified"])
-            reconcile = journal["reconcile"]
-
-            final_snapshot = control / "sweeps" / fingerprint / "snapshot.md"
-            self.assertEqual(str(final_snapshot), reconcile["snapshot_path"])
-            self.assertTrue(final_snapshot.is_file(), "bootstrap-bound snapshot_path must exist before bootstrap starts")
-            actual_digest = hashlib.sha256(final_snapshot.read_bytes()).hexdigest()
-            self.assertEqual(reconcile["snapshot_digest"], actual_digest)
-
-            observations = json.loads(observations_file.read_text())
-            self.assertTrue(
-                observations["snapshot_exists"],
-                "fake bootstrap must observe the final snapshot already present when it runs",
-            )
-            self.assertTrue(
-                observations["snapshot_bytes_match"],
-                "fake bootstrap must independently hash matching bytes, not trust the receipt string",
-            )
-            self.assertEqual(
-                [], observations["pending_files"],
-                "the pending digest-verification input must already be gone when bootstrap runs",
-            )
-
-    def test_sweep_fails_closed_when_a_declared_canonical_source_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo, with_canonical_sources=False)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "worktrees").exists())
-            self.assertFalse((control / "sweeps").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-            self.assertFalse(any(line.startswith("operator ") for line in calls))
-
-    def test_sweep_fails_closed_when_a_declared_canonical_path_is_not_a_regular_file(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            # The declared canonical spec path resolves to a tree object, not a blob.
-            bogus = repo / "spec" / "domains" / "operating-model.spec.html"
-            bogus.mkdir(parents=True)
-            (bogus / "inner.html").write_text("<p>not the real file</p>\n")
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "sweeps").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def test_sweep_discovers_target_owned_canonical_paths_declared_in_agents_md(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(
-                repo,
-                spec_path="docs/behavior.spec.html",
-                adr_path="docs/decisions/0001.spec.html",
-            )
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertTrue(json.loads(result.stdout)["changed"])
-
-            with (control / "sweep-state.toml").open("rb") as handle:
-                state = tomllib.load(handle)
-            reconcile = json.loads(Path(state["journal"]).read_text())["reconcile"]
-            self.assertEqual(1, len(reconcile["spec_blobs"]))
-            self.assertTrue(reconcile["spec_blobs"][0].startswith("docs/behavior.spec.html:"))
-            self.assertEqual(1, len(reconcile["adr_blobs"]))
-            self.assertTrue(reconcile["adr_blobs"][0].startswith("docs/decisions/0001.spec.html:"))
-
-    def test_sweep_fails_closed_on_a_symlinked_canonical_path(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            real = repo / "spec" / "domains" / "real.spec.html"
-            real.parent.mkdir(parents=True)
-            real.write_text('<p data-anchor="x">Works.</p>\n')
-            link = repo / "spec" / "domains" / "operating-model.spec.html"
-            link.symlink_to("real.spec.html")
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "sweeps").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def test_sweep_fails_closed_on_an_empty_canonical_path(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            spec = repo / "spec" / "domains" / "operating-model.spec.html"
-            spec.parent.mkdir(parents=True)
-            spec.write_text("")
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def test_sweep_fails_closed_on_duplicate_canonical_path_declaration(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html, "
-                "spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            spec = repo / "spec" / "domains" / "operating-model.spec.html"
-            spec.parent.mkdir(parents=True)
-            spec.write_text('<p data-anchor="x">Works.</p>\n')
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def test_sweep_fails_closed_on_an_escaped_canonical_path_declaration(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: ../outside.spec.html\n"
-                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            # A valid file at octo-lite's own default spec path proves the sweep
-            # honors and rejects the escaped declaration rather than coincidentally
-            # falling back to a hardcoded default it never actually reads.
-            decoy = repo / "spec" / "domains" / "operating-model.spec.html"
-            decoy.parent.mkdir(parents=True)
-            decoy.write_text('<p data-anchor="x">Works.</p>\n')
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def _sweep_env_and_command(self, base: Path, control: Path, repo: Path) -> tuple[dict, list[str], Path]:
-        status = control / "streams/TUR-1/status.md"
-        status.parent.mkdir(parents=True)
-        status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-        owner = base / "operator-owner.toml"
-        owner.write_text(
-            f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-        )
-        fake_bin = base / "bin"
-        fake_bin.mkdir()
-        log = base / "calls.jsonl"
-        for name, body in {
-            "claude": FAKE_RECONCILER_CLAUDE,
-            "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-        }.items():
-            path = fake_bin / name
-            path.write_text(body)
-            path.chmod(0o755)
-        env = dict(
-            os.environ,
-            PATH=f"{fake_bin}:{os.environ['PATH']}",
-            CALL_LOG=str(log),
-            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
-        )
-        command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
-        return env, command, log
-
-    def test_sweep_accepts_none_as_sole_no_adr_declaration_and_binds_empty_adr_list(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: none\n"
-            )
-            spec = repo / "spec" / "domains" / "operating-model.spec.html"
-            spec.parent.mkdir(parents=True)
-            spec.write_text('<p data-anchor="x">Works.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            env, command, _log = self._sweep_env_and_command(base, control, repo)
-            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertTrue(json.loads(result.stdout)["changed"])
-            with (control / "sweep-state.toml").open("rb") as handle:
-                state = tomllib.load(handle)
-            reconcile = json.loads(Path(state["journal"]).read_text())["reconcile"]
-            self.assertEqual([], reconcile["adr_blobs"])
-            self.assertEqual(1, len(reconcile["spec_blobs"]))
-
-    def test_sweep_fails_closed_on_a_sentinel_no_adr_value(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: None\n"
-            )
-            spec = repo / "spec" / "domains" / "operating-model.spec.html"
-            spec.parent.mkdir(parents=True)
-            spec.write_text('<p data-anchor="x">Works.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            env, command, log = self._sweep_env_and_command(base, control, repo)
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "sweeps").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def test_sweep_fails_closed_on_mixed_none_and_path_adr_declaration(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: none, spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            spec = repo / "spec" / "domains" / "operating-model.spec.html"
-            spec.parent.mkdir(parents=True)
-            spec.write_text('<p data-anchor="x">Works.</p>\n')
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            env, command, log = self._sweep_env_and_command(base, control, repo)
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "sweeps").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def test_sweep_fails_closed_when_canonical_spec_declaration_is_none(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: none\n"
-                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            env, command, log = self._sweep_env_and_command(base, control, repo)
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "sweeps").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def test_sweep_fails_closed_on_repeated_canonical_spec_declaration_lines_with_identical_values(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            spec = repo / "spec" / "domains" / "operating-model.spec.html"
-            spec.parent.mkdir(parents=True)
-            spec.write_text('<p data-anchor="x">Works.</p>\n')
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            env, command, log = self._sweep_env_and_command(base, control, repo)
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("canonical", result.stderr.lower())
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "sweeps").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-
-    def test_sweep_ignores_a_prefix_lookalike_line_and_succeeds_on_the_one_real_declaration(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text(
-                "# Target\n\n"
-                "- Canonical spec paths (legacy, unused): see docs\n"
-                "- Canonical spec paths: spec/domains/operating-model.spec.html\n"
-                "- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html\n"
-            )
-            spec = repo / "spec" / "domains" / "operating-model.spec.html"
-            spec.parent.mkdir(parents=True)
-            spec.write_text('<p data-anchor="x">Works.</p>\n')
-            adr = repo / "spec" / "adr" / "0001-operating-model-boundaries.spec.html"
-            adr.parent.mkdir(parents=True)
-            adr.write_text('<p data-anchor="x">Decided.</p>\n')
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-
-            control = base / "control"
-            env, command, _log = self._sweep_env_and_command(base, control, repo)
-            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertTrue(json.loads(result.stdout)["changed"])
-            with (control / "sweep-state.toml").open("rb") as handle:
-                state = tomllib.load(handle)
-            reconcile = json.loads(Path(state["journal"]).read_text())["reconcile"]
-            self.assertEqual(1, len(reconcile["spec_blobs"]))
-            self.assertTrue(reconcile["spec_blobs"][0].startswith("spec/domains/operating-model.spec.html:"))
-
-    def test_sweep_leaves_no_sweep_directory_when_gateway_validation_fails_after_canonical_sources_are_valid(self) -> None:
-        # Canonical sources on AGENTS.md are entirely valid so canonical_blobs()
-        # succeeds and the sweep proceeds to build snapshot.md; the declared
-        # Linear stream then races between the snapshot-time fetch and the
-        # gateway's own fresh re-fetch, so the failure surfaces only inside
-        # prepare_reconcile_launch, after a naive implementation would already
-        # have written snapshot.md to disk.
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-
-            control = base / "control"
-            stream = control / "streams/TUR-1"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text(
-                "Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n"
-            )
-            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-1"\n')
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            call_count_file = base / "linear-call-count.txt"
-            call_count_file.write_text("0")
-            (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
-            (fake_bin / "operator-say").write_text(
-                "#!/usr/bin/env bash\nprintf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-            )
-            (fake_bin / "linear").write_text(
-                "#!/usr/bin/env bash\n"
-                "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-                'count="$(cat "$CALL_COUNT_FILE")"\n'
-                'count=$((count + 1))\n'
-                'echo -n "$count" >"$CALL_COUNT_FILE"\n'
-                'if [[ "$count" -eq 1 ]]; then state="Todo"; else state="In Progress"; fi\n'
-                "cat <<JSON\n"
-                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "2026-07-19T00:00:00Z"}\n'
-                "JSON\n"
-            )
-            for name in ("claude", "operator-say", "linear"):
-                (fake_bin / name).chmod(0o755)
-            env = dict(
-                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
-                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
-                CALL_COUNT_FILE=str(call_count_file),
-            )
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("stale Linear input", result.stderr)
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "worktrees").exists())
-            self.assertFalse((control / "sweeps").exists())
-            # A failed sweep leaves no journal entry, no reconcile receipt, and no
-            # sweep directory behind (workspace-cleanup-clean-abort plus Unit I).
-            self.assertEqual([], list(control.rglob("journal.json")))
-            self.assertEqual([], list(control.rglob("receipt.toml")))
-            leftover = [path for path in control.glob("**/*") if path.is_file()]
-            self.assertEqual(
-                {control / "streams/TUR-1/status.md", control / "streams/TUR-1/sources.toml"},
-                set(leftover),
-            )
-            # explicit liveness-cleanup red (v16 finding 2): a failed gateway
-            # removes the pre-written liveness report with everything else.
-            self.assertFalse((control / "liveness.json").exists())
-
-    def test_sweep_detects_changed_target_head_even_when_linear_and_pr_facts_are_unchanged(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-
-            control = base / "control"
-            status = control / "streams/TUR-1/status.md"
-            status.parent.mkdir(parents=True)
-            status.write_text("Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n")
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            for name, body in {
-                "claude": FAKE_RECONCILER_CLAUDE,
-                "operator-say": '#!/usr/bin/env bash\nprintf \'operator %s\\n\' "$*" >>"$CALL_LOG"\n',
-            }.items():
-                path = fake_bin / name
-                path.write_text(body)
-                path.chmod(0o755)
-            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log), OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"))
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner),
-                "--repo", str(repo),
-            ]
-            first = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertTrue(json.loads(first.stdout)["changed"])
-
-            # A trivial commit moves the target HEAD without touching Linear, PR,
-            # stream status, or canonical spec/ADR blob content at all.
-            (repo / "unrelated.txt").write_text("noise\n")
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "unrelated"], check=True)
-
-            second = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            self.assertTrue(json.loads(second.stdout)["changed"])
-            self.assertNotEqual(
-                json.loads(first.stdout)["fingerprint"], json.loads(second.stdout)["fingerprint"]
-            )
-
-    def test_sweep_fails_closed_before_any_provider_call_when_linear_state_races_between_snapshot_and_gateway(self) -> None:
-        # declared_stream_facts() and prepare_reconcile_launch()'s own fresh
-        # re-verification each call the fake `linear` binary once for TUR-1's issue
-        # view. Returning a different state on the second call simulates the exact
-        # race the gateway's final source comparison must catch before any provider
-        # call: a snapshot input that went stale between capture and dispatch.
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-
-            control = base / "control"
-            stream = control / "streams/TUR-1"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text(
-                "Outcome: ready\nGate: review\nBlocker: none\nNext operator action: inspect\n"
-            )
-            (stream / "sources.toml").write_text(
-                'schema_version = 1\n\n[linear]\nissue = "TUR-1"\n'
-            )
-            owner = base / "operator-owner.toml"
-            owner.write_text(
-                f'schema_version = 1\nowner_session_id = "operator-1-session"\nowner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-            )
-
-            fake_bin = base / "bin"
-            fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            call_count_file = base / "linear-call-count.txt"
-            call_count_file.write_text("0")
-            (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
-            (fake_bin / "operator-say").write_text(
-                "#!/usr/bin/env bash\nprintf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-            )
-            (fake_bin / "linear").write_text(
-                "#!/usr/bin/env bash\n"
-                "printf 'linear %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-                'count="$(cat "$CALL_COUNT_FILE")"\n'
-                'count=$((count + 1))\n'
-                'echo -n "$count" >"$CALL_COUNT_FILE"\n'
-                'if [[ "$count" -eq 1 ]]; then state="Todo"; else state="In Progress"; fi\n'
-                "cat <<JSON\n"
-                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "2026-07-19T00:00:00Z"}\n'
-                "JSON\n"
-            )
-            for name in ("claude", "operator-say", "linear"):
-                (fake_bin / name).chmod(0o755)
-            env = dict(
-                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
-                OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
-                CALL_COUNT_FILE=str(call_count_file),
-            )
-
-            command = [
-                str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo),
-            ]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("stale Linear input", result.stderr)
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "worktrees").exists())
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
-            self.assertEqual(2, sum(line.startswith("linear ") for line in calls))
-
-    def test_sweep_defers_reconcile_before_any_provider_call_when_target_head_races_between_snapshot_and_gateway(self) -> None:
-        # TUR-489: a thin git wrapper answers the exact literal `-C <repo> rev-parse
-        # HEAD` call with two different commits (first the captured head, then a
-        # newer one), simulating a commit landing on the target between the sweep's
-        # own head capture and the gateway's independent re-read of the current repo
-        # HEAD. The gateway fails closed inside prepare_reconcile_launch with a
-        # 'target HEAD changed' GateError. Previously that GateError PROPAGATED and
-        # crashed the whole timer sweep (real crash 08:56:06). The sweep now DEFERS
-        # the reconcile for this pass instead: it makes NO provider call, persists
-        # NO sweep state (so the next pass retries against a stable HEAD), leaves NO
-        # sweep artifact behind, emits the distinct deferred note, and exits 0.
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            first_head = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            (repo / "unrelated.txt").write_text("noise\n")
-            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "unrelated"], check=True)
-            second_head = subprocess.run(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
-            ).stdout.strip()
-
-            control = base / "control"
-            env, command, log = self._sweep_env_and_command(base, control, repo)
-            real_git_path = subprocess.run(["which", "git"], check=True, capture_output=True, text=True).stdout.strip()
-            call_count_file = base / "head-call-count.txt"
-            call_count_file.write_text("0")
-            wrapper = base / "bin" / "git"
-            wrapper.write_text(
-                "#!/usr/bin/env bash\n"
-                f'REAL_GIT="{real_git_path}"\n'
-                f'REPO="{repo}"\n'
-                'if [[ "$1" == "-C" && "$2" == "$REPO" && "$3" == "rev-parse" && "$4" == "HEAD" && "$#" -eq 4 ]]; then\n'
-                '  count="$(cat "$HEAD_CALL_COUNT_FILE")"\n'
-                '  count=$((count + 1))\n'
-                '  echo -n "$count" >"$HEAD_CALL_COUNT_FILE"\n'
-                f'  if [[ "$count" -eq 1 ]]; then echo "{first_head}"; else echo "{second_head}"; fi\n'
-                "else\n"
-                '  exec "$REAL_GIT" "$@"\n'
-                "fi\n"
-            )
-            wrapper.chmod(0o755)
-            env["HEAD_CALL_COUNT_FILE"] = str(call_count_file)
-
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            # Deferred, not crashed: clean exit 0.
-            self.assertEqual(0, result.returncode, result.stderr)
-            # The distinct deferred-reconcile note is surfaced.
-            self.assertIn("SWEEP NOTE (deferred reconcile):", result.stdout)
-            payload = _sweep_stdout_json(result.stdout)
-            self.assertTrue(payload.get("deferred_reconcile"))
-            # No provider call, no persisted state, no sweep artifact directory:
-            # the next pass retries the reconcile against a stable HEAD.
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertFalse((control / "worktrees").exists())
-            self.assertFalse((control / "sweeps").exists())
-            self.assertEqual([], list(control.glob(".sweep-pending-*.md")))
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("claude ") for line in calls))
 
     def _write_receipt(self, path: Path, *, role: str, issue: str, provider_session_id: str, verified: bool = True) -> None:
         from octo_lite.runtime import launch_revision
@@ -2617,15 +1381,17 @@ class OperatorControlTests(unittest.TestCase):
                         self.assertTrue(calls[3].startswith("gh pr view 7"), calls)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
+class HeartbeatSnapshotTests(unittest.TestCase):
+    """#23 (rulings 1/3/10/11): the lean heartbeat regenerates a FRESH per-stream
+    snapshot from current facts (heartbeat-fresh-snapshot) reporting one layer
+    down only (heartbeat-one-layer) - stream name, last delivery OR forward-
+    progress marker, and any operator-gated state - and carries NO worker-level
+    liveness classification of its own (heartbeat-judgment-in-roles). It probes no
+    workers and binds no target canonical specs, so a Markdown/no-canonical target
+    never crashes it."""
 
-class SweepStreamLivenessTests(unittest.TestCase):
-    # Simple liveness law: real surfaces only (receipt-derived transcript
-    # mtimes, status gate lines, XDG inbox and message state); classification
-    # is advisory and never enters the digested reconcile snapshot.
-    def _stream_with_receipt(self, base: Path, name: str, projects: Path, now: float) -> tuple[Path, Path]:
+    def _stream_with_receipt(self, base: Path, name: str, projects: Path) -> tuple[Path, Path]:
         stream = base / "streams" / name
         stream.mkdir(parents=True)
         worktree = base / "wt" / name
@@ -2642,123 +1408,115 @@ class SweepStreamLivenessTests(unittest.TestCase):
         transcript.write_text("{}\n")
         return stream, transcript
 
-    def test_liveness_reports_from_real_surfaces_only(self) -> None:
+    def test_snapshot_reports_forward_progress_and_delivery_from_real_observables_only(self) -> None:
+        # heartbeat-one-layer: forward progress is derived from a REAL observable
+        # (the receipt-derived session transcript mtime) and the last-delivery
+        # marker from the status.md anchored delivery line - never a probe or a
+        # persisted classification.
         module = _load_operator_sweep_module()
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            now = 1_000_000.0
             projects = base / "projects"
-            inbox_root = base / "inbox"
-            messages = base / "messages"
-            messages.mkdir()
-            stream, transcript = self._stream_with_receipt(base, "tur-1", projects, now)
-            os.utime(transcript, (now - 600, now - 600))
+            stream, transcript = self._stream_with_receipt(base, "tur-1", projects)
+            os.utime(transcript, (1_000_000.0, 1_000_000.0))
             (stream / "status.md").write_text(
-                "# s\n- waiting-on: operator: Please approve.\n- wf_abc123-def running.\n"
+                "# tur-1\nLast delivery: implementer green at abc123\nOutcome: working\n"
             )
-            os.utime(stream / "status.md", (now - 300, now - 300))
-            (messages / "m1.toml").write_text(
-                'message_id = "m1"\ntarget = "tur-1"\nstatus = "pending"\n'
-            )
-            live = module.stream_liveness(
-                stream, inbox_root, messages, idle_seconds=3600, now=now, projects_root=projects
-            )
-            self.assertEqual("waiting", live["classification"])
-            self.assertEqual("operator", live["wait_owner"])
-            self.assertEqual("Please approve.", live["open_ask"])
-            self.assertEqual(["wf_abc123-def"], live["inflight_workflows"])
-            self.assertEqual(["m1"], live["undelivered_queue"])
-            # newest receipt wins; ask consumed once session activity postdates it
-            os.utime(transcript, (now - 60, now - 60))
-            consumed = module.stream_liveness(
-                stream, inbox_root, messages, idle_seconds=3600, now=now, projects_root=projects
-            )
-            self.assertTrue(consumed["ask_consumed"])
-            self.assertEqual("active", consumed["classification"])
+            snap = module.stream_snapshot(stream, {}, base / "waits", projects_root=projects)
+            self.assertEqual("tur-1", snap["stream"])
+            self.assertEqual(1_000_000, snap["forward_progress_mtime"])
+            self.assertEqual("implementer green at abc123", snap["last_delivery"])
+            self.assertEqual([], snap["operator_gate"])
+            # heartbeat-judgment-in-roles: the snapshot carries NO classification.
+            self.assertNotIn("classification", snap)
+            self.assertNotIn("agent_running", snap)
+            self.assertNotIn("agent_status", snap)
 
-    def test_idle_stream_without_wait_owner_is_suspected_stuck_and_status_age_never_counts(self) -> None:
+    def test_snapshot_carries_operator_gate_state_but_no_worker_liveness_classification(self) -> None:
+        # heartbeat-operator-gate: an operator-gated carried state surfaces in the
+        # snapshot's operator_gate list; heartbeat-judgment-in-roles: the snapshot
+        # never probes workers or classifies liveness (no dead/stuck/active).
         module = _load_operator_sweep_module()
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            now = 1_000_000.0
             projects = base / "projects"
-            stream, transcript = self._stream_with_receipt(base, "tur-2", projects, now)
-            os.utime(transcript, (now - 9000, now - 9000))
-            (stream / "status.md").write_text("# fresh status, no gate lines\n")
-            os.utime(stream / "status.md", (now - 5, now - 5))
-            # Pin the dead-agent watchdog probe unavailable (TUR-505 C3): this
-            # test asserts the TIME-BASED fallback law, independent of whatever
-            # live herdr agents exist on the machine running the suite.
-            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
-                live = module.stream_liveness(
-                    stream, base / "inbox", base / "messages", idle_seconds=3600, now=now, projects_root=projects
-                )
-            self.assertEqual("suspected-stuck", live["classification"])
+            stream, _ = self._stream_with_receipt(base, "tur-2", projects)
+            (stream / "status.md").write_text("Outcome: shipping\n")
+            facts = {"tur-2": {"carried_linear": [{"identifier": "TUR-479", "state": "In Staging"}]}}
+            snap = module.stream_snapshot(stream, facts, base / "waits", projects_root=projects)
+            self.assertEqual(1, len(snap["operator_gate"]))
+            self.assertIn("TUR-479 In Staging", snap["operator_gate"][0])
+            # No worker/dead-agent liveness classification is emitted anywhere.
+            for banned in ("classification", "agent_running", "agent_status", "watchdog_error"):
+                self.assertNotIn(banned, snap)
 
-    def test_reconciler_reads_current_liveness_at_launch_time(self) -> None:
-        # v15 finding red: on a changed sweep, liveness.json must exist with
-        # CURRENT bytes when the reconciler runs, and a failed run leaves no
-        # liveness artifact. The fake reconciler snapshots the file it can read.
+    def test_heartbeat_never_probes_workers_or_binds_canonical_specs(self) -> None:
+        # #23 STRIP: the dead-agent watchdog probe (herdr agent get), the
+        # classification engine, and canonical-spec binding are all removed - none
+        # of their source markers survive in the lean heartbeat.
+        source = SWEEP.read_text()
+        for banned in (
+            "herdr_agent_probe", "agent get", "def stream_liveness", "_HERDR_AGENT_GONE_CODES",
+            "suspected-stuck", "waiting-on-operator",
+            '"classification"', "canonical_blobs", "spec_blobs", "adr_blobs",
+            "prepare_reconcile_launch", "run_reconcile_launch",
+        ):
+            self.assertNotIn(banned, source, f"stripped marker {banned!r} must not survive")
+
+    def test_heartbeat_runs_clean_against_a_markdown_no_canonical_target(self) -> None:
+        # REPRO of the live crash (operator-sweep ~line 267 SystemExit "no
+        # canonical ... paths declared"): a target with a Markdown / no-declaration
+        # AGENTS.md must run the heartbeat cleanly and exit 0, never SystemExit.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
-            _init_target_repo(repo)
+            _init_target_repo(repo, with_canonical_sources=False)
             control = base / "control"
-            stream = control / "streams/TUR-9"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("- waiting-on: operator: Approve please.\n")
+            (control / "streams").mkdir(parents=True)
             owner = base / "operator-owner.toml"
             owner.write_text(
-                f'schema_version = 1\nowner_session_id = "s"\nowner_route = "r"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
+                f'schema_version = 1\nowner_route = "operator-1"\ncontrol_dir = "{control}"\n'
             )
             fake_bin = base / "bin"
             fake_bin.mkdir()
-            log = base / "calls.jsonl"
-            probe = FAKE_RECONCILER_CLAUDE.replace(
-                "prompt=\"$(cat)\"",
-                "cat \"$LIVENESS_PROBE\" >>\"$CALL_LOG\" 2>/dev/null || printf 'liveness-missing\\n' >>\"$CALL_LOG\"\nprompt=\"$(cat)\"",
-            )
-            (fake_bin / "claude").write_text(probe)
-            (fake_bin / "claude").chmod(0o755)
             (fake_bin / "operator-say").write_text("#!/usr/bin/env bash\nexit 0\n")
             (fake_bin / "operator-say").chmod(0o755)
+            xdg = base / "xdg"
             env = dict(
-                os.environ,
-                PATH=f"{fake_bin}:{os.environ['PATH']}",
-                CALL_LOG=str(log),
-                LIVENESS_PROBE=str(control / "liveness.json"),
+                os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
                 OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
+                XDG_STATE_HOME=str(xdg), HOME=str(base),
             )
             result = subprocess.run(
                 [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)],
                 env=env, capture_output=True, text=True,
             )
             self.assertEqual(0, result.returncode, result.stderr)
-            calls = log.read_text()
-            self.assertNotIn("liveness-missing", calls)
-            self.assertIn('"wait_owner": "operator"', calls)
-            self.assertIn("Approve please.", calls)
+            self.assertNotIn("no canonical", result.stderr)
+            self.assertNotIn("SystemExit", result.stderr)
 
     def test_sweep_invokes_operator_say_by_absolute_path(self) -> None:
         # Live defect: timer-run sweep crashed with FileNotFoundError because
         # operator-say was invoked by bare name under systemd's bare PATH. The
-        # sweep resolves the helper from its own root, overridable for tests
-        # via OCTO_OPERATOR_SAY.
+        # heartbeat resolves the helper from its own root, overridable via
+        # OCTO_OPERATOR_SAY.
         source = SWEEP.read_text()
         self.assertNotIn('"operator-say", "--kind"', source)
         self.assertIn("OCTO_OPERATOR_SAY", source)
         self.assertIn('skills/herdr-comms/assets/operator-say', source)
 
-    def test_liveness_never_enters_the_digested_snapshot(self) -> None:
+    def test_snapshot_lives_in_output_and_one_control_file_never_a_persisted_current_state_record(self) -> None:
+        # heartbeat-outside-digest: the snapshot is an operator report in the
+        # heartbeat output and exactly one control-level file (snapshot.json),
+        # never a persisted authoritative current-state record downstream roles
+        # read (no liveness.json digest, no reconcile journal).
         source = SWEEP.read_text()
-        # the digested snapshot is parts + declared facts only; liveness goes to
-        # stdout and control/liveness.json, so digests verify and never churn.
-        self.assertIn('"# Stream snapshot\\n\\n" + "\\n".join(parts)', source.replace("\\n","\\n"))
-        self.assertNotIn("stream_liveness", source.split("normalized_facts = json.dumps")[1].split("fingerprint")[0])
-        self.assertIn('control / "liveness.json"', source)
-        for phantom in ("waiting.toml", "inflight.toml", "pane-activity.txt", "herdr-queue", "observations"):
+        self.assertIn('control / "snapshot.json"', source)
+        for phantom in (
+            "liveness.json", "journal.json", "sweep-pending",
+            "waiting.toml", "inflight.toml", "pane-activity.txt", "observations",
+        ):
             self.assertNotIn(phantom, source)
-
 
 def _load_octo_control_module():
     loader = importlib.machinery.SourceFileLoader("octo_control", str(CONTROL))
@@ -3255,118 +2013,6 @@ class OperatorGateTests(unittest.TestCase):
             # operator-gate line is STILL surfaced.
             self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", second.stdout)
 
-    def test_t4_gated_stream_classifies_waiting_on_operator_despite_busy_transcript(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            control = base / "control"
-            stream = control / "streams/tf-carrier"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("Outcome: ready\n")
-            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-454"\n')
-            # A fresh (busy) transcript: build a receipt + a live transcript file.
-            projects = base / "projects"
-            worktree = base / "wt"
-            worktree.mkdir()
-            session = "sess-busy"
-            sanitized = __import__("re").sub(r"[^A-Za-z0-9]", "-", str(worktree))
-            tpath = projects / sanitized / f"{session}.jsonl"
-            tpath.parent.mkdir(parents=True)
-            tpath.write_text("{}\n")
-            (stream / "receipt.toml").write_text(
-                'schema_version = 1\n\n[bootstrap]\nprovider_session_id = '
-                f'"{session}"\n\n[workspace]\nworktree = "{worktree}"\n'
-            )
-            owner = self._write_owner(base, control)
-            fake_bin, log, env = self._fake_bins(base)
-            state_map = base / "state-map.json"
-            state_map.write_text(json.dumps({"TUR-454": "Awaiting Accept"}))
-            env["LINEAR_STATE_MAP"] = str(state_map)
-            env["HOME"] = str(base)  # keep default projects root away from real home
-            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
-            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            liveness = json.loads((control / "liveness.json").read_text())
-            self.assertEqual("waiting-on-operator", liveness["tf-carrier"]["classification"])
-
-    def test_t4b_source_a_gate_wait_carries_operator_owner_and_gate_reason(self) -> None:
-        # RULING-46 / ruling-46 (TUR-489): a Source-A-ONLY gated stream (carried
-        # issue in an operator-gated Linear state, NO operator-waits stamp, NO
-        # status waiting-on line) must ALSO carry wait_owner=operator and an
-        # open_ask holding the gate reason, so every waiting-on-operator stream
-        # shares one taxonomy and the reconciler stops flagging empty wait_owner.
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            control = base / "control"
-            stream = control / "streams/src-a-only"
-            stream.mkdir(parents=True)
-            # No waiting-on line; the operator gate is derived purely from state.
-            (stream / "status.md").write_text("Outcome: ready\n")
-            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
-            owner = self._write_owner(base, control)
-            fake_bin, log, env = self._fake_bins(base)
-            state_map = base / "state-map.json"
-            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
-            env["LINEAR_STATE_MAP"] = str(state_map)
-            env["HOME"] = str(base)
-            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
-            result = subprocess.run(command, env=env, check=True, capture_output=True, text=True)
-            entry = json.loads((control / "liveness.json").read_text())["src-a-only"]
-            self.assertEqual("waiting-on-operator", entry["classification"])
-            self.assertEqual("operator", entry["wait_owner"])
-            self.assertIn("TUR-479", entry["open_ask"])
-            self.assertIn("In Staging", entry["open_ask"])
-            self.assertFalse(entry["ask_consumed"])
-            # The loud operator-gate lines are unchanged by the taxonomy fix.
-            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
-
-    def test_t4c_source_b_ask_and_non_gated_stream_taxonomy_unchanged(self) -> None:
-        # Regression: a Source-B stamped stream keeps wait_owner=operator with its
-        # verbatim ask, and a non-gated active stream keeps wait_owner='' with its
-        # normal (non-operator) classification.
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            projects = base / "projects"
-            projects.mkdir()
-            inbox = base / "inbox"
-            messages = base / "messages"
-            messages.mkdir()
-
-            # Source-B stamped stream: verbatim status ask preserved, owner operator.
-            stream_b = control_stream = base / "streams" / "src-b"
-            stream_b.mkdir(parents=True)
-            (stream_b / "status.md").write_text("- waiting-on: operator: Approve promotion of TUR-479?\n")
-            os.utime(stream_b / "status.md", (now - 60, now - 60))
-            live_b = module.stream_liveness(
-                stream_b, inbox, messages, idle_seconds=3600, now=now,
-                projects_root=projects, operator_gated=True,
-                operator_gate_reason="TUR-479 In Staging - verify staging then promote or hold",
-            )
-            self.assertEqual("waiting-on-operator", live_b["classification"])
-            self.assertEqual("operator", live_b["wait_owner"])
-            # A real Source-B/status open ask is preferred over the gate reason.
-            self.assertEqual("Approve promotion of TUR-479?", live_b["open_ask"])
-
-            # Non-gated active stream: no operator owner, normal classification.
-            # Watchdog probe pinned unavailable (TUR-505 C3) so the taxonomy
-            # assertion stays time-based and machine-independent.
-            stream_c = base / "streams" / "src-c"
-            stream_c.mkdir(parents=True)
-            (stream_c / "status.md").write_text("Outcome: working\n")
-            os.utime(stream_c / "status.md", (now - 30, now - 30))
-            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
-                live_c = module.stream_liveness(
-                    stream_c, inbox, messages, idle_seconds=3600, now=now,
-                    projects_root=projects, operator_gated=False,
-                )
-            self.assertEqual("", live_c["wait_owner"])
-            self.assertEqual("", live_c["open_ask"])
-            self.assertIn(live_c["classification"], {"active", "suspected-stuck"})
-
     def test_t5_source_b_operator_ask_surfaces_then_clears_on_ack(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
@@ -3532,10 +2178,12 @@ class OperatorGateTests(unittest.TestCase):
             self.assertNotIn("OPERATOR ACTION NEEDED", result.stdout)
             gate = _sweep_stdout_json(result.stdout).get("operator_gate", [])
             self.assertEqual([], gate)
-            # No prose TUR-id was ever read from Linear.
+            # No prose TUR-id was ever read from Linear (with no gated read the
+            # heartbeat never touches linear/operator-say, so the log may not exist).
+            log_lines = log.read_text().splitlines() if log.exists() else []
             for pid in ("TUR-101", "TUR-107", "TUR-222", "TUR-303", "TUR-404", "TUR-505"):
                 self.assertFalse(
-                    any(pid in line and line.startswith("linear ") for line in log.read_text().splitlines()),
+                    any(pid in line and line.startswith("linear ") for line in log_lines),
                     f"{pid} must not be read from Linear",
                 )
 
@@ -3660,167 +2308,6 @@ class SweepGracefulDegradationTests(unittest.TestCase):
             )
 
 
-class SweepDeferredReconcileTests(unittest.TestCase):
-    """TUR-489: a target commit landing MID-RUN (the sweep runs from a control dir
-    another lane actively commits to) makes prepare_reconcile_launch fail closed
-    with a 'target HEAD changed' GateError. That GateError must NOT crash the whole
-    timer sweep (real crash observed 08:56:06): the sweep defers the reconcile for
-    this pass, still surfaces the loud operator-gate block, notes the defer, and
-    does NOT persist sweep-state.toml so the next pass retries. A NON-HEAD GateError
-    (HEAD unchanged) still propagates / fails closed."""
-
-    def _write_owner(self, base: Path, control: Path) -> Path:
-        owner = base / "operator-owner.toml"
-        owner.write_text(
-            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
-            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-        )
-        return owner
-
-    def _fake_bins(self, base: Path) -> tuple[Path, Path, dict]:
-        fake_bin = base / "bin"
-        fake_bin.mkdir()
-        log = base / "calls.jsonl"
-        (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
-        (fake_bin / "operator-say").write_text(
-            "#!/usr/bin/env bash\n"
-            "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
-        )
-        (fake_bin / "linear").write_text(FAKE_PER_ISSUE_LINEAR)
-        for name in ("claude", "operator-say", "linear"):
-            (fake_bin / name).chmod(0o755)
-        env = dict(
-            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
-            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
-        )
-        return fake_bin, log, env
-
-    def _run_main(self, module, control: Path, owner: Path, repo: Path, env: dict):
-        """Run module.main() in-process (so prepare_reconcile_launch can be
-        monkeypatched) with argv + os.environ swapped and stdout captured."""
-        import contextlib
-        import io
-        import sys as _sys
-
-        old_argv = _sys.argv
-        old_environ = dict(os.environ)
-        buffer = io.StringIO()
-        _sys.argv = [
-            "operator-sweep", "--control-dir", str(control),
-            "--owner-file", str(owner), "--repo", str(repo),
-        ]
-        os.environ.clear()
-        os.environ.update(env)
-        try:
-            with contextlib.redirect_stdout(buffer):
-                rc = module.main()
-        finally:
-            _sys.argv = old_argv
-            os.environ.clear()
-            os.environ.update(old_environ)
-        return rc, buffer.getvalue()
-
-    def test_mid_run_head_change_defers_reconcile_and_never_crashes(self) -> None:
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            control = base / "control"
-            stream = control / "streams/tf-carrier"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("Outcome: ready\n")
-            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
-            owner = self._write_owner(base, control)
-            fake_bin, log, env = self._fake_bins(base)
-            state_map = base / "state-map.json"
-            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
-            env["LINEAR_STATE_MAP"] = str(state_map)
-            env["HOME"] = str(base)
-
-            real_prepare = module.prepare_reconcile_launch
-
-            def racing_prepare(**kwargs):
-                # Simulate the live race: a land advances the control HEAD AFTER the
-                # sweep captured `head`, then the gateway's own recheck fails closed.
-                expected = kwargs["expected_head"]
-                subprocess.run(
-                    ["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "mid-run land"],
-                    check=True,
-                )
-                new = module.repo_head(repo)
-                assert new != expected
-                raise GateError(f"target HEAD changed: expected {expected}, found {new}")
-
-            module.prepare_reconcile_launch = racing_prepare
-            try:
-                rc, stdout = self._run_main(module, control, owner, repo, env)
-            finally:
-                module.prepare_reconcile_launch = real_prepare
-
-            # No crash: clean exit 0, GateError did NOT propagate.
-            self.assertEqual(0, rc)
-            # The captured head genuinely no longer matches the current repo HEAD,
-            # exercising the repo_head(repo) != head branch of the handler.
-            # The trust-critical operator-gate line still surfaces on stdout.
-            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", stdout)
-            # ...and was delivered via operator-say too.
-            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", log.read_text())
-            # The distinct deferred-reconcile note is emitted (not a gate line).
-            self.assertIn("SWEEP NOTE (deferred reconcile):", stdout)
-            self.assertNotIn("OPERATOR ACTION NEEDED: SWEEP NOTE", stdout)
-            # sweep-state.toml is NOT written, so the next pass retries the reconcile.
-            self.assertFalse((control / "sweep-state.toml").exists())
-            # The pending snapshot artifact was cleaned up.
-            self.assertEqual([], list(control.glob(".sweep-pending-*.md")))
-            # Machine-readable JSON is still the last stdout line and marks the defer.
-            payload = _sweep_stdout_json(stdout)
-            self.assertTrue(payload.get("deferred_reconcile"))
-            self.assertTrue(any(
-                "OPERATOR ACTION NEEDED: TUR-479 In Staging" in line
-                for line in payload.get("operator_gate", [])
-            ), payload)
-
-    def test_non_head_gate_error_still_fails_closed(self) -> None:
-        # Regression: a GateError with the HEAD UNCHANGED (e.g. spec/ADR/PR drift)
-        # must NOT be swallowed - it propagates so the deliberate fail-closed
-        # behavior is preserved and no stale state is left behind.
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            control = base / "control"
-            stream = control / "streams/tf-carrier"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("Outcome: ready\n")
-            (stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
-            owner = self._write_owner(base, control)
-            fake_bin, log, env = self._fake_bins(base)
-            state_map = base / "state-map.json"
-            state_map.write_text(json.dumps({"TUR-479": "In Staging"}))
-            env["LINEAR_STATE_MAP"] = str(state_map)
-            env["HOME"] = str(base)
-
-            real_prepare = module.prepare_reconcile_launch
-
-            def drift_prepare(**kwargs):
-                # HEAD is left UNCHANGED; only a non-HEAD gateway check fails.
-                raise GateError("stale Linear input: tf-carrier")
-
-            module.prepare_reconcile_launch = drift_prepare
-            try:
-                with self.assertRaises(GateError) as caught:
-                    self._run_main(module, control, owner, repo, env)
-            finally:
-                module.prepare_reconcile_launch = real_prepare
-            self.assertIn("stale Linear input", str(caught.exception))
-            # Fail-closed: no state persisted and no pending snapshot left behind.
-            self.assertFalse((control / "sweep-state.toml").exists())
-            self.assertEqual([], list(control.glob(".sweep-pending-*.md")))
-
-
 class TimerLinearAuthTests(unittest.TestCase):
     """TUR-489: a fresh timer install must pass LINEAR_API_KEY to the transient
     unit so the timer-run sweep's Source A `linear issue view` works without a
@@ -3942,86 +2429,6 @@ class TransportLifecycleSweepTests(unittest.TestCase):
         state = messages / f"{id_}.toml"
         state.write_text("\n".join(lines) + "\n")
         return state
-
-    # --- T21: E1 undelivered derivation matrix ------------------------------
-
-    def test_t21_e1_matrix_filters_locks_residue_and_notes_unknown(self) -> None:
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            projects = base / "projects"
-            projects.mkdir()
-            inbox_root = base / "inbox"
-            messages = base / "messages"
-            stream = base / "streams" / "tur-1"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("Outcome: working\n")
-            target_inbox = inbox_root / "tur-1"
-            target_inbox.mkdir(parents=True)
-
-            retryable = "20260722T000001-1-1"
-            self._seed_message(messages, retryable, status="pending", path="deferred")
-            (target_inbox / retryable).write_text(retryable + "\n")
-
-            orphan = "20260722T000002-2-2"
-            (target_inbox / orphan).write_text(orphan + "\n")  # no state: unknown
-
-            residue = "20260722T000003-3-3"
-            self._seed_message(messages, residue, status="pending", path="direct")
-            (target_inbox / residue).write_text(residue + "\n")  # ACK-WAIT residue
-
-            terminal = "20260722T000004-4-4"
-            self._seed_message(messages, terminal, status="acknowledged", path="deferred")
-            (target_inbox / terminal).write_text(terminal + "\n")
-
-            stalled = "20260722T000005-5-5"
-            self._seed_message(messages, stalled, status="stalled", path="deferred", attempts=3)
-            (target_inbox / stalled).write_text(stalled + "\n")
-
-            # Never items: locks, dot-temporaries, foreign files.
-            (target_inbox / f"{retryable}.lock").write_text("")
-            (target_inbox / ".partial.tmp").write_text("x")
-            (target_inbox / "README").write_text("foreign")
-
-            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
-                live = module.stream_liveness(
-                    stream, inbox_root, messages, idle_seconds=3600, now=now, projects_root=projects
-                )
-            self.assertIn(retryable, live["undelivered_queue"])
-            for excluded in (orphan, residue, terminal, stalled, f"{retryable}.lock"):
-                self.assertNotIn(excluded, live["undelivered_queue"])
-            notes = "\n".join(live["message_notes"])
-            self.assertIn("undelivered-unknown", notes)
-            self.assertIn(orphan, notes)
-            self.assertIn("residue", notes)
-            self.assertIn(residue, notes)
-
-    def test_t21_ack_wait_and_legacy_itemless_states(self) -> None:
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            projects = base / "projects"
-            projects.mkdir()
-            messages = base / "messages"
-            stream = base / "streams" / "tur-1"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("Outcome: working\n")
-            # ACK-WAIT (path=direct, itemless by design): NOT undelivered.
-            self._seed_message(messages, "20260722T000006-6-6", status="pending", path="direct")
-            # Legacy no-path itemless (pre-contract live state): still surfaced.
-            self._seed_message(messages, "20260722T000007-7-7", status="pending", path=None)
-            # Crash-window retryable itemless: undelivered (P1 will repair).
-            self._seed_message(messages, "20260722T000008-8-8", status="pending", path="deferred")
-            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(base / "no-such-herdr")}):
-                live = module.stream_liveness(
-                    stream, base / "inbox", messages, idle_seconds=3600, now=1_000_000.0, projects_root=projects
-                )
-            self.assertNotIn("20260722T000006-6-6", live["undelivered_queue"])
-            self.assertIn("20260722T000007-7-7", live["undelivered_queue"])
-            self.assertIn("20260722T000008-8-8", live["undelivered_queue"])
-
-    # --- T23 / T-R87c / T-L4: P1 publication repair -------------------------
 
     def test_t23_publication_repair_matrix(self) -> None:
         module = _load_operator_sweep_module()
@@ -4687,12 +3094,11 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
             self.assertTrue(marker.is_file())
 
     def test_edge_hardfail_retries(self) -> None:
-        # On the noop path a hard send failure (rc not in {0,75}) must NOT write
-        # the marker, so a NEW gate is never silently dropped: the next noop pass
-        # RE-PINGS. Once the send succeeds (rc 0) the marker persists and a repeat
-        # does not re-ping. The fault is injected ONLY on the "Operator gate" pane
-        # push so the CHANGED reconcile delivery still succeeds and the sweep
-        # settles to the noop path where the edge trigger lives.
+        # sweep-operator-gate-edge-retry: a hard send failure (rc not in {0,75})
+        # must NOT write the marker, so a NEW gate is never silently dropped: the
+        # next pass RE-PINGS. Once the send succeeds (rc 0) the marker persists and
+        # a repeat does not re-ping. The lean heartbeat emits the edge ping on
+        # EVERY wake, so a single wake fires exactly one ping attempt.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             repo = base / "repo"
@@ -4707,10 +3113,10 @@ class OperatorGateEdgeTriggerTests(unittest.TestCase):
             command = self._sweep_cmd(control, owner, repo)
             marker = control / self.MARKER_NAME
 
-            # Settle to the noop path with the gate pane push HARD-FAILING (rc 1):
-            # the ping is attempted but the marker is NOT written.
+            # One wake with the gate pane push HARD-FAILING (rc 1): the ping is
+            # attempted but the marker is NOT written.
             fail_env = dict(env, GATE_SAY_RC="1")
-            first = self._run_to_noop(command, fail_env)
+            first = subprocess.run(command, env=fail_env, check=True, capture_output=True, text=True)
             self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", first.stdout)
             self.assertEqual(1, self._ping_count(log))
             self.assertFalse(marker.is_file())
@@ -4901,329 +3307,3 @@ class WorkspaceAdmitProvisionCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-# ---- TUR-505 C3: native dead-agent watchdog fakes ----
-# `herdr agent get <target>` is the probe: it exists with the same shape in BOTH
-# the live 0.7.1 grammar and the 0.7.5 grammar. Gone agent: rc 1 + error code
-# agent_not_found (0.7.1, live-verified) or agent_not_running (0.7.5). Live
-# agent: rc 0 + .result.agent.agent_status on STDOUT.
-# LIVE-VERIFIED (herdr 0.7.1): the ERROR JSON goes to STDERR with EMPTY stdout:
-#   rc=1, stdout='', stderr='{"error":{"code":"agent_not_found","message":
-#   "agent target tur-443 not found"},"id":"cli:agent:get"}'
-# The fake mirrors that reality by default; stream="stdout" keeps an
-# older/other-version tolerance variant where the error JSON arrives on stdout.
-def _fake_herdr_gone(code: str, stream: str = "stderr") -> str:
-    redirect = " >&2" if stream == "stderr" else ""
-    return (
-        "#!/usr/bin/env bash\n"
-        "printf 'herdr %s\\n' \"$*\" >>\"${CALL_LOG:-/dev/null}\"\n"
-        'if [[ "$1 $2" == "agent get" ]]; then\n'
-        f"  printf '{{\"error\":{{\"code\":\"{code}\",\"message\":\"agent target %s not found\"}},\"id\":\"cli:agent:get\"}}\\n' \"$3\"{redirect}\n"
-        "  exit 1\n"
-        "fi\n"
-        "exit 0\n"
-    )
-
-
-def _fake_herdr_live(agent_status: str) -> str:
-    return (
-        "#!/usr/bin/env bash\n"
-        "printf 'herdr %s\\n' \"$*\" >>\"${CALL_LOG:-/dev/null}\"\n"
-        'if [[ "$1 $2" == "agent get" ]]; then\n'
-        f"  echo '{{\"id\":\"cli:agent:get\",\"result\":{{\"agent\":{{\"agent_status\":\"{agent_status}\",\"name\":\"x\",\"pane_id\":\"w1:p1\"}}}}}}'\n"
-        "  exit 0\n"
-        "fi\n"
-        "exit 0\n"
-    )
-
-
-# A hard herdr failure (socket down / crash): nonzero rc with a non-JSON body.
-FAKE_HERDR_ERRORING = (
-    "#!/usr/bin/env bash\n"
-    "printf 'herdr %s\\n' \"$*\" >>\"${CALL_LOG:-/dev/null}\"\n"
-    "echo 'herdr: cannot connect to socket' >&2\n"
-    "exit 3\n"
-)
-
-
-class SweepDeadAgentWatchdogTests(unittest.TestCase):
-    """TUR-505 C3: the sweep's native dead-agent watchdog. A stream whose herdr
-    agent pane is gone with no live transcript activity classifies 'dead' (never
-    perpetual suspected-stuck); a status.md anchored 'Outcome: superseded-closed'
-    stream classifies 'closed' and is excluded from stuck/dead flagging; probe
-    failure degrades gracefully to time-based classification; operator-gate
-    surfacing is never affected by dead/closed."""
-
-    def _idle_stream(self, base: Path, name: str, projects: Path, now: float) -> tuple[Path, Path]:
-        stream = base / "streams" / name
-        stream.mkdir(parents=True)
-        worktree = base / "wt" / name
-        worktree.mkdir(parents=True)
-        session_id = f"sess-{name}"
-        (stream / "receipt.toml").write_text(
-            f'[workspace]\nworktree = "{worktree}"\n[bootstrap]\nprovider_session_id = "{session_id}"\n'
-        )
-        module = _load_operator_sweep_module()
-        sanitized = module.sanitize_project_dir(str(worktree))
-        transcript_dir = projects / sanitized
-        transcript_dir.mkdir(parents=True)
-        transcript = transcript_dir / f"{session_id}.jsonl"
-        transcript.write_text("{}\n")
-        os.utime(transcript, (now - 9000, now - 9000))
-        return stream, transcript
-
-    def _fake_herdr_bin(self, base: Path, script: str) -> Path:
-        fake_bin = base / "watchdog-bin"
-        fake_bin.mkdir(exist_ok=True)
-        herdr = fake_bin / "herdr"
-        herdr.write_text(script)
-        herdr.chmod(0o755)
-        return herdr
-
-    def test_dead_pane_classifies_dead_not_suspected_stuck(self) -> None:
-        # RED core: a closed pane (agent gone) on an idle stream must classify
-        # 'dead', not trip suspected-stuck forever. Both grammar spellings of the
-        # gone code are covered: agent_not_found (0.7.1 live) and
-        # agent_not_running (0.7.5). The real 0.7.1 binary prints the error JSON
-        # to STDERR with empty stdout (live-verified); the stdout variant keeps
-        # older/other-version tolerance so both streams parse.
-        module = _load_operator_sweep_module()
-        for code, stream in (
-            ("agent_not_found", "stderr"),
-            ("agent_not_running", "stderr"),
-            ("agent_not_found", "stdout"),
-        ):
-            with self.subTest(code=code, stream=stream):
-                with tempfile.TemporaryDirectory() as td:
-                    base = Path(td)
-                    now = 1_000_000.0
-                    projects = base / "projects"
-                    stream_dir, _ = self._idle_stream(base, "tur-dead", projects, now)
-                    (stream_dir / "status.md").write_text("Outcome: shipping\n")
-                    herdr = self._fake_herdr_bin(base, _fake_herdr_gone(code, stream))
-                    log = base / "herdr-calls.log"
-                    with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr), "CALL_LOG": str(log)}):
-                        live = module.stream_liveness(
-                            stream_dir, base / "inbox", base / "messages",
-                            idle_seconds=3600, now=now, projects_root=projects,
-                        )
-                    self.assertEqual("dead", live["classification"])
-                    self.assertNotEqual("suspected-stuck", live["classification"])
-                    self.assertIs(False, live["agent_running"])
-                    # The probe target is the stream name (herdr-spawn --name).
-                    self.assertIn("herdr agent get tur-dead", log.read_text())
-
-    def test_agent_gone_with_live_transcript_activity_is_not_dead(self) -> None:
-        # Dead requires BOTH: agent gone AND no live transcript activity.
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            projects = base / "projects"
-            stream, transcript = self._idle_stream(base, "tur-fresh", projects, now)
-            os.utime(transcript, (now - 60, now - 60))
-            (stream / "status.md").write_text("Outcome: shipping\n")
-            herdr = self._fake_herdr_bin(base, _fake_herdr_gone("agent_not_running"))
-            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr)}):
-                live = module.stream_liveness(
-                    stream, base / "inbox", base / "messages",
-                    idle_seconds=3600, now=now, projects_root=projects,
-                )
-            self.assertEqual("active", live["classification"])
-
-    def test_live_agent_keeps_time_based_classification_and_surfaces_agent_status(self) -> None:
-        # A live agent never flips classification; its agent_status (idle,
-        # working, blocked) is surfaced in the liveness dict so a blocked agent
-        # is noted.
-        module = _load_operator_sweep_module()
-        for status, expected in (("idle", "suspected-stuck"), ("blocked", "suspected-stuck")):
-            with self.subTest(status=status):
-                with tempfile.TemporaryDirectory() as td:
-                    base = Path(td)
-                    now = 1_000_000.0
-                    projects = base / "projects"
-                    stream, _ = self._idle_stream(base, "tur-live", projects, now)
-                    (stream / "status.md").write_text("Outcome: shipping\n")
-                    herdr = self._fake_herdr_bin(base, _fake_herdr_live(status))
-                    with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr)}):
-                        live = module.stream_liveness(
-                            stream, base / "inbox", base / "messages",
-                            idle_seconds=3600, now=now, projects_root=projects,
-                        )
-                    self.assertEqual(expected, live["classification"])
-                    self.assertIs(True, live["agent_running"])
-                    self.assertEqual(status, live["agent_status"])
-
-    def test_closed_stream_classifies_closed_and_is_excluded_from_stuck_and_dead(self) -> None:
-        # Anchored '^Outcome:' line matching superseded-closed (case-insensitive)
-        # classifies 'closed' even when the agent is gone and the stream is idle.
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            projects = base / "projects"
-            stream, _ = self._idle_stream(base, "tur-old", projects, now)
-            (stream / "status.md").write_text(
-                "# tur-old shaping (retained)\n\nOutcome: Superseded-Closed by tur-505\n"
-            )
-            herdr = self._fake_herdr_bin(base, _fake_herdr_gone("agent_not_found"))
-            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr)}):
-                live = module.stream_liveness(
-                    stream, base / "inbox", base / "messages",
-                    idle_seconds=3600, now=now, projects_root=projects,
-                )
-            self.assertEqual("closed", live["classification"])
-            self.assertNotIn(live["classification"], {"suspected-stuck", "dead"})
-
-    def test_prose_superseded_closed_mention_never_classifies_closed(self) -> None:
-        # Only the ANCHORED '^Outcome:' line counts; a free-prose mention of
-        # superseded-closed never closes the stream (noise guard).
-        module = _load_operator_sweep_module()
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            now = 1_000_000.0
-            projects = base / "projects"
-            stream, _ = self._idle_stream(base, "tur-prose", projects, now)
-            (stream / "status.md").write_text(
-                "# notes\n\nOutcome: shipping\nThe old lane recorded Outcome: superseded-closed once.\n"
-            )
-            herdr = self._fake_herdr_bin(base, _fake_herdr_gone("agent_not_found"))
-            with mock.patch.dict(os.environ, {"OCTO_HERDR": str(herdr)}):
-                live = module.stream_liveness(
-                    stream, base / "inbox", base / "messages",
-                    idle_seconds=3600, now=now, projects_root=projects,
-                )
-            self.assertNotEqual("closed", live["classification"])
-            self.assertEqual("dead", live["classification"])
-
-    def test_probe_unavailable_or_erroring_degrades_to_time_based_classification(self) -> None:
-        # Missing herdr binary or a hard herdr error (socket down): the watchdog
-        # degrades gracefully to the current time-based classification with a
-        # noted error, never a crash and never a dead flag.
-        module = _load_operator_sweep_module()
-        cases = ("absent", "erroring")
-        for case in cases:
-            with self.subTest(case=case):
-                with tempfile.TemporaryDirectory() as td:
-                    base = Path(td)
-                    now = 1_000_000.0
-                    projects = base / "projects"
-                    stream, _ = self._idle_stream(base, "tur-degraded", projects, now)
-                    (stream / "status.md").write_text("Outcome: shipping\n")
-                    if case == "absent":
-                        target = str(base / "no-such-herdr")
-                    else:
-                        target = str(self._fake_herdr_bin(base, FAKE_HERDR_ERRORING))
-                    with mock.patch.dict(os.environ, {"OCTO_HERDR": target}):
-                        live = module.stream_liveness(
-                            stream, base / "inbox", base / "messages",
-                            idle_seconds=3600, now=now, projects_root=projects,
-                        )
-                    self.assertEqual("suspected-stuck", live["classification"])
-                    self.assertIsNone(live["agent_running"])
-                    self.assertNotEqual("", live["watchdog_error"])
-
-    # ---- full-sweep coverage (fake-bin harness) ----
-
-    def _write_owner(self, base: Path, control: Path) -> Path:
-        owner = base / "operator-owner.toml"
-        owner.write_text(
-            f'schema_version = 1\nowner_session_id = "operator-1-session"\n'
-            f'owner_route = "operator-1"\nhandoff_revision = 0\ncontrol_dir = "{control}"\n'
-        )
-        return owner
-
-    def _fake_bins(self, base: Path, herdr_script: str) -> tuple[Path, Path, dict]:
-        fake_bin = base / "bin"
-        fake_bin.mkdir()
-        log = base / "calls.jsonl"
-        (fake_bin / "claude").write_text(FAKE_RECONCILER_CLAUDE)
-        (fake_bin / "operator-say").write_text(
-            "#!/usr/bin/env bash\n"
-            "printf 'operator %s\\n' \"$*\" >>\"$CALL_LOG\"\n"
-            'for a in "$@"; do prev="${prev:-}"; if [[ "$prev" == "--artifact" ]]; then cat "$a" >>"$CALL_LOG"; fi; prev="$a"; done\n'
-        )
-        (fake_bin / "linear").write_text(FAKE_PER_ISSUE_LINEAR)
-        (fake_bin / "herdr").write_text(herdr_script)
-        for name in ("claude", "operator-say", "linear", "herdr"):
-            (fake_bin / name).chmod(0o755)
-        env = dict(
-            os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", CALL_LOG=str(log),
-            OCTO_OPERATOR_SAY=str(fake_bin / "operator-say"),
-            OCTO_HERDR=str(fake_bin / "herdr"),
-        )
-        env["HOME"] = str(base)
-        return fake_bin, log, env
-
-    def test_gated_issue_on_dead_and_closed_streams_still_surfaces_operator_gate(self) -> None:
-        # Precedence: waiting-on-operator > closed > dead. A dead stream and a
-        # closed stream each carrying an operator-gated issue STILL surface the
-        # loud gate lines; a closed stream with no gate classifies 'closed'.
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            control = base / "control"
-            dead_stream = control / "streams/tf-dead"
-            dead_stream.mkdir(parents=True)
-            (dead_stream / "status.md").write_text("Outcome: shipping\n")
-            (dead_stream / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-479"\n')
-            closed_gated = control / "streams/tf-closed-gated"
-            closed_gated.mkdir(parents=True)
-            (closed_gated / "status.md").write_text("Outcome: superseded-closed\n")
-            (closed_gated / "sources.toml").write_text('schema_version = 1\n\n[linear]\nissue = "TUR-454"\n')
-            closed_plain = control / "streams/tf-closed-plain"
-            closed_plain.mkdir(parents=True)
-            (closed_plain / "status.md").write_text("Outcome: superseded-closed by tur-505\n")
-            owner = self._write_owner(base, control)
-            fake_bin, log, env = self._fake_bins(base, _fake_herdr_gone("agent_not_running"))
-            state_map = base / "state-map.json"
-            state_map.write_text(json.dumps({"TUR-479": "In Staging", "TUR-454": "Awaiting Accept"}))
-            env["LINEAR_STATE_MAP"] = str(state_map)
-            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertEqual(0, result.returncode, result.stderr)
-            # Operator gates are NEVER affected by dead/closed.
-            self.assertIn("OPERATOR ACTION NEEDED: TUR-479 In Staging", result.stdout)
-            self.assertIn("OPERATOR ACTION NEEDED: TUR-454 Awaiting Accept", result.stdout)
-            liveness = json.loads((control / "liveness.json").read_text())
-            self.assertEqual("waiting-on-operator", liveness["tf-dead"]["classification"])
-            self.assertEqual("waiting-on-operator", liveness["tf-closed-gated"]["classification"])
-            self.assertEqual("closed", liveness["tf-closed-plain"]["classification"])
-
-    def test_dead_stream_without_gate_classifies_dead_in_full_sweep(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            control = base / "control"
-            stream = control / "streams/tf-gone"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("Outcome: shipping\n")
-            owner = self._write_owner(base, control)
-            fake_bin, log, env = self._fake_bins(base, _fake_herdr_gone("agent_not_running"))
-            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertEqual(0, result.returncode, result.stderr)
-            liveness = json.loads((control / "liveness.json").read_text())
-            self.assertEqual("dead", liveness["tf-gone"]["classification"])
-
-    def test_erroring_herdr_never_crashes_the_sweep_and_falls_back_time_based(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            repo = base / "repo"
-            _init_target_repo(repo)
-            control = base / "control"
-            stream = control / "streams/tf-fallback"
-            stream.mkdir(parents=True)
-            (stream / "status.md").write_text("Outcome: shipping\n")
-            owner = self._write_owner(base, control)
-            fake_bin, log, env = self._fake_bins(base, FAKE_HERDR_ERRORING)
-            command = [str(SWEEP), "--control-dir", str(control), "--owner-file", str(owner), "--repo", str(repo)]
-            result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertEqual(0, result.returncode, result.stderr)
-            liveness = json.loads((control / "liveness.json").read_text())
-            # No transcript at all + probe degraded: time-based fallback, never dead.
-            self.assertEqual("suspected-stuck", liveness["tf-fallback"]["classification"])
-            self.assertNotEqual("", liveness["tf-fallback"]["watchdog_error"])
