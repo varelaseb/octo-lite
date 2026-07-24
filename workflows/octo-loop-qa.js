@@ -1117,6 +1117,7 @@ if (mode === 'evidence') {
     const cardUrl = await postEvidenceCard('QA Capture', 'nonvisual', head, required(A.manifest ?? 'backend-packet', 'backend manifest'), A.artifacts)
     return {
       stage: 'qa-review-required', issue: A.issue, head, card_url: cardUrl, user_facing: false,
+      manifest: (A.manifest ?? 'backend-packet'),
       next: 'Run qa-review over the served backend card.',
     }
   }
