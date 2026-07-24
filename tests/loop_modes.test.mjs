@@ -228,6 +228,40 @@ test('evidence mode spawns qa-capture, posts the evidence card, and returns qa-r
   assert.ok(labels.some((l) => l.startsWith('publish-visual:')), 'evidence card posted')
 })
 
+// ---- backend evidence -> qa-review round-trip: the nonvisual branch must carry manifest forward ----
+test('backend evidence mode returns the default manifest so the evidence->qa-review round-trip does not fail closed', async () => {
+  // Backend-only delivery (user_facing:false), no A.manifest supplied: the branch defaults to
+  // 'backend-packet'. The returned result must include that manifest so the next qa-review pass (which
+  // requires A.manifest) does not fail closed on the manifest reason.
+  const evidenceEnv = readyEnvelope({
+    mode: 'evidence', head: NEWHEAD, linear_state: 'In Progress', user_facing: false,
+    code_review: { verdict: 'clear', head: NEWHEAD },
+  })
+  const { result: evidenceResult } = await runMode(evidenceEnv, [
+    ['publish-nonvisual:', { card_url: `${PR_URL}#backend-card`, readable: true }],
+  ])
+  assert.equal(evidenceResult.stage, 'qa-review-required')
+  assert.equal(evidenceResult.user_facing, false)
+  assert.equal(evidenceResult.manifest, 'backend-packet')
+
+  // Feed the returned evidence result straight into qa-review: it must NOT throw the manifest error.
+  const qaEnv = readyEnvelope({
+    mode: 'qa-review', head: evidenceResult.head, linear_state: 'In Progress',
+    card_url: evidenceResult.card_url, manifest: evidenceResult.manifest,
+  })
+  const payload = JSON.stringify({ verdict: 'satisfied' })
+  const { result: qaResult } = await runMode(qaEnv, [
+    ['qa-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+    ['qa-reviewer-relay:', relayResult(payload)],
+    ['qa-reviewer-rollout:', rolloutFor(payload)],
+    ['qa-reviewer:', {
+      head: evidenceResult.head, verdict: 'satisfied', issue: ISSUE, pr: PR, manifest: 'backend-packet',
+      criteria: [{ criterion: 'works', status: 'pass', observation: 'ok' }], packet_url: `${PR_URL}#pkt`,
+    }],
+  ])
+  assert.equal(qaResult.stage, 'acceptance-required')
+})
+
 // ---- qa-review mode: spawns qa-reviewer through the relay, returns acceptance-required|fix ----
 test('qa-review mode spawns the qa-reviewer through the relay and advances to acceptance on satisfied', async () => {
   const env = readyEnvelope({
