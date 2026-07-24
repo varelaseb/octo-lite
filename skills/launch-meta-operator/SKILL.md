@@ -15,16 +15,17 @@ Use only on explicit operator request.
 Decision tree. Pick one path; the launchers are distinct scripts.
 
 - No `operator-owner.toml` yet (first ever launch): INITIAL launch. Run
-  `scripts/launch-meta-operator.sh`. Creates the revision-zero owner record;
-  refuses if an owner record already exists.
+  `skills/launch-meta-operator/scripts/launch-meta-operator.sh`. Creates the
+  revision-zero owner record; refuses if an owner record already exists.
 - `operator-owner.toml` exists and operator wants a live Fable-to-Fable
-  handoff: LIVE handoff. Run `scripts/handoff-meta-operator.sh`. Requires the
+  handoff: LIVE handoff. Run
+  `skills/launch-meta-operator/scripts/handoff-meta-operator.sh`. Requires the
   existing owner record; refuses if none (that is the initial case). See
   operator-control `handoff-launcher-initial` / `handoff-launcher-live`.
 
 ## INITIAL launch
 
-Run `scripts/launch-meta-operator.sh`. It:
+Run `skills/launch-meta-operator/scripts/launch-meta-operator.sh`. It:
 
 - resolves `meta-operator` through `roles.toml`
 - pins exact `claude-fable-5`, xhigh, auto mode, no fallback
@@ -32,9 +33,9 @@ Run `scripts/launch-meta-operator.sh`. It:
 - injects remote access facts from turn one
 - launches through `herdr-spawn` as `🧠 operator`
 - requires bootstrap acknowledgment before mutation
-- installs one lifecycle-bound host timer that runs `operator-sweep` directly
+- installs one lifecycle-bound host timer that runs the operator heartbeat sweep
 
-The timer executes the deterministic sweep itself; only a changed sweep
+The operator heartbeat sweep fires on a schedule; only a changed sweep delta
 messages Fable through the sweep's own delta path, so no periodic wake message
 ever enters the operator context.
 
@@ -54,7 +55,7 @@ every send.
 
 ## LIVE handoff
 
-Run `scripts/handoff-meta-operator.sh --workspace ID --handoff DOC [--name NAME]`.
+Run `skills/launch-meta-operator/scripts/handoff-meta-operator.sh --workspace ID --handoff DOC [--name NAME]`.
 It:
 
 - requires an existing `operator-owner.toml`; refuses fail-closed if absent
