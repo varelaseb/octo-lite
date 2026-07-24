@@ -12,32 +12,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from workflows.lib.role_resolver import build_launch_receipt, load_registry, render_receipt, resolve_role
-from octo_lite.launch import PROVISION_RECORD_SOURCE, validate_provision_record
-
-
-def _write_spawn_record(path: Path, worktree: Path) -> Path:
-    # gh#13 Blocker B: a valid host-authored provision record for the spawn
-    # worktree, exercising herdr-spawn's launch-provision-env-seam injection
-    # without a full git provisioning round-trip (validate_provision_record is
-    # pure schema; herdr-spawn trusts the host-authored record it is handed).
-    worktree = Path(worktree)
-    record = {
-        "schema_version": 1,
-        "source": PROVISION_RECORD_SOURCE,
-        "lane": "spawn-test",
-        "control_repo": str(worktree.parent / "control"),
-        "worktree": str(worktree),
-        "worktree_root": str(worktree.parent),
-        "repo_slug": "acme/widgets",
-        "branch": "octo-lite/spawn-test",
-        "starting_head": "0" * 40,
-        "resolver_root": str(worktree),
-        "install_check": "clean",
-        "provisioned_at": "2026-07-23T00:00:00+00:00",
-    }
-    validate_provision_record(record)
-    path.write_text(json.dumps(record))
-    return path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,6 +118,12 @@ if [[ "$sub" == "agent get" ]]; then
       echo 'herdr: agent get failed' >&2
       exit 1
     fi
+    # Persistent seq-read failure from the Nth get onward: recurs across the
+    # stall-recovery re-fire so both attempts fail and the message stays pending.
+    if [[ -n "${FAKE_GET_FAIL_FROM:-}" && "$g" -ge "$FAKE_GET_FAIL_FROM" ]]; then
+      echo 'herdr: agent get failed' >&2
+      exit 1
+    fi
   fi
   seq=1
   [[ -n "${FAKE_SEQ_FILE:-}" && -f "${FAKE_SEQ_FILE:-}" ]] && seq="$(cat "$FAKE_SEQ_FILE")"
@@ -206,7 +186,16 @@ elif [[ "$sub" == "agent prompt" ]]; then
     [[ -f "$FAKE_SEQ_FILE" ]] && s="$(cat "$FAKE_SEQ_FILE")"
     echo $((s + 1)) >"$FAKE_SEQ_FILE"
   fi
-  if [[ -n "${FAKE_WAIT_STALL:-}" ]]; then
+  # FAKE_WAIT_STALL_ONCE models the 0.7.5 stall-then-recover path: the FIRST
+  # prompt stalls (dirty composer), and after a settle-wait the re-fire lands.
+  # The first fire drops a marker so subsequent fires fall through to a submit.
+  stall_now=""
+  [[ -n "${FAKE_WAIT_STALL:-}" ]] && stall_now=1
+  if [[ -n "${FAKE_WAIT_STALL_ONCE:-}" && ! -f "${FAKE_STALL_DONE:-/nonexistent}" ]]; then
+    stall_now=1
+    [[ -n "${FAKE_STALL_DONE:-}" ]] && : >"$FAKE_STALL_DONE"
+  fi
+  if [[ -n "$stall_now" ]]; then
     # Dirty composer: the prompt returns rc=0 WITHOUT submitting. Only --wait
     # observes the missing state change and reports agent_prompt_stalled
     # (still rc=0: rc alone never carries the submission signal).
@@ -233,6 +222,11 @@ elif [[ "$sub" == "agent prompt" ]]; then
   fi
 elif [[ "$sub" == "agent send-keys" ]]; then
   echo send-keys >>"$FAKE_LOG"
+elif [[ "$sub" == "agent wait" ]]; then
+  # herdr 0.7.5 settle-wait: the say/drain stall-recovery waits for the target to
+  # reach a safe state before its single re-fire. Logs "wait" and reports idle.
+  echo wait >>"$FAKE_LOG"
+  echo '{"result":{"agent":{"state":"idle","state_change_seq":1}}}'
 else
   exit 2
 fi
@@ -364,7 +358,7 @@ fi
 """
 
 
-def build_orchestrator_receipt(repo: Path, receipt_path: Path) -> dict:
+def build_orchestrator_receipt(repo: Path, receipt_path: Path, *, model=None, effort=None) -> dict:
     registry = load_registry(ROOT)
     resolved = resolve_role(registry, "orchestrator", set())
     receipt = build_launch_receipt(
@@ -378,6 +372,8 @@ def build_orchestrator_receipt(repo: Path, receipt_path: Path) -> dict:
         execution_location="remote",
         operator_loopback=False,
         review_delivery="reachable_url_required",
+        model=model,
+        effort=effort,
     )
     receipt_path.write_text(render_receipt(receipt))
     return receipt
@@ -1324,33 +1320,24 @@ exec {real_mv} "$@"
             env["FAKE_ACK_OVERRIDE"] = ack_override
         return env, log
 
-    def spawn_base_command(self, receipt, cwd=None, provision_record=None, inject_record=True):
-        # gh#13 Blocker B: an orchestrator spawn now REQUIRES a host-authored
-        # provision record so herdr-spawn injects the frozen OCTO_* launch env.
-        # By default the shared helper auto-provisions a valid record for the
-        # spawn worktree so every existing bootstrap-contract test keeps passing;
-        # a test drives the fail-closed paths with inject_record=False.
+    def spawn_base_command(self, receipt, cwd=None):
+        # ADR 0003 (drop-loop-trust-root): herdr-spawn no longer injects a frozen
+        # OCTO_* launch env from a provision record; the loop derives its worktree
+        # from cwd and its branch from git. The orchestrator spawn carries no
+        # --provision-record flag.
         worktree = cwd or ROOT
-        if provision_record is None and inject_record:
-            provision_record = _write_spawn_record(Path(receipt).parent / "provision.json", worktree)
-        command = [
+        return [
             str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(worktree),
             "--role", "orchestrator", "--label", "443/6 · operating model",
             "--receipt", str(receipt),
-        ]
-        if provision_record is not None:
-            command += ["--provision-record", str(provision_record)]
-        command += [
             "--", "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
             "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
         ]
-        return command
 
-    def test_spawn_injects_frozen_provision_env_into_tab_create(self):
-        # gh#13 Blocker B (spec launch-provision-env-seam): herdr-spawn reads the
-        # host-authored provision record (never the child) and starts the loop
-        # process with the frozen OCTO_* env via `herdr tab create --env`, cwd
-        # pinned to the provisioned worktree.
+    def test_spawn_injects_no_provision_env_into_tab_create(self):
+        # ADR 0003 (drop-loop-trust-root; role-runtime loop-runs-on-cwd-and-branch):
+        # herdr-spawn creates the tab at the receipt-verified cwd with NO frozen
+        # OCTO_* --env seam; the loop reads no launch environment.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -1369,17 +1356,12 @@ exec {real_mv} "$@"
             self.assertEqual(0, result.returncode, result.stderr)
             calls = log.read_text().splitlines()
             tab_call = next(line for line in calls if line.startswith("tab create"))
-            for key in (
-                "OCTO_WORKTREE", "OCTO_WORKTREE_ROOT", "OCTO_CONTROL_REPO", "OCTO_REPO_SLUG",
-                "OCTO_STARTING_HEAD", "OCTO_LANE", "OCTO_PROVISION_RECORD",
-            ):
-                self.assertIn(f"--env {key}=", tab_call)
-            self.assertIn(f"--env OCTO_WORKTREE={repo}", tab_call)
-            self.assertIn(f"--env OCTO_PROVISION_RECORD={receipt_path.parent / 'provision.json'}", tab_call)
+            self.assertIn(f"--cwd {repo}", tab_call)
+            self.assertNotIn("--env OCTO_", tab_call)
 
-    def test_spawn_requires_provision_record_for_orchestrator(self):
-        # Fail closed: an orchestrator lane with no provision record creates no
-        # tab or pane and reports no success.
+    def test_spawn_accepts_a_fable_orchestrator_runtime(self):
+        # Operator choice at spawn: a Fable orchestrator (claude-fable-5/xhigh) is a
+        # sanctioned orchestrator runtime and spawns like the default opus one.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -1389,81 +1371,44 @@ exec {real_mv} "$@"
             subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
             subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
             receipt_path = Path(td) / "launch.toml"
-            build_orchestrator_receipt(repo, receipt_path)
-
+            receipt = build_orchestrator_receipt(repo, receipt_path, model="claude-fable-5", effort="xhigh")
             env, log = self.spawn_environment(td)
-            result = subprocess.run(
-                self.spawn_base_command(receipt_path, cwd=repo, inject_record=False),
-                env=env, capture_output=True, text=True,
-            )
-            self.assertNotEqual(0, result.returncode)
-            calls = log.read_text().splitlines() if log.is_file() else []
-            self.assertFalse(any(line.startswith("tab create") for line in calls))
-            # Fail closed BEFORE any provider bootstrap or session creation.
-            self.assertFalse(any(line.startswith("agent start") for line in calls))
-            self.assertFalse(tomllib.loads(receipt_path.read_text())["bootstrap"]["verified"])
-
-    def test_spawn_rejects_provision_record_bound_to_a_different_worktree(self):
-        # Fail closed: a record whose worktree does not equal the spawn worktree
-        # can never inject a foreign lane's env, and it fails before bootstrap.
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td) / "repo"
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
-            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-            receipt_path = Path(td) / "launch.toml"
-            build_orchestrator_receipt(repo, receipt_path)
-            foreign = _write_spawn_record(Path(td) / "foreign.json", Path(td) / "other-lane")
-
-            env, log = self.spawn_environment(td)
-            result = subprocess.run(
-                self.spawn_base_command(receipt_path, cwd=repo, provision_record=foreign),
-                env=env, capture_output=True, text=True,
-            )
-            self.assertNotEqual(0, result.returncode)
-            calls = log.read_text().splitlines() if log.is_file() else []
-            self.assertFalse(any(line.startswith("tab create") for line in calls))
-            self.assertFalse(tomllib.loads(receipt_path.read_text())["bootstrap"]["verified"])
-
-    def test_spawn_provision_import_is_not_hijackable_by_the_process_cwd(self):
-        # gh#13 codex P0: `python3 -P` keeps the process cwd off sys.path so a
-        # poisoned octo_lite in the invocation cwd cannot shadow the trusted
-        # octo_root import of lane_env_from_record. Run herdr-spawn from a cwd
-        # holding a hostile octo_lite; the spawn must still resolve the real module
-        # and inject the genuine frozen env.
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td) / "repo"
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-            (repo / "AGENTS.md").write_text("# Target\n")
-            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
-            receipt_path = Path(td) / "launch.toml"
-            build_orchestrator_receipt(repo, receipt_path)
-
-            poison = Path(td) / "poison"
-            (poison / "octo_lite").mkdir(parents=True)
-            (poison / "octo_lite" / "__init__.py").write_text("")
-            (poison / "octo_lite" / "launch.py").write_text(
-                "class GateError(Exception):\n    pass\n\n\n"
-                "def lane_env_from_record(*a, **k):\n"
-                "    raise RuntimeError('hijacked octo_lite import')\n"
-            )
-
-            env, log = self.spawn_environment(td)
-            result = subprocess.run(
-                self.spawn_base_command(receipt_path, cwd=repo), env=env,
-                capture_output=True, text=True, cwd=str(poison),
-            )
+            cmd = [
+                str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(repo),
+                "--role", "orchestrator", "--label", "443/6 · operating model",
+                "--receipt", str(receipt_path), "--",
+                "claude", "--model", "claude-fable-5", "--effort", "xhigh",
+                "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
+            ]
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
-            tab_call = next(
-                line for line in log.read_text().splitlines() if line.startswith("tab create")
-            )
-            self.assertIn(f"--env OCTO_WORKTREE={repo}", tab_call)
+            self.assertIn("bootstrap=acknowledged", result.stdout)
+            self.assertIn(f"provider_session_id={receipt['spawn_id']}", result.stdout)
+
+    def test_spawn_rejects_an_unsanctioned_orchestrator_runtime(self):
+        # A runtime that is neither the default opus nor the sanctioned Fable fails
+        # closed at the role gate, before any bootstrap or pane.
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+            (repo / "AGENTS.md").write_text("# Target\n")
+            subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
+            receipt_path = Path(td) / "launch.toml"
+            build_orchestrator_receipt(repo, receipt_path)
+            env, log = self.spawn_environment(td)
+            cmd = [
+                str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(repo),
+                "--role", "orchestrator", "--label", "443/6 · operating model",
+                "--receipt", str(receipt_path), "--",
+                "claude", "--model", "claude-sonnet-5", "--effort", "high",
+                "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
+            ]
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertEqual(65, result.returncode)
+            self.assertFalse(any(line.startswith("tab create") for line in (log.read_text().splitlines() if log.is_file() else [])))
 
     def test_spawn_verifies_bootstrap_before_any_pane_and_resumes_the_exact_verified_session(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1834,11 +1779,10 @@ exec {real_mv} "$@"
             "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
         ]
         worktree = cwd or ROOT
-        record = _write_spawn_record(Path(receipt).parent / "provision.json", worktree)
         return [
             str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(worktree),
             "--role", "orchestrator", "--label", "🎤 443/6 · operating model",
-            "--receipt", str(receipt), "--provision-record", str(record), "--", *claude,
+            "--receipt", str(receipt), "--", *claude,
         ]
 
     def spawn_git_repo(self, path):
@@ -2936,7 +2880,9 @@ class ObservedConfirmationTests(unittest.TestCase):
             self.assertEqual("deferred", stored["delivery_path"])
             self.assertEqual(1, stored["transport_attempts"])
             self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            # 0.7.5 recovery: a stalled fire settle-waits and re-fires ONCE; both
+            # stalls here, so it still fails closed to pending (attempts still 1).
+            self.assertEqual(["prompt-stalled", "wait", "prompt-stalled"], log.read_text().splitlines())
         with self.subTest("say-non-info"), tempfile.TemporaryDirectory() as td:
             env, log = self._env(td)
             env["FAKE_WAIT_STALL"] = "1"
@@ -2964,7 +2910,7 @@ class ObservedConfirmationTests(unittest.TestCase):
             self.assertEqual("deferred", stored["delivery_path"])
             self.assertEqual(1, stored["transport_attempts"])
             self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt-stalled", "wait", "prompt-stalled"], log.read_text().splitlines())
 
     def test_ta1b_observed_state_change_confirms_exactly_as_before(self):
         with self.subTest("say-info-completed"), tempfile.TemporaryDirectory() as td:
@@ -3208,31 +3154,32 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual(1, stored["transport_attempts"])
             self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
 
-    def test_ta2c_seq_read_failure_on_either_side_is_unconfirmed_fail_closed(self):
-        # agent get call order per invocation: 1 pane resolution, 2 pre-prompt
-        # seq read, 3 post-outcome seq read. Even though the seq WOULD have
-        # advanced, a failed read on either side never confirms (degrade-safe).
-        for label, fail_at in (("say-pre-read", "2"), ("say-post-read", "3")):
-            with self.subTest(label), tempfile.TemporaryDirectory() as td:
-                env, log = self._seq_env(td)
-                env["FAKE_GET_COUNT_FILE"] = str(Path(td) / "get-count")
-                env["FAKE_GET_FAIL_AT"] = fail_at
-                result = subprocess.run(
-                    ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
-                    env=env, capture_output=True, text=True,
-                )
-                self.assertEqual(75, result.returncode, result.stdout + result.stderr)
-                self.assertNotIn("status=completed", result.stdout)
-                state = next(iter((self._base(td) / "messages").glob("*.toml")))
-                stored = self._load(state)
-                self.assertEqual("pending", stored["status"])
-                self.assertEqual("deferred", stored["delivery_path"])
-                self.assertEqual(1, stored["transport_attempts"])
-                self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
-        with self.subTest("drain-post-read"), tempfile.TemporaryDirectory() as td:
+    def test_ta2c_persistent_seq_read_failure_stays_unconfirmed_across_the_refire(self):
+        # In a working pane every prompt reports agent_prompt_stalled, so the
+        # stall-recovery re-fire runs; a seq read failure that RECURS across both
+        # attempts (FAKE_GET_FAIL_FROM=3 fails the first post-outcome read and every
+        # read after it) never confirms and stays pending. A merely transient read
+        # failure would be recovered by the re-fire.
+        with self.subTest("say"), tempfile.TemporaryDirectory() as td:
             env, log = self._seq_env(td)
             env["FAKE_GET_COUNT_FILE"] = str(Path(td) / "get-count")
-            env["FAKE_GET_FAIL_AT"] = "3"
+            env["FAKE_GET_FAIL_FROM"] = "3"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertNotIn("status=completed", result.stdout)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("deferred", stored["delivery_path"])
+            self.assertEqual(1, stored["transport_attempts"])
+            self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
+        with self.subTest("drain"), tempfile.TemporaryDirectory() as td:
+            env, log = self._seq_env(td)
+            env["FAKE_GET_COUNT_FILE"] = str(Path(td) / "get-count")
+            env["FAKE_GET_FAIL_FROM"] = "3"
             state = self._seed(td, self.ID_1, kind="info", message="fyi update")
             result = self._drain(env)
             self.assertEqual(0, result.returncode, result.stderr)
@@ -3240,6 +3187,28 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual("pending", stored["status"])
             self.assertEqual("deferred", stored["delivery_path"])
             self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
+
+    def test_ta1f_stalled_fire_recovers_on_the_single_refire(self):
+        # 0.7.5 stall recovery: the FIRST fire stalls (dirty composer), the
+        # transport settle-waits (agent wait) and re-fires exactly ONCE, and the
+        # re-fire lands -> the message is delivered, not left pending. The fire log
+        # is prompt-stalled, wait, prompt (the recovered submit).
+        with self.subTest("say-info"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_WAIT_STALL_ONCE"] = "1"
+            env["FAKE_STALL_DONE"] = str(Path(td) / "stall-done")
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertIn("status=completed", result.stdout)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("completed", stored["status"])
+            self.assertEqual("direct", stored["delivery_path"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).is_file())
+            self.assertEqual(["prompt-stalled", "wait", "prompt"], log.read_text().splitlines())
 
     def test_ta2d_seq_reads_bracket_the_prompt_pre_prompt_and_post_outcome(self):
         # Order law: the pre seq read is the agent get immediately before the

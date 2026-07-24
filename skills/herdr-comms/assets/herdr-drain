@@ -54,11 +54,15 @@ read_state_seq() { # -> prints state_change_seq for $target; nonzero on any fail
   printf '%s' "$seq"
 }
 
-prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
+prompt_attempt() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
   local out="$state.$$.wait" rc=0 pre_seq="" post_seq=""
   pre_seq="$(read_state_seq)" || pre_seq=""
+  last_stalled=0
   herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
-  if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
+  # A real stall is rc=0 (dirty-composer swallow); a hard failure (rc!=0) is never
+  # the stall class even if its message text mentions agent_prompt_stalled.
+  (( rc == 0 )) && grep -q 'agent_prompt_stalled' "$out" && last_stalled=1
+  if (( rc == 0 )) && (( last_stalled == 0 )) \
     && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
     rm -f "$out"
     return 0
@@ -69,6 +73,23 @@ prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanc
     if [[ -n "$post_seq" ]] && (( 10#$post_seq > 10#$pre_seq )); then
       return 0
     fi
+  fi
+  return 1
+}
+
+prompt_confirmed() { # $1 pane, $2 body -> 0 on confirmed delivery
+  # herdr 0.7.5 say-transport stall recovery (matches herdr-say): fire once; on a
+  # stalled or otherwise unconfirmed outcome, settle-wait (agent wait) and re-fire
+  # EXACTLY ONCE. agent prompt pastes over residual composer text and the body's
+  # message id dedups a double at the recipient, so the one retry recovers the
+  # stall class safely. Only the agent_prompt_stalled class re-fires; a modal
+  # block, hard transport failure, or seq swallow keeps single-fire defer. A second
+  # unconfirmed outcome stays pending under the attempts law for the next drain.
+  last_stalled=0
+  prompt_attempt "$1" "$2" && return 0
+  if (( last_stalled == 1 )); then
+    herdr agent wait "$target" --until idle --timeout "$confirm_timeout_ms" >/dev/null 2>&1 || true
+    prompt_attempt "$1" "$2" && return 0
   fi
   return 1
 }

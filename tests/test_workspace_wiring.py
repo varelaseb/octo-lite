@@ -67,7 +67,7 @@ class WorkspaceWiringTests(unittest.TestCase):
         self.provision()
         registry = load_registry(self.worktree)
         self.assertEqual(self.worktree.resolve(), registry.root)
-        for role in ("orchestrator", "tdd-observer", "implementer"):
+        for role in ("orchestrator", "implementer"):
             resolved = resolve_role(registry, role)
             self.assertEqual(role, resolved.role.name)
 
