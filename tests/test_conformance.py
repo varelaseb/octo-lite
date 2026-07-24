@@ -185,11 +185,14 @@ class CutoverConformanceTests(unittest.TestCase):
         lines = (ROOT / "skills/octo-lite-issue-shaper/SKILL.md").read_text().splitlines()
         self.assertLessEqual(len(lines), 160)
 
-    def test_workflow_spawns_workers_natively_through_admission_and_ack_echo_gates(self) -> None:
-        # Decision 109 (role-runtime launch-correctness-path, role-worker-migration):
-        # the Workflow spawns every worker pass natively through agent(); the retired
-        # launcher's completed pass_result consumption path must not return, and raw
-        # adapter files (agents/*.md) are never spawn inputs.
+    def test_workflow_spawns_workers_natively_as_plain_role_subagents(self) -> None:
+        # ADR 0003 (drop-loop-trust-root; role-runtime loop-runs-on-cwd-and-branch,
+        # launch-correctness-path, role-worker-migration): the Workflow spawns every
+        # worker pass natively through agent() as a PLAIN role subagent. The retired
+        # launcher's pass_result consumption path must not return, raw adapter files
+        # (agents/*.md) are never spawn inputs, and the ADR-0003-removed ack-echo
+        # two-phase gate, the live readback, and the launch-revision revalidation are
+        # gone from the plain worker spawn path.
         text = (ROOT / "workflows/octo-loop-qa.js").read_text()
         for role in ("implementer", "code-reviewer", "qa-capture", "qa-reviewer"):
             self.assertIn(f"'{role}'", text)
@@ -199,38 +202,22 @@ class CutoverConformanceTests(unittest.TestCase):
         for retired in ("pass_result", "assertPassReceipt", "assertBoundPassResult", "octo-launch"):
             self.assertNotIn(retired, text)
         self.assertNotIn("agents/", text)
-        # Unit B (TUR-447 F1) observable pre-mutation boundary: the shared spawn path
-        # admits the role, then runs an OBSERVABLE read-only acknowledgment spawn
-        # (write tools withheld) that produces ONLY the ack echo, then the host
-        # verifies that echo against the journalled bound inputs, and ONLY THEN spawns
-        # the write-capable mutation phase, in that exact order. A worker that would
-        # mutate before verification cannot, because no write-capable spawn exists
-        # until the read-only echo verifies.
-        spawn = text[text.index("async function spawnWorker"):text.index("if (mode ===")]
-        # Admission runs before any spawn.
+        # The plain worker spawn path admits the role and checks containment before its
+        # single mutation-phase spawn; there is no ack-echo two-phase gate, no live
+        # readback, and no launch-revision revalidation on the path (ADR 0003).
+        spawn = text[text.index("async function spawnWorker"):text.index("async function spawnOpenaiReviewer")]
         self.assertLess(spawn.index("assertAdmission("), spawn.index("await agent("))
-        # The FIRST agent() spawn is the read-only ack phase: it withholds write tools by
-        # spawning under the real read-only subagent type (agentType: 'Explore'), the only
-        # value that genuinely withholds Edit/Write/mutating Bash at the runtime. The prior
-        # writeCapable/readOnly flags were not real agent() opts and withheld nothing.
-        first_spawn = spawn.index("await agent(")
-        self.assertIn("agentType: ackAgentType", spawn)
-        self.assertIn("'Explore'", spawn)
-        self.assertLess(spawn.index("agentType: ackAgentType"), spawn.index("verifyAckThenUpgrade("))
-        # The echo is verified through the read-only-ack-then-upgrade gate before the
-        # write-capable spawn is reached.
-        self.assertLess(spawn.index("verifyAckThenUpgrade("), spawn.rindex("await agent("))
-        # The read-only ack spawn precedes the write-capable spawn (two distinct spawns).
-        self.assertLess(first_spawn, spawn.rindex("await agent("))
-        self.assertNotEqual(first_spawn, spawn.rindex("await agent("))
-        # verifyAckThenUpgrade receives the same read-only agentType, so the gate rejects a
-        # non-read-only ack phase rather than trusting an ignored flag.
-        self.assertIn("verifyAckThenUpgrade(bound, { agentType: ackAgentType", spawn)
-        # The write-capable mutation spawn is the LAST agent() and passes NO agentType, so
-        # it runs as the default write-capable subagent; the read-only agentType appears
-        # only in the earlier ack spawn.
-        write_spawn = spawn[spawn.rindex("await agent("):]
-        self.assertNotIn("agentType", write_spawn)
+        self.assertLess(spawn.index("assertContainment("), spawn.index("await agent("))
+        for removed in (
+            "ackAgentType", "verifyAckThenUpgrade(", "assertReadOnlyAckPhase(",
+            "liveReadback(", "hostTrustedIdentity(", "resolveLaunchRevision(",
+            "assertLaunchRevision(",
+        ):
+            self.assertNotIn(removed, spawn, f"plain worker spawn must not call the removed gate {removed}")
+        # The single native worker spawn runs under the resolved model and effort from
+        # roles.toml and carries the canonical contract text (role-worker-migration).
+        self.assertIn("runtime.contract_text", spawn)
+        self.assertIn("model: runtime.model, effort: runtime.effort", spawn)
 
     def test_openai_reviewer_roles_run_through_relay_with_independent_rollout_provenance(self) -> None:
         # TUR-447 F2b Unit G (role-runtime role-openai-relay, role-openai-fail-closed,
@@ -564,97 +551,70 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertIn("ruling-15", text)
         self.assertIn("TUR-447", text)
 
-    def test_every_spawn_path_does_live_readback_before_its_spawn(self) -> None:
-        # TUR-447 F3 Unit H (role-runtime launch-readback, launch-entrypoint-revalidation,
-        # launch-gates-workflow-layer): the loop must obtain FRESH LIVE reads immediately
-        # before EVERY native spawn by spawning a read-only agentType:'Explore' subagent
-        # that performs the reads and RETURNS them, then feed them to assertLaunchReadback.
-        # The prior F3 defect ran readback ONLY in implement mode and TRUSTED a
-        # caller-supplied A.fresh_reads blob as if it were live; and spawnWorker /
-        # spawnOpenaiReviewer did no readback at all. These are structural assertions over
-        # the actual spawn paths.
+    def test_loop_runs_on_cwd_and_branch_with_no_trust_root_or_observer(self) -> None:
+        # ADR 0003 (drop-loop-trust-root; role-runtime loop-runs-on-cwd-and-branch,
+        # launch-provisioning-trust-root; delivery-lifecycle delivery-tdd-reviewer-guard).
+        # The loop derives its worktree from the process cwd and its branch from git and
+        # runs: it performs NO provision-record read, no environment-equals-record
+        # cross-check, no worker-claim cross-check, no push readback, no live readback,
+        # no launch-revision revalidation, and no independent-observer replay. This is a
+        # structural guard that the removed trust-root/observer/readback/launch-revision
+        # symbols are gone from the loop source.
         text = (ROOT / "workflows/octo-loop-qa.js").read_text()
-        code = strip_line_and_block_comments(text)
+        removed = (
+            "hostTrustedIdentity", "assertProvisionedWorkspaceBinding",
+            "assertLiveWorktreeIdentity", "assertHostTrustedIdentity",
+            "PROVISION_ENV_KEYS", "PROVISION_BINDING_FIELDS", "HOST_PROVISION_RECORD_ENV",
+            "OCTO_PROVISION_RECORD", "DELIVERY_READ_RESTRICTED_ROLES",
+            "-tdd-observer:", "observeCommittedStates", "assertObservedCommittedStates",
+            "independentGitRead", "assertIndependentGitRead", "assertWorkerClaimCrossCheck",
+            "launchRevision", "resolveLaunchRevision", "assertLaunchRevision",
+            "liveReadback", "assertLaunchReadback", "assertWorkerAckEcho",
+            "verifyAckThenUpgrade", "assertReadOnlyAckPhase", "assertPrePushReadback",
+            "assertPrePushWorktreeReAnchor", "assertLiveRemotePushReadback",
+            "assertWorkerLivenessEcho",
+        )
+        for symbol in removed:
+            self.assertNotIn(symbol, text, f"ADR-0003-removed symbol still present in the loop: {symbol}")
+        # The loop no longer trusts a frozen launch environment: no OCTO_* env-seam read.
+        self.assertNotIn("OCTO_WORKTREE", text)
+        self.assertNotIn("OCTO_CONTROL_REPO", text)
+        # The RETAINED OpenAI reviewer relay-provenance path stays (role-openai-relay).
+        self.assertIn("async function spawnOpenaiReviewer", text)
+        self.assertIn("independent-rollout-subagent", text)
+        self.assertIn("acceptOpenaiReviewRelay", text)
 
-        # A dedicated live-readback helper exists, spawns a read-only Explore subagent, and
-        # feeds the returned live reads to the pure readback gate. It never copies a
-        # caller-supplied fresh_reads blob.
-        self.assertIn("async function liveReadback", code)
-        readback = code[code.index("async function liveReadback"):code.index("function resolveLaunchRevision")]
-        self.assertIn("await agent(", readback)
-        self.assertIn("agentType: 'Explore'", readback)
-        self.assertLess(readback.index("await agent("), readback.index("assertLaunchReadback("))
-        # The live git HEAD is proven against the exact starting HEAD.
-        self.assertIn("git_head", readback)
-
-        # The loop must NOT trust a caller-supplied fresh_reads blob anywhere in live code:
-        # the only source of fresh reads is the spawned read-only reader.
-        self.assertNotIn("A.fresh_reads", code)
-        self.assertNotIn("required(A.fresh_reads", code)
-
-        # EVERY native spawn path calls liveReadback BEFORE its spawn. spawnWorker covers
-        # implementer (implement + fix) and qa-capture; spawnOpenaiReviewer covers
-        # code-reviewer and qa-reviewer. Each must readback before its first agent() spawn.
-        worker = code[code.index("async function spawnWorker"):code.index("async function spawnOpenaiReviewer")]
-        self.assertLess(worker.index("liveReadback("), worker.index("await agent("))
-        reviewer = code[code.index("async function spawnOpenaiReviewer"):code.index("async function loopFire")]
-        self.assertLess(reviewer.index("liveReadback("), reviewer.index("await agent("))
-
-    def test_every_delivery_mode_revalidates_launch_revision_from_required_not_stale(self) -> None:
-        # TUR-447 F3 Unit H (role-runtime launch-entrypoint-revalidation): launch_revision
-        # must be REQUIRED and revalidated against the bound inputs whose HEAD was proven
-        # live; it must never be recomputed from a possibly-stale caller fallback. The prior
-        # defect used `A.launch_revision ?? launchRevision(bound)`, which silently recomputed
-        # a revision from stale caller input and admitted it.
-        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
-        code = strip_line_and_block_comments(text)
-        # The stale-recompute fallback must be gone from every spawn path.
-        self.assertNotIn("A.launch_revision ?? launchRevision", code)
-        self.assertNotIn("A.launch_revision ??", code)
-        # The revision resolver requires the caller revision and revalidates it.
-        self.assertIn("function resolveLaunchRevision", code)
-        resolver = code[code.index("function resolveLaunchRevision"):code.index("async function spawnWorker")]
-        self.assertIn("required(A.launch_revision", resolver)
-        self.assertIn("assertLaunchRevision(revision, bound)", resolver)
-        # Both spawn paths resolve the revision through the required-revalidating resolver.
-        worker = code[code.index("async function spawnWorker"):code.index("async function spawnOpenaiReviewer")]
-        reviewer = code[code.index("async function spawnOpenaiReviewer"):code.index("async function loopFire")]
-        self.assertIn("resolveLaunchRevision(bound)", worker)
-        self.assertIn("resolveLaunchRevision(bound)", reviewer)
-
-    def test_every_delivery_mode_reaches_a_readback_revalidating_spawn_seam(self) -> None:
-        # TUR-447 F3 Unit H (role-runtime launch-gates-workflow-layer): readback plus
-        # launch-revision revalidation plus containment must run before the spawn in EVERY
-        # delivery mode, not just implement. implement and fix spawn the implementer through
-        # spawnWorker; qa-capture (evidence) spawns through spawnWorker; code-review and
-        # qa-review spawn through spawnOpenaiReviewer. Every one of those spawn functions
-        # runs liveReadback, resolveLaunchRevision, and assertContainment before its spawn.
+    def test_every_delivery_mode_spawns_the_right_role_through_a_contained_admission_seam(self) -> None:
+        # ADR 0003 (role-runtime loop-runs-on-cwd-and-branch, launch-containment,
+        # launch-role-purpose-capability): each spawn function admits the role and checks
+        # containment before its spawn; the plain worker path (implementer, qa-capture)
+        # and the retained relay path (code-reviewer, qa-reviewer) each run assertAdmission
+        # and assertContainment before their first agent() spawn. Each delivery mode routes
+        # to the correct spawn call.
         text = (ROOT / "workflows/octo-loop-qa.js").read_text()
         code = strip_line_and_block_comments(text)
         for func_name in ("async function spawnWorker", "async function spawnOpenaiReviewer"):
             start = code.index(func_name)
-            # Bound the function body at the next top-level `async function`/`function` decl.
             rest = code[start + len(func_name):]
             nxt = re.search(r"\n(?:async )?function ", rest)
             body = rest[:nxt.start()] if nxt else rest
             first_spawn = body.index("await agent(")
-            for seam in ("assertAdmission(", "assertContainment(", "liveReadback(", "resolveLaunchRevision("):
+            for seam in ("assertAdmission(", "assertContainment("):
                 self.assertIn(seam, body, f"{func_name} missing {seam}")
                 self.assertLess(
                     body.index(seam), first_spawn,
                     f"{func_name}: {seam} must run before the first spawn",
                 )
-        # Each delivery mode routes to one of those two seams; no mode spawns a worker
-        # without going through a readback-revalidating spawn function.
         for mode_marker, spawn_call in (
             ("if (mode === 'implement')", "spawnWorker('implementer'"),
             ("if (mode === 'fix')", "spawnWorker('implementer'"),
             ("if (mode === 'evidence')", "spawnWorker('qa-capture'"),
             ("if (mode === 'code-review')", "spawnOpenaiReviewer('code-reviewer'"),
             ("if (mode === 'qa-review')", "spawnOpenaiReviewer('qa-reviewer'"),
+            ("if (mode === 'acceptance')", "buildAcceptancePackage("),
         ):
             block_start = code.index(mode_marker)
-            self.assertIn(spawn_call, code[block_start:block_start + 900])
+            self.assertIn(spawn_call, code[block_start:block_start + 1200])
 
     def test_loop_skill_directs_journal_based_gating_with_no_worker_receipt(self) -> None:
         # Deterministic wiring check only (prompt-tdd-deterministic): the installed

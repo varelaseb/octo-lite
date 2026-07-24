@@ -1,19 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# octo-lite source root derived from this script's own real location
-# (<root>/skills/herdr-comms/assets/herdr-spawn), never from a caller-supplied
-# path, so the host-owned provision-record reader imports octo_lite from the
-# trusted control source in both the installed symlink and the test layout.
-octo_root="$(cd "$(dirname "$(realpath "$0")")/../../.." && pwd)"
-
 workspace=""
 name=""
 label=""
 cwd="$PWD"
 role=""
 receipt=""
-provision_record=""
 while (($#)); do
   case "$1" in
     --workspace) workspace="${2:?}"; shift 2 ;;
@@ -22,7 +15,6 @@ while (($#)); do
     --cwd) cwd="${2:?}"; shift 2 ;;
     --role) role="${2:?}"; shift 2 ;;
     --receipt) receipt="${2:?}"; shift 2 ;;
-    --provision-record) provision_record="${2:?}"; shift 2 ;;
     --) shift; break ;;
     *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
   esac
@@ -108,46 +100,11 @@ if receipt_role != role or os.path.realpath(cwd) != os.path.realpath(receipt_wor
     sys.exit(65)
 PY
 
-# launch-provision-env-seam: the host STARTS the loop process with the frozen
-# OCTO_* launch env a child cannot forge. This runs BEFORE any provider bootstrap
-# or session creation, so a missing, unreadable, non-host, malformed, in-tree, or
-# worktree-mismatched record fails closed before a tab, pane, provider session, or
-# receipt mutation exists. An issue-orchestrator lane MUST carry a host-authored
-# provision record; herdr-spawn reads it (never a child). `python3 -P` keeps the
-# process cwd and script dir off sys.path so the trusted octo_root import can never
-# be shadowed by a lane worktree copy of octo_lite. lane_env_from_record guarantees
-# the values carry no control character, so the line-by-line read cannot be tricked
-# into injecting an extra --env. meta-operator is the control root, not a
-# provisioned lane, so it carries no record.
-env_args=()
-if [[ "$role" == orchestrator ]]; then
-  [[ -n "$provision_record" ]] || {
-    echo "herdr-spawn: orchestrator spawn requires --provision-record (host provision-record trust root)" >&2
-    exit 64
-  }
-  if ! env_block="$(PYTHONPATH="$octo_root" python3 -P - "$provision_record" "$cwd" <<'PY'
-import sys
-
-from octo_lite.launch import GateError, lane_env_from_record
-
-record_path, worktree = sys.argv[1], sys.argv[2]
-try:
-    env = lane_env_from_record(record_path, expected_worktree=worktree)
-except GateError as error:
-    print(f"herdr-spawn: {error}", file=sys.stderr)
-    raise SystemExit(65)
-for key, value in env.items():
-    print(f"{key}={value}")
-PY
-  )"; then
-    echo "herdr-spawn: provision-record env injection failed" >&2
-    exit 65
-  fi
-  while IFS= read -r kv; do
-    [[ -n "$kv" ]] && env_args+=(--env "$kv")
-  done <<<"$env_block"
-fi
-
+# ADR 0003 (drop-loop-trust-root): the loop derives its worktree from the process
+# working directory and its branch from git and reads no frozen OCTO_* launch env,
+# so herdr-spawn injects no provision-record env seam. The tab is created at the
+# receipt-verified cwd, which is the provisioned worktree the loop runs inside.
+#
 # Parent-controlled two-phase bootstrap. octo-launch runs a read-only print-mode
 # bootstrap for the exact receipt and verifies the full BOOTSTRAP_ACK (schema,
 # spawn, provider session, launch revision, role, worktree, starting HEAD, ready,
@@ -168,7 +125,7 @@ resumed=("$1" "--resume" "$provider_session_id" "${@:2}")
 # The real 0.7.5 tab-create result (bundled API schema, `tab_created`) carries
 # the tab's root pane as required `.result.root_pane.pane_id`, so the launch
 # pane is known here with no extra resolution call.
-out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" ${env_args[@]+"${env_args[@]}"} --no-focus)"
+out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"
 tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
 [[ -n "$tab" ]] || exit 1
 pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
