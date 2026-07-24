@@ -47,8 +47,8 @@ REQUIRED_CARD_FIELDS = ("issue", "pr", "head", "verdict", "story_ids", "criterio
 
 def _signal_value(text: str, signal: str) -> str | None:
     # Single-line AGENTS.md signal, mirroring operator-sweep's convention: the
-    # last non-empty declaration wins; an absent or blank signal returns None so
-    # the caller fails loud on an incomplete declaration.
+    # last non-empty declaration wins; an absent, blank, or unfilled-placeholder
+    # signal returns None so the caller fails loud on an incomplete declaration.
     found: str | None = None
     for line in text.splitlines():
         stripped = line.strip()
@@ -56,7 +56,11 @@ def _signal_value(text: str, signal: str) -> str | None:
             stripped = stripped[2:].strip()
         if stripped.startswith(signal):
             value = stripped[len(signal):].strip()
-            if value:
+            # adv3: the target-init template ships each signal with a `TODO: ...`
+            # placeholder. An unfilled placeholder is NOT a real declaration; it
+            # must fail loud at the surface-declaration gate, not slip through and
+            # break later at the filesystem/render step.
+            if value and not value.startswith("TODO:"):
                 found = value
     return found
 
@@ -130,6 +134,17 @@ def publish_evidence(
     except (OSError, json.JSONDecodeError) as error:
         raise GateError(f"durable verdict card unreadable for {issue}") from error
 
+    # adv1 (octo-lite data integrity): the rendered-card readback below validates
+    # the target render command's output against the CALLER-supplied `expected`.
+    # A target render command that merely echoes the caller args reduces that
+    # check to caller-vs-caller, so a durable card that says verdict=blocking can
+    # be published as ready when the caller passes --verdict clear. Cross-check
+    # the caller-supplied verified fields against the DURABLE source card here, at
+    # the octo-lite data-integrity boundary (NOT target render logic): any field
+    # the durable card carries must match what the caller asserts. A mismatch
+    # (e.g. caller verdict does not match durable card) fails LOUD, no ready.
+    _assert_caller_matches_durable(card, expected, issue=issue)
+
     # Leg 2 (qa-publication-single-writer): create + verify the served-evidence
     # symlink for the EXACT issue at the target-declared served root. A missing or
     # dangling link fails readiness loud (edge-evidence-missing).
@@ -166,6 +181,12 @@ def publish_evidence(
     )
     _assert_rendered_matches(rendered, expected, issue=issue)
 
+    # adv1: the operator-read INDEX card the helper WROTE must still equal the
+    # DURABLE source it was sourced from. Re-read the index at readback time and
+    # assert it has not diverged from the durable card (split-brain), failing loud
+    # rather than reporting ready on a stale/tampered operator-read index.
+    _assert_index_matches_durable(index_card, card, issue=issue)
+
     return {
         "issue": issue,
         "served_link": str(link),
@@ -175,6 +196,39 @@ def publish_evidence(
         "rendered": rendered,
         "ready": True,
     }
+
+
+# The caller-supplied verified fields cross-checked against the durable card
+# (adv1). Only fields the durable card actually carries are checked, so a minimal
+# durable card is not spuriously rejected; a field present in BOTH must agree.
+_DURABLE_CROSSCHECK_FIELDS = ("issue", "pr", "head", "verdict", "story_ids", "criterion_coverage")
+
+
+def _assert_caller_matches_durable(card: Mapping[str, object], expected: Mapping[str, object], *, issue: str) -> None:
+    mismatched = [
+        field
+        for field in _DURABLE_CROSSCHECK_FIELDS
+        if field in card and field in expected and card.get(field) != expected.get(field)
+    ]
+    if mismatched:
+        detail = ", ".join(
+            f"{field} (caller {expected.get(field)!r} vs durable {card.get(field)!r})"
+            for field in mismatched
+        )
+        raise GateError(
+            f"caller-supplied fields do not match the durable verdict card for {issue}: {detail}"
+        )
+
+
+def _assert_index_matches_durable(index_card: Path, durable_card: Mapping[str, object], *, issue: str) -> None:
+    try:
+        written = json.loads(index_card.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateError(f"operator-read index card unreadable for {issue}") from error
+    if written != durable_card:
+        raise GateError(
+            f"operator-read index card for {issue} diverged from the durable source card"
+        )
 
 
 def _atomic_write_json(path: Path, value: object) -> None:
