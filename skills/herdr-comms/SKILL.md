@@ -50,13 +50,18 @@ epoch. Every transported body carries `[msg:<id>]`, info included, so
 duplicates are id-correlated. Only herdr-ack proves delivery; a
 confirmed info submit completes on its own.
 
-On every wake, run `herdr-drain <own-agent-name>`. It fires only when the
-prompt is safe, and a pending retry re-fires the same atomic prompt with the
-same message id, which never double-submits partially-pasted text. Retries
-are capped by `OCTO_TRANSPORT_ATTEMPT_CAP` (default 3, per epoch): at the cap
-the message goes stalled, never auto-fires again, and the operator sweep
-surfaces it loudly every cycle. `herdr-drain --resume <id>` starts a new
-epoch (stalled to pending, attempts reset to 0). State reads, attempt
+On every wake, run `herdr-drain <own-agent-name>`. It fires only into a
+non-working target, and a pending retry re-fires the same atomic prompt with
+the same message id, which never double-submits partially-pasted text. Because
+a target cannot deliver to itself while it is working, a neutral caller (the
+operator or sweep) runs `herdr-drain --all` to deliver to every idle target on
+its behalf. Retries are capped by `OCTO_TRANSPORT_ATTEMPT_CAP` (default 3, per
+epoch): at the cap the message goes stalled. A busy target defers, but a defer
+older than `OCTO_TRANSPORT_DEFER_MAX_AGE_S` (default 900s, one sweep cycle)
+also goes stalled, so nothing waits unseen past one sweep cycle. A stalled
+message never auto-fires again and the operator sweep surfaces it loudly every
+cycle. `herdr-drain --resume <id>` starts a new epoch (stalled to pending,
+attempts reset to 0). State reads, attempt
 increments, and fires all run under the permanent per-message flock
 `locks/<id>.lock`; nothing ever unlinks a lock. Reclamation is runbook-only:
 `docs/runbooks/herdr-comms-lock-reclamation.md`.

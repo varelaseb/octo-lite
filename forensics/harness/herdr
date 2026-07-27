@@ -62,14 +62,14 @@ case "${1:-}" in
             exit 0
             ;;
           timeout)
-            # Busy pane whose turn outlived --timeout: nonzero, no settle.
-            emit_agent_info working "prompt" "agent_prompted"
-            echo "timeout" >&2
+            # Busy pane whose turn outlived --timeout: real 0.7.5 exits non-zero
+            # with a STRUCTURED timeout error.
+            printf '{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:prompt"}\n'
             exit 1
             ;;
           stalled)
             # True swallow: no observed state change within 5000ms.
-            echo "agent_prompt_stalled" >&2
+            printf '{"error":{"code":"agent_prompt_stalled","message":"agent prompt produced no observed state change within 5000ms"},"id":"cli:agent:prompt"}\n'
             exit 1
             ;;
         esac

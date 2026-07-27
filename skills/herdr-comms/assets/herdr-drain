@@ -33,6 +33,31 @@ confirm_timeout_ms="${OCTO_PROMPT_CONFIRM_TIMEOUT_MS:-15000}"
   confirm_timeout_ms=15000
 }
 
+# gh#31 herdr 0.7.5 non-working state-change floor (ms): a --timeout below it
+# returns timeout WITHOUT the state-change guarantee, so a timeout is turn-start
+# proof only when the configured timeout exceeds the floor.
+FLOOR_MS=5000
+
+# gh#31 starvation bound (operator ruling, lean frame): a defer older than
+# OCTO_TRANSPORT_DEFER_MAX_AGE_S seconds since creation (default 900 = one 15m
+# sweep cycle) goes STALLED LOUD. One age bound off the existing created_at, no
+# counter: nothing waits past one sweep cycle unseen.
+defer_max_age_s="${OCTO_TRANSPORT_DEFER_MAX_AGE_S:-900}"
+[[ "$defer_max_age_s" =~ ^[1-9][0-9]*$ ]] || {
+  echo "herdr-drain: invalid OCTO_TRANSPORT_DEFER_MAX_AGE_S '$defer_max_age_s', using default 900" >&2
+  defer_max_age_s=900
+}
+
+# gh#31 starvation bound test (reads global created_at set per message in the
+# loop): 0 when the deferral has waited past one sweep cycle.
+deferral_aged_out() {
+  local created_epoch now_epoch
+  created_epoch="$(date -u -d "$created_at" +%s 2>/dev/null)" || return 1
+  now_epoch="$(date -u +%s)"
+  (( now_epoch - created_epoch >= defer_max_age_s )) && return 0
+  return 1
+}
+
 # gh#31: per-message submission-correlated confirmation (replaces the global
 # state_change_seq heuristic). herdr 0.7.5 guarantees a submission from a
 # NON-WORKING start yields an observed state change within its floor or returns
@@ -61,13 +86,18 @@ fire_eligible() {
 #   turn started (working/timeout) -> delivered, still running its turn
 # Anything else fails closed as unconfirmed.
 prompt_confirmed() { # $1 pane, $2 body -> 0 on submission-correlated confirmation
-  local out="$state.$$.wait" rc=0
+  local out="$state.$$.wait" rc=0 type code astatus
   herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
-  if grep -q 'agent_prompt_stalled' "$out"; then rm -f "$out"; return 1; fi
-  if (( rc == 0 )) && grep -qE '"agent_status"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"' "$out"; then
-    rm -f "$out"; return 0
+  code="$(jq -r 'if type=="object" then (.error.code // "") else "" end' "$out" 2>/dev/null)"
+  if [[ "$code" == "agent_prompt_stalled" ]] || grep -q 'agent_prompt_stalled' "$out"; then
+    rm -f "$out"; return 1
   fi
-  if grep -qiE 'timed? out|"timeout"|"agent_status"[[:space:]]*:[[:space:]]*"working"' "$out"; then
+  type="$(jq -r 'if type=="object" then (.result.type // "") else "" end' "$out" 2>/dev/null)"
+  astatus="$(jq -r 'if type=="object" then (.result.agent.agent_status // "") else "" end' "$out" 2>/dev/null)"
+  if [[ "$type" == "agent_prompted" ]] && (( rc == 0 )); then
+    case "$astatus" in idle|done|blocked|working) rm -f "$out"; return 0 ;; esac
+  fi
+  if [[ "$code" == "timeout" ]] && (( confirm_timeout_ms > FLOOR_MS )); then
     rm -f "$out"; return 0
   fi
   rm -f "$out"; return 1
@@ -127,6 +157,22 @@ body_with_suffix() {
 }
 
 target=""
+if [[ "${1:-}" == "--all" ]]; then
+  # gh#31 target-independent drain path (operator ruling): a NEUTRAL caller
+  # (operator, sweep, any session) drains every target's inbox on the targets'
+  # behalf. Each per-target drain is gated ONLY on that target's state, so an
+  # idle target receives delivery even though it could never self-deliver while
+  # working. Best-effort: one busy or missing target never blocks the rest.
+  inbox_root="$state_root/inbox"
+  [[ -d "$inbox_root" ]] || exit 0
+  for target_dir in "$inbox_root"/*/; do
+    [[ -d "$target_dir" ]] || continue
+    all_target="$(basename "$target_dir")"
+    [[ "$all_target" =~ $target_shape ]] || continue
+    "$0" "$all_target" || true
+  done
+  exit 0
+fi
 if [[ "${1:-}" == "--resume" ]]; then
   # S2a manual resume = NEW EPOCH: explicit single id, only legal on stalled,
   # stalled->pending with transport_attempts reset to 0, under the lock. The
@@ -280,11 +326,31 @@ PY
           continue
           ;;
       esac
-      # gh#31 busy-gate: only fire into a non-working target; otherwise leave
-      # the item untouched (no transition, no attempt burn) for the next drain
-      # when the target idles. This is where duplicate re-fires into a busy
-      # pane stop.
+      attempts="${fields[transport_attempts]}"
+      [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
+      # gh#31 RULING order: cap-reached stalls LOUD BEFORE the eligibility gate,
+      # regardless of whether the target is busy (state-transition precedes item
+      # removal, order law).
+      if (( attempts >= cap )); then
+        write_state stalled "$path" "$attempts"
+        rm -f "$item"
+        echo "message_id=$id status=stalled transport_attempts=$attempts"
+        exec 9>&-
+        continue
+      fi
+      # gh#31 busy-gate (target-state-gated ONLY): fire only into a non-working
+      # target; otherwise leave the item untouched for the next drain. But once
+      # the deferral has aged past one sweep cycle it stalls LOUD so the sweep
+      # surfaces it: a busy target can no longer defer forever.
       if ! fire_eligible; then
+        created_at="${fields[created_at]}"
+        if deferral_aged_out; then
+          write_state stalled "$path" "$attempts"
+          rm -f "$item"
+          echo "message_id=$id status=stalled deferral_aged_out=1"
+          exec 9>&-
+          continue
+        fi
         exec 9>&-
         continue
       fi
@@ -295,17 +361,6 @@ PY
         # a transported message can never still be queued.
         write_state pending "$path" "${fields[transport_attempts]}"
         status=pending
-      fi
-      attempts="${fields[transport_attempts]}"
-      [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
-      # S2 fire rule under the lock: cap reached -> pending->stalled, NO fire
-      # (state-transition precedes item removal, order law).
-      if (( attempts >= cap )); then
-        write_state stalled "$path" "$attempts"
-        rm -f "$item"
-        echo "message_id=$id status=stalled transport_attempts=$attempts"
-        exec 9>&-
-        continue
       fi
       # Attempts-increment persists before the fire: a crash between them
       # burns an attempt without a fire (safe direction, never more fires).

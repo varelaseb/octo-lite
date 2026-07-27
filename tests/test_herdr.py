@@ -223,13 +223,23 @@ elif [[ "$sub" == "agent prompt" ]]; then
     exit 0
   fi
   echo prompt >>"$FAKE_LOG"
+  # gh#31: real 0.7.5 hard-error outcome (agent_not_running, client_disconnected,
+  # ...): the CLI exits non-zero with a STRUCTURED error result. The message here
+  # deliberately embeds the tokens 'timed out' and 'working' so a text-grepping
+  # confirmer would MISread it as delivered; a structured confirmer (error.code)
+  # must NOT.
+  if [[ -n "${FAKE_PROMPT_ERROR:-}" ]]; then
+    printf '{"error":{"code":"%s","message":"agent is no longer running; timed out, was working"},"id":"cli:agent:prompt"}\n' "$FAKE_PROMPT_ERROR"
+    exit 1
+  fi
   if [[ -n "$has_wait" ]]; then
     # gh#31: real 0.7.5 settle emits agent_status (NOT a "state" field), inside
     # an agent_prompted result. FAKE_PROMPT_SETTLE overrides the settled status;
-    # FAKE_PROMPT_TIMEOUT models a delivered-but-unsettled turn (still working).
+    # FAKE_PROMPT_TIMEOUT models a delivered-but-unsettled turn: herdr exits
+    # non-zero with a structured timeout error (real 0.7.5 shape).
     if [[ -n "${FAKE_PROMPT_TIMEOUT:-}" ]]; then
-      printf '{"result":{"agent":{"agent_status":"working","state_change_seq":2},"type":"agent_prompted"}}\n'
-      echo 'timed out waiting for agent status' >&2
+      printf '{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:prompt"}\n'
+      exit 1
     else
       printf '{"result":{"agent":{"agent_status":"%s","state_change_seq":2},"type":"agent_prompted"}}\n' "${FAKE_PROMPT_SETTLE:-idle}"
     fi
@@ -3258,6 +3268,9 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
         with self.subTest("drain-working"), tempfile.TemporaryDirectory() as td:
             env, log = self._env(td)
             env["FAKE_AGENT_STATUS"] = "working"
+            # Large age bound so the fixed old seed exercises the pure-defer path
+            # (the aged-out stall is covered by DeferralBoundTests below).
+            env["OCTO_TRANSPORT_DEFER_MAX_AGE_S"] = "9999999999"
             state = self._seed(td, self.ID_1, kind="info", message="fyi update")
             result = self._drain(env)
             self.assertEqual(0, result.returncode, result.stderr)
@@ -3320,6 +3333,124 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             stalled_lines = "\n".join(report["stalled_lines"])
             self.assertIn("TRANSPORT STALLED", stalled_lines)
             self.assertIn(message_id, stalled_lines)
+
+
+class GH31StarvationAndConfirmTests(unittest.TestCase):
+    """gh#31 operator rulings + codex hardening: cap-reached stalls before the
+    busy gate; a deferral aged past one sweep cycle stalls LOUD (visibility over
+    silence); confirmation parses the STRUCTURED herdr result so an error payload
+    carrying delivery-ish tokens is never misread; a sub-floor timeout is not
+    turn-start proof; and a neutral caller can drain every target on its behalf."""
+
+    ID_1 = "20260722T000000-11-111"
+
+    _env = MessageLockProtocolTests._env
+    _base = MessageLockProtocolTests._base
+    _load = MessageLockProtocolTests._load
+    _seed = MessageLockProtocolTests._seed
+    _drain = MessageLockProtocolTests._drain
+
+    @staticmethod
+    def _fired(log):
+        return log.exists() and "prompt" in log.read_text()
+
+    def test_cap_reached_stalls_before_the_busy_gate(self):
+        # RULING: a cap-reached message stalls LOUD regardless of the target
+        # being busy; the cap check precedes the eligibility gate.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_AGENT_STATUS"] = "working"
+            env["OCTO_TRANSPORT_ATTEMPT_CAP"] = "2"
+            env["OCTO_TRANSPORT_DEFER_MAX_AGE_S"] = "9999999999"  # isolate the cap
+            state = self._seed(td, self.ID_1, attempts=2)  # already at cap
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("status=stalled", result.stdout)
+            self.assertEqual("stalled", self._load(state)["status"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / self.ID_1).exists())
+            self.assertFalse(self._fired(log), "never fired into the busy target")
+
+    def test_deferral_ages_out_to_a_loud_stall(self):
+        # RULING: a defer older than one sweep cycle stalls LOUD so the sweep
+        # surfaces it; a busy target can no longer defer forever.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_AGENT_STATUS"] = "working"
+            env["OCTO_TRANSPORT_DEFER_MAX_AGE_S"] = "60"  # old seed >> 60s
+            state = self._seed(td, self.ID_1, kind="info", message="fyi")
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("deferral_aged_out=1", result.stdout)
+            self.assertEqual("stalled", self._load(state)["status"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / self.ID_1).exists())
+            self.assertFalse(self._fired(log), "aged-out defer never fires")
+            module = _load_operator_sweep_module()
+            report = module.transport_message_report(
+                self._base(td) / "messages",
+                self._base(td) / "inbox",
+                self._base(td) / "locks",
+            )
+            self.assertIn(self.ID_1, "\n".join(report["stalled_lines"]))
+
+    def test_agent_error_payload_is_not_confirmed_despite_delivery_tokens(self):
+        # Codex HIGH-3: a hard error (agent_not_running) whose message embeds
+        # 'timed out'/'working' must NOT be read as delivered; the structured
+        # confirmer keys on error.code, not free text.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_PROMPT_ERROR"] = "agent_not_running"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "hi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertNotIn("status=completed", result.stdout)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("deferred", stored["delivery_path"])
+            self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
+
+    def test_sub_floor_timeout_is_not_delivery_proof(self):
+        # Codex HIGH-3: a --wait timeout below herdr's 5000ms state-change floor
+        # is NOT proof a turn began, so it must not confirm; above the floor it
+        # does (turn started).
+        with self.subTest("sub-floor -> unconfirmed"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            env["FAKE_PROMPT_TIMEOUT"] = "1"
+            env["OCTO_PROMPT_CONFIRM_TIMEOUT_MS"] = "3000"  # below the 5000 floor
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "hi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            self.assertEqual("pending", self._load(state)["status"])
+        with self.subTest("above-floor -> confirmed"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            env["FAKE_PROMPT_TIMEOUT"] = "1"  # default 15000ms timeout > floor
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "hi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            self.assertEqual("completed", self._load(state)["status"])
+
+    def test_drain_all_delivers_to_each_idle_target_on_its_behalf(self):
+        # RULING: a neutral caller drains every target's inbox, gated ONLY on
+        # each target's state, so an idle target is delivered even though it
+        # could never self-deliver while working.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)  # default idle
+            s1 = self._seed(td, "20260722T000000-11-111", target="agent1", kind="info", message="a")
+            s2 = self._seed(td, "20260722T000001-22-222", target="agent2", kind="info", message="b")
+            result = subprocess.run(["bash", str(DRAIN), "--all"], env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("completed", self._load(s1)["status"])
+            self.assertEqual("completed", self._load(s2)["status"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / s1.stem).exists())
+            self.assertFalse((self._base(td) / "inbox/agent2" / s2.stem).exists())
 
 
 if __name__ == "__main__":

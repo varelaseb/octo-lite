@@ -64,6 +64,14 @@ confirm_timeout_ms="${OCTO_PROMPT_CONFIRM_TIMEOUT_MS:-15000}"
   confirm_timeout_ms=15000
 }
 
+# gh#31 herdr 0.7.5 non-working state-change floor (ms): a submission from a
+# non-working start yields an observed state change within this floor or returns
+# agent_prompt_stalled; a --timeout BELOW it returns timeout WITHOUT that
+# guarantee, so a timeout is turn-start proof only when the configured timeout
+# exceeds the floor.
+FLOOR_MS=5000
+
+
 # Source B operator-gate stamp (sweep-operator-ask): when the lane operator-ask
 # path sends a --kind question and OCTO_STREAM names the sending stream, stamp a
 # mechanical per-stream operator-wait the sweep reads. This is written before any
@@ -275,49 +283,61 @@ fire_eligible() {
   case "$st" in idle|done) return 0 ;; *) return 1 ;; esac
 }
 
-# gh#31 busy-gate (before the attempts-increment so a defer burns nothing):
-# hold pending+deferred with the item for a later drain when the target idles.
-if ! fire_eligible; then
-  echo "herdr-say: target busy, deferred message_id=$id" >&2
-  exit 75
-fi
-
-# S2 fire rule under the lock: cap reached -> pending->stalled, NO fire;
-# else increment + persist, then fire (attempts-increment before fire).
+# gh#31 RULING order: the cap check runs BEFORE the eligibility gate, so a
+# cap-reached message stalls LOUD regardless of whether the target is busy.
 if (( attempts >= cap )); then
   write_locked_state stalled deferred "$attempts"
   rm -f "$inbox/$id"
   echo "herdr-say: transport attempt cap reached, stalled message_id=$id" >&2
   exit 75
 fi
+
+# Busy-gate: a fresh send into a busy target defers (young, no attempt burned);
+# the age-bounded stall lives in herdr-drain, which reprocesses aging deferrals.
+# An eligible (non-working) target proceeds to the single fire below.
+if ! fire_eligible; then
+  echo "herdr-say: target busy, deferred message_id=$id" >&2
+  exit 75
+fi
+
+# Attempts-increment before fire (attempts law).
 attempts=$((attempts + 1))
 write_locked_state pending deferred "$attempts"
 
-# gh#31 confirmation: because we only fire into a gated NON-WORKING target,
-# THIS prompt's own outcome is the delivery proof, correlated to this message
-# with no global counter:
-#   agent_prompt_stalled           -> submit swallowed (residual text): retry
-#   settled agent_status idle|done|blocked (rc 0) -> delivered + settled
-#   turn started (working/timeout) -> delivered, still running its turn
-# Anything else (agent error, unknown) fails closed as unconfirmed.
+# gh#31 confirmation: because we only fire into a gated NON-WORKING target, THIS
+# prompt's own outcome is the delivery proof, parsed from the STRUCTURED herdr
+# result (never a free-text grep that an error payload could satisfy):
+#   agent_prompt_stalled            -> submit swallowed: unconfirmed, retry
+#   result.type=agent_prompted (rc 0), agent_status idle|done|blocked|working
+#                                   -> settled/turn-started after our submit
+#   error.code=timeout AND configured timeout > the 5000ms floor
+#                                   -> turn started, still running (delivered)
+# Any other error (agent_not_running, client_disconnected, sub-floor timeout,
+# malformed) fails closed as unconfirmed.
 prompt_confirmed() { # $1 pane, $2 body -> 0 on submission-correlated confirmation
-  local out="$state.$$.wait" rc=0
+  local out="$state.$$.wait" rc=0 type code astatus
   herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
-  if grep -q 'agent_prompt_stalled' "$out"; then rm -f "$out"; return 1; fi
-  if (( rc == 0 )) && grep -qE '"agent_status"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"' "$out"; then
-    rm -f "$out"; return 0
+  code="$(jq -r 'if type=="object" then (.error.code // "") else "" end' "$out" 2>/dev/null)"
+  # Swallow (structured or bare-text) only ever WITHHOLDS confirmation: safe.
+  if [[ "$code" == "agent_prompt_stalled" ]] || grep -q 'agent_prompt_stalled' "$out"; then
+    rm -f "$out"; return 1
   fi
-  if grep -qiE 'timed? out|"timeout"|"agent_status"[[:space:]]*:[[:space:]]*"working"' "$out"; then
+  type="$(jq -r 'if type=="object" then (.result.type // "") else "" end' "$out" 2>/dev/null)"
+  astatus="$(jq -r 'if type=="object" then (.result.agent.agent_status // "") else "" end' "$out" 2>/dev/null)"
+  if [[ "$type" == "agent_prompted" ]] && (( rc == 0 )); then
+    case "$astatus" in idle|done|blocked|working) rm -f "$out"; return 0 ;; esac
+  fi
+  if [[ "$code" == "timeout" ]] && (( confirm_timeout_ms > FLOOR_MS )); then
     rm -f "$out"; return 0
   fi
   rm -f "$out"; return 1
 }
 
-# On OBSERVED-STATE-CONFIRMED direct success, under the lock: transition
-# (info -> completed, non-info stays pending) + promote delivery_path=direct
-# + remove the item (state-transition precedes item removal, order law). An
-# unconfirmed outcome keeps the message pending + deferred with its item so
-# herdr-drain retries under the attempts law, never claiming delivery.
+# On CONFIRMED direct success, under the lock: transition (info -> completed,
+# non-info stays pending) + promote delivery_path=direct + remove the item
+# (state-transition precedes item removal, order law). An unconfirmed outcome
+# keeps the message pending + deferred with its item so herdr-drain retries
+# under the attempts law, never claiming delivery.
 if prompt_confirmed "$pane" "$(body_with_suffix)"; then
   if [[ "$kind" == "info" ]]; then
     write_locked_state completed direct "$attempts"

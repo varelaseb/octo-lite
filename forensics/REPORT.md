@@ -100,3 +100,34 @@ chosen:
    advance as proof (neither necessary nor sufficient).
 3. Turn-tracked wait (`herdr agent wait` on a fresh turn) instead of a raw seq
    delta, to distinguish this prompt's turn from incidental status churn.
+
+## Post-review remediation (operator rulings + lean frame)
+
+Applied (code + TDD, tests/test_herdr.py 101 green):
+- Cap-reached stalls BEFORE the eligibility gate (stalls regardless of busy).
+- Starvation bound: one AGE bound off the existing `created_at` (a defer older
+  than `OCTO_TRANSPORT_DEFER_MAX_AGE_S`, default 900s = one sweep cycle, stalls
+  LOUD); reprocessed by `herdr-drain` (herdr-say never ages a fresh send).
+- `herdr-drain --all`: target-independent drain so a neutral caller delivers to
+  every idle target on its behalf (resolves the self-defer starvation).
+- Structured confirmation: parse the herdr result (`error.code`, `result.type`,
+  `agent_status`) instead of grepping combined text, so an error payload
+  (agent_not_running / client_disconnected) carrying "timed out"/"working"
+  tokens is never misread as delivered; a `timeout` confirms only above the
+  5000ms floor.
+- Canonical spec amended: `operator-control.spec.html` anchors
+  `message-eligibility-gate`, `message-observed-confirmation`,
+  `message-starvation-bound` (through the spec-chat review loop; code does not
+  merge before the amended spec lands).
+
+Recorded, NOT implemented (lean frame - beyond the minimum):
+- The operator's "5 defers" faster tripwire (in addition to the 15m age bound).
+  The single age bound already delivers the stated guarantee (nothing waits
+  unseen past one sweep cycle); a defer counter would add a per-message schema
+  field and counting machinery for a faster-trip refinement. Recorded here for a
+  future pass if rapid-redeferral latency ever matters.
+- TOCTOU between the gate read and the prompt / no per-target lock (codex HIGH-4):
+  the structured confirm already fails closed (a target that flips to working
+  mid-fire yields a non-confirming outcome), so this cannot cause a false
+  positive, only an occasional honest retry. A per-target lock is recorded as a
+  future hardening, not built now.

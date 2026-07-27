@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
-# gh#31 reproduction harness: proves the herdr transport confirmation is
-# unsound in BOTH directions, using a stub herdr that decouples REAL delivery
-# from the confirmation signal the wrapper reads. No live state touched:
-# a private XDG_STATE_HOME under a temp dir.
+# gh#31 reproduction harness: proves the ORIGINAL (pre-fix) herdr transport
+# confirmation is unsound in BOTH directions, using a stub herdr that decouples
+# REAL delivery from the confirmation signal the wrapper reads. It runs against
+# the PRESERVED originals in forensics/rollback/ so it reproduces the pre-fix
+# bug regardless of the shipped fix (the fixed contract is proven by
+# forensics/harness/test-fix.sh and tests/test_herdr.py). No live state touched.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ASSETS="$(cd "$HERE/../../skills/herdr-comms/assets" && pwd)"
 export PATH="$HERE:$PATH"   # stub herdr wins
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# Stage the preserved pre-fix originals as the assets under test.
+ASSETS="$TMP/orig"
+mkdir -p "$ASSETS"
+cp "$HERE/../rollback/herdr-say.orig" "$ASSETS/herdr-say"
+cp "$HERE/../rollback/herdr-drain.orig" "$ASSETS/herdr-drain"
+chmod +x "$ASSETS/herdr-say" "$ASSETS/herdr-drain"
 export XDG_STATE_HOME="$TMP/state"
 export HOME="$TMP/home"     # keep any HOME-derived path off the real tree
 mkdir -p "$XDG_STATE_HOME" "$HOME"
