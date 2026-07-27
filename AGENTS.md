@@ -6,6 +6,17 @@ This repository is the source for the local octo-lite Codex personalization.
 octo-lite installs into the user's Codex profile and operates on separate
 target repositories.
 
+## Design Frame (operator ruling 2026-07-27)
+
+Every octo-lite issue STARTS from the elegant-lean frame: build the smallest
+mechanism that makes the failure visible or the behavior correct. No machinery
+for hypothetical edge cases - an edge case earns code only with a failing test
+that proves real cost. Prefer deletion over guard. One bound over layered
+bounds. Derivation over declaration. Recorded-not-implemented is the default
+disposition for reviewer findings beyond the elegant minimum. Precedents:
+gh#28 (-380 lines deletion-only), gh#34 (envelope deleted, not simplified),
+gh#31 (one age bound, dropped lock/TOCTOU armor).
+
 ## Durable Sources
 
 - `README.md` explains the product and install shape.
