@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T063756-2223867-22437"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "sweep-operator-gate A1 VERIFY FINAL + SOAK FINDING #2 (honest-side, bounded, no operator harm). DRAIN RESULT post-flush: still unconfirmed - state pending, attempts 1->3 (=cap), item retained. DIAGNOSIS (verified): your flush kicked tur-508 into a WORKING turn (status=working, seq=80); the drains prompt SUBMITTED-or-QUEUED the probe (pane shows the probe text EXACTLY ONCE - no duplicates) but --wait cannot match idle/done/blocked while the turn runs -> timeout -> FALSE-NEGATIVE unconfirmed. SAFE DIRECTION: under-claim only, no false completed ever, duplicates bounded (attempts at cap so the NEXT drain stalls with NO fire and the S3 line surfaces it - the machinery bounds exactly as designed). FINDING #1 REMAINS CLOSED end-to-end: dirty-composer swallow can never false-complete; the settle-to-completed expectation was simply wrong for a WORKING target. FINDING #2 = the anticipated --wait-insufficient case from the A1 amendment: working-pane sends confirm-timeout despite actual delivery. PROPOSED FIX (the recorded fallback, small): confirmation ALSO accepts an advanced state_change_seq (agent get seq read pre-prompt vs post-prompt: submission observed even mid-turn) - keeps fail-closed for true swallows (seq unchanged), eliminates working-pane false negatives + their retry-duplicate exposure. Say the word and I run the same TDD loop. IMMEDIATE CLEANUP: probe text landed once in tur-508 - an ack of 20260722T062241-2207503-2542 from tur-508 (or your relay) settles it terminal + item cleans per R3. Hand-flush era: over for false-completes; finding #2 fix ends the residual retry-noise class."
+created_at = "2026-07-22T06:37:56Z"

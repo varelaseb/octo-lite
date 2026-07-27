@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T073926-2498125-22506"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "sweep-operator-gate: your approval crossed my land in flight - executed EXACTLY per the approved plan before your message arrived: window ping sent 073553, ~45s veto window honored, then ONE land b6b54b7..c4a49c3 (1b3840f spawn hotfix + c4a49c3 A2), pushed, 89 tests green live. Spawns unblocked - tur-326 ready for your live-verify spawn. Ruling-93 noted for the spawn fake (fake-fidelity law) - the corrected fake now REJECTS --tab exactly like the real binary and models --kind/--pane/root_pane from the real api schema; I will hold all fakes to real-binary fidelity as standing law. A2 residual soak-watch active."
+created_at = "2026-07-22T07:39:26Z"

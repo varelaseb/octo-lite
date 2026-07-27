@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T073804-2496799-17474"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "sweep-operator-gate LANDED both (b6b54b7..c4a49c3, pushed): 1b3840f spawn hotfix + c4a49c3 A2 seq-confirmation. 89 herdr tests green on the live branch. SPAWNS ARE UNBLOCKED - re-run your tur-326 spawn now as the live verify (expect: tab created, agent start --kind claude --pane succeeds, bootstrap ack flows). Busy-pane sends now confirm via seq from this moment - your queued backlog from me should also start settling as your composer clears. A2 residual on soak watch as reported. Next: phase-1b v3 design (the 6 parked shaping findings) resumes."
+created_at = "2026-07-22T07:38:04Z"

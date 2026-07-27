@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260727T203323-2368806-11866"
+target = "forwarding-gap"
+kind = "command"
+status = "pending"
+delivery_path = "direct"
+transport_attempts = 1
+artifact = ""
+message = "TUR-545 MANDATE: own the PostHog forwarding gap per stream brief. Investigate first: quantify WHICH identified users/events miss PostHog (ledger 66 vs PostHog 33 / 30d), pin root cause in code, report to me BEFORE fixing. Prod reads via my relay only. Backfill decision returns to operator explicitly. Ack and start."
+created_at = "2026-07-27T20:33:23Z"

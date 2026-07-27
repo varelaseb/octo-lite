@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T062310-2208740-11563"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "sweep-operator-gate A1 LIVE VERIFY - STAGE 1 PASS, observed status line verbatim: \"herdr-say: transport unconfirmed, delivery pending message_id=20260722T062241-2207503-2542\" rc=75; state: status=pending delivery_path=deferred transport_attempts=1; inbox item RETAINED; lock sidecar present. NO false completed against your staged dirty composer - the probe-2 swallow shape is closed in production. FLUSH tur-508 with Enter when ready and confirm; I then run herdr-drain tur-508 and we watch the retained item deliver + the message settle honestly (expect completed on observed state). Note: the earlier land-report message to YOUR busy pane also proved the fix on its first real send (pending, 1 attempt, retained) - it will reach you on your next composer clear + drain cycle."
+created_at = "2026-07-22T06:23:10Z"

@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T065753-2280521-8324"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = "https://github.com/Turbo-Video/Turbo-Outreach/pull/445"
+message = "TUR-508 DELIVERED, awaiting your acceptance. PR #445 ready-for-review @13d29ebd. Gate cycle (fresh instances): implement 45/45 -> review CHANGES-REQUESTED (2 blockers incl Neon role.password bug that would've failed every refresh + ambiguous-secret-write branch-strand) -> verify FAIL -> fix 53/53 -> re-verify PASS. Prod deploy configs hash-unchanged; refresh is operator-run-only, zero cloud mutation this session. QA evidence at qa-artifacts/TUR-508. Linear=Awaiting Accept. Accept+merge is your call (no agent merges). TUR-233 shaping still queued for when bandwidth allows."
+created_at = "2026-07-22T06:57:53Z"

@@ -250,38 +250,6 @@ write_locked_state() { # $1 status, $2 delivery_path, $3 attempts
   mv "$temporary" "$state"
 }
 
-# gh#31: per-message submission-correlated confirmation (replaces the global
-# state_change_seq heuristic that produced BOTH a stuck-in-composer false
-# positive, when unrelated status churn advanced the shared counter, AND a
-# duplicate-flood false negative, when a continuously-working target never
-# advanced it). herdr 0.7.5 guarantees a submission from a NON-WORKING start
-# yields an observed state change within its floor or returns
-# agent_prompt_stalled; so we FIRE ONLY into a non-working target and read the
-# real `agent_status` field (never a phantom "state", never the global seq).
-read_agent_status() { # prints agent_status for $target; nonzero on any failure
-  local raw st
-  raw="$(herdr agent get "$target" 2>/dev/null)" || return 1
-  st="$(printf '%s' "$raw" | jq -er '.result.agent.agent_status' 2>/dev/null)" || return 1
-  [[ -n "$st" ]] || return 1
-  printf '%s' "$st"
-}
-
-# Fire-eligible only into a non-working target (idle|done): a working, blocked,
-# or unknown target DEFERS so we never fire a send we cannot confirm. Pane-form
-# targets are addressed directly and bypass the gate.
-fire_eligible() {
-  case "$target" in *:p*) return 0 ;; esac
-  local st; st="$(read_agent_status)" || return 1
-  case "$st" in idle|done) return 0 ;; *) return 1 ;; esac
-}
-
-# gh#31 busy-gate (before the attempts-increment so a defer burns nothing):
-# hold pending+deferred with the item for a later drain when the target idles.
-if ! fire_eligible; then
-  echo "herdr-say: target busy, deferred message_id=$id" >&2
-  exit 75
-fi
-
 # S2 fire rule under the lock: cap reached -> pending->stalled, NO fire;
 # else increment + persist, then fire (attempts-increment before fire).
 if (( attempts >= cap )); then
@@ -293,24 +261,44 @@ fi
 attempts=$((attempts + 1))
 write_locked_state pending deferred "$attempts"
 
-# gh#31 confirmation: because we only fire into a gated NON-WORKING target,
-# THIS prompt's own outcome is the delivery proof, correlated to this message
-# with no global counter:
-#   agent_prompt_stalled           -> submit swallowed (residual text): retry
-#   settled agent_status idle|done|blocked (rc 0) -> delivered + settled
-#   turn started (working/timeout) -> delivered, still running its turn
-# Anything else (agent error, unknown) fails closed as unconfirmed.
-prompt_confirmed() { # $1 pane, $2 body -> 0 on submission-correlated confirmation
-  local out="$state.$$.wait" rc=0
+# A1 (soak finding 1): `agent prompt` can return rc=0 WITHOUT submitting when
+# the target composer holds residual text, so rc alone NEVER confirms.
+# Confirmation is OBSERVED STATE: the fire passes --wait --timeout so herdr
+# reports the observed post-submission state; only a matched state
+# (idle|done|blocked) confirms. A2 (soak finding 2): a send into a WORKING
+# pane delivers (submit/queue) but --wait cannot match idle|done|blocked
+# mid-turn, so confirmation is (--wait matched state) OR (state_change_seq
+# ADVANCED across the prompt): the seq is read via `herdr agent get`
+# (structured field, never pane text) immediately BEFORE the prompt and again
+# AFTER the --wait outcome. Unchanged seq with no matched state is a true
+# swallow (UNCONFIRMED, fails closed exactly as A1), and any seq read failure
+# on either side leaves only the matched-state path (fail closed,
+# degrade-safe).
+read_state_seq() { # -> prints state_change_seq for $target; nonzero on any failure
+  local raw seq
+  raw="$(herdr agent get "$target" 2>/dev/null)" || return 1
+  seq="$(printf '%s' "$raw" | jq -er '.result.agent.state_change_seq' 2>/dev/null)" || return 1
+  [[ "$seq" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$seq"
+}
+
+prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
+  local out="$state.$$.wait" rc=0 pre_seq="" post_seq=""
+  pre_seq="$(read_state_seq)" || pre_seq=""
   herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
-  if grep -q 'agent_prompt_stalled' "$out"; then rm -f "$out"; return 1; fi
-  if (( rc == 0 )) && grep -qE '"agent_status"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"' "$out"; then
-    rm -f "$out"; return 0
+  if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
+    && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
+    rm -f "$out"
+    return 0
   fi
-  if grep -qiE 'timed? out|"timeout"|"agent_status"[[:space:]]*:[[:space:]]*"working"' "$out"; then
-    rm -f "$out"; return 0
+  rm -f "$out"
+  if [[ -n "$pre_seq" ]]; then
+    post_seq="$(read_state_seq)" || post_seq=""
+    if [[ -n "$post_seq" ]] && (( 10#$post_seq > 10#$pre_seq )); then
+      return 0
+    fi
   fi
-  rm -f "$out"; return 1
+  return 1
 }
 
 # On OBSERVED-STATE-CONFIRMED direct success, under the lock: transition

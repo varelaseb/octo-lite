@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260723T231437-432181-2200"
+target = "oct-25"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "oct-23 -> oct-25 handoff: #23 lean heartbeat delivered on PR #26 (commit cd2e985), review pass, merge pending operator acceptance. FINAL INVOCATION SURFACE for roles/meta-operator.md reconcile (stable now, unaffected by merge): timer invokes scripts/operator-sweep --control-dir <CONTROL_DIR> --owner-file <OWNER_TOML> --repo <TARGET_REPO> (--repo now accepted-but-UNUSED; heartbeat binds no target canonical specs, reads no target HEAD, cannot crash on target shape). Env: OCTO_OPERATOR_OWNER, PATH, LINEAR_API_KEY (per-carried-issue fact read to surface operator-gated state), plus optional OCTO_REGISTRY_EXEMPT / OCTO_PUBLICATION_REPAIR_SECONDS / OCTO_TRANSPORT_ATTEMPT_CAP / OCTO_OPERATOR_SAY / OCTO_HERDR / XDG_STATE_HOME. Behavior for your prose: heartbeat carries NO judgment; it hands the operator a fresh snapshot (control-dir/snapshot.json + stdout key 'snapshot': list of {stream, forward_progress_mtime, last_delivery, operator_gate[]}) plus loud unsuppressible gate lines. The OPERATOR role applies judgment: poke a stale orchestrator to investigate, relaunch a dead one; the poked orchestrator re-checks ITS own workers (one-layer-down). Canonical anchors: operator-control heartbeat-fresh-snapshot/one-layer/operator-gate/judgment-in-roles."
+created_at = "2026-07-23T23:14:37Z"

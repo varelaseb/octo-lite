@@ -147,7 +147,11 @@ if [[ "$sub" == "agent get" ]]; then
   fi
   seq=1
   [[ -n "${FAKE_SEQ_FILE:-}" && -f "${FAKE_SEQ_FILE:-}" ]] && seq="$(cat "$FAKE_SEQ_FILE")"
-  printf '{"result":{"agent":{"pane_id":"w1:p1","state_change_seq":%s}}}\n' "$seq"
+  # gh#31: real 0.7.5 exposes agent_status (idle|working|blocked|done|unknown);
+  # the transport gates firing on a NON-WORKING status. Default idle so an
+  # ungated test target is fire-eligible; FAKE_AGENT_STATUS overrides it.
+  status="${FAKE_AGENT_STATUS:-idle}"
+  printf '{"result":{"agent":{"pane_id":"w1:p1","agent_status":"%s","state_change_seq":%s}}}\n' "$status" "$seq"
 elif [[ "$sub" == "pane read" ]]; then
   n=0
   [[ -n "${FAKE_PANE_READ_COUNT:-}" && -f "$FAKE_PANE_READ_COUNT" ]] && n="$(cat "$FAKE_PANE_READ_COUNT")"
@@ -220,8 +224,15 @@ elif [[ "$sub" == "agent prompt" ]]; then
   fi
   echo prompt >>"$FAKE_LOG"
   if [[ -n "$has_wait" ]]; then
-    # Observed post-submission state change within the wait window.
-    echo '{"result":{"agent":{"state":"idle","state_change_seq":2}}}'
+    # gh#31: real 0.7.5 settle emits agent_status (NOT a "state" field), inside
+    # an agent_prompted result. FAKE_PROMPT_SETTLE overrides the settled status;
+    # FAKE_PROMPT_TIMEOUT models a delivered-but-unsettled turn (still working).
+    if [[ -n "${FAKE_PROMPT_TIMEOUT:-}" ]]; then
+      printf '{"result":{"agent":{"agent_status":"working","state_change_seq":2},"type":"agent_prompted"}}\n'
+      echo 'timed out waiting for agent status' >&2
+    else
+      printf '{"result":{"agent":{"agent_status":"%s","state_change_seq":2},"type":"agent_prompted"}}\n' "${FAKE_PROMPT_SETTLE:-idle}"
+    fi
   fi
   # T20 / T-R87b hook: the transport is accepted server-side, then the CALLER
   # dies before its post-transport transition (crash-mid-fire). Close the
@@ -3101,15 +3112,15 @@ class ObservedConfirmationTests(unittest.TestCase):
 
 
 class SeqConfirmationFallbackTests(unittest.TestCase):
-    """TUR-505 amendment A2 (soak finding 2): confirmation = (--wait matched
-    state) OR (state_change_seq ADVANCED across the prompt). A send into a
-    WORKING pane delivers (submit/queue) but --wait cannot match
-    idle/done/blocked mid-turn, so the confirm-timeout was a false negative
-    that burned retries despite delivery. The seq is read via `agent get`
-    (structured field, no pane text) immediately BEFORE the prompt and again
-    AFTER the --wait outcome; advanced = confirmed even on --wait timeout;
-    unchanged + no match = fail closed exactly as A1; any seq read failure =
-    fail closed. Test names carry the contract TA2 letters."""
+    """gh#31: per-message submission-correlated confirmation REPLACES the global
+    state_change_seq heuristic (which produced a stuck-in-composer false positive
+    when unrelated churn advanced the shared counter, and a duplicate-flood false
+    negative when a continuously-working target never advanced it). The transport
+    now FIRES ONLY into a non-working target (agent_status idle|done) and confirms
+    on THIS prompt's own outcome: agent_prompt_stalled = swallow (retry); a settled
+    agent_status idle|done|blocked, or a timeout meaning a turn started from a
+    non-working start = delivered. A working/unreadable target DEFERS without a
+    fire. Test names keep the TA2 letters for continuity."""
 
     ID_1 = "20260722T000000-11-111"
 
@@ -3129,13 +3140,21 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             env["FAKE_SEQ_ADVANCES"] = "1"
         return env, log
 
+    def _timeout_env(self, td):
+        # A fire into a non-working (default idle) target whose turn STARTS but
+        # does not settle in the window: herdr returns a timeout (not a stall),
+        # which is a delivered send. FAKE_PROMPT_TIMEOUT models exactly that.
+        env, log = self._env(td)
+        env["FAKE_PROMPT_TIMEOUT"] = "1"
+        return env, log
+
     def test_ta2a_wait_timeout_with_advanced_seq_confirms_the_working_pane_send(self):
-        # The live false negative: --wait cannot match a state mid-turn
-        # (agent_prompt_stalled) but the submission landed and the seq
-        # advanced. Pre-fix this stayed pending/unconfirmed (the captured
-        # red); post-fix it is CONFIRMED with exactly one fire and no retry.
+        # gh#31: a turn STARTED from a non-working target but did not settle in
+        # the window. herdr returns a timeout (NOT agent_prompt_stalled), which
+        # is a delivered send. Confirmed with exactly one fire and no retry,
+        # from the prompt's own outcome (no global seq).
         with self.subTest("say-info-completed"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
+            env, log = self._timeout_env(td)
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
                 env=env, capture_output=True, text=True,
@@ -3149,12 +3168,12 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual(1, stored["transport_attempts"])
             self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
             # Exactly one fire, and a follow-up drain never re-fires.
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
             redrain = self._drain(env)
             self.assertEqual(0, redrain.returncode, redrain.stderr)
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
         with self.subTest("say-non-info-direct-promotion"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
+            env, log = self._timeout_env(td)
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
                 env=env, capture_output=True, text=True,
@@ -3166,9 +3185,9 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual("direct", stored["delivery_path"])
             self.assertEqual(1, stored["transport_attempts"])
             self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
         with self.subTest("drain-confirmed-item-removed"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
+            env, log = self._timeout_env(td)
             state = self._seed(td, self.ID_1, kind="info", message="fyi update")
             result = self._drain(env)
             self.assertEqual(0, result.returncode, result.stderr)
@@ -3178,7 +3197,7 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual("direct", stored["delivery_path"])
             self.assertEqual(1, stored["transport_attempts"])
             self.assertFalse((self._base(td) / "inbox/agent1" / self.ID_1).exists())
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
 
     def test_ta2b_true_swallow_with_unchanged_seq_stays_fail_closed_pending(self):
         # A1 law intact: rc=0 + agent_prompt_stalled + seq UNCHANGED is a true
@@ -3209,14 +3228,20 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
 
     def test_ta2c_seq_read_failure_on_either_side_is_unconfirmed_fail_closed(self):
-        # agent get call order per invocation: 1 pane resolution, 2 pre-prompt
-        # seq read, 3 post-outcome seq read. Even though the seq WOULD have
-        # advanced, a failed read on either side never confirms (degrade-safe).
-        for label, fail_at in (("say-pre-read", "2"), ("say-post-read", "3")):
+        # gh#31: firing is gated on a readable NON-WORKING agent_status. A
+        # working target, or one whose status cannot be read, DEFERS: no fire,
+        # no attempt burn, item retained. This is where a send that cannot be
+        # confirmed is held rather than fired-then-misclassified.
+        def _fired(log):
+            return log.exists() and "prompt" in log.read_text()
+        for label, extra in (
+            ("say-working", {"FAKE_AGENT_STATUS": "working"}),
+            ("say-unreadable", {"FAKE_GET_COUNT_FILE": None, "FAKE_GET_FAIL_AT": "2"}),
+        ):
             with self.subTest(label), tempfile.TemporaryDirectory() as td:
-                env, log = self._seq_env(td)
-                env["FAKE_GET_COUNT_FILE"] = str(Path(td) / "get-count")
-                env["FAKE_GET_FAIL_AT"] = fail_at
+                env, log = self._env(td)
+                for k, v in extra.items():
+                    env[k] = str(Path(td) / "get-count") if v is None else v
                 result = subprocess.run(
                     ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
                     env=env, capture_output=True, text=True,
@@ -3227,12 +3252,12 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
                 stored = self._load(state)
                 self.assertEqual("pending", stored["status"])
                 self.assertEqual("deferred", stored["delivery_path"])
-                self.assertEqual(1, stored["transport_attempts"])
+                self.assertEqual(0, stored.get("transport_attempts", 0))
                 self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
-        with self.subTest("drain-post-read"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
-            env["FAKE_GET_COUNT_FILE"] = str(Path(td) / "get-count")
-            env["FAKE_GET_FAIL_AT"] = "3"
+                self.assertFalse(_fired(log), "must not fire into a non-eligible target")
+        with self.subTest("drain-working"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_AGENT_STATUS"] = "working"
             state = self._seed(td, self.ID_1, kind="info", message="fyi update")
             result = self._drain(env)
             self.assertEqual(0, result.returncode, result.stderr)
@@ -3240,13 +3265,15 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual("pending", stored["status"])
             self.assertEqual("deferred", stored["delivery_path"])
             self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
+            self.assertFalse(_fired(log), "drain must not fire into a working target")
 
     def test_ta2d_seq_reads_bracket_the_prompt_pre_prompt_and_post_outcome(self):
-        # Order law: the pre seq read is the agent get immediately before the
-        # prompt, and the post seq read follows the --wait outcome.
-        expected = ["agent-get", "agent-get", "prompt", "agent-get"]
+        # gh#31 order law: no post-fire agent get. The confirmation is the
+        # prompt's own outcome, so the call order is resolve-pane (get), gate on
+        # agent_status (get), then the single prompt -- and nothing after it.
+        expected = ["agent-get", "agent-get", "prompt"]
         with self.subTest("say"), tempfile.TemporaryDirectory() as td:
-            env, _ = self._seq_env(td)
+            env, _ = self._env(td)
             order = Path(td) / "call-order"
             env["FAKE_CALL_ORDER"] = str(order)
             result = subprocess.run(
@@ -3256,7 +3283,7 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             self.assertEqual(expected, order.read_text().splitlines())
         with self.subTest("drain"), tempfile.TemporaryDirectory() as td:
-            env, _ = self._seq_env(td)
+            env, _ = self._env(td)
             order = Path(td) / "call-order"
             env["FAKE_CALL_ORDER"] = str(order)
             self._seed(td, self.ID_1)
