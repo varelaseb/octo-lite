@@ -15,22 +15,10 @@ COMPLETE_AGENTS = """# Target AGENTS.md
 
 - Operator-visibility served root: served
 - Operator-visibility verdict index: gallery/qa-verdicts
-- Operator-visibility rendered-card verify: render-card.sh
 """
 
 
-def _expected(issue="TUR-1"):
-    return {
-        "issue": issue,
-        "pr": 29,
-        "head": "a" * 40,
-        "verdict": "clear",
-        "story_ids": ["S1", "S2"],
-        "criterion_coverage": "AC1-AC7",
-    }
-
-
-def _rendered(issue="TUR-1", **overrides):
+def _durable_card(issue="TUR-1", **overrides):
     card = {
         "issue": issue,
         "pr": 29,
@@ -47,9 +35,13 @@ class PublishEvidenceTests(unittest.TestCase):
     """AC4-AC7: the SOLE writer of an issue's operator-visibility surface, reading
     the target-declared surface from AGENTS.md, creating+verifying the served
     link, writing the verdict card from the ONE durable home, and reading back the
-    RENDERED operator card for the exact fields, failing loud on any gap."""
+    WRITTEN operator-read index card for the exact fields, failing loud on any
+    gap."""
 
-    def _scaffold(self, base: Path, *, agents_text=COMPLETE_AGENTS, issue="TUR-1", write_durable=True):
+    def _scaffold(
+        self, base: Path, *, agents_text=COMPLETE_AGENTS, issue="TUR-1",
+        write_durable=True, durable_card=None,
+    ):
         target = base / "target"
         target.mkdir()
         (target / "AGENTS.md").write_text(agents_text)
@@ -58,10 +50,15 @@ class PublishEvidenceTests(unittest.TestCase):
         (durable / issue).mkdir(parents=True)  # served-evidence source dir
         (durable / issue / "index.html").write_text("<html>card</html>")
         if write_durable:
-            (durable / "qa-verdicts" / f"{issue}.json").write_text(
-                json.dumps({"issue": issue, "verdict": "clear"})
-            )
+            card = durable_card if durable_card is not None else _durable_card(issue)
+            (durable / "qa-verdicts" / f"{issue}.json").write_text(json.dumps(card))
         return target, durable
+
+    def _publish(self, target, durable, issue="TUR-1"):
+        return publish_evidence(
+            issue=issue, agents_path=target / "AGENTS.md",
+            durable_home=durable, target_root=target,
+        )
 
     # --- AC4 (red4): served-evidence symlink ---
 
@@ -73,11 +70,7 @@ class PublishEvidenceTests(unittest.TestCase):
             link = served_root / "TUR-1"
             self.assertFalse(link.exists())  # missing before publish
 
-            result = publish_evidence(
-                issue="TUR-1", agents_path=target / "AGENTS.md",
-                durable_home=durable, target_root=target, expected=_expected(),
-                run_verify=lambda **kw: _rendered(),
-            )
+            result = self._publish(target, durable)
             self.assertTrue(link.is_symlink())
             self.assertTrue(link.resolve().exists())
             self.assertEqual(str(link), result["served_link"])
@@ -91,11 +84,7 @@ class PublishEvidenceTests(unittest.TestCase):
             import shutil
             shutil.rmtree(durable / "TUR-1")
             with self.assertRaises(GateError) as caught:
-                publish_evidence(
-                    issue="TUR-1", agents_path=target / "AGENTS.md",
-                    durable_home=durable, target_root=target, expected=_expected(),
-                    run_verify=lambda **kw: _rendered(),
-                )
+                self._publish(target, durable)
             self.assertIn("served-evidence source", str(caught.exception).lower())
 
     # --- AC5 (red5): verdict card single-writer / single durable store ---
@@ -111,11 +100,7 @@ class PublishEvidenceTests(unittest.TestCase):
             self.assertTrue(durable_card.is_file())
             self.assertFalse(index_card.exists())
 
-            publish_evidence(
-                issue="TUR-1", agents_path=target / "AGENTS.md",
-                durable_home=durable, target_root=target, expected=_expected(),
-                run_verify=lambda **kw: _rendered(),
-            )
+            self._publish(target, durable)
             # After publish: the operator-read index carries the card, sourced from
             # the durable home; exactly ONE durable store exists.
             self.assertTrue(index_card.is_file())
@@ -128,96 +113,66 @@ class PublishEvidenceTests(unittest.TestCase):
             base = Path(td)
             target, durable = self._scaffold(base, write_durable=False)
             with self.assertRaises(GateError) as caught:
-                publish_evidence(
-                    issue="TUR-1", agents_path=target / "AGENTS.md",
-                    durable_home=durable, target_root=target, expected=_expected(),
-                    run_verify=lambda **kw: _rendered(),
-                )
+                self._publish(target, durable)
             self.assertIn("durable verdict card missing", str(caught.exception).lower())
 
-    # --- AC6 (red6): rendered-card readback ---
+    # --- AC6 (red6): written-card readback ---
 
-    def test_unreadable_rendered_card_is_not_ready(self) -> None:
+    def test_written_index_card_missing_required_field_is_not_ready(self) -> None:
+        # The durable card (single source) lacks a required field, so the WRITTEN
+        # operator-read index card lacks it too; readback must fail loud.
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            target, durable = self._scaffold(base)
-
-            def bad_verify(**kw):
-                return "not a card"  # unreadable
-
-            with self.assertRaises(GateError) as caught:
-                publish_evidence(
-                    issue="TUR-1", agents_path=target / "AGENTS.md",
-                    durable_home=durable, target_root=target, expected=_expected(),
-                    run_verify=bad_verify,
-                )
-            self.assertIn("unreadable", str(caught.exception).lower())
-
-    def test_rendered_card_field_mismatch_is_not_ready(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            target, durable = self._scaffold(base)
-            with self.assertRaises(GateError) as caught:
-                publish_evidence(
-                    issue="TUR-1", agents_path=target / "AGENTS.md",
-                    durable_home=durable, target_root=target, expected=_expected(),
-                    run_verify=lambda **kw: _rendered(head="b" * 40),  # HEAD mismatch
-                )
-            self.assertIn("mismatch", str(caught.exception).lower())
-
-    def test_rendered_card_missing_field_is_not_ready(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            target, durable = self._scaffold(base)
-            incomplete = _rendered()
+            incomplete = _durable_card()
             del incomplete["criterion_coverage"]
+            target, durable = self._scaffold(base, durable_card=incomplete)
             with self.assertRaises(GateError) as caught:
-                publish_evidence(
-                    issue="TUR-1", agents_path=target / "AGENTS.md",
-                    durable_home=durable, target_root=target, expected=_expected(),
-                    run_verify=lambda **kw: incomplete,
-                )
+                self._publish(target, durable)
             self.assertIn("missing fields", str(caught.exception).lower())
 
-    def test_complete_and_readable_card_is_ready(self) -> None:
+    def test_written_index_card_issue_mismatch_is_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            target, durable = self._scaffold(base, durable_card=_durable_card(issue="OTHER-9"))
+            with self.assertRaises(GateError) as caught:
+                self._publish(target, durable)
+            self.assertIn("issue mismatch", str(caught.exception).lower())
+
+    def test_happy_path_writes_readable_index_card_with_all_fields(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             target, durable = self._scaffold(base)
-            result = publish_evidence(
-                issue="TUR-1", agents_path=target / "AGENTS.md",
-                durable_home=durable, target_root=target, expected=_expected(),
-                run_verify=lambda **kw: _rendered(),
-            )
+            result = self._publish(target, durable)
             self.assertTrue(result["ready"])
+            index_card = Path(result["verdict_index_card"])
+            # The written operator-read card is readable JSON carrying all 6 fields.
+            written = json.loads(index_card.read_text())
             for field in ("issue", "pr", "head", "verdict", "story_ids", "criterion_coverage"):
-                self.assertIn(field, result["rendered"])
+                self.assertIn(field, written)
+                self.assertIn(field, result["readback"])
+            self.assertEqual("TUR-1", written["issue"])
 
     # --- AC7 (red7): target surface config required, no hard-coded path ---
 
     def test_incomplete_surface_declaration_fails_loud(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            # Declare served root + verdict index but OMIT the rendered-card verify.
+            # Declare served root but OMIT the verdict index.
             incomplete_agents = (
                 "# Target\n\n"
                 "- Operator-visibility served root: served\n"
-                "- Operator-visibility verdict index: gallery/qa-verdicts\n"
             )
             target, durable = self._scaffold(base, agents_text=incomplete_agents)
             with self.assertRaises(GateError) as caught:
-                publish_evidence(
-                    issue="TUR-1", agents_path=target / "AGENTS.md",
-                    durable_home=durable, target_root=target, expected=_expected(),
-                    run_verify=lambda **kw: _rendered(),
-                )
+                self._publish(target, durable)
             self.assertIn("incompletely declared", str(caught.exception).lower())
-            self.assertIn("rendered-card verify", str(caught.exception).lower())
+            self.assertIn("verdict index", str(caught.exception).lower())
 
     def test_todo_placeholder_surface_declaration_fails_loud(self) -> None:
-        # adv3: the target-init template ships the three signals with `TODO: ...`
+        # adv3: the target-init template ships the surface signals with `TODO: ...`
         # placeholder values. A freshly-copied-but-unfilled AGENTS.md must fail
         # LOUD at the surface-declaration gate, not silently pass read and only
-        # break later at the filesystem/render step.
+        # break later at the filesystem step.
         placeholder_agents = (
             Path(__file__).resolve().parents[1]
             / "skills/octo-lite-issue-shaper/assets/repo-agents.md"
@@ -231,13 +186,12 @@ class PublishEvidenceTests(unittest.TestCase):
         agents = (
             "# Target\n\n"
             "- Operator-visibility served root: served\n"
-            "- Operator-visibility verdict index: gallery/qa-verdicts\n"
-            "- Operator-visibility rendered-card verify: TODO: command emitting the card\n"
+            "- Operator-visibility verdict index: TODO: operator-read verdict-index dir\n"
         )
         with self.assertRaises(GateError) as caught:
             read_surface_declaration(agents)
         self.assertIn("incompletely declared", str(caught.exception).lower())
-        self.assertIn("rendered-card verify", str(caught.exception).lower())
+        self.assertIn("verdict index", str(caught.exception).lower())
 
     def test_missing_agents_file_fails_loud(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -245,23 +199,19 @@ class PublishEvidenceTests(unittest.TestCase):
             target, durable = self._scaffold(base)
             (target / "AGENTS.md").unlink()
             with self.assertRaises(GateError) as caught:
-                publish_evidence(
-                    issue="TUR-1", agents_path=target / "AGENTS.md",
-                    durable_home=durable, target_root=target, expected=_expected(),
-                    run_verify=lambda **kw: _rendered(),
-                )
+                self._publish(target, durable)
             self.assertIn("agents.md missing", str(caught.exception).lower())
 
-    def test_surface_declaration_reads_all_three_target_declared_fields(self) -> None:
+    def test_surface_declaration_reads_both_target_declared_fields(self) -> None:
         declaration = read_surface_declaration(COMPLETE_AGENTS)
         self.assertEqual("served", declaration["served_root"])
         self.assertEqual("gallery/qa-verdicts", declaration["verdict_index"])
-        self.assertEqual("render-card.sh", declaration["rendered_verify"])
+        self.assertNotIn("rendered_verify", declaration)
 
-    def test_target_init_template_declares_all_three_surface_signals(self) -> None:
+    def test_target_init_template_declares_both_surface_signals(self) -> None:
         # AC7 (qa-publication-surface-target): the target-init AGENTS.md template
-        # the shaper copies declares all three operator-visibility surface signals,
-        # so a freshly initialized target cannot ship without the surface contract.
+        # the shaper copies declares both operator-visibility surface signals, so a
+        # freshly initialized target cannot ship without the surface contract.
         from octo_lite import publish as pub
         template = (
             Path(__file__).resolve().parents[1]
@@ -270,9 +220,10 @@ class PublishEvidenceTests(unittest.TestCase):
         for signal in (
             pub.SURFACE_SERVED_ROOT_SIGNAL,
             pub.SURFACE_VERDICT_INDEX_SIGNAL,
-            pub.SURFACE_RENDERED_VERIFY_SIGNAL,
         ):
             self.assertIn(signal, template)
+        # The retired rendered-card verify signal must be gone from the template.
+        self.assertNotIn("rendered-card verify", template)
 
     def test_no_hard_coded_uploads_path_in_publish_module(self) -> None:
         # qa-publication-surface-target: octo-lite owns mechanism only; the

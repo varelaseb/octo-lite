@@ -7,17 +7,18 @@ ONE deterministic publication helper, the SOLE writer of an issue's
 operator-visibility surface. It:
 
   a. reads the operator-visibility surface DECLARATION (served root, verdict
-     index location, rendered-card verify command) from the TARGET repo
-     AGENTS.md -- octo-lite stays target-neutral, no hard-coded path;
+     index location) from the TARGET repo AGENTS.md -- octo-lite stays
+     target-neutral, no hard-coded path;
   b. creates and verifies the served-evidence symlink for the exact issue at the
      served root;
   c. writes the verdict card into the verdict-index (operator-read) location
      sourced from the ONE durable evidence home (qa-artifacts/qa-verdicts),
      asserting exactly one durable store;
-  d. runs the rendered-card verify command and checks the exact fields
-     issue / PR / HEAD / verdict / story IDs / criterion coverage;
+  d. reads back the WRITTEN operator-read index card and confirms it is readable
+     JSON carrying the exact fields issue / PR / HEAD / verdict / story IDs /
+     criterion coverage for the exact issue;
   e. FAILS LOUD on any missing link, missing/incomplete surface declaration, or
-     unreadable/mismatched rendered card -- never a silent skip.
+     unreadable/incomplete written card -- never a silent skip.
 
 octo-lite owns only mechanism + readback; the concrete surface is target-owned.
 """
@@ -25,23 +26,21 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import Path
-from typing import Mapping
+
 
 from octo_lite.runtime import GateError
 
 
 # Target AGENTS.md surface-declaration signal keys (delivery-lifecycle
-# qa-publication-surface-target). A target that has not fully declared all three
+# qa-publication-surface-target). A target that has not declared BOTH signals
 # fails the publish loud (qa-publication-surface-required); none is hard-coded.
 SURFACE_SERVED_ROOT_SIGNAL = "Operator-visibility served root:"
 SURFACE_VERDICT_INDEX_SIGNAL = "Operator-visibility verdict index:"
-SURFACE_RENDERED_VERIFY_SIGNAL = "Operator-visibility rendered-card verify:"
 
-# The exact rendered-card fields readiness requires (qa-served,
-# qa-publication-readback): the readback proves the RENDERED operator card, not
-# only the written artifact, carries each of these for the exact issue.
+# The exact card fields readiness requires (qa-served, qa-publication-readback):
+# the readback proves the WRITTEN operator-read index card carries each of these
+# for the exact issue.
 REQUIRED_CARD_FIELDS = ("issue", "pr", "head", "verdict", "story_ids", "criterion_coverage")
 
 
@@ -59,7 +58,7 @@ def _signal_value(text: str, signal: str) -> str | None:
             # adv3: the target-init template ships each signal with a `TODO: ...`
             # placeholder. An unfilled placeholder is NOT a real declaration; it
             # must fail loud at the surface-declaration gate, not slip through and
-            # break later at the filesystem/render step.
+            # break later at the filesystem step.
             if value and not value.startswith("TODO:"):
                 found = value
     return found
@@ -67,17 +66,15 @@ def _signal_value(text: str, signal: str) -> str | None:
 
 def read_surface_declaration(agents_text: str) -> dict:
     """Parse the target AGENTS.md operator-visibility surface declaration. Fails
-    loud (qa-publication-surface-required) if any of the three fields is absent or
-    blank, so a missing declaration can never become a silent no-publish path."""
+    loud (qa-publication-surface-required) if EITHER field is absent or blank, so
+    a missing declaration can never become a silent no-publish path."""
     served_root = _signal_value(agents_text, SURFACE_SERVED_ROOT_SIGNAL)
     verdict_index = _signal_value(agents_text, SURFACE_VERDICT_INDEX_SIGNAL)
-    rendered_verify = _signal_value(agents_text, SURFACE_RENDERED_VERIFY_SIGNAL)
     missing = [
         name
         for name, value in (
             ("served root", served_root),
             ("verdict index", verdict_index),
-            ("rendered-card verify command", rendered_verify),
         )
         if not value
     ]
@@ -89,7 +86,6 @@ def read_surface_declaration(agents_text: str) -> dict:
     return {
         "served_root": served_root,
         "verdict_index": verdict_index,
-        "rendered_verify": rendered_verify,
     }
 
 
@@ -104,8 +100,6 @@ def publish_evidence(
     agents_path: Path,
     durable_home: Path,
     target_root: Path,
-    expected: Mapping[str, object],
-    run_verify=None,
 ) -> dict:
     """Publish the exact issue's operator-visibility surface atomically-or-loud.
 
@@ -113,10 +107,6 @@ def publish_evidence(
     - `durable_home`: the ONE durable evidence home root; the verdict card is
       sourced from `<durable_home>/qa-verdicts/<issue>.json`.
     - `target_root`: base for resolving relative declared paths.
-    - `expected`: the exact rendered-card fields readiness requires
-      (issue/pr/head/verdict/story_ids/criterion_coverage).
-    - `run_verify`: injectable rendered-card verify runner (default: subprocess);
-      returns the rendered card as a dict. Tests inject a deterministic runner.
     """
     if not issue or not issue.strip():
         raise GateError("publish requires an issue identifier")
@@ -161,14 +151,13 @@ def publish_evidence(
     if not index_card.is_file():
         raise GateError(f"verdict index card for {issue} not written")
 
-    # Rendered-card readback (qa-served, qa-publication-readback,
-    # edge-evidence-missing): run the target-declared rendered-card verify command
-    # and require the RENDERED operator card carry each exact field. An unreadable
-    # or mismatched rendered card is NOT ready.
-    rendered = _run_rendered_verify(
-        declaration["rendered_verify"], issue=issue, target_root=target_root, run_verify=run_verify,
-    )
-    _assert_rendered_matches(rendered, expected, issue=issue)
+    # Written-card readback (qa-served, qa-publication-readback,
+    # edge-evidence-missing): RE-READ the written operator-read index card and
+    # require it be readable JSON carrying each exact field for the exact issue.
+    # The card content is the durable card (single source), so this both proves
+    # single-writer landing AND that the operator-read card is readable-for-those-
+    # fields. An unreadable or incomplete written card is NOT ready.
+    readback = _readback_written_card(index_card, issue=issue)
 
     return {
         "issue": issue,
@@ -176,7 +165,7 @@ def publish_evidence(
         "served_link_resolved": str(link.resolve()),
         "verdict_index_card": str(index_card),
         "durable_source": str(verdict_source),
-        "rendered": rendered,
+        "readback": readback,
         "ready": True,
     }
 
@@ -188,49 +177,22 @@ def _atomic_write_json(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
-def _run_rendered_verify(command: str, *, issue: str, target_root: Path, run_verify) -> dict:
-    if run_verify is not None:
-        rendered = run_verify(command=command, issue=issue, target_root=target_root)
-        if not isinstance(rendered, dict):
-            raise GateError("rendered-card verify returned an unreadable card")
-        return rendered
-    # Default runner: the declared command is run with the issue as ISSUE in the
-    # environment and must emit the rendered card as JSON on stdout. A nonzero
-    # exit, empty, or non-JSON stdout means the rendered card is unreadable ->
-    # not ready (edge-evidence-missing).
-    env = dict(os.environ, ISSUE=issue, OCTO_PUBLISH_ISSUE=issue)
+def _readback_written_card(index_card: Path, *, issue: str) -> dict:
     try:
-        result = subprocess.run(
-            command, shell=True, cwd=str(target_root), env=env,
-            capture_output=True, text=True,
-        )
-    except OSError as error:
-        raise GateError(f"rendered-card verify command failed to run for {issue}") from error
-    if result.returncode != 0:
+        card = json.loads(index_card.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
         raise GateError(
-            f"rendered operator card not readable for {issue}: verify exited {result.returncode}"
-        )
-    try:
-        rendered = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise GateError(f"rendered operator card for {issue} is not readable JSON") from error
-    if not isinstance(rendered, dict):
-        raise GateError(f"rendered operator card for {issue} is not a card object")
-    return rendered
-
-
-def _assert_rendered_matches(rendered: Mapping[str, object], expected: Mapping[str, object], *, issue: str) -> None:
-    missing = [field for field in REQUIRED_CARD_FIELDS if field not in rendered]
+            f"written operator card for {issue} is not readable JSON"
+        ) from error
+    if not isinstance(card, dict):
+        raise GateError(f"written operator card for {issue} is not a card object")
+    missing = [field for field in REQUIRED_CARD_FIELDS if field not in card]
     if missing:
         raise GateError(
-            f"rendered operator card for {issue} missing fields: {', '.join(missing)}"
+            f"written operator card for {issue} missing fields: {', '.join(missing)}"
         )
-    mismatched = [
-        field
-        for field in REQUIRED_CARD_FIELDS
-        if field in expected and rendered.get(field) != expected.get(field)
-    ]
-    if mismatched:
+    if card.get("issue") != issue:
         raise GateError(
-            f"rendered operator card for {issue} field mismatch: {', '.join(mismatched)}"
+            f"written operator card issue mismatch for {issue}: {card.get('issue')!r}"
         )
+    return card

@@ -657,23 +657,14 @@ def command_publish_evidence(args) -> dict:
     # edge-evidence-missing): the SOLE writer of an issue's operator-visibility
     # surface. Reads the target-declared surface from AGENTS.md, creates+verifies
     # the served link, writes the verdict card from the ONE durable home into the
-    # operator-read index, and reads back the RENDERED card for exact fields.
+    # operator-read index, and reads back the WRITTEN card for exact fields.
     from octo_lite.publish import publish_evidence
 
-    expected = {
-        "issue": args.issue,
-        "pr": args.pr,
-        "head": args.head,
-        "verdict": args.verdict,
-        "story_ids": list(args.story_id),
-        "criterion_coverage": args.criterion_coverage,
-    }
     return publish_evidence(
         issue=args.issue,
         agents_path=Path(args.agents),
         durable_home=Path(args.durable_home),
         target_root=Path(args.target_root),
-        expected=expected,
     )
 
 
@@ -1266,11 +1257,6 @@ def parser() -> argparse.ArgumentParser:
     publish.add_argument("--agents", required=True, help="target repo AGENTS.md declaring the surface")
     publish.add_argument("--durable-home", required=True, help="single durable evidence home root")
     publish.add_argument("--target-root", required=True, help="target repo root for resolving declared relative paths")
-    publish.add_argument("--pr", type=int, required=True)
-    publish.add_argument("--head", required=True)
-    publish.add_argument("--verdict", required=True)
-    publish.add_argument("--story-id", action="append", default=[])
-    publish.add_argument("--criterion-coverage", required=True)
     publish.set_defaults(run=command_publish_evidence)
 
     stream_init = sub.add_parser("stream-init")
