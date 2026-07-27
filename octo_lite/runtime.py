@@ -153,6 +153,7 @@ def initialize_stream(
     child_role: str,
     caller: str,
     brief: str,
+    issue: str | None = None,
 ) -> dict:
     if caller != parent_session:
         raise GateError("only parent may create stream brief")
@@ -170,6 +171,17 @@ def initialize_stream(
         "brief_revision": 1,
         "status_revision": 0,
     }
+    # gh#28 leg1 (delivery-lifecycle linear-transition-issue-binding,
+    # operator-control stream-issue-binding): the host-owned registry entry
+    # records the exact delivered issue alongside its owner, distinct from a
+    # descriptive stream name, so the verified transition binds authority to this
+    # registry-recorded issue rather than requiring stream_id == issue. This is
+    # the SOLE registry writer (operator-control stream-registry-sole); no second
+    # writer stamps this field. Sourced from the already launch-bound issue.
+    if issue is not None:
+        if not issue.strip():
+            raise GateError("stream issue binding must be a nonempty identifier")
+        state["issue"] = issue
     _atomic_write(path / "brief.md", brief)
     _atomic_write(path / "stream.toml", _toml_document(state))
     return state

@@ -531,7 +531,7 @@ class OperatorControlTests(unittest.TestCase):
             from octo_lite.runtime import initialize_stream
             initialize_stream(
                 stream, stream_id="TUR-1", parent_session="epic-opus", child_session="issue-opus",
-                child_role="orchestrator", caller="epic-opus", brief="Build it.\n",
+                child_role="orchestrator", caller="epic-opus", brief="Build it.\n", issue="TUR-1",
             )
             fake_bin = base / "bin"
             fake_bin.mkdir()
@@ -555,7 +555,7 @@ class OperatorControlTests(unittest.TestCase):
                 env=env, capture_output=True, text=True,
             )
             self.assertNotEqual(0, result.returncode)
-            self.assertIn("stream_id", result.stderr.lower())
+            self.assertIn("issue", result.stderr.lower())
             self.assertFalse(call_log.exists())
 
     def test_linear_transition_rejects_wrong_caller_before_any_linear_call(self) -> None:
@@ -595,7 +595,7 @@ class OperatorControlTests(unittest.TestCase):
             from octo_lite.runtime import initialize_stream
             initialize_stream(
                 stream, stream_id="TUR-1", parent_session="epic-opus", child_session="issue-opus",
-                child_role="orchestrator", caller="epic-opus", brief="Build it.\n",
+                child_role="orchestrator", caller="epic-opus", brief="Build it.\n", issue="TUR-1",
             )
             fake_bin = base / "bin"
             fake_bin.mkdir()
@@ -629,6 +629,94 @@ class OperatorControlTests(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual("In Progress", state_file.read_text())
+
+    def test_linear_transition_authorizes_a_name_keyed_owned_stream_by_registry_issue(self) -> None:
+        # AC1 (delivery-lifecycle linear-transition-issue-binding, operator-control
+        # stream-issue-binding): a DESCRIPTIVELY-named stream whose host-owned
+        # registry entry binds it to issue TUR-1 must reach compare-mutate-readback
+        # for TUR-1, even though stream_id != "TUR-1". The prior authority (stream_id
+        # == issue) rejected exactly this case; the fix authorizes on the registry
+        # `issue` field plus exact owner/role.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            stream = base / "stream"
+            from octo_lite.runtime import initialize_stream
+            initialize_stream(
+                stream, stream_id="onb-chips-default", parent_session="epic-opus",
+                child_session="issue-opus", child_role="orchestrator", caller="epic-opus",
+                brief="Build it.\n", issue="TUR-1",
+            )
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            state_file = base / "linear-state.txt"
+            state_file.write_text("Todo")
+            (fake_bin / "linear").write_text(
+                "#!/usr/bin/env bash\n"
+                'if [[ "$1 $2" == "issue view" ]]; then\n'
+                '  state="$(cat "$STATE_FILE")"\n'
+                "  cat <<JSON\n"
+                '{"identifier": "TUR-1", "state": {"name": "$state"}, "updatedAt": "t1"}\n'
+                "JSON\n"
+                'elif [[ "$1 $2" == "issue update" ]]; then\n'
+                '  echo -n "In Progress" >"$STATE_FILE"\n'
+                "fi\n"
+            )
+            (fake_bin / "linear").chmod(0o755)
+            (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 0\n")
+            (fake_bin / "herdr-say").chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}", STATE_FILE=str(state_file))
+
+            result = subprocess.run(
+                [
+                    str(CONTROL), "linear-transition", "TUR-1",
+                    "--expected", "Todo", "--target", "In Progress",
+                    "--progress", str(base / "progress.toml"), "--status", str(base / "status.md"),
+                    "--parent", "epic-opus", "--outcome", "started", "--gate", "implement",
+                    "--caller", "issue-opus", "--stream", str(stream),
+                ],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("In Progress", state_file.read_text())
+
+    def test_linear_transition_denies_a_foreign_issue_by_registry_issue_binding(self) -> None:
+        # AC1: the exact owner of a name-keyed stream bound to TUR-1 must NOT be
+        # able to drive a different issue (TUR-999): authority is the registry
+        # `issue` field, not the descriptive stream_id. A fake `linear` that logs
+        # any call before exiting nonzero proves rejection happens before any read.
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            stream = base / "stream"
+            from octo_lite.runtime import initialize_stream
+            initialize_stream(
+                stream, stream_id="onb-chips-default", parent_session="epic-opus",
+                child_session="issue-opus", child_role="orchestrator", caller="epic-opus",
+                brief="Build it.\n", issue="TUR-1",
+            )
+            fake_bin = base / "bin"
+            fake_bin.mkdir()
+            call_log = base / "calls.log"
+            (fake_bin / "linear").write_text(
+                f"#!/usr/bin/env bash\nprintf 'linear %s\\n' \"$*\" >>\"{call_log}\"\nexit 99\n"
+            )
+            (fake_bin / "linear").chmod(0o755)
+            (fake_bin / "herdr-say").write_text("#!/usr/bin/env bash\nexit 99\n")
+            (fake_bin / "herdr-say").chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}")
+
+            result = subprocess.run(
+                [
+                    str(CONTROL), "linear-transition", "TUR-999",
+                    "--expected", "Todo", "--target", "In Progress",
+                    "--progress", str(base / "progress.toml"), "--status", str(base / "status.md"),
+                    "--parent", "epic-opus", "--outcome", "started", "--gate", "implement",
+                    "--caller", "issue-opus", "--stream", str(stream),
+                ],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("issue", result.stderr.lower())
+            self.assertFalse(call_log.exists())
 
     def test_linear_transition_routes_top_level_notification_through_operator_say(self) -> None:
         with tempfile.TemporaryDirectory() as td:
