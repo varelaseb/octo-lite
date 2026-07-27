@@ -2004,7 +2004,7 @@
 <p data-anchor="qa-verdict" id="qa-verdict">A fresh QA reviewer visually inspects the artifacts and grades every criterion pass, fail, or not evidenced.</p>
 <p data-anchor="qa-publication-boundary" id="qa-publication-boundary">QA capture produces artifacts and a manifest; a deterministic publication helper updates the evidence site and its index.</p>
 <p data-anchor="qa-publication-single-writer" id="qa-publication-single-writer">The publication helper is the sole writer of an issue's operator-visibility surface, creating the served-evidence link and writing the verdict card into the exact operator-read index location from the single durable evidence home, so no lane writes that surface directly and no second durable store exists.</p>
-<p data-anchor="qa-publication-surface-target" id="qa-publication-surface-target">The concrete operator-visibility surface, the served root, the verdict-index location, and the rendered-card verify command, is declared by the target repo <code>AGENTS.md</code>, and octo-lite owns only the publish mechanism and the readback contract.</p>
+<p data-anchor="qa-publication-surface-target" id="qa-publication-surface-target">The concrete operator-visibility surface, the served root and the verdict-index location, is declared by the target repo <code>AGENTS.md</code>, and octo-lite owns only the publish mechanism and the readback contract.</p>
 <p data-anchor="qa-publication-surface-required" id="qa-publication-surface-required">A target that has not fully declared the surface fails the publish loud rather than skipping it, so a missing declaration can never become a silent no-publish path.</p>
 <p data-anchor="qa-publication-performance" id="qa-publication-performance">Routine publication is incremental.</p>
 <p data-anchor="qa-publication-repair" id="qa-publication-repair">Full-archive repair is explicit and never the normal readiness path.</p>
@@ -2020,7 +2020,7 @@
 <p data-anchor="qa-backend-review" id="qa-backend-review">A fresh QA reviewer checks only nonvisual evidence sufficiency and per-criterion coverage, without repeating code review.</p>
 <p data-anchor="qa-backend-site" id="qa-backend-site">The evidence site serves the backend packet and QA verdict through the same operator acceptance path.</p>
 <p data-anchor="qa-hosting-boundary" id="qa-hosting-boundary">Evidence hosting remains target-repo operations; octo-lite adds no access-control, redaction, retention, or recurring broken-link subsystem.</p>
-<p data-anchor="qa-publication-readback" id="qa-publication-readback">Publication reads back the rendered operator card at the operator-read location, not only the written artifact, for the exact issue, PR, HEAD, verdict, story IDs, and criterion coverage before readiness, and no periodic evidence sweeper is required.</p>
+<p data-anchor="qa-publication-readback" id="qa-publication-readback">Publication reads back the written operator-read card, confirming it is readable and carries the exact issue, PR, HEAD, verdict, story IDs, and criterion coverage before readiness, and no periodic evidence sweeper is required.</p>
 <p data-anchor="qa-no-secrets" id="qa-no-secrets">Known secrets and credentials are never intentionally published.</p>
 </section>
 
