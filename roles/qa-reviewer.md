@@ -20,7 +20,7 @@ Judge exact-head QA evidence against every declared story and acceptance criteri
 
 ## Rules
 
-- Echo the exact bound inputs in the schema-forced acknowledgment before review. Stop on any mismatch.
+- Adversarial by default: treat the evidence as insufficient until the cited pixels prove each criterion, and refute on uncertainty. A pass is earned, never a default.
 - Inspect cited pixels. Logs and code only corroborate.
 - Missing, stale, mismatched, or unreadable evidence never passes.
 - Require video only where screenshots cannot prove the criterion.

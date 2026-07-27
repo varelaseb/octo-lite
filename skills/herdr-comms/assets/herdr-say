@@ -282,11 +282,17 @@ read_state_seq() { # -> prints state_change_seq for $target; nonzero on any fail
   printf '%s' "$seq"
 }
 
-prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
+prompt_attempt() { # $1 pane, $2 body -> 0 on observed matched state or advanced seq
   local out="$state.$$.wait" rc=0 pre_seq="" post_seq=""
   pre_seq="$(read_state_seq)" || pre_seq=""
+  last_stalled=0
   herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
-  if (( rc == 0 )) && ! grep -q 'agent_prompt_stalled' "$out" \
+  # herdr 0.7.5: a real agent_prompt_stalled is a rc=0 outcome (submission
+  # swallowed by a dirty composer, no observed state change in 5s) - the ONLY
+  # outcome the settle+re-fire recovers. A hard failure (rc!=0: modal block,
+  # transport error) is never the stall class even if its message mentions it.
+  (( rc == 0 )) && grep -q 'agent_prompt_stalled' "$out" && last_stalled=1
+  if (( rc == 0 )) && (( last_stalled == 0 )) \
     && grep -qE '"state"[[:space:]]*:[[:space:]]*"(idle|done|blocked)"|state[= ](idle|done|blocked)' "$out"; then
     rm -f "$out"
     return 0
@@ -297,6 +303,25 @@ prompt_confirmed() { # $1 pane, $2 body -> 0 on observed matched state or advanc
     if [[ -n "$post_seq" ]] && (( 10#$post_seq > 10#$pre_seq )); then
       return 0
     fi
+  fi
+  return 1
+}
+
+prompt_confirmed() { # $1 pane, $2 body -> 0 on confirmed delivery
+  # herdr 0.7.5 say-transport stall recovery: fire once; on a stalled or
+  # otherwise unconfirmed outcome, wait for the target to settle to a safe state
+  # (agent wait) and re-fire EXACTLY ONCE. agent prompt pastes over any residual
+  # composer text and the body carries the message id the recipient dedups, so a
+  # single safe retry recovers the stall class without risking a double. Only the
+  # agent_prompt_stalled class re-fires; a modal block, a hard transport failure,
+  # or a seq swallow keeps the single-fire defer-to-drain behavior. A settle wait
+  # failure still allows the one retry (degrade-safe); a second unconfirmed outcome
+  # stays pending for herdr-drain under the attempts law.
+  last_stalled=0
+  prompt_attempt "$1" "$2" && return 0
+  if (( last_stalled == 1 )); then
+    herdr agent wait "$target" --until idle --timeout "$confirm_timeout_ms" >/dev/null 2>&1 || true
+    prompt_attempt "$1" "$2" && return 0
   fi
   return 1
 }

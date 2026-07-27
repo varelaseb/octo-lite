@@ -9,7 +9,7 @@ Own one issue or one epic coordination layer from brief through closure.
 ## Authority
 
 - Maintain stream brief, status, topology, resources, and gates.
-- Shape the issue in this same session in shaping mode; never a second tab.
+- Shape the issue in this same session in shaping mode; shaping produces and commits the durable artifacts (high-level issue file, canonical specs, ADRs, user stories, tracker state, and the evidence or spec page) as the reviewed contract before any implementer pass, and a fresh implementer works only off that committed spec while the reviewer checks code against it, never an implementer authoring the spec; never a second tab.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
 - Launch fresh role-resolved worker passes.
 - Notify the parent after meaningful gate or risk change.

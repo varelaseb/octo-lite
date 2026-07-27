@@ -648,17 +648,6 @@ PROVISION_RECORD_INSTALL_CHECK_VALUES = frozenset({"clean", "drifted"})
 # installer itself refuses to replace a nonmatching target).
 INSTALLED_SURFACE_OWNER = "installed-surface-owner"
 
-# launch-provision-env-seam: the frozen stable seam names, in the frozen order.
-LANE_ENV_KEYS = (
-    "OCTO_WORKTREE",
-    "OCTO_WORKTREE_ROOT",
-    "OCTO_CONTROL_REPO",
-    "OCTO_REPO_SLUG",
-    "OCTO_STARTING_HEAD",
-    "OCTO_LANE",
-    "OCTO_PROVISION_RECORD",
-)
-
 
 def validate_provision_record(record: Mapping[str, Any]) -> None:
     """launch-provision-record-schema: any extra key, missing key, wrong type, or
@@ -1028,81 +1017,6 @@ def provision_lane_worktree(
             raise GateError("worktree unexpectedly dirty after provisioning")
 
         return LaneProvision(record=record, record_path=lane_record_path, install_check_owner_route=owner_route)
-
-
-def lane_invocation_env(provision: LaneProvision) -> tuple[Path, dict[str, str]]:
-    """launch-provision-env-seam: cwd is the provisioned worktree; env carries
-    exactly the 7 frozen OCTO_* names, without importing or editing
-    octo-loop-qa.js."""
-    record = provision.record
-    cwd = Path(record["worktree"])
-    values = {
-        "OCTO_WORKTREE": record["worktree"],
-        "OCTO_WORKTREE_ROOT": record["worktree_root"],
-        "OCTO_CONTROL_REPO": record["control_repo"],
-        "OCTO_REPO_SLUG": record["repo_slug"],
-        "OCTO_STARTING_HEAD": record["starting_head"],
-        "OCTO_LANE": record["lane"],
-        "OCTO_PROVISION_RECORD": str(provision.record_path),
-    }
-    env = {key: values[key] for key in LANE_ENV_KEYS}
-    return cwd, env
-
-
-def lane_env_from_record(
-    record_path: Path | str, *, expected_worktree: Path | str
-) -> dict[str, str]:
-    """launch-provision-env-seam: read the host-authored OUT-OF-TREE provision
-    record and return exactly the frozen OCTO_* env a host injects into the loop
-    process it starts. Fails closed on an unreadable record, a non-host source or
-    missing/extra field (validate_provision_record), or a record whose worktree
-    does not equal the spawn worktree, so a spawn can never inject a foreign
-    lane's env or a forged record. The launcher owns this read; a lane agent
-    never self-writes or self-reads its own trust root."""
-    record_path = Path(record_path).resolve()
-    expected_worktree = Path(expected_worktree).resolve()
-    try:
-        record = json.loads(record_path.read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        raise GateError("provision record unreadable") from error
-    validate_provision_record(record)
-    if Path(record["worktree"]).resolve() != expected_worktree:
-        raise GateError("provision record worktree does not match spawn worktree")
-    # launch-provision-record-out-of-tree: a genuine host record lives OUTSIDE the
-    # worktree tree. Reject a record path inside the worktree so a lane can never
-    # author a self-consistent record under its own tree and have it trusted as the
-    # host trust root (defense in depth over the host-supplied path).
-    if record_path == expected_worktree or expected_worktree in record_path.parents:
-        raise GateError("provision record must live outside the worktree tree")
-    _, env = lane_invocation_env(
-        LaneProvision(
-            record=record,
-            record_path=record_path,
-            install_check_owner_route=None,
-        )
-    )
-    # A frozen seam value carrying a newline or NUL could inject an extra host
-    # environment variable when a launcher serializes env line by line; reject any
-    # C0/C1 control character (including TAB, ESC, DEL) so no control byte reaches
-    # the launched process environment (launch-provision-env-seam).
-    for key, value in env.items():
-        if any(ord(char) < 0x20 or 0x7F <= ord(char) <= 0x9F for char in value):
-            raise GateError(f"provision record field has an illegal control character: {key}")
-    return env
-
-
-def run_lane_loop(
-    provision: LaneProvision,
-    envelope: Mapping[str, Any],
-    *,
-    runner: Callable[[Path, Mapping[str, str], Mapping[str, Any]], Any],
-) -> Any:
-    """launch-provision-identity-supersedes-interim (ruling-62 'runs the loop IN
-    it'): actually INVOKE the loop through the injected runner with the seam's
-    cwd, env, and the already-built envelope, proving this layer STARTS the loop
-    rather than only building params."""
-    cwd, env = lane_invocation_env(provision)
-    return runner(cwd, env, envelope)
 
 
 def _child_workspace_check(

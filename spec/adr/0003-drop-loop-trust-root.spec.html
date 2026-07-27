@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0003: drop the loop trust-root ceremony and independent observer</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header">
+<h1>ADR 0003: drop the loop trust-root ceremony and independent observer</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/role-runtime.spec.html">role runtime</a> / ADR 0003</nav>
+<p>Decisions closing the operator grill on octo-lite issue 13, 2026-07-24.</p>
+</header>
+
+<section data-anchor="status">
+<h2>Status</h2>
+<p data-anchor="status-value">Accepted.</p>
+</section>
+
+<section data-anchor="context">
+<h2>Context</h2>
+<p data-anchor="context-built-trust-root">Issue 13 first built a lane provisioning trust root so delivery loops could fire: a provision-record read, a frozen OCTO_* launch environment, an environment-equals-record cross-check, and identity, entrypoint-revalidation, gates-workflow-layer, and readback gates at loop entry.</p>
+<p data-anchor="context-observer-ceremony">The delivery loop separately carried an independent <code>tdd-observer</code> role that re-ran each committed red, green, and final HEAD in an isolated worktree, plus a host-gated push after observation, an acknowledgment echo, and a live-remote pre-push readback.</p>
+<p data-anchor="context-adr-0002">ADR 0002 had made observer machinery the only red guard, stating no relocation compensates.</p>
+<p data-anchor="context-operator-ruling">Operator ruling 2026-07-24 held there is literally no reason for these checks: a lane's branch and worktree are sufficient identity, and the loop should just run.</p>
+<p data-anchor="context-codex-down">Cross-model codex review is down, so the current adversarial guard is a fresh Opus code-reviewer, refute-on-uncertainty.</p>
+</section>
+
+<section data-anchor="decision">
+<h2>Decision</h2>
+<p data-anchor="decision-drop-loop-trust-root">The loop-entry trust root is removed wholesale: no provision-record read, no frozen-environment seam, no environment-equals-record cross-check, and no identity, entrypoint-revalidation, gates-workflow-layer, worker-claim, or readback gate; the loop derives its worktree from the process working directory and its branch from git and runs.</p>
+<p data-anchor="decision-keep-provisioning-cleanup">Host provisioning-record writing and <code>worktree_repo</code> cleanup ownership are retained, so the record exists for worktree provisioning and clean-abort cleanup proof rather than loop-entry identity.</p>
+<p data-anchor="decision-retire-observer">The independent <code>tdd-observer</code> role is retired from the roster, <code>roles.toml</code>, the generated adapters, and the model map, and the host pushes the verified branch directly with no observer replay, acknowledgment-echo gate, or pre-push readback.</p>
+<p data-anchor="decision-reviewer-is-guard">The fresh adversarial code-reviewer, refute-on-uncertainty, is the delivery-TDD guard, confirming from the committed red and green that the red genuinely failed, the green makes the named test pass, and no commit weakened, edited, or removed the bound test, while the implementer still commits spec-derived red then green.</p>
+<p data-anchor="decision-supersede-0002">This supersedes ADR 0002's honest-red decision that observer machinery is the only red guard and no relocation compensates: the guard relocates to the adversarial code-reviewer.</p>
+</section>
+
+<section data-anchor="consequences">
+<h2>Consequences</h2>
+<p data-anchor="consequence-simpler-loop">The delivery loop collapses to its per-mode essence, and the assert-and-accept gate lattice, the launch environment seam, and the observer replay are removed from the loop and its libraries.</p>
+<p data-anchor="consequence-guard-relocated">Delivery-TDD integrity now rests on adversarial code review rather than a mechanical observer re-run, and while codex is down that reviewer is a fresh Opus pass under a recorded operator waiver.</p>
+<p data-anchor="consequence-weaker-mechanical">Mechanical replay proof is gone, so a forged red or green is caught by review judgment rather than re-execution; this is an accepted weakening per operator ruling, revisited only on observed regression.</p>
+<p data-anchor="consequence-identity-simpler">Lane workspace identity is the process working directory and git branch, with no frozen environment or provision-record read at loop entry.</p>
+</section>
+
+<section data-anchor="related">
+<h2>Related</h2>
+<p data-anchor="related-issue">Origin: octo-lite issue 13.</p>
+<p data-anchor="related-specs">Amended: <a href="../domains/role-runtime.spec.html#launch-provisioning-trust-root">role-runtime provisioning trust root</a>, <a href="../domains/role-runtime.spec.html#loop-runs-on-cwd-and-branch">role-runtime loop runs on cwd and branch</a>, <a href="../domains/delivery-lifecycle.spec.html#delivery-tdd-reviewer-guard">delivery-lifecycle reviewer guard</a>.</p>
+<p data-anchor="related-supersedes">Supersedes: <a href="./0002-tdd-skill-vendoring.spec.html#decision-honest-red-dropped">ADR 0002 honest-red decision</a>.</p>
+</section>
+</article>
+</body>
+</html>

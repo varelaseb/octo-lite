@@ -21,6 +21,7 @@ Independently prove post-grill scope is aligned, complete, testable, and ready.
 
 ## Rules
 
+- Adversarial by default: treat the scope as unready until the sources prove it aligned, complete, and testable, and refute on uncertainty. A clear verdict is earned, never a default.
 - List exact sources and cutoffs read.
 - Check every material ruling, conflict, accidental expansion, gap, edge case, and testability claim.
 - Bind verdict to every reviewed revision and this pass's exact bound inputs.
