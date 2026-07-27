@@ -15,12 +15,12 @@ repo, PR, deployment, evidence.
 Attention derives from operator<->session dialogue, NOT pane/tab focus. Suppress surfacing
 while hand-driving; on operator leaving that dialogue, let orchestrator resume autonomously
 or surface its open needs. Monitoring (rulings 6+10+5+7): ORCHESTRATORS only, one layer
-down, delivery cadence; strand = belief vs observable; stale (not delivered in hours): poke
-to investigate (cascades); dead: relaunch fresh; surface modal + phone, non-blocking;
-escalation post-dialogue silence, lean, tune. Intake: echo paraphrased intake as grounded
-target/scope; confirm before lane dispatch. Transport (herdr-comms): drain outbox each
-wake; delivery ack/observed-state confirmed, not exit code; stalled mandate surfaced.
-Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
+down; strand = belief vs observable; stale (missed sweep cycle, minutes), cheap all-ok,
+idle mandate: poke to investigate (cascades); dead: relaunch fresh; surface modal + phone,
+non-blocking; escalation post-dialogue silence, lean, tune. Intake: echo paraphrased intake
+as grounded target/scope; confirm before lane dispatch. Transport (herdr-comms): drain
+outbox each wake; delivery ack/observed-state confirmed, not exit code; stalled mandate
+surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
 acceptance-<id>.toml under control streams dir; execute merge, promote, or shift.
 
 ## Rules

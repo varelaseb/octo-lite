@@ -144,15 +144,15 @@ class StrandAndDeliveryMonitoringTests(unittest.TestCase):
         )
 
     def test_meta_operator_pokes_stale_orchestrator_to_investigate(self) -> None:
-        # Ruling 10: orchestrator that has not delivered in hours is POKED to investigate.
+        # Ruling gh#32: one missed sweep cycle (minutes), cheap all-ok default, idle mandate poke.
         text = _lower(META_OPERATOR)
         self.assertTrue(
             "poke" in text or "poked" in text or "investigate" in text,
             "meta-operator.md must state: stale orchestrator is poked to investigate"
         )
         self.assertTrue(
-            "hour" in text or "cadence" in text,
-            "meta-operator.md must mention delivery cadence (hours threshold)"
+            ("minute" in text or "cycle" in text) and ("all-ok" in text or "all ok" in text),
+            "meta-operator.md must state minutes/cycle cadence and cheap all-ok default"
         )
 
     def test_meta_operator_relaunches_dead_orchestrator(self) -> None:
