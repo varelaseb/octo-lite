@@ -38,25 +38,10 @@ confirm_timeout_ms="${OCTO_PROMPT_CONFIRM_TIMEOUT_MS:-15000}"
 # proof only when the configured timeout exceeds the floor.
 FLOOR_MS=5000
 
-# gh#31 starvation bound (operator ruling, lean frame): a defer older than
-# OCTO_TRANSPORT_DEFER_MAX_AGE_S seconds since creation (default 900 = one 15m
-# sweep cycle) goes STALLED LOUD. One age bound off the existing created_at, no
-# counter: nothing waits past one sweep cycle unseen.
-defer_max_age_s="${OCTO_TRANSPORT_DEFER_MAX_AGE_S:-900}"
-[[ "$defer_max_age_s" =~ ^[1-9][0-9]*$ ]] || {
-  echo "herdr-drain: invalid OCTO_TRANSPORT_DEFER_MAX_AGE_S '$defer_max_age_s', using default 900" >&2
-  defer_max_age_s=900
-}
-
-# gh#31 starvation bound test (reads global created_at set per message in the
-# loop): 0 when the deferral has waited past one sweep cycle.
-deferral_aged_out() {
-  local created_epoch now_epoch
-  created_epoch="$(date -u -d "$created_at" +%s 2>/dev/null)" || return 1
-  now_epoch="$(date -u +%s)"
-  (( now_epoch - created_epoch >= defer_max_age_s )) && return 0
-  return 1
-}
+# gh#31 starvation bound lives in ONE place: operator-sweep ages a retryable
+# message past OCTO_TRANSPORT_DEFER_MAX_AGE_S to stalled every cycle, centrally
+# and independent of target liveness, so herdr-drain never needs to age. Drain
+# just fires-or-defers; the sweep is the universal backstop.
 
 # gh#31: per-message submission-correlated confirmation (replaces the global
 # state_change_seq heuristic). herdr 0.7.5 guarantees a submission from a
@@ -72,9 +57,9 @@ read_agent_status() { # prints agent_status for $target; nonzero on any failure
 }
 
 # Fire-eligible only into a non-working target (idle|done); working/blocked/
-# unknown DEFERS. Pane-form targets are addressed directly and bypass the gate.
+# unreadable DEFERS. Every target is gated (no pane-form bypass): confirmation
+# soundness needs a verified non-working start.
 fire_eligible() {
-  case "$target" in *:p*) return 0 ;; esac
   local st; st="$(read_agent_status)" || return 1
   case "$st" in idle|done) return 0 ;; *) return 1 ;; esac
 }
@@ -87,7 +72,7 @@ fire_eligible() {
 # Anything else fails closed as unconfirmed.
 prompt_confirmed() { # $1 pane, $2 body -> 0 on submission-correlated confirmation
   local out="$state.$$.wait" rc=0 type code astatus
-  herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
+  herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" 8>&- >"$out" 2>&1 || rc=$?
   code="$(jq -r 'if type=="object" then (.error.code // "") else "" end' "$out" 2>/dev/null)"
   if [[ "$code" == "agent_prompt_stalled" ]] || grep -q 'agent_prompt_stalled' "$out"; then
     rm -f "$out"; return 1
@@ -338,19 +323,21 @@ PY
         exec 9>&-
         continue
       fi
+      # gh#31 per-target serialization (non-blocking, deadlock-free): the gate
+      # read and the fire run under a per-target lock (fd 8) so a concurrent
+      # sender to this target cannot race the same idle window; a loser defers
+      # this pass. fd 9 (message) then fd 8 (target) are the only two locks held.
+      exec 8>>"$locks/target-$target.lock"
+      if ! flock -n 8; then
+        exec 8>&-
+        exec 9>&-
+        continue
+      fi
       # gh#31 busy-gate (target-state-gated ONLY): fire only into a non-working
-      # target; otherwise leave the item untouched for the next drain. But once
-      # the deferral has aged past one sweep cycle it stalls LOUD so the sweep
-      # surfaces it: a busy target can no longer defer forever.
+      # target; otherwise leave the item untouched for the next drain (the sweep
+      # ages a truly-stuck message centrally).
       if ! fire_eligible; then
-        created_at="${fields[created_at]}"
-        if deferral_aged_out; then
-          write_state stalled "$path" "$attempts"
-          rm -f "$item"
-          echo "message_id=$id status=stalled deferral_aged_out=1"
-          exec 9>&-
-          continue
-        fi
+        exec 8>&-
         exec 9>&-
         continue
       fi
@@ -394,5 +381,6 @@ PY
       # Unknown status: never transport and keep the item for inspection.
       ;;
   esac
+  exec 8>&- 2>/dev/null || true
   exec 9>&-
 done

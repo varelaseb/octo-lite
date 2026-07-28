@@ -3371,26 +3371,39 @@ class GH31StarvationAndConfirmTests(unittest.TestCase):
             self.assertFalse(self._fired(log), "never fired into the busy target")
 
     def test_deferral_ages_out_to_a_loud_stall(self):
-        # RULING: a defer older than one sweep cycle stalls LOUD so the sweep
-        # surfaces it; a busy target can no longer defer forever.
-        with tempfile.TemporaryDirectory() as td:
-            env, log = self._env(td)
-            env["FAKE_AGENT_STATUS"] = "working"
-            env["OCTO_TRANSPORT_DEFER_MAX_AGE_S"] = "60"  # old seed >> 60s
+        # RULING: a defer older than one sweep cycle ages out to a LOUD stall in
+        # ONE place - the operator-sweep - regardless of target liveness, modal,
+        # or self-working. herdr-drain no longer ages.
+        import os as _os
+        module = _load_operator_sweep_module()
+        for label, extra in (
+            ("plain-old", {}),
+            ("modal-blocked", {"status": "queued", "path": "modal-queued"}),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                env, _ = self._env(td)
+                state = self._seed(td, self.ID_1, kind="info", message="fyi", **extra)
+                report = module.transport_message_report(
+                    self._base(td) / "messages",
+                    self._base(td) / "inbox",
+                    self._base(td) / "locks",
+                    now=_os.path.getmtime(state) + 10**9,  # far past the 900s bound
+                )
+                self.assertIn(self.ID_1, "\n".join(report["stalled_lines"]))
+                self.assertIn("deferral_aged_out", "\n".join(report["stalled_lines"]))
+                self.assertEqual("stalled", self._load(state)["status"])
+        # A fresh (young) deferral is NOT aged out by the sweep.
+        with self.subTest("young-not-aged"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
             state = self._seed(td, self.ID_1, kind="info", message="fyi")
-            result = self._drain(env)
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertIn("deferral_aged_out=1", result.stdout)
-            self.assertEqual("stalled", self._load(state)["status"])
-            self.assertFalse((self._base(td) / "inbox/agent1" / self.ID_1).exists())
-            self.assertFalse(self._fired(log), "aged-out defer never fires")
-            module = _load_operator_sweep_module()
             report = module.transport_message_report(
                 self._base(td) / "messages",
                 self._base(td) / "inbox",
                 self._base(td) / "locks",
+                now=module._created_epoch(self._load(state)) + 10,  # 10s old << 900s
             )
-            self.assertIn(self.ID_1, "\n".join(report["stalled_lines"]))
+            self.assertNotIn("deferral_aged_out", "\n".join(report["stalled_lines"]))
+            self.assertEqual("pending", self._load(state)["status"])
 
     def test_agent_error_payload_is_not_confirmed_despite_delivery_tokens(self):
         # Codex HIGH-3: a hard error (agent_not_running) whose message embeds
@@ -3436,6 +3449,41 @@ class GH31StarvationAndConfirmTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             state = next(iter((self._base(td) / "messages").glob("*.toml")))
             self.assertEqual("completed", self._load(state)["status"])
+
+    def test_pane_form_target_is_gated_not_bypassed(self):
+        # Codex HIGH-4: pane-form targets no longer bypass the eligibility gate,
+        # so an unsound timeout/working confirmation can never apply to them.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_AGENT_STATUS"] = "working"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1:p1", "hi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertFalse(self._fired(log), "pane-form must be gated, not auto-fired")
+
+    def test_concurrent_same_target_is_serialized_by_per_target_lock(self):
+        # Codex BLOCKER-2: while another fire to the target is in flight (its
+        # per-target lock held), a send DEFERS rather than racing the idle
+        # window; this is what closes the two-message TOCTOU.
+        import fcntl
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            locks = self._base(td) / "locks"
+            locks.mkdir(parents=True, exist_ok=True)
+            tlock = locks / "target-agent1.lock"
+            tlock.write_text("")
+            with tlock.open("a") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                result = subprocess.run(
+                    ["bash", str(SAY), "--kind", "info", "agent1", "hi"],
+                    env=env, capture_output=True, text=True,
+                )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertFalse(self._fired(log), "must not fire while the target lock is held")
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            self.assertEqual("pending", self._load(state)["status"])
 
     def test_drain_all_delivers_to_each_idle_target_on_its_behalf(self):
         # RULING: a neutral caller drains every target's inbox, gated ONLY on

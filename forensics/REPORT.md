@@ -131,3 +131,33 @@ Recorded, NOT implemented (lean frame - beyond the minimum):
   mid-fire yields a non-confirming outcome), so this cannot cause a false
   positive, only an occasional honest retry. A per-target lock is recorded as a
   future hardening, not built now.
+
+## Iteration 3 (second codex verdict + operator rulings: cadence 15m, cleanest)
+
+Closed both surviving blockers:
+- STARVATION (all edge paths): the age bound now lives in ONE place, the
+  operator-sweep, which each cycle first runs `herdr-drain --all` (delivers every
+  target's deferred inbox on its behalf) then ages any still-retryable message
+  older than OCTO_TRANSPORT_DEFER_MAX_AGE_S (default 900s) to stalled under the
+  message lock, independent of target liveness / modal / self-working. The timer
+  cadence default is now 15m (= 900s), so "one sweep cycle" is exact. herdr-drain
+  no longer ages (deleted). This closes codex's aged-modal / aged-unresolved /
+  cap-behind-modal / no-periodic-drainer reproductions.
+- TOCTOU (now IMPLEMENTED, not deferred): a non-blocking per-target flock
+  (locks/target-<target>.lock, acquired after the message lock, dropped from the
+  fired subprocess so a crash cannot strand it) serializes gate-through-fire, so
+  two concurrent sends to one target cannot both fire into the same idle window.
+  The pane-form gate bypass is removed (all targets gated), so the confirmation
+  precondition always holds. My earlier "fails closed" claim was wrong; this is
+  the real close.
+
+Spec reconciled: message-eligibility-gate (no pane exception), message-
+starvation-bound (sweep central drive+age, 900s=one cycle), message-lock-law
+(per-target lock), message-retry-cap (+ sweep backstop), message-info-best-
+effort / message-state-before-transport ("confirmed" wording).
+
+Tests: tests/test_herdr.py 103/103 (+ pane-form-gated, per-target-lock
+serialization, sweep-aging incl modal). Pre-existing 8 operator_control sweep
+errors remain out of scope (git/linear fixtures, identical at base d5a07f7).
+Lean frame: single age bound retained; 5-defers counter still recorded-not-
+implemented. No remaining recorded-not-implemented holes from the review.

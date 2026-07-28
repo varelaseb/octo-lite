@@ -275,10 +275,10 @@ read_agent_status() { # prints agent_status for $target; nonzero on any failure
 }
 
 # Fire-eligible only into a non-working target (idle|done): a working, blocked,
-# or unknown target DEFERS so we never fire a send we cannot confirm. Pane-form
-# targets are addressed directly and bypass the gate.
+# or unreadable target DEFERS so we never fire a send we cannot confirm. Every
+# target is gated (no pane-form bypass): the confirmation soundness theorem
+# needs a verified non-working start.
 fire_eligible() {
-  case "$target" in *:p*) return 0 ;; esac
   local st; st="$(read_agent_status)" || return 1
   case "$st" in idle|done) return 0 ;; *) return 1 ;; esac
 }
@@ -292,9 +292,21 @@ if (( attempts >= cap )); then
   exit 75
 fi
 
-# Busy-gate: a fresh send into a busy target defers (young, no attempt burned);
-# the age-bounded stall lives in herdr-drain, which reprocesses aging deferrals.
-# An eligible (non-working) target proceeds to the single fire below.
+# gh#31 per-target serialization (non-blocking, so deadlock-free): concurrent
+# sends to ONE target must not both read idle and race their fires. The gate
+# read and the fire run under this lock; a loser DEFERS without burning an
+# attempt. The permanent per-message lock (fd 9) plus this per-target lock
+# (fd 8) are the only two a helper holds, always in that acquisition order.
+target_lock="$locks/target-$target.lock"
+exec 8>>"$target_lock"
+if ! flock -n 8; then
+  echo "herdr-say: target $target busy with another fire, deferred message_id=$id" >&2
+  exit 75
+fi
+
+# Busy-gate under the target lock: a fresh send into a busy target defers (young,
+# no attempt burned); the age-bounded stall is the sweep's job. An eligible
+# (non-working) target proceeds to the single fire below.
 if ! fire_eligible; then
   echo "herdr-say: target busy, deferred message_id=$id" >&2
   exit 75
@@ -316,7 +328,7 @@ write_locked_state pending deferred "$attempts"
 # malformed) fails closed as unconfirmed.
 prompt_confirmed() { # $1 pane, $2 body -> 0 on submission-correlated confirmation
   local out="$state.$$.wait" rc=0 type code astatus
-  herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" >"$out" 2>&1 || rc=$?
+  herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" 8>&- >"$out" 2>&1 || rc=$?
   code="$(jq -r 'if type=="object" then (.error.code // "") else "" end' "$out" 2>/dev/null)"
   # Swallow (structured or bare-text) only ever WITHHOLDS confirmation: safe.
   if [[ "$code" == "agent_prompt_stalled" ]] || grep -q 'agent_prompt_stalled' "$out"; then
