@@ -89,14 +89,17 @@ def _stall_state(state_path: Path, state: dict, locks_root: Path, message_id: st
             return False
         if str(fresh.get("delivery_path") or "") not in RETRYABLE_PATHS:
             return False
+        # Status-only rewrite that PRESERVES every parsed field (including any
+        # this helper does not know about), so aging never drops data.
         fresh["status"] = "stalled"
-        lines = ["schema_version = 1"]
-        for key in ("message_id", "target", "kind", "status", "delivery_path"):
-            lines.append(f"{key} = {json.dumps(str(fresh.get(key, '')))}")
-        if fresh.get("transport_attempts") is not None:
-            lines.append(f"transport_attempts = {int(fresh.get('transport_attempts', 0))}")
-        for key in ("artifact", "message", "created_at"):
-            lines.append(f"{key} = {json.dumps(str(fresh.get(key, '')))}")
+        lines = []
+        for key, value in fresh.items():
+            if isinstance(value, bool):
+                lines.append(f"{key} = {'true' if value else 'false'}")
+            elif isinstance(value, int):
+                lines.append(f"{key} = {value}")
+            else:
+                lines.append(f"{key} = {json.dumps(str(value))}")
         temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
         temporary.write_text("\n".join(lines) + "\n")
         temporary.replace(state_path)
@@ -164,19 +167,6 @@ def transport_message_report(messages_root: Path, inbox_root: Path, locks_root: 
             continue
         if path not in RETRYABLE_PATHS:
             continue
-        # gh#31 starvation bound: a retryable message older than the deferral
-        # max-age ages out to STALLED here, centrally, regardless of the target
-        # being unresolved, behind a modal, or itself the one draining. This is
-        # the single place the age bound lives (herdr-drain no longer ages), so
-        # nothing waits unseen past one sweep cycle.
-        created_epoch = _created_epoch(state)
-        if created_epoch is not None and (current - created_epoch) >= defer_max_age_s:
-            if _stall_state(state_path, state, locks_root, message_id):
-                stalled_lines.append(
-                    f"TRANSPORT STALLED: message {message_id} target={target} "
-                    f"deferral_aged_out - resume with herdr-drain --resume {message_id} or ack"
-                )
-            continue
         # L3 target grammar (ruling-87 fold): validated BEFORE deriving any
         # path, so ../../escape:p1 can never traverse out of the inbox root.
         if not MESSAGE_TARGET_RE.match(target):
@@ -186,6 +176,20 @@ def transport_message_report(messages_root: Path, inbox_root: Path, locks_root: 
             continue
         item = inbox_root / target / message_id
         if item.is_file():
+            # gh#31 starvation bound: a PUBLISHED, still-retryable message older
+            # than the deferral max-age ages out to STALLED here, centrally,
+            # regardless of the target being unresolved, behind a modal, or the
+            # one draining. This is the single place the age bound lives
+            # (herdr-drain no longer ages). An ITEMLESS retryable state is a
+            # publication crash and falls through to P1 repair below (recreated
+            # then delivered by a later --all), never aged.
+            created_epoch = _created_epoch(state)
+            if created_epoch is not None and (current - created_epoch) >= defer_max_age_s:
+                if _stall_state(state_path, state, locks_root, message_id):
+                    stalled_lines.append(
+                        f"TRANSPORT STALLED: message {message_id} target={target} "
+                        f"deferral_aged_out - resume with herdr-drain --resume {message_id} or ack"
+                    )
             continue
         try:
             mtime = state_path.stat().st_mtime

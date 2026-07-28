@@ -3450,6 +3450,40 @@ class GH31StarvationAndConfirmTests(unittest.TestCase):
             state = next(iter((self._base(td) / "messages").glob("*.toml")))
             self.assertEqual("completed", self._load(state)["status"])
 
+    def test_sweep_aging_preserves_unknown_fields(self):
+        # Codex MEDIUM-5: the status-only rewrite must preserve every field,
+        # including one this helper does not know about.
+        import os as _os
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = self._base(td)
+            (base / "messages").mkdir(parents=True, exist_ok=True)
+            state = base / "messages" / f"{self.ID_1}.toml"
+            state.write_text(
+                "schema_version = 1\n"
+                f'message_id = "{self.ID_1}"\n'
+                'target = "agent1"\n'
+                'kind = "info"\n'
+                'status = "pending"\n'
+                'delivery_path = "deferred"\n'
+                'transport_attempts = 2\n'
+                'artifact = ""\n'
+                'message = "hi"\n'
+                'created_at = "2026-07-22T00:00:00Z"\n'
+                'sentinel_field = "keep-me"\n'
+            )
+            inbox = base / "inbox" / "agent1"
+            inbox.mkdir(parents=True, exist_ok=True)
+            (inbox / self.ID_1).write_text(self.ID_1 + "\n")
+            module.transport_message_report(
+                base / "messages", base / "inbox", base / "locks",
+                now=_os.path.getmtime(state) + 10**9,
+            )
+            stored = self._load(state)
+            self.assertEqual("stalled", stored["status"])
+            self.assertEqual("keep-me", stored["sentinel_field"])
+            self.assertEqual(2, stored["transport_attempts"])
+
     def test_pane_form_target_is_gated_not_bypassed(self):
         # Codex HIGH-4: pane-form targets no longer bypass the eligibility gate,
         # so an unsound timeout/working confirmation can never apply to them.

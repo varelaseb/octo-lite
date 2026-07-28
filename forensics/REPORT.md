@@ -161,3 +161,29 @@ serialization, sweep-aging incl modal). Pre-existing 8 operator_control sweep
 errors remain out of scope (git/linear fixtures, identical at base d5a07f7).
 Lean frame: single age bound retained; 5-defers counter still recorded-not-
 implemented. No remaining recorded-not-implemented holes from the review.
+
+## Iteration 3.1 (third codex verdict - concrete fixes + lean-recorded residuals)
+
+Fixed (all concrete, correct, non-bloaty):
+- #3 order: the sweep now ages ONLY a PUBLISHED (item-present) retryable message;
+  an itemless retryable state (publication crash) falls through to P1 repair
+  (recreated + delivered by a later --all), never spuriously stalled.
+- #5: _stall_state does a status-only rewrite preserving EVERY parsed field
+  (sentinel-field test added), not a fixed field list.
+- #6: operator-timer now propagates OCTO_TRANSPORT_DEFER_MAX_AGE_S and
+  OCTO_PROMPT_CONFIRM_TIMEOUT_MS to the transient sweep unit.
+- #4: the normative state table gains the queued|pending(retryable) -> stalled
+  transition with actor operator-sweep.
+- #2: the starvation-bound anchor now states the honest worst-case (age threshold
+  plus one sweep interval / phase offset), not an inexact "one cycle".
+
+Recorded, NOT implemented (lean frame; dup-tolerant, no-delivery-guarantee
+transport - these are beyond-minimum, not real ship holes):
+- #1 pane-canonical locking + resolve-inside-lock + in-flight-retention. The
+  name-keyed per-target lock already serializes the REAL threat (two concurrent
+  sends to one agent NAME). Its residuals are edge/hypothetical: pane-form
+  targets are UNUSED in the codebase (verified), so the name-vs-pane alias race
+  cannot occur; name-rebind-mid-send and a crashed-parent-with-live-prompt window
+  are rare and absorbed by the transport's explicit duplicate tolerance. Building
+  pane-identity locking with in-flight retention would be the over-building the
+  lean frame forbids. Escalated to the operator for a ship-vs-keep-polishing call.

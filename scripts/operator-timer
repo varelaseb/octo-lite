@@ -60,7 +60,7 @@ fi
 # TUR-505 phase-1 (ruling-87 fold): the transient sweep unit does not inherit
 # the installing shell environment, so the transport knobs are propagated via
 # --setenv, same mechanism as the LINEAR_API_KEY propagation above.
-for transport_var in OCTO_REGISTRY_EXEMPT OCTO_PUBLICATION_REPAIR_SECONDS OCTO_TRANSPORT_ATTEMPT_CAP; do
+for transport_var in OCTO_REGISTRY_EXEMPT OCTO_PUBLICATION_REPAIR_SECONDS OCTO_TRANSPORT_ATTEMPT_CAP OCTO_TRANSPORT_DEFER_MAX_AGE_S OCTO_PROMPT_CONFIRM_TIMEOUT_MS; do
   if [[ -n "${!transport_var:-}" ]]; then
     setenv_args+=(--setenv="$transport_var=${!transport_var}")
   fi
