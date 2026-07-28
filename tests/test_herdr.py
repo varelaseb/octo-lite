@@ -3471,6 +3471,8 @@ class GH31StarvationAndConfirmTests(unittest.TestCase):
                 'message = "hi"\n'
                 'created_at = "2026-07-22T00:00:00Z"\n'
                 'sentinel_field = "keep-me"\n'
+                'sentinel_float = 1.5\n'
+                'sentinel_list = [1, 2, 3]\n'
             )
             inbox = base / "inbox" / "agent1"
             inbox.mkdir(parents=True, exist_ok=True)
@@ -3483,6 +3485,9 @@ class GH31StarvationAndConfirmTests(unittest.TestCase):
             self.assertEqual("stalled", stored["status"])
             self.assertEqual("keep-me", stored["sentinel_field"])
             self.assertEqual(2, stored["transport_attempts"])
+            # Non-string types survive byte-for-byte (raw-line replace, not re-emit).
+            self.assertEqual(1.5, stored["sentinel_float"])
+            self.assertEqual([1, 2, 3], stored["sentinel_list"])
 
     def test_pane_form_target_is_gated_not_bypassed(self):
         # Codex HIGH-4: pane-form targets no longer bypass the eligibility gate,

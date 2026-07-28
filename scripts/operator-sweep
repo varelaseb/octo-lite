@@ -71,8 +71,9 @@ def _stall_state(state_path: Path, state: dict, locks_root: Path, message_id: st
     """gh#31 starvation bound: rewrite a message state to status=stalled under
     the permanent per-message flock, preserving every other field. This is the
     ONE place a deferral ages out: it fires regardless of target liveness, modal,
-    or self-working, so a retryable message can never wait unseen past one sweep
-    cycle. Returns True when the stall was persisted."""
+    or self-working. The lock is non-blocking, so if a concurrent fire holds it
+    at this instant the stall defers to the next sweep (never hangs the sweep);
+    returns True only when the stall was persisted this cycle."""
     import fcntl
 
     locks_root.mkdir(parents=True, exist_ok=True)
@@ -89,19 +90,24 @@ def _stall_state(state_path: Path, state: dict, locks_root: Path, message_id: st
             return False
         if str(fresh.get("delivery_path") or "") not in RETRYABLE_PATHS:
             return False
-        # Status-only rewrite that PRESERVES every parsed field (including any
-        # this helper does not know about), so aging never drops data.
-        fresh["status"] = "stalled"
-        lines = []
-        for key, value in fresh.items():
-            if isinstance(value, bool):
-                lines.append(f"{key} = {'true' if value else 'false'}")
-            elif isinstance(value, int):
-                lines.append(f"{key} = {value}")
+        # Status-only line replacement: rewrite ONLY the top-level `status` line
+        # and copy every other line verbatim, so any field of any TOML type
+        # (string, int, float, array, table, date) is preserved byte-for-byte.
+        try:
+            raw = state_path.read_text()
+        except OSError:
+            return False
+        out, replaced = [], False
+        for line in raw.splitlines(keepends=True):
+            if not replaced and re.match(r"^status\s*=", line):
+                out.append("status = \"stalled\"" + ("\n" if line.endswith("\n") else ""))
+                replaced = True
             else:
-                lines.append(f"{key} = {json.dumps(str(value))}")
+                out.append(line)
+        if not replaced:
+            return False
         temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
-        temporary.write_text("\n".join(lines) + "\n")
+        temporary.write_text("".join(out))
         temporary.replace(state_path)
         return True
 

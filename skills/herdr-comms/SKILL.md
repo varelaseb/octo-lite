@@ -60,9 +60,11 @@ serialized by a non-blocking per-target lock (`locks/target-<target>.lock`) so
 a loser defers rather than racing the idle window. Retries are capped by
 `OCTO_TRANSPORT_ATTEMPT_CAP` (default 3, per epoch): at the cap the message
 goes stalled. A busy target defers, but the sweep stalls any retryable message
-older than `OCTO_TRANSPORT_DEFER_MAX_AGE_S` (default 900s = one sweep cycle),
-so nothing waits unseen past one cycle. A stalled message never auto-fires
-again and the sweep surfaces it loudly every cycle. `herdr-drain --resume <id>`
+older than `OCTO_TRANSPORT_DEFER_MAX_AGE_S` (default 900s), so a stuck message
+is surfaced within about the threshold plus one sweep interval (a further
+interval only on momentary lock contention), always bounded, never unseen. A
+stalled message never auto-fires again and the sweep surfaces it loudly every
+cycle. `herdr-drain --resume <id>`
 starts a new epoch (stalled to pending, attempts reset to 0). State reads, attempt
 increments, and fires all run under the permanent per-message flock
 `locks/<id>.lock`; nothing ever unlinks a lock. Reclamation is runbook-only:
