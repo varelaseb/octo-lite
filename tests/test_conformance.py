@@ -752,9 +752,19 @@ class CutoverConformanceTests(unittest.TestCase):
         implement = text[text.index("if (mode === 'implement')"):text.index("if (mode === 'code-review')")]
         self.assertIn("=== 'Shaped'", implement)
         self.assertNotIn("assertReadyEnvelope", text)
-        self.assertLess(implement.index("deriveDeliveryEntry("), implement.index("loopFire("))
+        # delivery-mode-envelope (ADR 0004): the envelope derivation is HOISTED before the mode
+        # dispatch, so EVERY mode derives its envelope from the three declared facts plus its mode
+        # inputs before its role spawn -- not only the implement branch. The derive invocation and its
+        # output-receipt journal precede the mode dispatch, and the implement branch no longer holds the
+        # derive.
+        dispatch_at = text.index("// ---- Mode dispatch")
+        self.assertLess(text.index("await deriveDeliveryEntry("), dispatch_at)
+        self.assertLess(text.index("delivery-entry-output-receipt"), dispatch_at)
+        self.assertNotIn("deriveDeliveryEntry(", implement)
+        # The one mechanical Shaped -> Todo loop fire still runs INSIDE the implement branch, after the
+        # entry gate and before the implementer spawn; Shaped never moves directly to In Progress.
         self.assertLess(implement.index("loopFire("), implement.index("spawnWorker('implementer'"))
-        self.assertIn("delivery-entry-output-receipt", implement)
+        self.assertIn("delivery-entry-output-receipt", text)
         self.assertIn("delivery spawn at Shaped rejected", text)
         # The single ruling-15 orchestrator-performed manual Shaped -> Todo for TUR-447
         # is the one recorded non-recurring exception, held in a comment, never in code.

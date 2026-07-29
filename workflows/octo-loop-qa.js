@@ -1028,17 +1028,48 @@ async function spawnReconciler(phaseTitle) {
   return reconciled
 }
 
-// ADR 0004 delivery entry. The caller declares exactly issue, PR, and head. One read-only pass derives
-// every remaining binding from canonical state. Derivation is verification: disagreements stop here,
-// before the mechanical Shaped -> Todo mutation, and the verified facts become the output receipt.
-async function deriveDeliveryEntry() {
-  const keys = Object.keys(A).sort()
-  if (JSON.stringify(keys) !== JSON.stringify(['head', 'issue', 'pr'])) {
-    throw new Error('delivery entry must declare exactly issue, PR, and head')
-  }
+// The exact set of fields this derivation assigns to A from canonical sources. A caller may NEVER
+// supply any of these; they are DERIVED, never declared (delivery-mode-anti-forgery, ADR 0004
+// decision-forgery-stays). This set must stay in sync with the A.<field> = ... assignments below.
+const DERIVED_ENTRY_FIELDS = new Set([
+  'repo_slug', 'worktree_root', 'worktree_root_common_dir', 'worktree_common_dir', 'worktree',
+  'repo', 'branch', 'starting_head', 'shaping_head', 'pr_head', 'pr_base', 'pr_url', 'reply_route',
+  'review_delivery', 'linear_state', 'linear_fingerprint', 'shaping_verdict', 'shaping_verdict_head',
+  'shaping_reviewer_receipt', 'spec_blobs', 'adr_blobs', 'contract_hash', 'brief', 'stream',
+  'caller', 'parent',
+])
+
+// The mode-input keys a caller may declare ALONGSIDE issue, PR, and head: the per-mode facts the
+// dispatch consumes (mode selector, review cycle, code-review/qa-review findings, served card + its
+// manifest and artifacts, the code-review/qa-review verdicts an acceptance package binds, the
+// user-facing flag, evidence card links, the what-changed summary, and the fix trigger). Any other key
+// is a forged binding and fails closed.
+const MODE_INPUT_KEYS = new Set([
+  'mode', 'cycle', 'findings', 'card_url', 'manifest', 'code_review', 'qa_review',
+  'user_facing', 'artifacts', 'summary', 'evidence_card_links', 'trigger',
+])
+
+// ADR 0004 delivery entry (delivery-mode-envelope, delivery-entry-gate-scope, delivery-mode-anti-forgery).
+// EVERY mode declares exactly issue, PR, and head plus its own mode inputs; one read-only pass derives
+// every remaining binding from canonical state, so a downstream mode (code-review / fix / evidence /
+// qa-review / acceptance) runs with the same host-verified envelope the implement entry binds, not an
+// unset one. Derivation is verification: the UNIVERSAL inconsistencies (worktree-head disagreement,
+// foreign-issue binding, missing canonical source, containment escape) stop every mode here; the
+// four-way head agreement and the Shaped/Todo entry-state gate are IMPLEMENT-entry only, because a
+// downstream mode derives at its own advanced head. The verified facts become the output receipt.
+async function deriveDeliveryEntry(mode) {
   const issue = requiredNonEmptyString(A.issue, 'declared issue')
   requiredPrNumber(A.pr, 'declared PR')
   const head = requiredNonEmptyString(A.head, 'declared head')
+  for (const key of Object.keys(A)) {
+    if (key === 'issue' || key === 'pr' || key === 'head') continue
+    if (DERIVED_ENTRY_FIELDS.has(key)) {
+      throw new Error(`delivery entry rejected: caller may not supply the derived field ${key}`)
+    }
+    if (!MODE_INPUT_KEYS.has(key)) {
+      throw new Error(`delivery entry must declare only issue, PR, head, and mode inputs; unexpected key ${key}`)
+    }
+  }
   const derived = await agent([
     `Derive delivery entry for issue ${issue}, PR ${A.pr}, head ${head}. One read-only pass; never mutate.`,
     'Read every remaining fact from its canonical source. Never copy a caller-supplied derived field.',
@@ -1066,16 +1097,14 @@ async function deriveDeliveryEntry() {
   })
   if (derived === null) throw new Error('delivery entry derivation returned no result')
 
-  for (const [label, actual] of [
-    ['PR head', derived.pr_head],
-    ['worktree head', derived.worktree_head],
-    ['shaping-verdict head', derived.shaping_verdict_head],
-  ]) {
-    if (requiredNonEmptyString(actual, `derived ${label}`) !== head) {
-      throw new Error(`delivery entry head inconsistency: declared head ${head} disagrees with ${label} ${actual}`)
-    }
+  // UNIVERSAL: the loop runs on the worktree, so the worktree the derivation reads must be at the
+  // declared head for every mode; a mode advanced to a different head is inconsistent.
+  if (requiredNonEmptyString(derived.worktree_head, 'derived worktree head') !== head) {
+    throw new Error(`delivery entry head inconsistency: declared head ${head} disagrees with worktree head ${derived.worktree_head}`)
   }
 
+  // UNIVERSAL: one orchestrator per issue; the Linear issue, worktree lane, branch, and PR must all own
+  // the declared issue for every mode (a foreign binding is a lane collision, not an entry concern).
   const issueBindings = [
     derived.linear_issue,
     derived.lane_issue,
@@ -1088,14 +1117,30 @@ async function deriveDeliveryEntry() {
       `and PR must own ${issue}; spawn a lane for ${issue}`,
     )
   }
-  if (derived.shaping_verdict !== 'clear') {
-    throw new Error('delivery entry rejected: derived shaping verdict is not clear')
-  }
-  if (!['Shaped', 'Todo'].includes(derived.linear_state)) {
-    throw new Error(`delivery entry rejected: Linear state ${derived.linear_state} is not Shaped or Todo`)
-  }
+  // UNIVERSAL: the canonical sources must be present at the derived head for every mode.
   requiredNonEmptyArray(derived.spec_blobs, 'derived spec blobs')
   if (!Array.isArray(derived.adr_blobs)) throw new Error('derived ADR blobs required')
+
+  // IMPLEMENT-ENTRY ONLY (delivery-entry-gate-scope): the four-way head agreement plus the clear
+  // shaping verdict and the Shaped/Todo entry-state gate guard the ONE mechanical Shaped -> Todo entry.
+  // A downstream mode derives at its own advanced head and past the entry, so these do not apply.
+  const implementEntry = mode === 'implement'
+  if (implementEntry) {
+    for (const [label, actual] of [
+      ['PR head', derived.pr_head],
+      ['shaping-verdict head', derived.shaping_verdict_head],
+    ]) {
+      if (requiredNonEmptyString(actual, `derived ${label}`) !== head) {
+        throw new Error(`delivery entry head inconsistency: declared head ${head} disagrees with ${label} ${actual}`)
+      }
+    }
+    if (derived.shaping_verdict !== 'clear') {
+      throw new Error('delivery entry rejected: derived shaping verdict is not clear')
+    }
+    if (!['Shaped', 'Todo'].includes(derived.linear_state)) {
+      throw new Error(`delivery entry rejected: Linear state ${derived.linear_state} is not Shaped or Todo`)
+    }
+  }
 
   A.repo_slug = assertRepoSlug(derived.repo_slug, 'derived repo slug')
   A.worktree_root = requiredNonEmptyString(derived.worktree_root, 'derived worktree root')
@@ -1187,12 +1232,25 @@ async function postEvidenceCard(phaseTitle, kind, head, manifest, artifacts) {
   return requiredNonEmptyString(published.card_url, `${kind} evidence card URL`)
 }
 
+// ---- Delivery-entry derivation, run BEFORE the mode dispatch for the SIX DELIVERY modes only
+// (delivery-mode-envelope, delivery-mode-envelope-scope). Each delivery mode derives the same envelope
+// from the three declared facts plus its own mode inputs before its role spawn, so a downstream delivery
+// mode never spawns with an unset linear_state, worktree, contract_hash, brief, or spec_blobs, and the
+// verified facts are journalled as the output receipt. The two NON-delivery modes reconcile and
+// shaping-review are EXCLUDED: their callers legitimately pre-supply a derived context envelope, so
+// running the derive (and its anti-forgery derived-field guard) over them would wrongly reject them.
+const DELIVERY_MODES = new Set([
+  'implement', 'code-review', 'fix', 'evidence', 'qa-review', 'acceptance',
+])
+if (DELIVERY_MODES.has(mode)) {
+  const deliveryReceipt = await deriveDeliveryEntry(mode)
+  log(`journal delivery-entry-output-receipt ${JSON.stringify(deliveryReceipt)}`)
+}
+
 // ---- Mode dispatch (loop-runs-on-cwd-and-branch). Each mode spawns the right resolved role, moves the
 // tracker state at the mode boundary, and posts evidence; acceptance builds+posts+sends the package. ----
 
 if (mode === 'implement') {
-  const receipt = await deriveDeliveryEntry()
-  log(`journal delivery-entry-output-receipt ${JSON.stringify(receipt)}`)
   // Delivery entry: at Shaped this loop performs the one mechanical Shaped -> Todo loop fire and verifies
   // the Todo readback before the implementer spawns (delivery-entry-gate, linear-loop-fire-transition);
   // Shaped never moves directly to In Progress. The single ruling-15 orchestrator-performed manual
