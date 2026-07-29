@@ -477,6 +477,73 @@ test('acceptance mode fails closed without a satisfied exact-head qa-review verd
   ]), /satisfied exact-head qa-review/)
 })
 
+// ---- reconcile mode: a NON-delivery mode (delivery-mode-envelope-scope). Its caller LEGITIMATELY
+// pre-supplies the derived context envelope (worktree, common-dirs, repo, repo_slug, issue) that
+// spawnReconciler consumes directly. The delivery-entry derivation and its anti-forgery derived-field
+// guard are DELIVERY-mode-only and must NOT run here; otherwise the guard rejects the normal reconcile
+// envelope ("caller may not supply the derived field ..."). ----
+function reconcileEnvelope(overrides = {}) {
+  return {
+    mode: 'reconcile',
+    issue: ISSUE, pr: PR, head: HEAD,
+    repo: REPO, repo_slug: REPO_SLUG,
+    worktree_root: WORKTREE_ROOT, worktree: WORKTREE_REL,
+    worktree_common_dir: WORKTREE_COMMON_DIR, worktree_root_common_dir: WORKTREE_COMMON_DIR,
+    starting_head: HEAD,
+    ...overrides,
+  }
+}
+
+test('reconcile mode classifies with its caller-supplied context and never runs the delivery-entry derive', async () => {
+  const { result, calls } = await runMode(reconcileEnvelope(), [
+    ['reconciler-runtime:', RESOLVED_RECONCILER_RUNTIME],
+    ['reconciler:', { classification: 'unchanged', needs_fable: false, deltas: [] }],
+  ])
+  assert.equal(result.stage, 'reconcile-classified')
+  assert.equal(result.classification, 'unchanged')
+  assert.equal(result.needs_fable, false)
+  const labels = calls.map((c) => c.label)
+  // The delivery-entry derivation is DELIVERY-mode-only: a non-delivery reconcile pass never runs it,
+  // so its anti-forgery guard never rejects the caller-supplied context envelope.
+  assert.ok(!labels.some((l) => l.startsWith('delivery-entry-derive:')), 'reconcile must not run the delivery-entry derive')
+  assert.ok(labels.some((l) => l.startsWith('reconciler:')), 'the reconciler spawned from the caller-supplied context')
+})
+
+// ---- shaping-review mode: a NON-delivery mode (delivery-mode-envelope-scope). Its caller LEGITIMATELY
+// pre-supplies the derived context envelope the relay spawn path (journalledBoundInputs + resolveRuntime)
+// requires: worktree/common-dirs/repo/repo_slug/issue/pr/linear_state/brief/contract_hash/spec_blobs/head.
+// The delivery-entry derivation and its anti-forgery guard must NOT run here. ----
+function shapingReviewEnvelope(overrides = {}) {
+  return {
+    mode: 'shaping-review',
+    issue: ISSUE, pr: PR, head: HEAD, shaping_head: HEAD,
+    repo: REPO, repo_slug: REPO_SLUG,
+    worktree_root: WORKTREE_ROOT, worktree: WORKTREE_REL,
+    worktree_common_dir: WORKTREE_COMMON_DIR, worktree_root_common_dir: WORKTREE_COMMON_DIR,
+    linear_state: 'Shaped', brief: 'shape-review the signed issue',
+    spec_blobs: SPEC_BLOBS, contract_hash: CONTRACT,
+    ...overrides,
+  }
+}
+
+test('shaping-review mode reviews through the relay with its caller-supplied context and never runs the delivery-entry derive', async () => {
+  const payload = JSON.stringify({ verdict: 'clear', findings: [], comment_url: `${PR_URL}#shaping` })
+  const { result, calls } = await runMode(shapingReviewEnvelope(), [
+    ['shaping-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+    ['shaping-reviewer-relay:', relayResult(payload)],
+    ['shaping-reviewer-rollout:', rolloutFor(payload)],
+    ['shaping-reviewer:', { head: HEAD, verdict: 'clear', findings: [], comment_url: `${PR_URL}#shaping` }],
+  ])
+  assert.equal(result.stage, 'shaping-review-verdict')
+  assert.equal(result.head, HEAD)
+  const labels = calls.map((c) => c.label)
+  assert.ok(!labels.some((l) => l.startsWith('delivery-entry-derive:')), 'shaping-review must not run the delivery-entry derive')
+  // The shaping-reviewer runs through the retained relay path with independent rollout provenance.
+  const relayAt = labels.findIndex((l) => l.startsWith('shaping-reviewer-relay:'))
+  const rolloutAt = labels.findIndex((l) => l.startsWith('shaping-reviewer-rollout:'))
+  assert.ok(relayAt >= 0 && rolloutAt > relayAt, 'shaping-review runs the relay then the independent rollout read')
+})
+
 // ---- removed-gates guard: ADR 0003 trust-root/observer/readback/launch-revision symbols are gone ----
 test('removed-gates guard: the ADR-0003 trust-root, observer, readback, and launch-revision symbols are gone', () => {
   const removed = [
