@@ -10,9 +10,11 @@
 // A companion removed-gates guard asserts the ADR-0003 trust-root/observer/readback/launch-revision
 // symbols are gone from the loop and that no mode calls them, while the RETAINED OpenAI reviewer
 // relay-provenance path (spawnOpenaiReviewer) remains.
-import test from 'node:test'
+import test, { before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -33,15 +35,52 @@ function loadLoop() {
   )
 }
 
-const REPO = '/root/octo-lite'
 const REPO_SLUG = 'varelaseb/octo-lite'
 const ISSUE = 'TUR-13'
 const PR = 21
 const PR_URL = `https://github.com/${REPO_SLUG}/pull/21`
-const WORKTREE_ROOT = '/root'
-const WORKTREE_REL = 'octo-lite-issue13-wt'
-const WORKTREE_ABS = `${WORKTREE_ROOT}/${WORKTREE_REL}`
 const BRANCH = 'octo-lite/issue13-drop-loop-trust'
+
+// The embedded loop calls the REAL assertContainment (git-linkage OWNERSHIP predicate) on
+// A.worktree_root + A.worktree at admission and at every spawn. This fixture therefore drives the
+// composed runtime over a REAL repository and a REAL linked sibling worktree, so the production
+// containment path stays exercised end to end (a synthetic path with no on-disk .git linkage would be
+// correctly rejected as an escape by the ownership predicate). WORKTREE_ROOT is the repository (the
+// containment root); WORKTREE_ABS is the real sibling worktree `git worktree add` created, whose .git
+// resolves bidirectionally into the repository's worktrees set; WORKTREE_REL is the root-relative path
+// to it. Populated in before(), torn down in after().
+let TMP_DIR
+let REPO
+let WORKTREE_ROOT
+let WORKTREE_REL
+let WORKTREE_ABS
+
+function git(cwd, ...args) {
+  execFileSync('git', args, { cwd, stdio: 'pipe' })
+}
+
+before(() => {
+  TMP_DIR = realpathSync(mkdtempSync(join(tmpdir(), 'octo-loop-modes-')))
+  const repo = join(TMP_DIR, 'repo')
+  mkdirSync(repo)
+  git(repo, 'init', '-q')
+  git(repo, 'config', 'user.email', 't@t')
+  git(repo, 'config', 'user.name', 't')
+  writeFileSync(join(repo, 'f'), 'x')
+  git(repo, 'add', 'f')
+  git(repo, 'commit', '-qm', 'init')
+  // Real linked sibling worktree: `git worktree add ../sib` writes bidirectional .git linkage back into
+  // repo/.git/worktrees/sib, so its git-common-dir equals the repo's own and assertContainment admits it.
+  git(repo, 'worktree', 'add', '-q', join(TMP_DIR, 'sib'))
+  REPO = repo
+  WORKTREE_ROOT = repo
+  WORKTREE_ABS = join(TMP_DIR, 'sib')
+  WORKTREE_REL = '../sib'
+})
+
+after(() => {
+  if (TMP_DIR) rmSync(TMP_DIR, { recursive: true, force: true })
+})
 const HEAD = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const NEWHEAD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 const SPEC_BLOBS = ['spec/domains/role-runtime.spec.html:loop-runs-on-cwd-and-branch']

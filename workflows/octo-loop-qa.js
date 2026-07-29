@@ -115,17 +115,64 @@ function posixResolve(...segments) {
   return `/${parts.join('/')}`
 }
 
-// Worktree containment (role-runtime launch-containment): checked exactly at admission and at child
-// subagent spawn; a wrong or escaping worktree path never spawns.
-function assertContainment(worktreeRoot, worktreePath) {
+// Default git-linkage reader over the real filesystem. gates.mjs stays module-load-free (no import,
+// no require, no import()) so it embeds verbatim in the Workflow loop, so it reaches node:fs through
+// process.getBuiltinModule, which the embed load-guard permits. Returns the shape of a `.git` path:
+// a directory (repo top-level), a file (a linked-worktree pointer, content carried), or missing. Tests
+// inject a reader over synthetic linkage; the pure predicate never reads the filesystem itself.
+function defaultReadGit(gitPath) {
+  const fs = process.getBuiltinModule('node:fs')
+  let stat
+  try {
+    stat = fs.statSync(gitPath)
+  } catch {
+    return { type: 'missing' }
+  }
+  if (stat.isDirectory()) return { type: 'dir' }
+  return { type: 'file', content: fs.readFileSync(gitPath, 'utf8') }
+}
+
+// Git-common-dir of a worktree via its `.git` linkage, or null when the linkage is not a valid worktree
+// of a repository. A `.git` DIRECTORY is the repository's own common dir (a top-level working tree). A
+// `.git` FILE `gitdir: <dir>/worktrees/<name>` names a linked worktree whose common dir is <dir>, and is
+// accepted only when that worktrees entry's own `gitdir` points back to this `.git` (bidirectional
+// linkage), so a forged pointer stolen into a repository's worktrees set is rejected as not-a-worktree.
+function gitCommonDir(worktree, readGit) {
+  const gitPath = `${worktree}${POSIX_SEP}.git`
+  const dotGit = readGit(gitPath)
+  if (dotGit.type === 'dir') return gitPath
+  if (dotGit.type === 'file') {
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(dotGit.content)
+    if (match) {
+      const entry = posixResolve(match[1])
+      const common = /^(.*)\/worktrees\/[^/]+$/.exec(entry)
+      if (common) {
+        const back = readGit(`${entry}${POSIX_SEP}gitdir`)
+        if (back.type === 'file' && posixResolve(back.content.trim()) === gitPath) return common[1]
+      }
+    }
+  }
+  return null
+}
+
+// Worktree containment (role-runtime launch-containment, launch-containment-integrity): containment is
+// a git-LINKAGE OWNERSHIP property, not path-prefix nesting. The candidate BELONGS to the repository iff
+// its resolved git-common-dir equals the repository's own git-common-dir, so the equal repository-root
+// path (candidate is the repository's own top-level working tree) and a standard sibling worktree
+// (`git worktree add ../name`, whose `.git` resolves bidirectionally into that repository's worktrees
+// set) are both admitted, while a path whose git linkage belongs to ANOTHER repository, or a forged
+// pointer into this repository's worktrees set, is rejected as an escape. This matches the integrity
+// property required at provisioning by launch-provision-verify (git-common-dir belongs to the repo).
+// worktreeRoot names the repository; the candidate resolves against it. Checked at admission and at
+// child subagent spawn. readGit is injected for testability, defaulting to the real-fs reader.
+function assertContainment(worktreeRoot, worktreePath, readGit = defaultReadGit) {
   required(worktreeRoot, 'worktree root')
   required(worktreePath, 'worker worktree')
   const root = posixResolve(worktreeRoot)
   const resolved = posixResolve(root, worktreePath)
-  if (!resolved.startsWith(root + POSIX_SEP)) {
-    throw new Error(`worktree ${worktreePath} escapes worktree root ${worktreeRoot}`)
-  }
-  return resolved
+  const expected = gitCommonDir(root, readGit)
+  if (expected !== null && gitCommonDir(resolved, readGit) === expected) return resolved
+  throw new Error(`worktree ${worktreePath} escapes worktree root ${worktreeRoot}`)
 }
 
 // The delivery roles (role-runtime launch-purpose-delivery-roles). ADR 0003 retired the independent
