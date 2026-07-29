@@ -54,6 +54,10 @@ let REPO
 let WORKTREE_ROOT
 let WORKTREE_REL
 let WORKTREE_ABS
+// The absolute git-common-dir the host derives for BOTH the worktree and the worktree_root. The linked
+// sibling worktree and its repository share one common-dir (repo/.git), so the pure sandbox containment
+// gate (git-common-dir equality) admits. Populated in before().
+let WORKTREE_COMMON_DIR
 
 function git(cwd, ...args) {
   execFileSync('git', args, { cwd, stdio: 'pipe' })
@@ -76,6 +80,11 @@ before(() => {
   WORKTREE_ROOT = repo
   WORKTREE_ABS = join(TMP_DIR, 'sib')
   WORKTREE_REL = '../sib'
+  // Real absolute git-common-dir shared by the repo and its linked sibling worktree.
+  WORKTREE_COMMON_DIR = execFileSync(
+    'git', ['-C', repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+    { encoding: 'utf8' },
+  ).trim()
 })
 
 after(() => {
@@ -137,6 +146,7 @@ function readyEnvelope(overrides = {}) {
     contract_hash: CONTRACT,
     brief: 'do the work',
     worktree_root: WORKTREE_ROOT, worktree: WORKTREE_REL,
+    worktree_common_dir: WORKTREE_COMMON_DIR, worktree_root_common_dir: WORKTREE_COMMON_DIR,
     loop_fire_args: '--reason ship',
     spawn_id: 'spawn-1', parent: 'orchestrator', reply_route: PR_URL,
     review_delivery: 'pr-comment', execution_location: 'local',
@@ -161,6 +171,8 @@ function derivedDeliveryEntry(overrides = {}) {
     worktree: WORKTREE_ABS,
     worktree_root: WORKTREE_ROOT,
     worktree_head: HEAD,
+    worktree_common_dir: WORKTREE_COMMON_DIR,
+    worktree_root_common_dir: WORKTREE_COMMON_DIR,
     lane: WORKTREE_REL,
     lane_issue: ISSUE,
     branch: BRANCH,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import tempfile
@@ -100,7 +102,81 @@ def static_import_specifiers(text: str) -> list[str]:
     return specifiers
 
 
+# Node harness (CommonJS) that mirrors the delivery-loop Workflow interpreter: it extracts the embedded
+# containment gate from the loop and runs it inside a node:vm context whose globals do NOT include
+# process, require, or module, then calls assertContainment with host-derived git-common-dir args only.
+# The harness process itself keeps require/process (to read the file and run vm); ONLY the vm context is
+# stripped, exactly as the sandbox strips them. It reports whether the gate decided containment and
+# whether any call raised, so the Python test can assert no ReferenceError ('process is not defined').
+SANDBOX_GATE_HARNESS = r"""'use strict';
+const fs = require('node:fs');
+const vm = require('node:vm');
+const loop = fs.readFileSync(process.argv[2], 'utf8');
+const begin = '// GATES-EMBED-BEGIN\n';
+const end = '// GATES-EMBED-END\n';
+const region = loop.slice(loop.indexOf(begin) + begin.length, loop.indexOf(end));
+const context = {};
+vm.createContext(context);
+vm.runInContext(region, context, { filename: 'embedded-gates.js' });
+const out = { admit: null, admit_error: null, reject_threw: false, reject_error: null };
+const repoCommon = '/root/repo/.git';
+try {
+  out.admit = context.assertContainment(repoCommon, repoCommon);
+} catch (e) {
+  out.admit_error = { name: e.name, message: e.message };
+}
+try {
+  context.assertContainment(repoCommon, '/root/other/.git');
+} catch (e) {
+  out.reject_threw = true;
+  out.reject_error = { name: e.name, message: e.message };
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
 class CutoverConformanceTests(unittest.TestCase):
+    def _run_sandbox_gate_harness(self) -> dict:
+        with tempfile.NamedTemporaryFile("w", suffix=".cjs", delete=False) as handle:
+            handle.write(SANDBOX_GATE_HARNESS)
+            harness_path = handle.name
+        try:
+            proc = subprocess.run(
+                ["node", harness_path, str(ROOT / "workflows/octo-loop-qa.js")],
+                capture_output=True, text=True,
+            )
+        finally:
+            os.unlink(harness_path)
+        self.assertEqual(0, proc.returncode, f"sandbox gate harness crashed: {proc.stderr}")
+        return json.loads(proc.stdout)
+
+    def test_embedded_containment_gate_decides_in_a_process_free_vm_sandbox(self) -> None:
+        # role-runtime launch-containment-sandbox-safe, launch-containment-sandbox-guard: the delivery
+        # loop's embedded containment gate must decide containment inside the Workflow interpreter, which
+        # has no process, filesystem, or module access. Executed in a node:vm context with no process /
+        # require / module globals, assertContainment must admit equal git-common-dirs and reject a
+        # differing one, raising NO ReferenceError. Against the prior process.getBuiltinModule reader the
+        # first call was RED with 'process is not defined'; the pure gate is GREEN.
+        out = self._run_sandbox_gate_harness()
+        self.assertIsNone(out["admit_error"], f"sandbox gate raised on admit: {out['admit_error']}")
+        self.assertTrue(out["admit"], "gate must decide (admit) equal git-common-dirs")
+        self.assertTrue(out["reject_threw"], "gate must reject a differing git-common-dir")
+        self.assertNotEqual(
+            "ReferenceError", (out["reject_error"] or {}).get("name"),
+            f"sandbox gate raised a ReferenceError on reject: {out['reject_error']}",
+        )
+        self.assertRegex(out["reject_error"]["message"], "escapes")
+
+    def test_embedded_gate_references_no_process_or_builtin_module(self) -> None:
+        # role-runtime launch-containment-sandbox-guard: neither the embedded loop nor its canonical gate
+        # source may reference process or getBuiltinModule in code, because the Workflow interpreter lacks
+        # them. Comments and prose are stripped so a benign 'the process working directory' string never
+        # trips this; only a real code reference (`process.<member>` or getBuiltinModule) fails.
+        for name in ("workflows/octo-loop-qa.js", "workflows/lib/gates.mjs"):
+            code = strip_line_and_block_comments((ROOT / name).read_text())
+            self.assertNotRegex(code, r"\bprocess\s*\.", f"{name}: forbidden process.<member> reference")
+            self.assertNotRegex(code, r"\bgetBuiltinModule\b", f"{name}: forbidden getBuiltinModule reference")
+
     def test_every_skill_has_compact_style_contract(self) -> None:
         skills = sorted((ROOT / "skills").glob("*/SKILL.md"))
         self.assertTrue(skills)

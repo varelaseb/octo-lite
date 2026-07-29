@@ -115,63 +115,25 @@ function posixResolve(...segments) {
   return `/${parts.join('/')}`
 }
 
-// Default git-linkage reader over the real filesystem. gates.mjs stays module-load-free (no import,
-// no require, no import()) so it embeds verbatim in the Workflow loop, so it reaches node:fs through
-// process.getBuiltinModule, which the embed load-guard permits. Returns the shape of a `.git` path:
-// a directory (repo top-level), a file (a linked-worktree pointer, content carried), or missing. Tests
-// inject a reader over synthetic linkage; the pure predicate never reads the filesystem itself.
-function defaultReadGit(gitPath) {
-  const fs = process.getBuiltinModule('node:fs')
-  let stat
-  try {
-    stat = fs.statSync(gitPath)
-  } catch {
-    return { type: 'missing' }
+// Worktree containment (role-runtime launch-containment, launch-containment-integrity,
+// launch-containment-sandbox-safe, launch-containment-sandbox-guard): containment is a git-LINKAGE
+// OWNERSHIP property, not path-prefix nesting. The candidate BELONGS to the repository iff its
+// git-common-dir equals the repository's own git-common-dir, so a sibling worktree (`git worktree add
+// ../name`, whose common-dir resolves back to that repository) and the repository's own top-level
+// working tree (equal common-dir) are both admitted, while a path whose git linkage belongs to ANOTHER
+// repository (a different common-dir) is rejected as an escape. This gate runs inside the delivery-loop
+// Workflow interpreter, which has no host process, no filesystem, and no module access, so it NEVER
+// reads git linkage itself: real git is the linkage authority (git rev-parse --git-common-dir already
+// validates a genuine worktree) and the read-only delivery-entry derivation agent host-derives both
+// absolute common-dirs on the host. The gate is a PURE equality of the two supplied common-dirs; on
+// admit it resolves and returns the candidate worktree path (worktreeRoot + worktreePath). Checked at
+// admission and at every child subagent spawn.
+function assertContainment(worktreeRootCommonDir, worktreeCommonDir, worktreeRoot, worktreePath) {
+  required(worktreeRootCommonDir, 'repository git-common-dir')
+  required(worktreeCommonDir, 'worktree git-common-dir')
+  if (posixResolve(worktreeRootCommonDir) === posixResolve(worktreeCommonDir)) {
+    return posixResolve(worktreeRoot, worktreePath)
   }
-  if (stat.isDirectory()) return { type: 'dir' }
-  return { type: 'file', content: fs.readFileSync(gitPath, 'utf8') }
-}
-
-// Git-common-dir of a worktree via its `.git` linkage, or null when the linkage is not a valid worktree
-// of a repository. A `.git` DIRECTORY is the repository's own common dir (a top-level working tree). A
-// `.git` FILE `gitdir: <dir>/worktrees/<name>` names a linked worktree whose common dir is <dir>, and is
-// accepted only when that worktrees entry's own `gitdir` points back to this `.git` (bidirectional
-// linkage), so a forged pointer stolen into a repository's worktrees set is rejected as not-a-worktree.
-function gitCommonDir(worktree, readGit) {
-  const gitPath = `${worktree}${POSIX_SEP}.git`
-  const dotGit = readGit(gitPath)
-  if (dotGit.type === 'dir') return gitPath
-  if (dotGit.type === 'file') {
-    const match = /^gitdir:\s*(.+?)\s*$/m.exec(dotGit.content)
-    if (match) {
-      const entry = posixResolve(match[1])
-      const common = /^(.*)\/worktrees\/[^/]+$/.exec(entry)
-      if (common) {
-        const back = readGit(`${entry}${POSIX_SEP}gitdir`)
-        if (back.type === 'file' && posixResolve(back.content.trim()) === gitPath) return common[1]
-      }
-    }
-  }
-  return null
-}
-
-// Worktree containment (role-runtime launch-containment, launch-containment-integrity): containment is
-// a git-LINKAGE OWNERSHIP property, not path-prefix nesting. The candidate BELONGS to the repository iff
-// its resolved git-common-dir equals the repository's own git-common-dir, so the equal repository-root
-// path (candidate is the repository's own top-level working tree) and a standard sibling worktree
-// (`git worktree add ../name`, whose `.git` resolves bidirectionally into that repository's worktrees
-// set) are both admitted, while a path whose git linkage belongs to ANOTHER repository, or a forged
-// pointer into this repository's worktrees set, is rejected as an escape. This matches the integrity
-// property required at provisioning by launch-provision-verify (git-common-dir belongs to the repo).
-// worktreeRoot names the repository; the candidate resolves against it. Checked at admission and at
-// child subagent spawn. readGit is injected for testability, defaulting to the real-fs reader.
-function assertContainment(worktreeRoot, worktreePath, readGit = defaultReadGit) {
-  required(worktreeRoot, 'worktree root')
-  required(worktreePath, 'worker worktree')
-  const root = posixResolve(worktreeRoot)
-  const resolved = posixResolve(root, worktreePath)
-  const expected = gitCommonDir(root, readGit)
-  if (expected !== null && gitCommonDir(resolved, readGit) === expected) return resolved
   throw new Error(`worktree ${worktreePath} escapes worktree root ${worktreeRoot}`)
 }
 
@@ -670,6 +632,7 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     'linear_issue', 'linear_state', 'linear_fingerprint',
     'repo_slug', 'pr_head', 'pr_base', 'pr_issue',
     'worktree', 'worktree_root', 'worktree_head',
+    'worktree_common_dir', 'worktree_root_common_dir',
     'lane', 'lane_issue', 'branch', 'branch_issue',
     'shaping_verdict', 'shaping_verdict_head', 'shaping_reviewer_receipt',
     'spec_blobs', 'adr_blobs', 'contract_hash', 'brief',
@@ -685,6 +648,8 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     worktree: { type: 'string' },
     worktree_root: { type: 'string' },
     worktree_head: { type: 'string' },
+    worktree_common_dir: { type: 'string' },
+    worktree_root_common_dir: { type: 'string' },
     lane: { type: 'string' },
     lane_issue: { type: 'string' },
     branch: { type: 'string' },
@@ -812,7 +777,12 @@ function journalledBoundInputs(role, startingHead) {
     role,
     repo: required(A.repo, 'repo'),
     repo_slug: assertRepoSlug(A.repo_slug, 'repo_slug'),
-    worktree: assertContainment(required(A.worktree_root, 'worktree root'), required(A.worktree, 'worker worktree')),
+    worktree: assertContainment(
+      required(A.worktree_root_common_dir, 'worktree root common dir'),
+      required(A.worktree_common_dir, 'worktree common dir'),
+      required(A.worktree_root, 'worktree root'),
+      required(A.worktree, 'worker worktree'),
+    ),
     issue: required(A.issue, 'issue'),
     pr: (requiredPrNumber(A.pr, 'pr'), A.pr),
     starting_head: required(startingHead, 'starting head'),
@@ -883,6 +853,8 @@ async function resolveRuntime(role, phaseTitle, worktreeAbs, schema, issue) {
 async function spawnWorker(role, phaseTitle, startingHead, schema) {
   assertAdmission({ purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') })
   const worktree = assertContainment(
+    required(A.worktree_root_common_dir, 'worktree root common dir'),
+    required(A.worktree_common_dir, 'worktree common dir'),
     required(A.worktree_root, 'worktree root'),
     required(A.worktree, 'worker worktree'),
   )
@@ -892,7 +864,7 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
   log(`journal spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash}`)
   const brief = required(A.brief, 'pass brief')
   const runtime = await resolveRuntime(role, phaseTitle, worktree, WORKER_RUNTIME_SCHEMA, bound.issue)
-  assertContainment(A.worktree_root, worktree)
+  assertContainment(A.worktree_root_common_dir, A.worktree_common_dir, A.worktree_root, worktree)
   const prompt = [
     `You are a fresh octo-lite ${role}. One pass only. Never reuse a worker session.`,
     'CANONICAL ROLE CONTRACT (resolved from roles.toml; follow it exactly):',
@@ -937,13 +909,15 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
   assertAdmission(admit)
   const acceptRelay = accept ?? acceptOpenaiReviewRelay
   const worktree = assertContainment(
+    required(A.worktree_root_common_dir, 'worktree root common dir'),
+    required(A.worktree_common_dir, 'worktree common dir'),
     required(A.worktree_root, 'worktree root'),
     required(A.worktree, 'worker worktree'),
   )
   const bound = journalledBoundInputs(role, startingHead)
   log(`journal relay-spawn ${role} ${bound.issue} ${bound.pr} ${bound.starting_head} ${bound.contract_hash}`)
   const brief = required(A.brief, 'pass brief')
-  assertContainment(A.worktree_root, worktree)
+  assertContainment(A.worktree_root_common_dir, A.worktree_common_dir, A.worktree_root, worktree)
   // 1. Resolve the OpenAI runtime FROM roles.toml through the COMPLETE resolver command; the loop never
   // hardcodes provider/model/effort/service_tier and receives the canonical contract TEXT the relay carries.
   const runtime = await resolveRuntime(role, phaseTitle, worktree, REVIEWER_RUNTIME_SCHEMA, bound.issue)
@@ -1028,7 +1002,11 @@ async function spawnShapingReviewer(phaseTitle, startingHead, schema) {
 async function spawnReconciler(phaseTitle) {
   const issue = required(A.issue, 'issue')
   const worktreeRoot = required(A.worktree_root, 'worktree root')
-  const worktree = assertContainment(worktreeRoot, required(A.worktree, 'reconcile worktree'))
+  const worktree = assertContainment(
+    required(A.worktree_root_common_dir, 'worktree root common dir'),
+    required(A.worktree_common_dir, 'worktree common dir'),
+    worktreeRoot, required(A.worktree, 'reconcile worktree'),
+  )
   assertAdmission({ purpose: 'reconcile', role: 'reconciler', readRestricted: true })
   assertManifestShape({ shape: 'worker-journal', role: 'reconciler', purpose: 'reconcile', readRestricted: true })
   const runtime = await resolveRuntime('reconciler', phaseTitle, worktree, WORKER_RUNTIME_SCHEMA, issue)
@@ -1062,6 +1040,9 @@ async function deriveDeliveryEntry() {
     'Read every remaining fact from its canonical source. Never copy a caller-supplied derived field.',
     'From the process working directory and git, return worktree, worktree_root, worktree_head, lane,',
     'lane_issue, branch, branch_issue, and repo_slug from the git origin. Do not read a provision record.',
+    'Return worktree_common_dir and worktree_root_common_dir as the ABSOLUTE git-common-dir of the',
+    'worktree and of the worktree_root, each from `git -C <path> rev-parse --path-format=absolute',
+    '--git-common-dir`; the containment gate admits only when these two common-dirs are equal.',
     'From the forge, return pr_head, pr_base, and pr_issue for the declared PR in that derived repo.',
     'From Linear, return linear_issue, linear_state, and its canonical fingerprint.',
     'From the pinned shaping-review journal, return shaping_verdict, shaping_verdict_head, and',
@@ -1110,7 +1091,12 @@ async function deriveDeliveryEntry() {
 
   A.repo_slug = assertRepoSlug(derived.repo_slug, 'derived repo slug')
   A.worktree_root = requiredNonEmptyString(derived.worktree_root, 'derived worktree root')
-  A.worktree = assertContainment(A.worktree_root, requiredNonEmptyString(derived.worktree, 'derived worktree'))
+  A.worktree_root_common_dir = requiredNonEmptyString(derived.worktree_root_common_dir, 'derived worktree root common dir')
+  A.worktree_common_dir = requiredNonEmptyString(derived.worktree_common_dir, 'derived worktree common dir')
+  A.worktree = assertContainment(
+    A.worktree_root_common_dir, A.worktree_common_dir,
+    A.worktree_root, requiredNonEmptyString(derived.worktree, 'derived worktree'),
+  )
   A.repo = A.worktree
   A.branch = requiredNonEmptyString(derived.branch, 'derived branch')
   A.starting_head = head
