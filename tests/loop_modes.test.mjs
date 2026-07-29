@@ -147,13 +147,20 @@ function readyEnvelope(overrides = {}) {
     brief: 'do the work',
     worktree_root: WORKTREE_ROOT, worktree: WORKTREE_REL,
     worktree_common_dir: WORKTREE_COMMON_DIR, worktree_root_common_dir: WORKTREE_COMMON_DIR,
-    loop_fire_args: '--reason ship',
     spawn_id: 'spawn-1', parent: 'orchestrator', reply_route: PR_URL,
     review_delivery: 'pr-comment', execution_location: 'local',
     starting_head: HEAD,
     ...overrides,
   }
 }
+
+// The read-only derivation reads the owning orchestrator's host-owned stream registry entry and returns
+// the stream directory and caller session, so loopFire can build the installed linear-transition arg
+// contract (--stream authority + --caller) from derived state, no faked or guessed value
+// (delivery-lifecycle linear-loop-fire-arg-contract). ADR 0004 keeps the declared delivery entry exactly
+// issue/PR/head; these are derived facts, not caller-declared ones.
+const STREAM_DIR = '/streams/octo-lite-issue13'
+const CALLER = 'orchestrator-session-13'
 
 function deliveryEntry(overrides = {}) {
   return { issue: ISSUE, pr: PR, head: HEAD, ...overrides }
@@ -184,6 +191,8 @@ function derivedDeliveryEntry(overrides = {}) {
     adr_blobs: [],
     contract_hash: CONTRACT,
     brief: 'Implement the signed issue and spec contract.',
+    stream: STREAM_DIR,
+    caller: CALLER,
     ...overrides,
   }
 }

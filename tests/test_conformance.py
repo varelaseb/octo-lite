@@ -102,6 +102,107 @@ def static_import_specifiers(text: str) -> list[str]:
     return specifiers
 
 
+# embedded-cli-drift-probe (delivery-lifecycle embedded-cli-drift-probe,
+# linear-loop-fire-arg-contract): learn the installed octo-control subcommand's
+# accepted flags, required flags, and required positional count from the CLI's
+# OWN argparse --help output, then validate every embedded octo-control
+# invocation in the delivery loop against that contract. A drift (an embedded
+# command that uses a flag the CLI no longer accepts, such as the retired
+# --reason, or omits a newly-required flag) fails in the checked suite, not at a
+# lane's live fire.
+def octo_control_contract(subcommand: str) -> dict:
+    proc = subprocess.run(
+        [str(ROOT / "scripts/octo-control"), subcommand, "--help"],
+        capture_output=True, text=True, check=True,
+    )
+    help_text = proc.stdout
+    usage_match = re.search(r"usage:(.*?)\n\s*\n", help_text, flags=re.DOTALL)
+    usage = usage_match.group(1) if usage_match else help_text
+    # Accepted flags: every --flag anywhere in the usage line.
+    accepted = set(re.findall(r"--[A-Za-z][A-Za-z0-9-]*", usage))
+    # Required flags: a --flag NOT wrapped in argparse optional brackets. Walk the
+    # usage tokens tracking bracket depth; a --flag token seen at depth 0 whose own
+    # token does not open a bracket is required.
+    required_flags: set[str] = set()
+    depth = 0
+    for token in usage.split():
+        core = token.strip("[]")
+        match = re.fullmatch(r"(--[A-Za-z][A-Za-z0-9-]*)", core)
+        if match and depth == 0 and not token.startswith("["):
+            required_flags.add(match.group(1))
+        depth += token.count("[") - token.count("]")
+    # Which flags consume a following value token: a `--flag METAVAR` line in the
+    # options section takes a value; a bare `--flag` line is a store_true switch.
+    takes_value: dict[str, bool] = {}
+    for match in re.finditer(
+        r"(?m)^\s+(--[A-Za-z][A-Za-z0-9-]*)(\s+[A-Z][A-Z0-9_]*)?", help_text
+    ):
+        takes_value[match.group(1)] = match.group(2) is not None
+    # Required positional count: the names listed under `positional arguments:`.
+    pos_match = re.search(
+        r"positional arguments:\n(.*?)(?:\n\s*\n|\noptions:)", help_text, flags=re.DOTALL
+    )
+    required_positionals = 0
+    if pos_match:
+        for line in pos_match.group(1).splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("-"):
+                required_positionals += 1
+    return {
+        "accepted": accepted,
+        "required_flags": required_flags,
+        "takes_value": takes_value,
+        "required_positionals": required_positionals,
+    }
+
+
+def validate_invocation(tokens: list[str], contract: dict) -> list[str]:
+    # tokens are the whitespace-split argument tokens AFTER the subcommand.
+    violations: list[str] = []
+    used_flags: set[str] = set()
+    positionals = 0
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("--"):
+            used_flags.add(token)
+            if token not in contract["accepted"]:
+                violations.append(f"flag not accepted by installed CLI: {token}")
+            index += 2 if contract["takes_value"].get(token, True) else 1
+            continue
+        positionals += 1
+        index += 1
+    for required in sorted(contract["required_flags"]):
+        if required not in used_flags:
+            violations.append(f"missing required flag: {required}")
+    if positionals < contract["required_positionals"]:
+        violations.append(
+            f"missing required positional: supplied {positionals}, "
+            f"need {contract['required_positionals']}"
+        )
+    return violations
+
+
+def embedded_octo_control_invocations(source: str) -> list[tuple[int, str, list[str]]]:
+    # Extract every embedded `octo-control <subcommand> ...` invocation from a
+    # Workflow-loop source. Comments are stripped first so prose mentions of a
+    # subcommand are never scanned. Each invocation is captured up to the enclosing
+    # string delimiter (backtick / quote) or newline; a ${...} template
+    # interpolation is kept as an opaque positional-or-value token.
+    code = strip_line_and_block_comments(source)
+    invocations: list[tuple[int, str, list[str]]] = []
+    for match in re.finditer(r"octo-control\s+([a-z][a-z-]*)([^\n`'\"]*)", code):
+        subcommand = match.group(1)
+        rest = match.group(2)
+        tokens: list[str] = []
+        for raw in rest.split():
+            flag = re.match(r"--[a-z][a-z0-9-]*", raw)
+            tokens.append(flag.group(0) if flag else raw)
+        line = code.count("\n", 0, match.start()) + 1
+        invocations.append((line, subcommand, tokens))
+    return invocations
+
+
 # Node harness (CommonJS) that mirrors the delivery-loop Workflow interpreter: it extracts the embedded
 # containment gate from the loop and runs it inside a node:vm context whose globals do NOT include
 # process, require, or module, then calls assertContainment with host-derived git-common-dir args only.
@@ -607,6 +708,52 @@ class CutoverConformanceTests(unittest.TestCase):
         # gates.mjs is the canonical module and must keep its exports for the
         # node --test suite that imports it.
         self.assertIn("export function assertAdmission", gates)
+
+    def test_embedded_octo_control_invocations_match_installed_cli_argparse(self) -> None:
+        # embedded-cli-drift-probe (delivery-lifecycle embedded-cli-drift-probe,
+        # linear-loop-fire-arg-contract): every embedded octo-control invocation in
+        # the delivery loop must validate against the INSTALLED CLI's own argparse
+        # contract, learned live from `octo-control <sub> --help`. A drift (a flag
+        # the CLI removed, such as --reason, or a missing newly-required flag) must
+        # fail HERE, not at a lane's live fire. This was RED against the prior
+        # --reason loop-fire command and is GREEN once the invocation carries the
+        # installed required arg contract.
+        source = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        invocations = embedded_octo_control_invocations(source)
+        self.assertTrue(invocations, "no embedded octo-control invocation found in the loop")
+        for line, subcommand, tokens in invocations:
+            contract = octo_control_contract(subcommand)
+            violations = validate_invocation(tokens, contract)
+            self.assertEqual(
+                [], violations,
+                f"embedded `octo-control {subcommand}` at loop line {line} drifted from the "
+                f"installed CLI: {violations}",
+            )
+
+    def test_drift_probe_catches_removed_and_missing_required_flags(self) -> None:
+        # The probe is robust to BOTH failure directions against the real installed
+        # linear-transition contract: a re-added removed flag (--reason) is rejected
+        # as not-accepted, and dropping a newly-required flag (--caller) is rejected
+        # as missing-required; the exact installed contract passes clean.
+        contract = octo_control_contract("linear-transition")
+        full = [
+            "ISSUE", "--expected", "Shaped", "--target", "Todo",
+            "--progress", "P", "--status", "S", "--parent", "operator",
+            "--outcome", "O", "--gate", "G", "--caller", "C", "--stream", "D",
+        ]
+        self.assertEqual([], validate_invocation(full, contract))
+        readded_removed = validate_invocation(full + ["--reason", "delivery-entry"], contract)
+        self.assertTrue(
+            any("--reason" in v for v in readded_removed),
+            f"probe must reject the retired --reason flag: {readded_removed}",
+        )
+        missing_required = validate_invocation(
+            [t for t in full if t not in ("--caller", "C")], contract
+        )
+        self.assertTrue(
+            any("--caller" in v for v in missing_required),
+            f"probe must reject a missing newly-required flag: {missing_required}",
+        )
 
     def test_workflow_loop_fires_shaped_to_todo_before_any_delivery_spawn(self) -> None:
         # delivery-lifecycle delivery-entry-gate and linear-loop-fire-transition: at
