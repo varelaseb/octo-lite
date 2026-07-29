@@ -185,11 +185,14 @@ class CutoverConformanceTests(unittest.TestCase):
         lines = (ROOT / "skills/octo-lite-issue-shaper/SKILL.md").read_text().splitlines()
         self.assertLessEqual(len(lines), 160)
 
-    def test_workflow_spawns_workers_natively_through_admission_and_ack_echo_gates(self) -> None:
-        # Decision 109 (role-runtime launch-correctness-path, role-worker-migration):
-        # the Workflow spawns every worker pass natively through agent(); the retired
-        # launcher's completed pass_result consumption path must not return, and raw
-        # adapter files (agents/*.md) are never spawn inputs.
+    def test_workflow_spawns_workers_natively_as_plain_role_subagents(self) -> None:
+        # ADR 0003 (drop-loop-trust-root; role-runtime loop-runs-on-cwd-and-branch,
+        # launch-correctness-path, role-worker-migration): the Workflow spawns every
+        # worker pass natively through agent() as a PLAIN role subagent. The retired
+        # launcher's pass_result consumption path must not return, raw adapter files
+        # (agents/*.md) are never spawn inputs, and the ADR-0003-removed ack-echo
+        # two-phase gate, the live readback, and the launch-revision revalidation are
+        # gone from the plain worker spawn path.
         text = (ROOT / "workflows/octo-loop-qa.js").read_text()
         for role in ("implementer", "code-reviewer", "qa-capture", "qa-reviewer"):
             self.assertIn(f"'{role}'", text)
@@ -199,38 +202,22 @@ class CutoverConformanceTests(unittest.TestCase):
         for retired in ("pass_result", "assertPassReceipt", "assertBoundPassResult", "octo-launch"):
             self.assertNotIn(retired, text)
         self.assertNotIn("agents/", text)
-        # Unit B (TUR-447 F1) observable pre-mutation boundary: the shared spawn path
-        # admits the role, then runs an OBSERVABLE read-only acknowledgment spawn
-        # (write tools withheld) that produces ONLY the ack echo, then the host
-        # verifies that echo against the journalled bound inputs, and ONLY THEN spawns
-        # the write-capable mutation phase, in that exact order. A worker that would
-        # mutate before verification cannot, because no write-capable spawn exists
-        # until the read-only echo verifies.
-        spawn = text[text.index("async function spawnWorker"):text.index("if (mode ===")]
-        # Admission runs before any spawn.
+        # The plain worker spawn path admits the role and checks containment before its
+        # single mutation-phase spawn; there is no ack-echo two-phase gate, no live
+        # readback, and no launch-revision revalidation on the path (ADR 0003).
+        spawn = text[text.index("async function spawnWorker"):text.index("async function spawnOpenaiReviewer")]
         self.assertLess(spawn.index("assertAdmission("), spawn.index("await agent("))
-        # The FIRST agent() spawn is the read-only ack phase: it withholds write tools by
-        # spawning under the real read-only subagent type (agentType: 'Explore'), the only
-        # value that genuinely withholds Edit/Write/mutating Bash at the runtime. The prior
-        # writeCapable/readOnly flags were not real agent() opts and withheld nothing.
-        first_spawn = spawn.index("await agent(")
-        self.assertIn("agentType: ackAgentType", spawn)
-        self.assertIn("'Explore'", spawn)
-        self.assertLess(spawn.index("agentType: ackAgentType"), spawn.index("verifyAckThenUpgrade("))
-        # The echo is verified through the read-only-ack-then-upgrade gate before the
-        # write-capable spawn is reached.
-        self.assertLess(spawn.index("verifyAckThenUpgrade("), spawn.rindex("await agent("))
-        # The read-only ack spawn precedes the write-capable spawn (two distinct spawns).
-        self.assertLess(first_spawn, spawn.rindex("await agent("))
-        self.assertNotEqual(first_spawn, spawn.rindex("await agent("))
-        # verifyAckThenUpgrade receives the same read-only agentType, so the gate rejects a
-        # non-read-only ack phase rather than trusting an ignored flag.
-        self.assertIn("verifyAckThenUpgrade(bound, { agentType: ackAgentType", spawn)
-        # The write-capable mutation spawn is the LAST agent() and passes NO agentType, so
-        # it runs as the default write-capable subagent; the read-only agentType appears
-        # only in the earlier ack spawn.
-        write_spawn = spawn[spawn.rindex("await agent("):]
-        self.assertNotIn("agentType", write_spawn)
+        self.assertLess(spawn.index("assertContainment("), spawn.index("await agent("))
+        for removed in (
+            "ackAgentType", "verifyAckThenUpgrade(", "assertReadOnlyAckPhase(",
+            "liveReadback(", "hostTrustedIdentity(", "resolveLaunchRevision(",
+            "assertLaunchRevision(",
+        ):
+            self.assertNotIn(removed, spawn, f"plain worker spawn must not call the removed gate {removed}")
+        # The single native worker spawn runs under the resolved model and effort from
+        # roles.toml and carries the canonical contract text (role-worker-migration).
+        self.assertIn("runtime.contract_text", spawn)
+        self.assertIn("model: runtime.model, effort: runtime.effort", spawn)
 
     def test_openai_reviewer_roles_run_through_relay_with_independent_rollout_provenance(self) -> None:
         # TUR-447 F2b Unit G (role-runtime role-openai-relay, role-openai-fail-closed,
@@ -564,97 +551,70 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertIn("ruling-15", text)
         self.assertIn("TUR-447", text)
 
-    def test_every_spawn_path_does_live_readback_before_its_spawn(self) -> None:
-        # TUR-447 F3 Unit H (role-runtime launch-readback, launch-entrypoint-revalidation,
-        # launch-gates-workflow-layer): the loop must obtain FRESH LIVE reads immediately
-        # before EVERY native spawn by spawning a read-only agentType:'Explore' subagent
-        # that performs the reads and RETURNS them, then feed them to assertLaunchReadback.
-        # The prior F3 defect ran readback ONLY in implement mode and TRUSTED a
-        # caller-supplied A.fresh_reads blob as if it were live; and spawnWorker /
-        # spawnOpenaiReviewer did no readback at all. These are structural assertions over
-        # the actual spawn paths.
+    def test_loop_runs_on_cwd_and_branch_with_no_trust_root_or_observer(self) -> None:
+        # ADR 0003 (drop-loop-trust-root; role-runtime loop-runs-on-cwd-and-branch,
+        # launch-provisioning-trust-root; delivery-lifecycle delivery-tdd-reviewer-guard).
+        # The loop derives its worktree from the process cwd and its branch from git and
+        # runs: it performs NO provision-record read, no environment-equals-record
+        # cross-check, no worker-claim cross-check, no push readback, no live readback,
+        # no launch-revision revalidation, and no independent-observer replay. This is a
+        # structural guard that the removed trust-root/observer/readback/launch-revision
+        # symbols are gone from the loop source.
         text = (ROOT / "workflows/octo-loop-qa.js").read_text()
-        code = strip_line_and_block_comments(text)
+        removed = (
+            "hostTrustedIdentity", "assertProvisionedWorkspaceBinding",
+            "assertLiveWorktreeIdentity", "assertHostTrustedIdentity",
+            "PROVISION_ENV_KEYS", "PROVISION_BINDING_FIELDS", "HOST_PROVISION_RECORD_ENV",
+            "OCTO_PROVISION_RECORD", "DELIVERY_READ_RESTRICTED_ROLES",
+            "-tdd-observer:", "observeCommittedStates", "assertObservedCommittedStates",
+            "independentGitRead", "assertIndependentGitRead", "assertWorkerClaimCrossCheck",
+            "launchRevision", "resolveLaunchRevision", "assertLaunchRevision",
+            "liveReadback", "assertLaunchReadback", "assertWorkerAckEcho",
+            "verifyAckThenUpgrade", "assertReadOnlyAckPhase", "assertPrePushReadback",
+            "assertPrePushWorktreeReAnchor", "assertLiveRemotePushReadback",
+            "assertWorkerLivenessEcho",
+        )
+        for symbol in removed:
+            self.assertNotIn(symbol, text, f"ADR-0003-removed symbol still present in the loop: {symbol}")
+        # The loop no longer trusts a frozen launch environment: no OCTO_* env-seam read.
+        self.assertNotIn("OCTO_WORKTREE", text)
+        self.assertNotIn("OCTO_CONTROL_REPO", text)
+        # The RETAINED OpenAI reviewer relay-provenance path stays (role-openai-relay).
+        self.assertIn("async function spawnOpenaiReviewer", text)
+        self.assertIn("independent-rollout-subagent", text)
+        self.assertIn("acceptOpenaiReviewRelay", text)
 
-        # A dedicated live-readback helper exists, spawns a read-only Explore subagent, and
-        # feeds the returned live reads to the pure readback gate. It never copies a
-        # caller-supplied fresh_reads blob.
-        self.assertIn("async function liveReadback", code)
-        readback = code[code.index("async function liveReadback"):code.index("function resolveLaunchRevision")]
-        self.assertIn("await agent(", readback)
-        self.assertIn("agentType: 'Explore'", readback)
-        self.assertLess(readback.index("await agent("), readback.index("assertLaunchReadback("))
-        # The live git HEAD is proven against the exact starting HEAD.
-        self.assertIn("git_head", readback)
-
-        # The loop must NOT trust a caller-supplied fresh_reads blob anywhere in live code:
-        # the only source of fresh reads is the spawned read-only reader.
-        self.assertNotIn("A.fresh_reads", code)
-        self.assertNotIn("required(A.fresh_reads", code)
-
-        # EVERY native spawn path calls liveReadback BEFORE its spawn. spawnWorker covers
-        # implementer (implement + fix) and qa-capture; spawnOpenaiReviewer covers
-        # code-reviewer and qa-reviewer. Each must readback before its first agent() spawn.
-        worker = code[code.index("async function spawnWorker"):code.index("async function spawnOpenaiReviewer")]
-        self.assertLess(worker.index("liveReadback("), worker.index("await agent("))
-        reviewer = code[code.index("async function spawnOpenaiReviewer"):code.index("async function loopFire")]
-        self.assertLess(reviewer.index("liveReadback("), reviewer.index("await agent("))
-
-    def test_every_delivery_mode_revalidates_launch_revision_from_required_not_stale(self) -> None:
-        # TUR-447 F3 Unit H (role-runtime launch-entrypoint-revalidation): launch_revision
-        # must be REQUIRED and revalidated against the bound inputs whose HEAD was proven
-        # live; it must never be recomputed from a possibly-stale caller fallback. The prior
-        # defect used `A.launch_revision ?? launchRevision(bound)`, which silently recomputed
-        # a revision from stale caller input and admitted it.
-        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
-        code = strip_line_and_block_comments(text)
-        # The stale-recompute fallback must be gone from every spawn path.
-        self.assertNotIn("A.launch_revision ?? launchRevision", code)
-        self.assertNotIn("A.launch_revision ??", code)
-        # The revision resolver requires the caller revision and revalidates it.
-        self.assertIn("function resolveLaunchRevision", code)
-        resolver = code[code.index("function resolveLaunchRevision"):code.index("async function spawnWorker")]
-        self.assertIn("required(A.launch_revision", resolver)
-        self.assertIn("assertLaunchRevision(revision, bound)", resolver)
-        # Both spawn paths resolve the revision through the required-revalidating resolver.
-        worker = code[code.index("async function spawnWorker"):code.index("async function spawnOpenaiReviewer")]
-        reviewer = code[code.index("async function spawnOpenaiReviewer"):code.index("async function loopFire")]
-        self.assertIn("resolveLaunchRevision(bound)", worker)
-        self.assertIn("resolveLaunchRevision(bound)", reviewer)
-
-    def test_every_delivery_mode_reaches_a_readback_revalidating_spawn_seam(self) -> None:
-        # TUR-447 F3 Unit H (role-runtime launch-gates-workflow-layer): readback plus
-        # launch-revision revalidation plus containment must run before the spawn in EVERY
-        # delivery mode, not just implement. implement and fix spawn the implementer through
-        # spawnWorker; qa-capture (evidence) spawns through spawnWorker; code-review and
-        # qa-review spawn through spawnOpenaiReviewer. Every one of those spawn functions
-        # runs liveReadback, resolveLaunchRevision, and assertContainment before its spawn.
+    def test_every_delivery_mode_spawns_the_right_role_through_a_contained_admission_seam(self) -> None:
+        # ADR 0003 (role-runtime loop-runs-on-cwd-and-branch, launch-containment,
+        # launch-role-purpose-capability): each spawn function admits the role and checks
+        # containment before its spawn; the plain worker path (implementer, qa-capture)
+        # and the retained relay path (code-reviewer, qa-reviewer) each run assertAdmission
+        # and assertContainment before their first agent() spawn. Each delivery mode routes
+        # to the correct spawn call.
         text = (ROOT / "workflows/octo-loop-qa.js").read_text()
         code = strip_line_and_block_comments(text)
         for func_name in ("async function spawnWorker", "async function spawnOpenaiReviewer"):
             start = code.index(func_name)
-            # Bound the function body at the next top-level `async function`/`function` decl.
             rest = code[start + len(func_name):]
             nxt = re.search(r"\n(?:async )?function ", rest)
             body = rest[:nxt.start()] if nxt else rest
             first_spawn = body.index("await agent(")
-            for seam in ("assertAdmission(", "assertContainment(", "liveReadback(", "resolveLaunchRevision("):
+            for seam in ("assertAdmission(", "assertContainment("):
                 self.assertIn(seam, body, f"{func_name} missing {seam}")
                 self.assertLess(
                     body.index(seam), first_spawn,
                     f"{func_name}: {seam} must run before the first spawn",
                 )
-        # Each delivery mode routes to one of those two seams; no mode spawns a worker
-        # without going through a readback-revalidating spawn function.
         for mode_marker, spawn_call in (
             ("if (mode === 'implement')", "spawnWorker('implementer'"),
             ("if (mode === 'fix')", "spawnWorker('implementer'"),
             ("if (mode === 'evidence')", "spawnWorker('qa-capture'"),
             ("if (mode === 'code-review')", "spawnOpenaiReviewer('code-reviewer'"),
             ("if (mode === 'qa-review')", "spawnOpenaiReviewer('qa-reviewer'"),
+            ("if (mode === 'acceptance')", "buildAcceptancePackage("),
         ):
             block_start = code.index(mode_marker)
-            self.assertIn(spawn_call, code[block_start:block_start + 900])
+            self.assertIn(spawn_call, code[block_start:block_start + 1200])
 
     def test_loop_skill_directs_journal_based_gating_with_no_worker_receipt(self) -> None:
         # Deterministic wiring check only (prompt-tdd-deterministic): the installed
@@ -830,194 +790,9 @@ class CutoverConformanceTests(unittest.TestCase):
         for leak in ("zero percent live traffic", "deployed to staging and therefore"):
             self.assertNotIn(leak, text)
 
-    def test_delivery_tdd_reshape_documents_committed_red_green_host_gated_push(self) -> None:
-        # TUR-447 reshape (ruling-50/51): code-delivery TDD is a NEW canonical section
-        # distinct from prompt-tdd (prose only). The implementer commits a real failing
-        # red then a green on an isolated branch and NEVER pushes; a Read-restricted
-        # observer re-runs each committed state in an ISOLATED worktree (ruling-51 note 1);
-        # the host gates the push after observation, echo, and readback, and confirms the
-        # pushed HEAD by a LIVE remote read (gh api / git ls-remote), not a local tracking
-        # ref (ruling-51 note 2). These are structural assertions over stable data-anchors
-        # plus the two load-bearing ruling-51 note phrases.
-        text = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        # The new delivery-tdd section exists and is distinct from prompt-tdd.
-        self.assertIn('data-anchor="delivery-tdd"', text)
-        self.assertIn('id="delivery-tdd"', text)
-        for anchor in (
-            "delivery-tdd-committed-red",
-            "delivery-tdd-committed-red-commit",
-            "delivery-tdd-committed-red-not-missing",
-            "delivery-tdd-committed-green",
-            "delivery-tdd-independent-observer",
-            "delivery-tdd-independent-observer-isolated",
-            "delivery-tdd-host-gated-push",
-            "delivery-tdd-host-gated-push-reject",
-            "delivery-tdd-no-forgeable-attestation",
-        ):
-            self.assertIn(f'data-anchor="{anchor}"', text, anchor)
-            self.assertIn(f'id="{anchor}"', text, anchor)
-        # The committed red is a durable commit on an isolated delivery branch, not an
-        # ephemeral tree; a missing file/module/export/script is not a valid red.
-        self.assertIn("durable commit on an isolated delivery branch", text)
-        self.assertIn("A missing file, module, export, or script is not a valid red.", text)
-        # ruling-51 note 1: the observer checkout+run happens in an ISOLATED worktree that
-        # never disturbs the worker branch, main, or the live repository working directory.
-        self.assertIn(
-            "isolated worktree that never disturbs the worker branch, main, or the live repository working directory",
-            text,
-        )
-        # ruling-51 note 2: the pushed HEAD is confirmed by a LIVE remote read (gh api or
-        # git ls-remote), not a local tracking ref.
-        self.assertIn("live remote read", text)
-        self.assertIn("gh api", text)
-        self.assertIn("git ls-remote", text)
-        self.assertIn("not a local tracking ref", text)
-        # The mutating worker never pushes; a rejection abandons the unpushed branch; the
-        # observer re-run is the only proof and worker strings are never interpolated.
-        self.assertIn("The mutating worker never pushes", text)
-        self.assertIn("A rejection abandons the unpushed branch.", text)
-        self.assertIn("so independence cannot be forged", text)
-        # No Markdown counterpart is generated for this spec-chat canonical document.
-        self.assertFalse((ROOT / "spec/domains/delivery-lifecycle.spec.md").exists())
-
-    def test_role_runtime_reconciles_worker_push_and_workspace_cleanup(self) -> None:
-        # TUR-447 reshape (ruling-50/51): the implementer worker commits red+green on an
-        # isolated branch and never pushes; the host gates the push after observation,
-        # echo, and readback. workspace-cleanup RECONCILES the prior contradiction:
-        # committed work on an isolated branch is NOT dirty; a rejected pass leaves its
-        # branch UNPUSHED (host-non-push) instead of a destructive reset; a genuinely
-        # dirty/diverged worktree still stops for inspection. clean-abort and reconcile
-        # anchors are PRESERVED, not deleted.
-        text = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
-        for anchor in (
-            "role-implementer-host-gated-push",
-            "launch-identity-delivery-branch",
-            "workspace-cleanup-committed-not-dirty",
-            "workspace-cleanup-rejected-unpushed",
-            "workspace-cleanup-dirty-still-stops",
-        ):
-            self.assertIn(f'data-anchor="{anchor}"', text, anchor)
-            self.assertIn(f'id="{anchor}"', text, anchor)
-        # The two prior cleanup anchors are PRESERVED, not deleted, so reconcile carries
-        # no contradiction.
-        for preserved in (
-            "workspace-cleanup-clean-abort",
-            "workspace-cleanup-reconcile",
-        ):
-            self.assertIn(f'data-anchor="{preserved}"', text, preserved)
-            self.assertIn(f'id="{preserved}"', text, preserved)
-        # Committed work on an isolated branch is not dirty and reset is the wrong tool;
-        # a rejected pass leaves its branch unpushed as the correct host-non-push abort.
-        self.assertIn("Committed work on an isolated branch is not dirty", text)
-        self.assertIn("reset is the wrong tool", text)
-        self.assertIn("host-non-push abort", text)
-        self.assertIn("rather than a destructive reset", text)
-        # A genuinely dirty or diverged worktree still stops for inspection.
-        self.assertIn(
-            "A genuinely dirty or diverged worktree still stops for inspection", text
-        )
-        # The implementer commits red+green on an isolated branch and never pushes; the
-        # host gates the push after observation, echo, and readback.
-        self.assertIn("commits the red and green on an isolated branch and never pushes", text)
-        # No Markdown counterpart is generated for this spec-chat canonical document.
-        self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
 
 
-    def test_delivery_tdd_shaping_tighten_closes_five_completeness_gaps(self) -> None:
-        # TUR-447 reshape spec tighten (shaping-review BLOCKING F1..F5, gpt-5.6-sol):
-        # the canonical delivery-tdd contract, the new tdd-observer role, and the named
-        # smallest-failing delivery TDD close all five completeness gaps. Structural
-        # assertions over stable data-anchors plus load-bearing phrases and the roster.
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        role_runtime = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
 
-        # F1 trusted observer command source: the observer derives its invocation only
-        # from the committed test files and the target AGENTS.md canonical validation
-        # command, never from a worker-supplied string; worker strings never enter the
-        # observer prompt or execution inputs.
-        for anchor in ("delivery-tdd-trusted-command-source",):
-            self.assertIn(f'data-anchor="{anchor}"', delivery, anchor)
-            self.assertIn(f'id="{anchor}"', delivery, anchor)
-        self.assertIn("committed test files", delivery)
-        self.assertIn("canonical validation command declared in the target", delivery)
-        self.assertIn("never enter the observer's prompt or execution inputs", delivery)
-        self.assertIn(
-            "worker-controlled command or scenario strings are never interpolated into the observer's prompt, execution inputs, or verdict",
-            delivery,
-        )
-
-        # F2 bind test identity across red and green by path and content digest.
-        self.assertIn('data-anchor="delivery-tdd-test-identity-binding"', delivery)
-        self.assertIn('id="delivery-tdd-test-identity-binding"', delivery)
-        self.assertIn("bound by path and content digest, not by name alone", delivery)
-        self.assertIn("the green commit changes production only and never the bound test", delivery)
-        self.assertIn("a green that removes, weakens, or edits the red's failing test is rejected", delivery)
-
-        # F3 final-HEAD verification: the exact final pushed HEAD is independently
-        # executed green by the observer before the push is accepted. (Issue #11
-        # ruling: the implementation pass ends at green; refactor arrives only via
-        # reviewer-flagged refactor-only passes.)
-        self.assertIn('data-anchor="delivery-tdd-final-head-verification"', delivery)
-        self.assertIn('id="delivery-tdd-final-head-verification"', delivery)
-        self.assertIn("The implementation pass ends at green and contains no refactor commits", delivery)
-        self.assertIn("exact final pushed HEAD is independently checked out and executed by the observer", delivery)
-        self.assertIn("nothing is pushed whose final HEAD is not independently verified", delivery)
-        self.assertIn('data-anchor="delivery-loop-final-head-observed"', delivery)
-        self.assertIn('id="delivery-loop-final-head-observed"', delivery)
-
-        # F4 tdd-observer role identity and delivery admission.
-        for anchor in ("role-tdd-observer", "role-tdd-observer-trusted-source"):
-            self.assertIn(f'data-anchor="{anchor}"', role_runtime, anchor)
-            self.assertIn(f'id="{anchor}"', role_runtime, anchor)
-        self.assertIn("dedicated Read-restricted delivery role", role_runtime)
-        self.assertIn(
-            "or the Read-restricted <code>tdd-observer</code>; every other role is rejected",
-            role_runtime,
-        )
-        # The role exists in the roster with a canonical prose contract and adapter.
-        self.assertTrue((ROOT / "roles/tdd-observer.md").is_file())
-        self.assertTrue((ROOT / "agents/tdd-observer.md").is_file())
-        import sys
-        sys.path.insert(0, str(ROOT / "workflows/lib"))
-        import role_resolver
-        registry = role_resolver.load_registry(ROOT)
-        self.assertIn("tdd-observer", registry.roles)
-        observer = registry.roles["tdd-observer"]
-        self.assertEqual(observer.subagent_access, "read-restricted")
-        self.assertEqual(observer.execution, "workflow-subagent")
-        # gates.mjs admits tdd-observer for delivery only as a Read-restricted subagent,
-        # and the inline embedded copy carries the same rule (drift-guarded elsewhere).
-        gates = (ROOT / "workflows/lib/gates.mjs").read_text()
-        self.assertIn("'tdd-observer'", gates)
-        self.assertIn("DELIVERY_READ_RESTRICTED_ROLES", gates)
-        loop = (ROOT / "workflows/octo-loop-qa.js").read_text()
-        self.assertIn("DELIVERY_READ_RESTRICTED_ROLES", loop)
-
-        # F5 named smallest-failing delivery TDD are enumerated with stable anchors and
-        # exact test names.
-        self.assertIn('data-anchor="delivery-tdd-named-tests"', delivery)
-        self.assertIn('id="delivery-tdd-named-tests"', delivery)
-        named_tests = (
-            "test_observer_replays_committed_red_then_green",
-            "test_observer_rejects_worker_supplied_observation",
-            "test_observer_inputs_exclude_worker_strings",
-            "test_observer_commit_inputs_are_host_journalled",
-            "test_invalid_red_missing_file_rejected",
-            "test_invalid_red_that_does_not_fail_rejected",
-            "test_test_identity_binding_green_may_not_weaken_red",
-            "test_push_ordering_host_push_only_after_observation_echo_readback",
-            "test_rejection_abandons_unpushed_branch",
-            "test_final_head_independently_verified_green",
-            "test_push_readback_uses_live_remote",
-            "test_observer_command_source_is_host_trusted",
-            "test_final_head_binds_test_identity",
-        )
-        for name in named_tests:
-            self.assertIn(f"<code>{name}</code>", delivery, name)
-
-        # No Markdown counterpart is generated for either spec-chat canonical document.
-        self.assertFalse((ROOT / "spec/domains/delivery-lifecycle.spec.md").exists())
-        self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
 
     def test_refactor_out_of_loop_ruling_conformance(self) -> None:
         # Issue #11 rulings (operator grill 2026-07-23, ADR 0002): refactoring leaves
@@ -1048,342 +823,11 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertTrue((ROOT / "spec/adr/0002-tdd-skill-vendoring.spec.html").is_file())
         self.assertIn('data-anchor="adr-0002"', index)
 
-    def test_observer_execution_inputs_are_host_journalled_not_worker_authored(self) -> None:
-        # TUR-447 reshape observer-inputs host-sourced (ruling gap-1 sharpening):
-        # the trusted-command-source anchors cover the observer's test COMMAND source,
-        # but the operator ruling was explicit that BOTH halves of the observer's
-        # execution inputs, the commit selection (which red, green, and final-HEAD
-        # commit identifiers to check out) AND the test command, come from a trusted
-        # host/journal binding of the worker's committed delivery branch, never a
-        # worker-authored claim. This closes the commit-selection half.
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        role_runtime = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
-
-        # Delivery-lifecycle: a dedicated anchor states the commit identifiers and the
-        # command are host-supplied from the journal binding, never worker-authored.
-        self.assertIn('data-anchor="delivery-tdd-observer-inputs-host-sourced"', delivery)
-        self.assertIn('id="delivery-tdd-observer-inputs-host-sourced"', delivery)
-        self.assertIn("red, green, and final-HEAD commit identifiers", delivery)
-        self.assertIn("supplied by the host from the journal binding", delivery)
-        self.assertIn("never from any worker-authored claim", delivery)
-        self.assertIn(
-            "The host records the committed branch and its red, green, and final commit ids in the journal",
-            delivery,
-        )
-        self.assertIn(
-            "the observer checks out exactly those host-journalled commits",
-            delivery,
-        )
-
-        # Role-runtime: the tdd-observer mirror states its commit identifiers and command
-        # come from the host journal binding, never worker-authored.
-        self.assertIn('data-anchor="role-tdd-observer-host-sourced-inputs"', role_runtime)
-        self.assertIn('id="role-tdd-observer-host-sourced-inputs"', role_runtime)
-        self.assertIn("commit identifiers and command from the host journal binding", role_runtime)
-        self.assertIn("never worker-authored", role_runtime)
-
-        # Named smallest-failing delivery TDD covers rejecting a worker-claimed commit id
-        # that differs from the host-journalled committed branch commits.
-        self.assertIn(
-            "<code>test_observer_commit_inputs_are_host_journalled</code>",
-            delivery,
-        )
-        self.assertIn(
-            "a worker-claimed commit id that differs from the host-journalled committed branch commits is rejected",
-            delivery,
-        )
-        self.assertIn(
-            "the observer checks out only host-journalled commits",
-            delivery,
-        )
-
-    def test_shaping_tighten2_closes_three_residual_completeness_gaps(self) -> None:
-        # TUR-447 reshape tighten-2 (shaping-review #2 BLOCKING, gpt-5.6-sol):
-        # F1 the canonical tdd-observer role contract REQUIRES host-journal provenance
-        # for commits AND the AGENTS.md canonical command, rejecting worker-authored
-        # inputs; F2 the roster prose and the model-map diagram include tdd-observer;
-        # F3 the final-HEAD observation binds the test identity (path + digest), not
-        # merely a green execution.
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        role_runtime = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
-        observer_contract = (ROOT / "roles/tdd-observer.md").read_text()
-
-        # F1 host-journal provenance is REQUIRED by the sole canonical role contract
-        # (role-contract-source): commit ids from the host journal binding of the
-        # worker committed delivery branch AND the command is the AGENTS.md canonical
-        # validation command supplied by the host, rejecting worker-authored inputs.
-        self.assertIn("host journal binding of the worker committed delivery branch", observer_contract)
-        self.assertIn("canonical validation command from the target AGENTS.md supplied by the host", observer_contract)
-        self.assertIn("REQUIRED", observer_contract)
-        self.assertIn("REJECT any input not so sourced", observer_contract)
-        self.assertIn("never a worker-authored commit id, command", observer_contract)
-        self.assertIn("Check out exactly the host-journalled commits; never a worker-claimed commit", observer_contract)
-        # The command-provenance named test is enumerated in the delivery named-tests.
-        self.assertIn('data-anchor="delivery-tdd-named-test-command-source-host-trusted"', delivery)
-        self.assertIn("<code>test_observer_command_source_is_host_trusted</code>", delivery)
-        self.assertIn(
-            "the observer's test command is the canonical validation command from the target <code>AGENTS.md</code> supplied by the host",
-            delivery,
-        )
-        self.assertIn("a worker-authored command string is rejected rather than executed", delivery)
-
-        # F2 tdd-observer appears in the role-roster prose AND role-model-map-authority
-        # AND the model-map diagram semantic-island JSON (node + link).
-        self.assertIn(
-            "reconciler, and the delivery <code>tdd-observer</code>",
-            role_runtime,
-        )
-        self.assertIn(
-            "The exact model, effort, and service tier for every role, including the delivery <code>tdd-observer</code>",
-            role_runtime,
-        )
-        # The diagram semantic island (JSON script block) includes a tdd-observer node
-        # and a link to its resolved model, and parses as valid JSON.
-        import json, re
-        model_map = re.search(
-            r'data-anchor="diagram-role-model-map".*?<script type="application/spec\+json"[^>]*>(.*?)</script>',
-            role_runtime,
-            re.S,
-        )
-        self.assertIsNotNone(model_map, "diagram-role-model-map island not found")
-        island = json.loads(model_map.group(1))
-        node_names = {n["name"] for n in island["series"][0]["data"]}
-        self.assertIn("tdd-observer", node_names)
-        link_sources = {l["source"] for l in island["series"][0]["links"]}
-        self.assertIn("tdd-observer", link_sources)
-        observer_link = next(l for l in island["series"][0]["links"] if l["source"] == "tdd-observer")
-        self.assertEqual(observer_link["target"], "claude-sonnet-5 high")
-
-        # F3 the final-HEAD observation binds the bound test identity (path + content
-        # digest), not merely a green execution, in both spec anchors and the contract.
-        self.assertIn('data-anchor="delivery-tdd-final-head-test-identity"', delivery)
-        self.assertIn('id="delivery-tdd-final-head-test-identity"', delivery)
-        self.assertIn(
-            "the bound test is present unchanged at the final pushed HEAD by the same path and content digest",
-            delivery,
-        )
-        self.assertIn("not merely that tests pass", delivery)
-        self.assertIn(
-            "a final HEAD whose bound test any commit weakened, edited, or removed",
-            delivery,
-        )
-        # The delivery-loop mirror also carries the final-HEAD test-identity confirmation.
-        self.assertIn(
-            "the same path and content digest as the red and green bound test under <code>delivery-tdd-final-head-test-identity</code>",
-            delivery,
-        )
-        # The canonical role contract confirms the final-HEAD test identity too.
-        self.assertIn("at the final pushed HEAD", observer_contract)
-        self.assertIn("removes, weakens, or edits the bound test is rejected even when tests pass", observer_contract)
-        # The final-HEAD test-identity named test is enumerated.
-        self.assertIn('data-anchor="delivery-tdd-named-test-final-head-test-identity"', delivery)
-        self.assertIn("<code>test_final_head_binds_test_identity</code>", delivery)
-
-        # No Markdown counterpart is generated for either spec-chat canonical document.
-        self.assertFalse((ROOT / "spec/domains/delivery-lifecycle.spec.md").exists())
-        self.assertFalse((ROOT / "spec/domains/role-runtime.spec.md").exists())
 
 
-class DeliveryTddContractConformanceTests(unittest.TestCase):
-    # TUR-447 reshape F2 (ruling-53): the CONTRACT-LAYER subset of the named
-    # delivery-TDD obligations is realized here as REAL executable conformance
-    # assertions over the durable CONTRACT/SPEC/ROLE-PROSE SEMANTICS, not a grep
-    # for a test-name string literal. Each method pins one anti-forgery guarantee
-    # at the contract layer NOW: the observer's inputs are host-journalled, any
-    # worker-authored input is rejected, and the bound test identity (path +
-    # content digest) is unchanged across red, green, and the final pushed HEAD.
-    # The genuinely RUNTIME named tests (observer replay, push ordering, live
-    # remote readback, rejection abandons the branch, final-HEAD green, invalid
-    # red variants) stay NAMED in the spec named-tests-list for delivery-time
-    # codex-gated implementation; they are circular here (they need the delivery
-    # loop to run) and are intentionally NOT made executable now.
-
-    def test_observer_inputs_are_host_journal_provenanced_in_contract_and_spec(self) -> None:
-        # CONTRACT-REAL. The tdd-observer role prose AND the delivery-tdd /
-        # role-runtime anchors REQUIRE the observer's red/green/final commit ids
-        # to come from the host journal binding of the worker committed delivery
-        # branch, and the command to be the canonical validation command from the
-        # target AGENTS.md supplied by the host. Asserts the actual semantic
-        # requirement, not the presence of a test-name string.
-        observer = (ROOT / "roles/tdd-observer.md").read_text()
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        role_runtime = (ROOT / "spec/domains/role-runtime.spec.html").read_text()
-
-        # Role contract: commit ids from the host journal binding, command is the
-        # AGENTS.md canonical validation command supplied by the host, and it must
-        # check out exactly the host-journalled commits.
-        self.assertIn("REQUIRED", observer)
-        self.assertIn(
-            "red, green, and final-HEAD commit identifiers come from the host journal binding of the worker committed delivery branch",
-            observer,
-        )
-        self.assertIn(
-            "the test command is the canonical validation command from the target AGENTS.md supplied by the host",
-            observer,
-        )
-        self.assertIn(
-            "Check out exactly the host-journalled commits; never a worker-claimed commit",
-            observer,
-        )
-
-        # Delivery-lifecycle spec: both halves (commit selection AND command) are
-        # host-supplied from the journal binding, never worker-authored, at a
-        # stable anchor.
-        for anchor in (
-            "delivery-tdd-observer-inputs-host-sourced",
-            "delivery-tdd-observer-inputs-host-journal-record",
-        ):
-            self.assertIn(f'data-anchor="{anchor}"', delivery, anchor)
-            self.assertIn(f'id="{anchor}"', delivery, anchor)
-        self.assertIn(
-            "both the red, green, and final-HEAD commit identifiers it checks out AND the test command, are supplied by the host from the journal binding",
-            delivery,
-        )
-        self.assertIn("never from any worker-authored claim", delivery)
-        self.assertIn(
-            "the observer checks out exactly those host-journalled commits",
-            delivery,
-        )
-
-        # Role-runtime spec mirror: the observer's commit identifiers and command
-        # come from the host journal binding, never worker-authored, at a stable
-        # anchor.
-        self.assertIn(
-            'data-anchor="role-tdd-observer-host-sourced-inputs"', role_runtime
-        )
-        self.assertIn('id="role-tdd-observer-host-sourced-inputs"', role_runtime)
-        self.assertIn(
-            "commit identifiers and command from the host journal binding",
-            role_runtime,
-        )
-        self.assertIn("never worker-authored", role_runtime)
-
-    def test_worker_authored_observer_inputs_are_rejected_not_executed(self) -> None:
-        # CONTRACT-REAL. The tdd-observer contract AND the delivery-tdd spec state
-        # that worker-authored commit ids, commands, scenarios, and verdict
-        # strings are REJECTED and never executed or trusted. Asserts the actual
-        # rejection semantics.
-        observer = (ROOT / "roles/tdd-observer.md").read_text()
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-
-        # Role contract: reject any input not host-sourced; never a worker-authored
-        # commit id, command, scenario, or verdict string; never trust a
-        # worker-authored string or infer the verdict from anything but its own
-        # re-run; stop on any worker string in the inputs.
-        self.assertIn("REJECT any input not so sourced", observer)
-        self.assertIn(
-            "never a worker-authored commit id, command, scenario, or verdict string in the prompt, execution inputs, or output",
-            observer,
-        )
-        self.assertIn(
-            "Trust a worker-authored string or infer the verdict from anything but its own re-run",
-            observer,
-        )
-        self.assertIn("any worker string in the inputs", observer)
-
-        # Delivery-lifecycle spec: the trusted-command-source anchor states
-        # worker-controlled command or scenario strings never enter the observer's
-        # prompt, execution inputs, or verdict, only its own trusted-source-derived
-        # invocation runs.
-        self.assertIn(
-            'data-anchor="delivery-tdd-trusted-command-source"', delivery
-        )
-        self.assertIn('id="delivery-tdd-trusted-command-source"', delivery)
-        self.assertIn(
-            "never from any worker-supplied string; worker-controlled command or scenario strings never enter the observer's prompt or execution inputs",
-            delivery,
-        )
-        self.assertIn(
-            "only its own trusted-source-derived invocation runs",
-            delivery,
-        )
-        # A worker-claimed commit id that differs from the host-journalled commits
-        # is rejected, and the observer checks out only host-journalled commits.
-        self.assertIn(
-            "a worker-authored command string is rejected rather than executed",
-            delivery,
-        )
-        self.assertIn(
-            "a worker-claimed commit id that differs from the host-journalled committed branch commits is rejected",
-            delivery,
-        )
-
-    def test_bound_test_identity_is_path_and_digest_unchanged_across_red_green_final(self) -> None:
-        # CONTRACT-REAL. The spec binds the failing test by path AND content
-        # digest, unchanged across the red commit, the green commit, AND the final
-        # pushed HEAD, and rejects a weakened, edited, or removed bound test at any
-        # of the three states. Asserts the actual identity-binding semantics.
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        observer = (ROOT / "roles/tdd-observer.md").read_text()
-
-        # Red->green identity: bound by path and content digest, not by name
-        # alone; green changes production only and never the bound test; a green
-        # that removes, weakens, or edits the red's failing test is rejected.
-        self.assertIn('data-anchor="delivery-tdd-test-identity-binding"', delivery)
-        self.assertIn('id="delivery-tdd-test-identity-binding"', delivery)
-        self.assertIn("bound by path and content digest, not by name alone", delivery)
-        self.assertIn(
-            "the green commit changes production only and never the bound test",
-            delivery,
-        )
-        self.assertIn(
-            "a green that removes, weakens, or edits the red's failing test is rejected",
-            delivery,
-        )
-
-        # Final-HEAD identity: the bound test is present unchanged at the final
-        # pushed HEAD by the same path and content digest, not merely that tests
-        # pass; a final HEAD whose bound test path is absent or whose digest
-        # differs is rejected.
-        self.assertIn('data-anchor="delivery-tdd-final-head-test-identity"', delivery)
-        self.assertIn('id="delivery-tdd-final-head-test-identity"', delivery)
-        self.assertIn(
-            "the bound test is present unchanged at the final pushed HEAD by the same path and content digest",
-            delivery,
-        )
-        self.assertIn("not merely that tests pass", delivery)
-        self.assertIn(
-            "a final HEAD whose bound test path is absent or whose content digest differs from the bound identity is rejected",
-            delivery,
-        )
-
-        # Role contract mirror: bound test present unchanged by path and content
-        # digest across red AND green AND at the final pushed HEAD; a green or
-        # final HEAD that removes, weakens, or edits the bound test is rejected
-        # even when tests pass.
-        self.assertIn(
-            "the bound test is present unchanged by path and content digest across the red and green commits AND at the final pushed HEAD",
-            observer,
-        )
-        self.assertIn(
-            "removes, weakens, or edits the bound test is rejected even when tests pass",
-            observer,
-        )
 
 
-class DeliveryTddRuntimeNamedTestsAreDeferredNotExecutableTests(unittest.TestCase):
-    # TUR-447 reshape F2 (ruling-53) boundary marker: the genuinely RUNTIME named
-    # delivery-TDD tests stay NAMED in the spec named-tests-list for delivery-time
-    # codex-gated implementation. They are circular here (they require the running
-    # delivery loop to observe a committed red/green branch), so they are NOT
-    # realized as executable conformance now. This asserts they REMAIN enumerated
-    # as spec named tests, so the deferral is explicit and cannot silently drop.
 
-    RUNTIME_NAMED_TESTS = (
-        "test_observer_replays_committed_red_then_green",
-        "test_push_ordering_host_push_only_after_observation_echo_readback",
-        "test_push_readback_uses_live_remote",
-        "test_rejection_abandons_unpushed_branch",
-        "test_final_head_independently_verified_green",
-        "test_invalid_red_missing_file_rejected",
-        "test_invalid_red_that_does_not_fail_rejected",
-    )
-
-    def test_runtime_named_delivery_tdd_tests_remain_enumerated_in_the_spec(self) -> None:
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        self.assertIn('data-anchor="delivery-tdd-named-tests"', delivery)
-        for name in self.RUNTIME_NAMED_TESTS:
-            self.assertIn(f"<code>{name}</code>", delivery, name)
 
 
 if __name__ == "__main__":

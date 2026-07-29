@@ -26,6 +26,17 @@ reviewer skills.
 
 Stop on conflict. Reconcile every authoritative source before readiness.
 
+## Shaping model
+
+Shaping produces and commits the durable contract before any implementer pass.
+Author the high-level issue as a first-class artifact, reconcile and author the
+in-repo canonical specs, ADRs, and user stories, drive the high-level content to
+the tracker, and publish the reviewed specs to the evidence or spec page. These
+committed artifacts are the reviewed contract. Only then does a fresh implementer
+refetch the committed spec and write code plus spec-derived TDD to match it, and
+the reviewer checks code against that committed spec. Never an implementer
+producing the spec.
+
 ## Intake
 
 1. Fetch the complete current Linear issue first for Linear-tracked work.
@@ -124,10 +135,13 @@ and status surfaces. The operator vetoes by rollback.
 
 On clear verdict readback, act then notify:
 
-1. Commit durable spec, ADR, story, repo instruction, and PR changes.
-2. Update Linear with concise high-level context and the verdict link.
-3. Set Linear to `Shaped`.
-4. Delete the local draft.
+1. Commit durable high-level issue, spec, ADR, story, repo instruction, and PR
+   changes as the reviewed contract before any implementer pass.
+2. Publish the reviewed specs to the evidence or spec page; for a spec-chat repo
+   this is the rendered `*.spec.html`.
+3. Update the tracker with concise high-level context and the verdict link.
+4. Set the readiness state to `Shaped`.
+5. Delete the local draft.
 
 Implementation launch must refetch every bound source. Any mismatch returns to
 shaping. Never implement, self-review, infer approval, accept, merge, or mutate

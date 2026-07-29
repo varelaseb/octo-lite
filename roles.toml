@@ -39,6 +39,9 @@ execution = "persistent"
 service_tier = "default"
 tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
 required_skills = ["herdr-comms"]
+# Operator choice at spawn: an orchestrator runs on the default opus runtime or,
+# when the operator wants a Fable orchestrator, on the sanctioned Fable runtime.
+alt_runtimes = [{ model = "claude-fable-5", effort = "xhigh" }]
 
 [[roles.orchestrator.conditional_skills]]
 skill = "octo-lite-issue-shaper"
@@ -180,16 +183,3 @@ tools = ["Read"]
 required_skills = []
 conditional_skills = []
 
-[roles.tdd-observer]
-contract = "roles/tdd-observer.md"
-provider = "anthropic"
-model = "claude-sonnet-5"
-effort = "high"
-mode = "never"
-session = "fresh"
-execution = "workflow-subagent"
-subagent_access = "read-restricted"
-service_tier = "default"
-tools = ["Read", "Grep", "Glob", "Bash"]
-required_skills = []
-conditional_skills = []

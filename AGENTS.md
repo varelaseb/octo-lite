@@ -6,6 +6,17 @@ This repository is the source for the local octo-lite Codex personalization.
 octo-lite installs into the user's Codex profile and operates on separate
 target repositories.
 
+## Design Frame (operator ruling 2026-07-27)
+
+Every octo-lite issue STARTS from the elegant-lean frame: build the smallest
+mechanism that makes the failure visible or the behavior correct. No machinery
+for hypothetical edge cases - an edge case earns code only with a failing test
+that proves real cost. Prefer deletion over guard. One bound over layered
+bounds. Derivation over declaration. Recorded-not-implemented is the default
+disposition for reviewer findings beyond the elegant minimum. Precedents:
+gh#28 (-380 lines deletion-only), gh#34 (envelope deleted, not simplified),
+gh#31 (one age bound, dropped lock/TOCTOU armor).
+
 ## Durable Sources
 
 - `README.md` explains the product and install shape.
@@ -31,7 +42,7 @@ target repositories.
 
 - Spec format: spec-chat
 - Canonical spec paths: spec/domains/operating-model.spec.html, spec/domains/delivery-lifecycle.spec.html, spec/domains/role-runtime.spec.html, spec/domains/operator-control.spec.html
-- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html
+- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html, spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0003-drop-loop-trust-root.spec.html
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact

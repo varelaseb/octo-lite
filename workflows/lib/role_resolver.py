@@ -31,7 +31,7 @@ ROLE_FIELDS = {
     "required_skills",
     "conditional_skills",
 }
-OPTIONAL_ROLE_FIELDS = {"subagent_access", "provenance"}
+OPTIONAL_ROLE_FIELDS = {"subagent_access", "provenance", "alt_runtimes"}
 PERSISTENT_EXECUTION_ROLES = {"meta-operator", "orchestrator"}
 SUBAGENT_ACCESS_VALUES = {"standard", "read-restricted"}
 PROVENANCE_VALUES = {"relay-verbatim-rollout"}
@@ -57,6 +57,7 @@ class Role(NamedTuple):
     tools: tuple[str, ...]
     required_skills: tuple[str, ...]
     conditional_skills: tuple[ConditionalSkill, ...]
+    alt_runtimes: tuple[tuple[str, str], ...] = ()
 
 
 class Registry(NamedTuple):
@@ -182,6 +183,25 @@ def load_registry(root: Path | str) -> Registry:
         if raw["service_tier"] not in {"default", "fast"}:
             raise ValueError(f"role {name} service_tier unsupported")
 
+        # Operator-selectable alternate runtimes (model, effort) an orchestrator may
+        # be spawned on at operator choice; the default model/effort remain the pin.
+        alt_runtimes: list[tuple[str, str]] = []
+        raw_alts = raw.get("alt_runtimes")
+        if raw_alts is not None:
+            if not isinstance(raw_alts, list):
+                raise ValueError(f"role {name}.alt_runtimes must be an array of tables")
+            for item in raw_alts:
+                if not isinstance(item, dict) or set(item) != {"model", "effort"}:
+                    raise ValueError(f"role {name} has invalid alt_runtime (expected model, effort)")
+                alt_model, alt_effort = item["model"], item["effort"]
+                if not isinstance(alt_model, str) or not alt_model:
+                    raise ValueError(f"role {name} alt_runtime model must be a nonempty string")
+                if alt_effort not in {"low", "medium", "high", "xhigh", "ultra"}:
+                    raise ValueError(f"role {name} alt_runtime effort unsupported")
+                if (alt_model, alt_effort) == (raw["model"], raw["effort"]):
+                    raise ValueError(f"role {name} alt_runtime duplicates the default runtime")
+                alt_runtimes.append((alt_model, alt_effort))
+
         conditional: list[ConditionalSkill] = []
         seen_conditions: set[tuple[str, str]] = set()
         if not isinstance(raw["conditional_skills"], list):
@@ -220,6 +240,7 @@ def load_registry(root: Path | str) -> Registry:
             tools=_strings(raw["tools"], "tools", name, allow_empty=False),
             required_skills=_strings(raw["required_skills"], "required_skills", name),
             conditional_skills=tuple(conditional),
+            alt_runtimes=tuple(alt_runtimes),
         )
         role_skills = set(role.required_skills)
         for item in role.conditional_skills:
@@ -353,9 +374,25 @@ def build_launch_receipt(
     operator_loopback: bool,
     review_delivery: str,
     issue: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     root = Path(root).resolve()
     repo = Path(repo).resolve()
+    # Operator runtime choice at spawn: model+effort default to the role's pinned
+    # runtime, or may select one of the role's sanctioned alt_runtimes (e.g. a Fable
+    # orchestrator). An override that is neither the default nor a declared alternate
+    # fails closed.
+    if model is not None or effort is not None:
+        if model is None or effort is None:
+            raise ValueError("model and effort must be provided together")
+        allowed = {(resolved.role.model, resolved.role.effort), *resolved.role.alt_runtimes}
+        if (model, effort) not in allowed:
+            raise ValueError(
+                f"runtime {model}/{effort} not sanctioned for role {resolved.role.name}"
+            )
+    effective_model = model if model is not None else resolved.role.model
+    effective_effort = effort if effort is not None else resolved.role.effort
     worktree = Path(worktree).resolve()
     if not spawn_id or not parent or not reply_route:
         raise ValueError("spawn_id, parent, and reply_route are required")
@@ -384,8 +421,8 @@ def build_launch_receipt(
         },
         "runtime": {
             "provider": resolved.role.provider,
-            "model": resolved.role.model,
-            "effort": resolved.role.effort,
+            "model": effective_model,
+            "effort": effective_effort,
             "mode": resolved.role.mode,
             "session": resolved.role.session,
             "service_tier": resolved.role.service_tier,
@@ -571,6 +608,10 @@ def main(argv: list[str] | None = None) -> int:
     # Shaped-transition gate that requires receipt[issue][identifier] admits it.
     # Absent for meta-operator and epic-orchestrator receipts, which bind no issue.
     resolve.add_argument("--issue")
+    # Operator runtime choice at spawn (e.g. a Fable orchestrator): must be the
+    # role's default runtime or one of its sanctioned alt_runtimes.
+    resolve.add_argument("--model")
+    resolve.add_argument("--effort")
     # TUR-447 cycle1 pass2 P0 (role-runtime role-openai-relay): a relay resolver run opts in to
     # the canonical contract text so the relay carries it as the codex exec prompt. Off by
     # default so a durable launch-receipt consumer (the persistent launch path writes this
@@ -600,6 +641,8 @@ def main(argv: list[str] | None = None) -> int:
         operator_loopback=args.operator_loopback == "true",
         review_delivery=args.review_delivery,
         issue=args.issue,
+        model=args.model,
+        effort=args.effort,
     )
     print(render_receipt(receipt), end="")
     # TUR-447 cycle1 pass2 P0 (role-runtime role-openai-relay, role-no-prompt-copy): with

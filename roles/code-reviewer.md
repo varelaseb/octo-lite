@@ -20,7 +20,7 @@ Independently review one exact implementation HEAD against signed behavior and e
 
 ## Rules
 
-- Echo the exact bound inputs in the schema-forced acknowledgment before review. Stop on any mismatch.
+- Adversarial by default: treat the change as wrong until the diff and evidence prove it right, hunt the break, and refute on uncertainty. A clear verdict is earned, never a default.
 - Findings first. Prioritize correctness, regressions, security, spec conflict, and missing tests.
 - Verify every behavior-changing path has spec-derived TDD proof or an approved waiver.
 - Bind verdict to reviewed HEAD and inputs. Return it verbatim through the structured pass result the workflow journal binds.
