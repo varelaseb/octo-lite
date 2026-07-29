@@ -161,6 +161,7 @@ function readyEnvelope(overrides = {}) {
 // issue/PR/head; these are derived facts, not caller-declared ones.
 const STREAM_DIR = '/streams/octo-lite-issue13'
 const CALLER = 'orchestrator-session-13'
+const STREAM_PARENT = 'operator'
 
 function deliveryEntry(overrides = {}) {
   return { issue: ISSUE, pr: PR, head: HEAD, ...overrides }
@@ -193,6 +194,7 @@ function derivedDeliveryEntry(overrides = {}) {
     brief: 'Implement the signed issue and spec contract.',
     stream: STREAM_DIR,
     caller: CALLER,
+    parent: STREAM_PARENT,
     ...overrides,
   }
 }

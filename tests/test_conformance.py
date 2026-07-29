@@ -103,84 +103,56 @@ def static_import_specifiers(text: str) -> list[str]:
 
 
 # embedded-cli-drift-probe (delivery-lifecycle embedded-cli-drift-probe,
-# linear-loop-fire-arg-contract): learn the installed octo-control subcommand's
-# accepted flags, required flags, and required positional count from the CLI's
-# OWN argparse --help output, then validate every embedded octo-control
-# invocation in the delivery loop against that contract. A drift (an embedded
-# command that uses a flag the CLI no longer accepts, such as the retired
-# --reason, or omits a newly-required flag) fails in the checked suite, not at a
+# linear-loop-fire-arg-contract): validate every embedded octo-control invocation
+# in the delivery loop against the INSTALLED CLI's OWN argparse parser, imported
+# live from scripts/octo-control. No reimplementation of argparse: the real
+# `parser()` decides acceptance exactly as a live fire would (a rejected command
+# raises SystemExit), so any drift (a flag the CLI removed, such as the retired
+# --reason, or a missing newly-required flag) fails in the checked suite, not at a
 # lane's live fire.
-def octo_control_contract(subcommand: str) -> dict:
-    proc = subprocess.run(
-        [str(ROOT / "scripts/octo-control"), subcommand, "--help"],
-        capture_output=True, text=True, check=True,
+def _load_octo_control_module():
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader(
+        "octo_control_cli", str(ROOT / "scripts/octo-control")
     )
-    help_text = proc.stdout
-    usage_match = re.search(r"usage:(.*?)\n\s*\n", help_text, flags=re.DOTALL)
-    usage = usage_match.group(1) if usage_match else help_text
-    # Accepted flags: every --flag anywhere in the usage line.
-    accepted = set(re.findall(r"--[A-Za-z][A-Za-z0-9-]*", usage))
-    # Required flags: a --flag NOT wrapped in argparse optional brackets. Walk the
-    # usage tokens tracking bracket depth; a --flag token seen at depth 0 whose own
-    # token does not open a bracket is required.
-    required_flags: set[str] = set()
-    depth = 0
-    for token in usage.split():
-        core = token.strip("[]")
-        match = re.fullmatch(r"(--[A-Za-z][A-Za-z0-9-]*)", core)
-        if match and depth == 0 and not token.startswith("["):
-            required_flags.add(match.group(1))
-        depth += token.count("[") - token.count("]")
-    # Which flags consume a following value token: a `--flag METAVAR` line in the
-    # options section takes a value; a bare `--flag` line is a store_true switch.
-    takes_value: dict[str, bool] = {}
-    for match in re.finditer(
-        r"(?m)^\s+(--[A-Za-z][A-Za-z0-9-]*)(\s+[A-Z][A-Z0-9_]*)?", help_text
-    ):
-        takes_value[match.group(1)] = match.group(2) is not None
-    # Required positional count: the names listed under `positional arguments:`.
-    pos_match = re.search(
-        r"positional arguments:\n(.*?)(?:\n\s*\n|\noptions:)", help_text, flags=re.DOTALL
-    )
-    required_positionals = 0
-    if pos_match:
-        for line in pos_match.group(1).splitlines():
-            stripped = line.strip()
-            if stripped and not stripped.startswith("-"):
-                required_positionals += 1
-    return {
-        "accepted": accepted,
-        "required_flags": required_flags,
-        "takes_value": takes_value,
-        "required_positionals": required_positionals,
-    }
+    spec = importlib.util.spec_from_loader("octo_control_cli", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
-def validate_invocation(tokens: list[str], contract: dict) -> list[str]:
-    # tokens are the whitespace-split argument tokens AFTER the subcommand.
-    violations: list[str] = []
-    used_flags: set[str] = set()
-    positionals = 0
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token.startswith("--"):
-            used_flags.add(token)
-            if token not in contract["accepted"]:
-                violations.append(f"flag not accepted by installed CLI: {token}")
-            index += 2 if contract["takes_value"].get(token, True) else 1
-            continue
-        positionals += 1
-        index += 1
-    for required in sorted(contract["required_flags"]):
-        if required not in used_flags:
-            violations.append(f"missing required flag: {required}")
-    if positionals < contract["required_positionals"]:
-        violations.append(
-            f"missing required positional: supplied {positionals}, "
-            f"need {contract['required_positionals']}"
-        )
-    return violations
+_OCTO_CONTROL_MODULE = None
+
+
+def _octo_control_parser():
+    # Build a fresh installed-CLI argparse parser. Importing the module runs only
+    # its top-level (no main(): that is __name__-guarded), so there are no side
+    # effects; parse_args never invokes the bound command.
+    global _OCTO_CONTROL_MODULE
+    if _OCTO_CONTROL_MODULE is None:
+        _OCTO_CONTROL_MODULE = _load_octo_control_module()
+    return _OCTO_CONTROL_MODULE.parser()
+
+
+def argparse_rejection(subcommand: str, tokens: list[str]) -> str | None:
+    # Return None if the installed CLI's own argparse ACCEPTS [subcommand, *tokens],
+    # else the argparse error text. A ${...} template value is an opaque placeholder
+    # string argparse takes as any value; an opaque interpolated blob standing in for
+    # hidden flags is an unrecognized extra positional and is rejected, exactly the
+    # pressure that keeps the fire command's args explicit and statically checkable.
+    import contextlib
+    import io
+
+    parser = _octo_control_parser()
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            parser.parse_args([subcommand, *tokens])
+    except SystemExit:
+        return err.getvalue().strip() or "installed CLI argparse rejected the invocation"
+    return None
 
 
 def embedded_octo_control_invocations(source: str) -> list[tuple[int, str, list[str]]]:
@@ -722,37 +694,49 @@ class CutoverConformanceTests(unittest.TestCase):
         invocations = embedded_octo_control_invocations(source)
         self.assertTrue(invocations, "no embedded octo-control invocation found in the loop")
         for line, subcommand, tokens in invocations:
-            contract = octo_control_contract(subcommand)
-            violations = validate_invocation(tokens, contract)
-            self.assertEqual(
-                [], violations,
+            rejection = argparse_rejection(subcommand, tokens)
+            self.assertIsNone(
+                rejection,
                 f"embedded `octo-control {subcommand}` at loop line {line} drifted from the "
-                f"installed CLI: {violations}",
+                f"installed CLI argparse: {rejection}",
             )
 
     def test_drift_probe_catches_removed_and_missing_required_flags(self) -> None:
-        # The probe is robust to BOTH failure directions against the real installed
-        # linear-transition contract: a re-added removed flag (--reason) is rejected
-        # as not-accepted, and dropping a newly-required flag (--caller) is rejected
-        # as missing-required; the exact installed contract passes clean.
-        contract = octo_control_contract("linear-transition")
-        full = [
-            "ISSUE", "--expected", "Shaped", "--target", "Todo",
-            "--progress", "P", "--status", "S", "--parent", "operator",
-            "--outcome", "O", "--gate", "G", "--caller", "C", "--stream", "D",
-        ]
-        self.assertEqual([], validate_invocation(full, contract))
-        readded_removed = validate_invocation(full + ["--reason", "delivery-entry"], contract)
-        self.assertTrue(
-            any("--reason" in v for v in readded_removed),
-            f"probe must reject the retired --reason flag: {readded_removed}",
+        # The probe runs the WHOLE pipeline (source extractor -> installed argparse)
+        # and is robust to BOTH failure directions. The exact embedded fire command
+        # parses clean; mutating the real loop SOURCE to re-add the retired --reason
+        # flag OR to drop the newly-required --caller flag makes the same extract+
+        # validate pipeline red. This exercises the extractor, not a hand-built token
+        # list, so an opaque-interpolation bypass cannot hide a drift.
+        source = (ROOT / "workflows/octo-loop-qa.js").read_text()
+
+        def pipeline_violations(text: str) -> list[str]:
+            found: list[str] = []
+            for line, subcommand, tokens in embedded_octo_control_invocations(text):
+                rejection = argparse_rejection(subcommand, tokens)
+                if rejection is not None:
+                    found.append(f"line {line} {subcommand}: {rejection}")
+            return found
+
+        # The unmutated loop source parses clean against the installed argparse.
+        self.assertEqual([], pipeline_violations(source))
+
+        # Re-adding the retired --reason flag to the real fire command is rejected.
+        readded = source.replace(
+            "--target Todo --stream", "--target Todo --reason delivery-entry --stream", 1
         )
-        missing_required = validate_invocation(
-            [t for t in full if t not in ("--caller", "C")], contract
-        )
+        self.assertNotEqual(source, readded, "fixture anchor for --reason injection not found")
         self.assertTrue(
-            any("--caller" in v for v in missing_required),
-            f"probe must reject a missing newly-required flag: {missing_required}",
+            pipeline_violations(readded),
+            "probe must reject the source with the retired --reason flag re-added",
+        )
+
+        # Dropping the newly-required --caller flag from the real fire command is rejected.
+        dropped = source.replace("--caller ${caller} ", "", 1)
+        self.assertNotEqual(source, dropped, "fixture anchor for --caller removal not found")
+        self.assertTrue(
+            pipeline_violations(dropped),
+            "probe must reject the source with the newly-required --caller flag dropped",
         )
 
     def test_workflow_loop_fires_shaped_to_todo_before_any_delivery_spawn(self) -> None:
