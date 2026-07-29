@@ -34,7 +34,9 @@
 <h3>Entry declares three facts</h3>
 <p data-anchor="decision-three-facts" id="decision-three-facts">A delivery pass declares exactly the issue, the PR, and the head, and the readiness envelope is deleted as an input concept, not simplified.</p>
 <p data-anchor="decision-derive-rest" id="decision-derive-rest">The loop derives every other binding at fire from its one canonical source, Linear, the forge, git, the pinned shaping-verdict comment, and any QA artifacts, so deriving each binding is the verification.</p>
-<p data-anchor="decision-fail-loud" id="decision-fail-loud">The loop fails loud on any inconsistency, in particular when the declared head, the PR head, the worktree head, and the shaping-verdict head disagree, stopping before any mutation rather than accepting an asserted field.</p>
+<p data-anchor="decision-fail-loud" id="decision-fail-loud">The loop fails loud on any inconsistency, in particular when the declared head, the PR head, and the worktree head disagree within one fire, stopping before any mutation rather than accepting an asserted field.</p>
+<p data-anchor="decision-shaping-descent" id="decision-shaping-descent">The shaping-verdict head is not a fourth head that must equal the declared head but immutable readiness evidence the declared head must descend from, so the entry gate admits any declared head that adds commits on top of the shaping-cleared head and refuses one off a different or unshaped base.</p>
+<p data-anchor="decision-shaping-descent-supersedes" id="decision-shaping-descent-supersedes">This ancestor-descent rule supersedes the original strict four-head equality, which made implement a one-time entry at the exact shaping head and blocked seam-by-seam re-entry within a single slice once the first green advanced the head.</p>
 <p data-anchor="decision-output-receipt" id="decision-output-receipt">The loop journals the full derivation as an output receipt produced by the fire, replacing the hand-assembled input envelope, so the durable record is what the loop verified rather than what a caller asserted.</p>
 </section>
 
@@ -56,11 +58,13 @@
 <p data-anchor="consequence-lean-entry" id="consequence-lean-entry">Delivery entry becomes one command carrying three facts, and the readiness envelope, its builder, and its readiness check are removed from an already-lean loop.</p>
 <p data-anchor="consequence-derivation-cost" id="consequence-derivation-cost">The loop does more work at fire deriving and cross-checking, and a single head inconsistency now stops the pass loudly instead of being silently reconciled by a hand-declared field.</p>
 <p data-anchor="consequence-no-reuse" id="consequence-no-reuse">Reusing one orchestrator across issues is no longer possible, and the re-pin operation is removed rather than maintained.</p>
+<p data-anchor="consequence-seam-by-seam" id="consequence-seam-by-seam">A slice may now deliver seam by seam, each green re-entering the loop at a head that descends from the shaping-cleared head with the host pushing each green so the PR head tracks, and this deliberate trust-model relaxation is guarded by a real shaping review rather than shipped as a hotfix.</p>
 </section>
 
 <section data-anchor="related" id="related">
 <h2>Related</h2>
 <p data-anchor="related-issue" id="related-issue">Origin: octo-lite issue 34. Supersedes: issue 33.</p>
+<p data-anchor="related-amended-by" id="related-amended-by">Amended by octo-lite issue 55, which relaxed the strict four-head equality to shaping-verdict ancestor-descent so a slice delivers seam by seam.</p>
 <p data-anchor="related-specs" id="related-specs">Amended: <a href="../domains/delivery-lifecycle.spec.html#delivery-entry-gate">delivery-lifecycle delivery entry gate</a>, <a href="../domains/role-runtime.spec.html#launch-stream-envelope-builder">role-runtime launch stream envelope</a>.</p>
 <p data-anchor="related-foundation" id="related-foundation">Builds on: <a href="0003-drop-loop-trust-root.spec.html">ADR 0003</a>, which dropped the loop trust root and the independent observer and left the loop deriving its worktree from cwd and branch from git.</p>
 </section>
