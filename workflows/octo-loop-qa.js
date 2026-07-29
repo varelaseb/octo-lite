@@ -636,6 +636,7 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     'lane', 'lane_issue', 'branch', 'branch_issue',
     'shaping_verdict', 'shaping_verdict_head', 'shaping_reviewer_receipt',
     'spec_blobs', 'adr_blobs', 'contract_hash', 'brief',
+    'stream', 'caller', 'parent',
   ],
   properties: {
     linear_issue: { type: 'string' },
@@ -661,6 +662,9 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     adr_blobs: { type: 'array', items: { type: 'string' } },
     contract_hash: { type: 'string' },
     brief: { type: 'string' },
+    stream: { type: 'string' },
+    caller: { type: 'string' },
+    parent: { type: 'string' },
   },
 }
 
@@ -1048,6 +1052,10 @@ async function deriveDeliveryEntry() {
     'From the pinned shaping-review journal, return shaping_verdict, shaping_verdict_head, and',
     'shaping_reviewer_receipt. From live reads at the derived head, return spec_blobs, adr_blobs,',
     'the resolved implementer contract_hash, and a brief grounded in the issue and signed sources.',
+    'From the host-owned stream registry, find the orchestrator stream whose stream.toml records this',
+    'exact issue and child_role orchestrator, and return stream as its absolute directory, caller as',
+    'its recorded child_session, and parent as its recorded parent_session (the notify route); loop',
+    'fire binds --stream authority, --caller, and --parent from these.',
     'Normalize every issue binding to the same identifier form as the declared issue.',
   ].join('\n'), {
     label: `delivery-entry-derive:${issue}`,
@@ -1118,17 +1126,39 @@ async function deriveDeliveryEntry() {
   A.adr_blobs = derived.adr_blobs
   A.contract_hash = requiredNonEmptyString(derived.contract_hash, 'derived contract hash')
   A.brief = requiredNonEmptyString(derived.brief, 'derived pass brief')
+  A.stream = requiredNonEmptyString(derived.stream, 'derived orchestrator stream directory')
+  A.caller = requiredNonEmptyString(derived.caller, 'derived orchestrator caller session')
+  A.parent = requiredNonEmptyString(derived.parent, 'derived orchestrator parent session')
   return { declared: { issue, pr: A.pr, head }, derived }
 }
 
-// Loop fire (delivery-lifecycle linear-loop-fire-transition, delivery-entry-gate): the one mechanical
-// Shaped -> Todo transition through octo-control linear-transition before any delivery worker spawns.
+// Loop fire (delivery-lifecycle linear-loop-fire-transition, delivery-entry-gate,
+// linear-loop-fire-arg-contract): the one mechanical Shaped -> Todo transition through
+// octo-control linear-transition before any delivery worker spawns. The invocation carries the exact
+// argument contract the INSTALLED CLI requires (embedded-cli-drift-probe guards the shape), with every
+// value derived from the host-owned stream state the orchestrator already holds, not a stale literal.
+// Authority binds through --stream: the loop fires from its OWNING orchestrator context, whose own
+// stream.toml records child_session (the caller) and the exact issue in the host-owned registry, so the
+// stream directory + caller identity is the caller-authority binding the installed CLI requires for a
+// non-Shaped target. The retired --reason flag never appears. --status is the canonical sweep-visible
+// child status surface status.md (operator-control stream-files), so the delivery-entry write lands on
+// the one surface the sweep reads; --parent is the stream's recorded parent_session notify route
+// (derived, never a stale literal); --progress is the transition resume ledger; the outcome and gate
+// are the status write's content.
 async function loopFire() {
   const issue = required(A.issue, 'issue')
-  const controlArgs = '--reason delivery-entry'
+  const stream = requiredNonEmptyString(A.stream, 'orchestrator stream directory')
+  const caller = requiredNonEmptyString(A.caller, 'orchestrator caller session')
+  const parent = requiredNonEmptyString(A.parent, 'orchestrator parent session')
+  const progress = `${stream}/loop-fire.progress`
+  const status = `${stream}/status.md`
+  // One-line invocation so the embedded-cli-drift-probe reads the whole command against the installed
+  // argparse: positional issue, the transition pair, --stream authority + --caller, the status/progress
+  // paths, the parent notify route, and the outcome/gate the status write records. No retired flag.
+  const command = `octo-control linear-transition ${issue} --expected Shaped --target Todo --stream ${stream} --caller ${caller} --progress ${progress} --status ${status} --parent ${parent} --outcome shaped-to-todo-delivery-entry --gate delivery-entry-gate`
   const fire = await agent([
     'Run exactly this command from the owning orchestrator context, then report it:',
-    `octo-control linear-transition ${issue} --expected Shaped --target Todo ${controlArgs}`,
+    command,
     'Return command, exit_status, and readback_state (the Linear state read back after the transition).',
     'Never substitute a different transition, target, or issue.',
   ].join('\n'), { label: `loop-fire:${issue}`, phase: 'Implement', schema: FIRE_SCHEMA, effort: 'low' })

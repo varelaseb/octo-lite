@@ -102,6 +102,79 @@ def static_import_specifiers(text: str) -> list[str]:
     return specifiers
 
 
+# embedded-cli-drift-probe (delivery-lifecycle embedded-cli-drift-probe,
+# linear-loop-fire-arg-contract): validate every embedded octo-control invocation
+# in the delivery loop against the INSTALLED CLI's OWN argparse parser, imported
+# live from scripts/octo-control. No reimplementation of argparse: the real
+# `parser()` decides acceptance exactly as a live fire would (a rejected command
+# raises SystemExit), so any drift (a flag the CLI removed, such as the retired
+# --reason, or a missing newly-required flag) fails in the checked suite, not at a
+# lane's live fire.
+def _load_octo_control_module():
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader(
+        "octo_control_cli", str(ROOT / "scripts/octo-control")
+    )
+    spec = importlib.util.spec_from_loader("octo_control_cli", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+_OCTO_CONTROL_MODULE = None
+
+
+def _octo_control_parser():
+    # Build a fresh installed-CLI argparse parser. Importing the module runs only
+    # its top-level (no main(): that is __name__-guarded), so there are no side
+    # effects; parse_args never invokes the bound command.
+    global _OCTO_CONTROL_MODULE
+    if _OCTO_CONTROL_MODULE is None:
+        _OCTO_CONTROL_MODULE = _load_octo_control_module()
+    return _OCTO_CONTROL_MODULE.parser()
+
+
+def argparse_rejection(subcommand: str, tokens: list[str]) -> str | None:
+    # Return None if the installed CLI's own argparse ACCEPTS [subcommand, *tokens],
+    # else the argparse error text. A ${...} template value is an opaque placeholder
+    # string argparse takes as any value; an opaque interpolated blob standing in for
+    # hidden flags is an unrecognized extra positional and is rejected, exactly the
+    # pressure that keeps the fire command's args explicit and statically checkable.
+    import contextlib
+    import io
+
+    parser = _octo_control_parser()
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            parser.parse_args([subcommand, *tokens])
+    except SystemExit:
+        return err.getvalue().strip() or "installed CLI argparse rejected the invocation"
+    return None
+
+
+def embedded_octo_control_invocations(source: str) -> list[tuple[int, str, list[str]]]:
+    # Extract every embedded `octo-control <subcommand> ...` invocation from a
+    # Workflow-loop source. Comments are stripped first so prose mentions of a
+    # subcommand are never scanned. Each invocation is captured up to the enclosing
+    # string delimiter (backtick / quote) or newline; a ${...} template
+    # interpolation is kept as an opaque positional-or-value token.
+    code = strip_line_and_block_comments(source)
+    invocations: list[tuple[int, str, list[str]]] = []
+    for match in re.finditer(r"octo-control\s+([a-z][a-z-]*)([^\n`'\"]*)", code):
+        subcommand = match.group(1)
+        rest = match.group(2)
+        tokens: list[str] = []
+        for raw in rest.split():
+            flag = re.match(r"--[a-z][a-z0-9-]*", raw)
+            tokens.append(flag.group(0) if flag else raw)
+        line = code.count("\n", 0, match.start()) + 1
+        invocations.append((line, subcommand, tokens))
+    return invocations
+
+
 # Node harness (CommonJS) that mirrors the delivery-loop Workflow interpreter: it extracts the embedded
 # containment gate from the loop and runs it inside a node:vm context whose globals do NOT include
 # process, require, or module, then calls assertContainment with host-derived git-common-dir args only.
@@ -607,6 +680,64 @@ class CutoverConformanceTests(unittest.TestCase):
         # gates.mjs is the canonical module and must keep its exports for the
         # node --test suite that imports it.
         self.assertIn("export function assertAdmission", gates)
+
+    def test_embedded_octo_control_invocations_match_installed_cli_argparse(self) -> None:
+        # embedded-cli-drift-probe (delivery-lifecycle embedded-cli-drift-probe,
+        # linear-loop-fire-arg-contract): every embedded octo-control invocation in
+        # the delivery loop must validate against the INSTALLED CLI's own argparse
+        # contract, learned live from `octo-control <sub> --help`. A drift (a flag
+        # the CLI removed, such as --reason, or a missing newly-required flag) must
+        # fail HERE, not at a lane's live fire. This was RED against the prior
+        # --reason loop-fire command and is GREEN once the invocation carries the
+        # installed required arg contract.
+        source = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        invocations = embedded_octo_control_invocations(source)
+        self.assertTrue(invocations, "no embedded octo-control invocation found in the loop")
+        for line, subcommand, tokens in invocations:
+            rejection = argparse_rejection(subcommand, tokens)
+            self.assertIsNone(
+                rejection,
+                f"embedded `octo-control {subcommand}` at loop line {line} drifted from the "
+                f"installed CLI argparse: {rejection}",
+            )
+
+    def test_drift_probe_catches_removed_and_missing_required_flags(self) -> None:
+        # The probe runs the WHOLE pipeline (source extractor -> installed argparse)
+        # and is robust to BOTH failure directions. The exact embedded fire command
+        # parses clean; mutating the real loop SOURCE to re-add the retired --reason
+        # flag OR to drop the newly-required --caller flag makes the same extract+
+        # validate pipeline red. This exercises the extractor, not a hand-built token
+        # list, so an opaque-interpolation bypass cannot hide a drift.
+        source = (ROOT / "workflows/octo-loop-qa.js").read_text()
+
+        def pipeline_violations(text: str) -> list[str]:
+            found: list[str] = []
+            for line, subcommand, tokens in embedded_octo_control_invocations(text):
+                rejection = argparse_rejection(subcommand, tokens)
+                if rejection is not None:
+                    found.append(f"line {line} {subcommand}: {rejection}")
+            return found
+
+        # The unmutated loop source parses clean against the installed argparse.
+        self.assertEqual([], pipeline_violations(source))
+
+        # Re-adding the retired --reason flag to the real fire command is rejected.
+        readded = source.replace(
+            "--target Todo --stream", "--target Todo --reason delivery-entry --stream", 1
+        )
+        self.assertNotEqual(source, readded, "fixture anchor for --reason injection not found")
+        self.assertTrue(
+            pipeline_violations(readded),
+            "probe must reject the source with the retired --reason flag re-added",
+        )
+
+        # Dropping the newly-required --caller flag from the real fire command is rejected.
+        dropped = source.replace("--caller ${caller} ", "", 1)
+        self.assertNotEqual(source, dropped, "fixture anchor for --caller removal not found")
+        self.assertTrue(
+            pipeline_violations(dropped),
+            "probe must reject the source with the newly-required --caller flag dropped",
+        )
 
     def test_workflow_loop_fires_shaped_to_todo_before_any_delivery_spawn(self) -> None:
         # delivery-lifecycle delivery-entry-gate and linear-loop-fire-transition: at
