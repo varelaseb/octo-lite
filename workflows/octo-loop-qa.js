@@ -1232,12 +1232,20 @@ async function postEvidenceCard(phaseTitle, kind, head, manifest, artifacts) {
   return requiredNonEmptyString(published.card_url, `${kind} evidence card URL`)
 }
 
-// ---- Delivery-entry derivation, hoisted BEFORE the mode dispatch (delivery-mode-envelope). EVERY mode
-// derives the same envelope from the three declared facts plus its own mode inputs before its role
-// spawn, so a downstream mode never spawns with an unset linear_state, worktree, contract_hash, brief,
-// or spec_blobs. The verified facts are journalled as the output receipt. ----
-const deliveryReceipt = await deriveDeliveryEntry(mode)
-log(`journal delivery-entry-output-receipt ${JSON.stringify(deliveryReceipt)}`)
+// ---- Delivery-entry derivation, run BEFORE the mode dispatch for the SIX DELIVERY modes only
+// (delivery-mode-envelope, delivery-mode-envelope-scope). Each delivery mode derives the same envelope
+// from the three declared facts plus its own mode inputs before its role spawn, so a downstream delivery
+// mode never spawns with an unset linear_state, worktree, contract_hash, brief, or spec_blobs, and the
+// verified facts are journalled as the output receipt. The two NON-delivery modes reconcile and
+// shaping-review are EXCLUDED: their callers legitimately pre-supply a derived context envelope, so
+// running the derive (and its anti-forgery derived-field guard) over them would wrongly reject them.
+const DELIVERY_MODES = new Set([
+  'implement', 'code-review', 'fix', 'evidence', 'qa-review', 'acceptance',
+])
+if (DELIVERY_MODES.has(mode)) {
+  const deliveryReceipt = await deriveDeliveryEntry(mode)
+  log(`journal delivery-entry-output-receipt ${JSON.stringify(deliveryReceipt)}`)
+}
 
 // ---- Mode dispatch (loop-runs-on-cwd-and-branch). Each mode spawns the right resolved role, moves the
 // tracker state at the mode boundary, and posts evidence; acceptance builds+posts+sends the package. ----
