@@ -1,7 +1,7 @@
 // Unit tests for the canonical delivery-loop gate module (workflows/lib/gates.mjs). ADR 0003
 // (drop-loop-trust-root) removed the loop-entry trust root, the independent observer, the ack-echo
 // two-phase gate, the launch-revision revalidation, and the pre-push readback; the retained set is the
-// admission matrix, containment, readiness, the code/QA review acceptance gates, the acceptance-package
+// admission matrix, containment, the code/QA review acceptance gates, the acceptance-package
 // builder, and the OpenAI reviewer relay-provenance gate (role-runtime role-openai-relay,
 // role-openai-fail-closed).
 import test from 'node:test'
@@ -11,7 +11,6 @@ import {
   assertAdmission,
   assertManifestShape,
   assertContainment,
-  assertReadyEnvelope,
   assertRepoSlug,
   requiredPrNumber,
   acceptCodeReview,
@@ -76,24 +75,6 @@ test('assertRepoSlug and requiredPrNumber reject a URL and a bare name', () => {
   assert.equal(requiredPrNumber(6, 'pr'), '6')
   assert.equal(requiredPrNumber('6', 'pr'), '6')
   assert.throws(() => requiredPrNumber('https://x/pull/6', 'pr'), /not a URL/)
-})
-
-function readyEnvelope(overrides = {}) {
-  return {
-    issue: 'TUR-13', repo: '/repo', repo_slug: 'a/b', pr: 21, branch: 'b',
-    worktree_root: '/root', worktree: 'wt',
-    shaping_head: 'h', spec_revision: 'r', linear_revision: 'lr', linear_fingerprint: 'fp',
-    linear_state: 'Shaped', pr_head: 'h', pr_base: 'main', topology_revision: 't',
-    shaping_verdict: 'clear', shaping_verdict_head: 'h', shaping_reviewer_receipt: 'rc',
-    conversation_cutoff: 'c', conversation_log_references: ['c:1'],
-    spec_blobs: ['s'], adr_blobs: [], shaping_verdict_inputs: ['i'], acceptance_criteria: ['a'],
-    ...overrides,
-  }
-}
-test('assertReadyEnvelope admits a well-formed envelope and rejects a non-clear verdict', () => {
-  assert.equal(assertReadyEnvelope(readyEnvelope()).issue, 'TUR-13')
-  assert.throws(() => assertReadyEnvelope(readyEnvelope({ shaping_verdict: 'blocking' })), /not clear/)
-  assert.throws(() => assertReadyEnvelope(readyEnvelope({ pr_head: 'other' })), /PR head mismatch/)
 })
 
 test('acceptCodeReview advances on clear and returns findings on blocking', () => {
