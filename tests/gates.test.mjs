@@ -6,6 +6,10 @@
 // role-openai-fail-closed).
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   assertAdmission,
@@ -64,9 +68,87 @@ test('assertManifestShape admits the persistent shape and the worker-journal sha
   )
 })
 
-test('assertContainment admits a contained worktree and rejects an escape', () => {
-  assert.equal(assertContainment('/root', 'lane'), '/root/lane')
-  assert.throws(() => assertContainment('/root', '../foreign'), /escapes/)
+// Containment is a git-LINKAGE property (role-runtime launch-containment-integrity), not path-prefix
+// nesting. assertContainment admits the repository's own top-level working tree and any linked worktree
+// whose .git file resolves bidirectionally into that repository's worktrees set, and rejects only a path
+// whose git linkage does not belong to the repository. The linkage reader is injectable so the pure
+// predicate is testable without a real filesystem; it defaults to the real-fs reader.
+test('assertContainment admits by git linkage (top-level and bidirectional sibling) and rejects a foreign linkage', () => {
+  // Equal repo-root: <resolved>/.git is a directory -> the repository top-level working tree.
+  const topLevel = (p) => (p === '/repo/.git' ? { type: 'dir' } : { type: 'missing' })
+  assert.equal(assertContainment('/repo', '.', topLevel), '/repo')
+  // Sibling: <resolved>/.git is a `gitdir:` file into worktrees/<name>, whose gitdir points back.
+  const linked = (p) => {
+    if (p === '/root/sib/.git') return { type: 'file', content: 'gitdir: /root/repo/.git/worktrees/sib\n' }
+    if (p === '/root/repo/.git/worktrees/sib/gitdir') return { type: 'file', content: '/root/sib/.git\n' }
+    return { type: 'missing' }
+  }
+  assert.equal(assertContainment('/root/repo', '../sib', linked), '/root/sib')
+  // Escape: a forged .git whose worktrees entry points back to a DIFFERENT worktree, so the
+  // bidirectional linkage does not hold and the path does not belong to the repository.
+  const forged = (p) => {
+    if (p === '/root/evil/.git') return { type: 'file', content: 'gitdir: /root/repo/.git/worktrees/sib\n' }
+    if (p === '/root/repo/.git/worktrees/sib/gitdir') return { type: 'file', content: '/root/sib/.git\n' }
+    return { type: 'missing' }
+  }
+  assert.throws(() => assertContainment('/root', 'evil', forged), /escapes/)
+})
+
+// Real-repo git-worktree linkage classes (self-validating bidirectional linkage created with git):
+// <repo>/.git/worktrees/<name>/gitdir reads back to the linked worktree's .git file. These exercise the
+// default real-fs linkage reader end to end.
+function git(cwd, ...args) {
+  execFileSync('git', args, { cwd, stdio: 'pipe' })
+}
+
+function makeRepo() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'octo-containment-')))
+  const repo = join(dir, 'repo')
+  mkdirSync(repo)
+  git(repo, 'init', '-q')
+  git(repo, 'config', 'user.email', 't@t')
+  git(repo, 'config', 'user.name', 't')
+  writeFileSync(join(repo, 'f'), 'x')
+  git(repo, 'add', 'f')
+  git(repo, 'commit', '-qm', 'init')
+  return { dir, repo }
+}
+
+test('assertContainment admits a real sibling git worktree by bidirectional linkage', () => {
+  const { dir, repo } = makeRepo()
+  try {
+    git(repo, 'worktree', 'add', '-q', join(dir, 'sib'))
+    // `git worktree add ../sib` is a sibling of the repo, never path-nested under it.
+    assert.equal(assertContainment(repo, '../sib'), join(dir, 'sib'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('assertContainment admits the repository top-level working tree (equal repo-root path)', () => {
+  const { dir, repo } = makeRepo()
+  try {
+    // Equal: the resolved worktree IS the repository top-level working tree; its .git is a directory.
+    assert.equal(assertContainment(repo, '.'), repo)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('assertContainment rejects a path whose git linkage does not belong to the repository', () => {
+  const { dir, repo } = makeRepo()
+  try {
+    git(repo, 'worktree', 'add', '-q', join(dir, 'sib'))
+    // A path-NESTED directory (the retired prefix check admitted it) whose forged .git steals the
+    // sibling's worktrees entry; that entry's gitdir points back to `sib`, not here, so the
+    // bidirectional linkage fails and the path is an escape.
+    const evil = join(repo, 'evil')
+    mkdirSync(evil)
+    writeFileSync(join(evil, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', 'sib')}\n`)
+    assert.throws(() => assertContainment(repo, 'evil'), /escapes/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('assertRepoSlug and requiredPrNumber reject a URL and a bare name', () => {

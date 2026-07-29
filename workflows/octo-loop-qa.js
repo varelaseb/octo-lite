@@ -115,17 +115,48 @@ function posixResolve(...segments) {
   return `/${parts.join('/')}`
 }
 
-// Worktree containment (role-runtime launch-containment): checked exactly at admission and at child
-// subagent spawn; a wrong or escaping worktree path never spawns.
-function assertContainment(worktreeRoot, worktreePath) {
+// Default git-linkage reader over the real filesystem. gates.mjs stays module-load-free (no import,
+// no require, no import()) so it embeds verbatim in the Workflow loop, so it reaches node:fs through
+// process.getBuiltinModule, which the embed load-guard permits. Returns the shape of a `.git` path:
+// a directory (repo top-level), a file (a linked-worktree pointer, content carried), or missing. Tests
+// inject a reader over synthetic linkage; the pure predicate never reads the filesystem itself.
+function defaultReadGit(gitPath) {
+  const fs = process.getBuiltinModule('node:fs')
+  let stat
+  try {
+    stat = fs.statSync(gitPath)
+  } catch {
+    return { type: 'missing' }
+  }
+  if (stat.isDirectory()) return { type: 'dir' }
+  return { type: 'file', content: fs.readFileSync(gitPath, 'utf8') }
+}
+
+// Worktree containment (role-runtime launch-containment, launch-containment-integrity): containment is
+// a git-LINKAGE property, not path-prefix nesting. The resolved worktree is admitted when it is the
+// repository's own top-level working tree (its `.git` is a directory) or a linked worktree whose `.git`
+// file points into a `.../worktrees/<name>` entry whose own `gitdir` points back to that same `.git`
+// (bidirectional linkage), matching launch-provision-verify. A standard sibling worktree
+// (`git worktree add ../name`) and the equal repository-root path are both admitted; only a path whose
+// git linkage does not belong to the repository is rejected as an escape. Checked at admission and at
+// child subagent spawn. readGit is injected for testability, defaulting to the real-fs reader.
+function assertContainment(worktreeRoot, worktreePath, readGit = defaultReadGit) {
   required(worktreeRoot, 'worktree root')
   required(worktreePath, 'worker worktree')
-  const root = posixResolve(worktreeRoot)
-  const resolved = posixResolve(root, worktreePath)
-  if (!resolved.startsWith(root + POSIX_SEP)) {
-    throw new Error(`worktree ${worktreePath} escapes worktree root ${worktreeRoot}`)
+  const resolved = posixResolve(posixResolve(worktreeRoot), worktreePath)
+  const escape = () => new Error(`worktree ${worktreePath} escapes worktree root ${worktreeRoot}`)
+  const dotGit = readGit(`${resolved}${POSIX_SEP}.git`)
+  if (dotGit.type === 'dir') return resolved
+  if (dotGit.type === 'file') {
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(dotGit.content)
+    if (match && /\/worktrees\/[^/]+$/.test(posixResolve(match[1]))) {
+      const back = readGit(`${posixResolve(match[1])}${POSIX_SEP}gitdir`)
+      if (back.type === 'file' && posixResolve(back.content.trim()) === `${resolved}${POSIX_SEP}.git`) {
+        return resolved
+      }
+    }
   }
-  return resolved
+  throw escape()
 }
 
 // The delivery roles (role-runtime launch-purpose-delivery-roles). ADR 0003 retired the independent
