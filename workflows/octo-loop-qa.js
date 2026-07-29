@@ -132,31 +132,47 @@ function defaultReadGit(gitPath) {
   return { type: 'file', content: fs.readFileSync(gitPath, 'utf8') }
 }
 
+// Git-common-dir of a worktree via its `.git` linkage, or null when the linkage is not a valid worktree
+// of a repository. A `.git` DIRECTORY is the repository's own common dir (a top-level working tree). A
+// `.git` FILE `gitdir: <dir>/worktrees/<name>` names a linked worktree whose common dir is <dir>, and is
+// accepted only when that worktrees entry's own `gitdir` points back to this `.git` (bidirectional
+// linkage), so a forged pointer stolen into a repository's worktrees set is rejected as not-a-worktree.
+function gitCommonDir(worktree, readGit) {
+  const gitPath = `${worktree}${POSIX_SEP}.git`
+  const dotGit = readGit(gitPath)
+  if (dotGit.type === 'dir') return gitPath
+  if (dotGit.type === 'file') {
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(dotGit.content)
+    if (match) {
+      const entry = posixResolve(match[1])
+      const common = /^(.*)\/worktrees\/[^/]+$/.exec(entry)
+      if (common) {
+        const back = readGit(`${entry}${POSIX_SEP}gitdir`)
+        if (back.type === 'file' && posixResolve(back.content.trim()) === gitPath) return common[1]
+      }
+    }
+  }
+  return null
+}
+
 // Worktree containment (role-runtime launch-containment, launch-containment-integrity): containment is
-// a git-LINKAGE property, not path-prefix nesting. The resolved worktree is admitted when it is the
-// repository's own top-level working tree (its `.git` is a directory) or a linked worktree whose `.git`
-// file points into a `.../worktrees/<name>` entry whose own `gitdir` points back to that same `.git`
-// (bidirectional linkage), matching launch-provision-verify. A standard sibling worktree
-// (`git worktree add ../name`) and the equal repository-root path are both admitted; only a path whose
-// git linkage does not belong to the repository is rejected as an escape. Checked at admission and at
+// a git-LINKAGE OWNERSHIP property, not path-prefix nesting. The candidate BELONGS to the repository iff
+// its resolved git-common-dir equals the repository's own git-common-dir, so the equal repository-root
+// path (candidate is the repository's own top-level working tree) and a standard sibling worktree
+// (`git worktree add ../name`, whose `.git` resolves bidirectionally into that repository's worktrees
+// set) are both admitted, while a path whose git linkage belongs to ANOTHER repository, or a forged
+// pointer into this repository's worktrees set, is rejected as an escape. This matches the integrity
+// property required at provisioning by launch-provision-verify (git-common-dir belongs to the repo).
+// worktreeRoot names the repository; the candidate resolves against it. Checked at admission and at
 // child subagent spawn. readGit is injected for testability, defaulting to the real-fs reader.
 function assertContainment(worktreeRoot, worktreePath, readGit = defaultReadGit) {
   required(worktreeRoot, 'worktree root')
   required(worktreePath, 'worker worktree')
-  const resolved = posixResolve(posixResolve(worktreeRoot), worktreePath)
-  const escape = () => new Error(`worktree ${worktreePath} escapes worktree root ${worktreeRoot}`)
-  const dotGit = readGit(`${resolved}${POSIX_SEP}.git`)
-  if (dotGit.type === 'dir') return resolved
-  if (dotGit.type === 'file') {
-    const match = /^gitdir:\s*(.+?)\s*$/m.exec(dotGit.content)
-    if (match && /\/worktrees\/[^/]+$/.test(posixResolve(match[1]))) {
-      const back = readGit(`${posixResolve(match[1])}${POSIX_SEP}gitdir`)
-      if (back.type === 'file' && posixResolve(back.content.trim()) === `${resolved}${POSIX_SEP}.git`) {
-        return resolved
-      }
-    }
-  }
-  throw escape()
+  const root = posixResolve(worktreeRoot)
+  const resolved = posixResolve(root, worktreePath)
+  const expected = gitCommonDir(root, readGit)
+  if (expected !== null && gitCommonDir(resolved, readGit) === expected) return resolved
+  throw new Error(`worktree ${worktreePath} escapes worktree root ${worktreeRoot}`)
 }
 
 // The delivery roles (role-runtime launch-purpose-delivery-roles). ADR 0003 retired the independent

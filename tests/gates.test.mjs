@@ -68,30 +68,44 @@ test('assertManifestShape admits the persistent shape and the worker-journal sha
   )
 })
 
-// Containment is a git-LINKAGE property (role-runtime launch-containment-integrity), not path-prefix
-// nesting. assertContainment admits the repository's own top-level working tree and any linked worktree
-// whose .git file resolves bidirectionally into that repository's worktrees set, and rejects only a path
-// whose git linkage does not belong to the repository. The linkage reader is injectable so the pure
+// Containment is a git-LINKAGE OWNERSHIP property (role-runtime launch-containment-integrity), not
+// path-prefix nesting: the candidate belongs to the repository iff its resolved git-common-dir equals
+// the repository's own git-common-dir. assertContainment admits the repository's own top-level working
+// tree (equal) and any linked worktree whose .git resolves bidirectionally into that repository's
+// worktrees set (sibling), and rejects a path whose git linkage belongs to ANOTHER repository or is a
+// forged pointer into this repository's worktrees set. The linkage reader is injectable so the pure
 // predicate is testable without a real filesystem; it defaults to the real-fs reader.
-test('assertContainment admits by git linkage (top-level and bidirectional sibling) and rejects a foreign linkage', () => {
-  // Equal repo-root: <resolved>/.git is a directory -> the repository top-level working tree.
+test('assertContainment binds git-common-dir ownership: admits equal and bidirectional sibling, rejects foreign and forged linkage', () => {
+  // Equal repo-root: <resolved>/.git is a directory -> the repository top-level working tree; its
+  // common dir equals the repository's own, so it is admitted.
   const topLevel = (p) => (p === '/repo/.git' ? { type: 'dir' } : { type: 'missing' })
   assert.equal(assertContainment('/repo', '.', topLevel), '/repo')
-  // Sibling: <resolved>/.git is a `gitdir:` file into worktrees/<name>, whose gitdir points back.
+  // Sibling: <root>/.git is the repo common dir; <sib>/.git is a `gitdir:` file into worktrees/<name>
+  // whose gitdir points back, so its common dir resolves to that same repo and it is admitted.
   const linked = (p) => {
+    if (p === '/root/repo/.git') return { type: 'dir' }
     if (p === '/root/sib/.git') return { type: 'file', content: 'gitdir: /root/repo/.git/worktrees/sib\n' }
     if (p === '/root/repo/.git/worktrees/sib/gitdir') return { type: 'file', content: '/root/sib/.git\n' }
     return { type: 'missing' }
   }
   assert.equal(assertContainment('/root/repo', '../sib', linked), '/root/sib')
-  // Escape: a forged .git whose worktrees entry points back to a DIFFERENT worktree, so the
-  // bidirectional linkage does not hold and the path does not belong to the repository.
+  // Foreign: a candidate whose own VALID linkage names a DIFFERENT repository common dir; the ownership
+  // bind rejects it even though its `.git` is a legitimate directory.
+  const foreign = (p) => {
+    if (p === '/root/repo/.git') return { type: 'dir' }
+    if (p === '/root/other/.git') return { type: 'dir' }
+    return { type: 'missing' }
+  }
+  assert.throws(() => assertContainment('/root/repo', '../other', foreign), /escapes/)
+  // Forged: a `.git` stealing this repo's worktrees entry whose gitdir points back to a DIFFERENT
+  // worktree, so the bidirectional linkage fails and the candidate is not a worktree of the repo.
   const forged = (p) => {
+    if (p === '/root/repo/.git') return { type: 'dir' }
     if (p === '/root/evil/.git') return { type: 'file', content: 'gitdir: /root/repo/.git/worktrees/sib\n' }
     if (p === '/root/repo/.git/worktrees/sib/gitdir') return { type: 'file', content: '/root/sib/.git\n' }
     return { type: 'missing' }
   }
-  assert.throws(() => assertContainment('/root', 'evil', forged), /escapes/)
+  assert.throws(() => assertContainment('/root/repo', '../evil', forged), /escapes/)
 })
 
 // Real-repo git-worktree linkage classes (self-validating bidirectional linkage created with git):
@@ -135,17 +149,25 @@ test('assertContainment admits the repository top-level working tree (equal repo
   }
 })
 
-test('assertContainment rejects a path whose git linkage does not belong to the repository', () => {
+test('assertContainment rejects a path whose valid git linkage belongs to ANOTHER repository (foreign top-level and foreign linked worktree)', () => {
   const { dir, repo } = makeRepo()
   try {
-    git(repo, 'worktree', 'add', '-q', join(dir, 'sib'))
-    // A path-NESTED directory (the retired prefix check admitted it) whose forged .git steals the
-    // sibling's worktrees entry; that entry's gitdir points back to `sib`, not here, so the
-    // bidirectional linkage fails and the path is an escape.
-    const evil = join(repo, 'evil')
-    mkdirSync(evil)
-    writeFileSync(join(evil, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', 'sib')}\n`)
-    assert.throws(() => assertContainment(repo, 'evil'), /escapes/)
+    // A separate real repository and a real linked worktree of THAT foreign repository. Both have
+    // valid, bidirectional git linkage, but to the foreign repo, not to `repo`; the ownership bind
+    // (candidate git-common-dir must equal the repository's own) rejects both as escapes.
+    const foreign = join(dir, 'foreign')
+    mkdirSync(foreign)
+    git(foreign, 'init', '-q')
+    git(foreign, 'config', 'user.email', 't@t')
+    git(foreign, 'config', 'user.name', 't')
+    writeFileSync(join(foreign, 'f'), 'x')
+    git(foreign, 'add', 'f')
+    git(foreign, 'commit', '-qm', 'init')
+    git(foreign, 'worktree', 'add', '-q', join(dir, 'foreign-sib'))
+    // Foreign top-level working tree: its `.git` is a real directory of a DIFFERENT repository.
+    assert.throws(() => assertContainment(repo, '../foreign'), /escapes/)
+    // Foreign linked worktree: valid bidirectional linkage, but into the foreign repo's worktrees set.
+    assert.throws(() => assertContainment(repo, '../foreign-sib'), /escapes/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
