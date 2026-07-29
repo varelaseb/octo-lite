@@ -74,6 +74,62 @@ def _load_message_state(path: Path) -> dict | None:
     return state if isinstance(state, dict) else None
 
 
+def _created_epoch(state: dict) -> float | None:
+    """Parse the message created_at (ISO8601 Z) to epoch seconds, or None."""
+    raw = str(state.get("created_at") or "")
+    try:
+        from datetime import datetime, timezone
+
+        return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except Exception:
+        return None
+
+
+def _stall_state(state_path: Path, state: dict, locks_root: Path, message_id: str) -> bool:
+    """gh#31 starvation bound: rewrite a message state to status=stalled under
+    the permanent per-message flock, preserving every other field. This is the
+    ONE place a deferral ages out: it fires regardless of target liveness, modal,
+    or self-working. The lock is non-blocking, so if a concurrent fire holds it
+    at this instant the stall defers to the next sweep (never hangs the sweep);
+    returns True only when the stall was persisted this cycle."""
+    import fcntl
+
+    locks_root.mkdir(parents=True, exist_ok=True)
+    lock_path = locks_root / f"{message_id}.lock"
+    with lock_path.open("a") as lock_handle:
+        try:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        fresh = _load_message_state(state_path)
+        if not isinstance(fresh, dict):
+            return False
+        if str(fresh.get("status") or "") not in {"queued", "pending"}:
+            return False
+        if str(fresh.get("delivery_path") or "") not in RETRYABLE_PATHS:
+            return False
+        # Status-only line replacement: rewrite ONLY the top-level `status` line
+        # and copy every other line verbatim, so any field of any TOML type
+        # (string, int, float, array, table, date) is preserved byte-for-byte.
+        try:
+            raw = state_path.read_text()
+        except OSError:
+            return False
+        out, replaced = [], False
+        for line in raw.splitlines(keepends=True):
+            if not replaced and re.match(r"^status\s*=", line):
+                out.append("status = \"stalled\"" + ("\n" if line.endswith("\n") else ""))
+                replaced = True
+            else:
+                out.append(line)
+        if not replaced:
+            return False
+        temporary = state_path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text("".join(out))
+        temporary.replace(state_path)
+        return True
+
+
 def transport_message_report(messages_root: Path, inbox_root: Path, locks_root: Path, *, now: float | None = None) -> dict:
     """S3 stalled surfacing + P1 publication repair over the durable message
     states. Stalled messages emit a loud transport-stalled line EVERY cycle
@@ -88,10 +144,13 @@ def transport_message_report(messages_root: Path, inbox_root: Path, locks_root: 
 
     current = time.time() if now is None else now
     repair_seconds, repair_warn = _positive_int_env("OCTO_PUBLICATION_REPAIR_SECONDS", 180)
+    defer_max_age_s, defer_warn = _positive_int_env("OCTO_TRANSPORT_DEFER_MAX_AGE_S", 900)
     stalled_lines: list[str] = []
     repair_notes: list[str] = []
     legacy_notes: list[str] = []
     warnings: list[str] = [repair_warn] if repair_warn else []
+    if defer_warn:
+        warnings.append(defer_warn)
     if not messages_root.is_dir():
         return {"stalled_lines": [], "repair_notes": [], "legacy_notes": [], "warnings": warnings}
     for state_path in sorted(messages_root.glob("*.toml")):
@@ -141,6 +200,20 @@ def transport_message_report(messages_root: Path, inbox_root: Path, locks_root: 
             continue
         item = inbox_root / target / message_id
         if item.is_file():
+            # gh#31 starvation bound: a PUBLISHED, still-retryable message older
+            # than the deferral max-age ages out to STALLED here, centrally,
+            # regardless of the target being unresolved, behind a modal, or the
+            # one draining. This is the single place the age bound lives
+            # (herdr-drain no longer ages). An ITEMLESS retryable state is a
+            # publication crash and falls through to P1 repair below (recreated
+            # then delivered by a later --all), never aged.
+            created_epoch = _created_epoch(state)
+            if created_epoch is not None and (current - created_epoch) >= defer_max_age_s:
+                if _stall_state(state_path, state, locks_root, message_id):
+                    stalled_lines.append(
+                        f"TRANSPORT STALLED: message {message_id} target={target} "
+                        f"deferral_aged_out - resume with herdr-drain --resume {message_id} or ack"
+                    )
             continue
         try:
             mtime = state_path.stat().st_mtime
@@ -620,6 +693,18 @@ def main() -> int:
 
     # Transport + registry surfaces (sweep-transport-stalled / sweep-registry-drift):
     # loud stalled lines every cycle, plus the one-agent-list registry advisory.
+    locks_root = xdg_state / "locks"
+    # gh#31 periodic target-independent delivery: before surfacing/aging, drain
+    # every target's inbox on its behalf so a deferred message to a now-idle
+    # target is DELIVERED (not spuriously aged to stalled). Best-effort: any
+    # failure is non-fatal and the age bound in transport_message_report still
+    # guarantees visibility.
+    drain_all = shutil.which("herdr-drain")
+    if drain_all:
+        try:
+            subprocess.run([drain_all, "--all"], check=False, capture_output=True, timeout=120)
+        except Exception:
+            pass
     transport = transport_message_report(messages_root, inbox_root, locks_root)
     transport_lines = transport["stalled_lines"] + transport["repair_notes"] + transport["warnings"]
     registry_advisories = registry_lite_advisories(control, owner_route)

@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T073553-2489102-3025"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "sweep-operator-gate PING-BEFORE-WRITE (URGENT window): landing TWO greens onto live tur-443 in ~45s unless you hold - (1) SPAWN HOTFIX 002df48: agent start --kind claude --pane <root_pane from tab-create JSON, documented via real api schema, no extra call>; red reproduced the exact live --tab break; obsolete post-start pane-resolution retry removed (agent start itself blocks on readiness); trust auto-accept + bootstrap fail-closed intact; 416 tests green. tur-326 unblocks on this. (2) A2 6807161 seq-confirmation (CLEAR, residual already reported). Disjoint files, both off current tip b6b54b7. Post-land: re-run your tur-326 spawn as the live verify."
+created_at = "2026-07-22T07:35:53Z"

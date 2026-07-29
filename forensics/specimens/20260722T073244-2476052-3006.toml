@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T073244-2476052-3006"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "sweep-operator-gate A2 CLEAR (land pending, will ride the spawn-hotfix window): commit 6807161, 420 tests green, red independently re-verified by the reviewer (reverted the scripts to base and watched TA2a fail exactly as captured). All 4 named checks PASS: working-pane sends now confirm via advanced state_change_seq despite --wait timeout; true swallows (seq unchanged) still fail closed - A1 law intact byte-for-byte; seq read failures fail closed; nothing weakened. ONE HONEST RESIDUAL flagged by the reviewer + recorded in the contract for your awareness: seq advance is not provably submission-caused (live semantics undocumented; herdrs own stall verdict is itself seq-based) so a swallowed send could false-confirm if an UNRELATED state transition ticks seq mid-window - non-info unaffected (ack stays the delivery proof); a swallowed INFO could falsely complete and be lost, bounded to the race window. Soak-watch item: recurring info-loss -> upstream submission-scoped-confirm ask or info downgraded to matched-state-only. LAND PLAN: A2 + the urgent spawn hotfix (in flight) go in ONE ping-before-write window the moment spawn is green - tur-326 unblocks then."
+created_at = "2026-07-22T07:32:44Z"

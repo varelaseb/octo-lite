@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260724T014221-486297-6256"
+target = "operator-20260723-231600"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "oct-25 stream CLOSED and archived. 25 · operator role gaps: DELIVERED + ACCEPTED + MERGED (PR #27, merge commit d5a07f7 on main; acceptance-GH-25.toml recorded; issue #25 closed). All 8 gaps A-H landed, #24 folded in, gap B reconciled to #23's stable heartbeat surface. Boundary held throughout. Archive written to streams/gh25-operator-role/CLOSED.md. No open follow-ups from this stream; #23/PR26 and oct-13/PR21 remain their own lanes. Single writer released. Orchestrator terminating."
+created_at = "2026-07-24T01:42:21Z"

@@ -127,7 +127,11 @@ if [[ "$sub" == "agent get" ]]; then
   fi
   seq=1
   [[ -n "${FAKE_SEQ_FILE:-}" && -f "${FAKE_SEQ_FILE:-}" ]] && seq="$(cat "$FAKE_SEQ_FILE")"
-  printf '{"result":{"agent":{"pane_id":"w1:p1","state_change_seq":%s}}}\n' "$seq"
+  # gh#31: real 0.7.5 exposes agent_status (idle|working|blocked|done|unknown);
+  # the transport gates firing on a NON-WORKING status. Default idle so an
+  # ungated test target is fire-eligible; FAKE_AGENT_STATUS overrides it.
+  status="${FAKE_AGENT_STATUS:-idle}"
+  printf '{"result":{"agent":{"pane_id":"w1:p1","agent_status":"%s","state_change_seq":%s}}}\n' "$status" "$seq"
 elif [[ "$sub" == "pane read" ]]; then
   n=0
   [[ -n "${FAKE_PANE_READ_COUNT:-}" && -f "$FAKE_PANE_READ_COUNT" ]] && n="$(cat "$FAKE_PANE_READ_COUNT")"
@@ -208,9 +212,26 @@ elif [[ "$sub" == "agent prompt" ]]; then
     exit 0
   fi
   echo prompt >>"$FAKE_LOG"
+  # gh#31: real 0.7.5 hard-error outcome (agent_not_running, client_disconnected,
+  # ...): the CLI exits non-zero with a STRUCTURED error result. The message here
+  # deliberately embeds the tokens 'timed out' and 'working' so a text-grepping
+  # confirmer would MISread it as delivered; a structured confirmer (error.code)
+  # must NOT.
+  if [[ -n "${FAKE_PROMPT_ERROR:-}" ]]; then
+    printf '{"error":{"code":"%s","message":"agent is no longer running; timed out, was working"},"id":"cli:agent:prompt"}\n' "$FAKE_PROMPT_ERROR"
+    exit 1
+  fi
   if [[ -n "$has_wait" ]]; then
-    # Observed post-submission state change within the wait window.
-    echo '{"result":{"agent":{"state":"idle","state_change_seq":2}}}'
+    # gh#31: real 0.7.5 settle emits agent_status (NOT a "state" field), inside
+    # an agent_prompted result. FAKE_PROMPT_SETTLE overrides the settled status;
+    # FAKE_PROMPT_TIMEOUT models a delivered-but-unsettled turn: herdr exits
+    # non-zero with a structured timeout error (real 0.7.5 shape).
+    if [[ -n "${FAKE_PROMPT_TIMEOUT:-}" ]]; then
+      printf '{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:prompt"}\n'
+      exit 1
+    else
+      printf '{"result":{"agent":{"agent_status":"%s","state_change_seq":2},"type":"agent_prompted"}}\n' "${FAKE_PROMPT_SETTLE:-idle}"
+    fi
   fi
   # T20 / T-R87b hook: the transport is accepted server-side, then the CALLER
   # dies before its post-transport transition (crash-mid-fire). Close the
@@ -2880,9 +2901,7 @@ class ObservedConfirmationTests(unittest.TestCase):
             self.assertEqual("deferred", stored["delivery_path"])
             self.assertEqual(1, stored["transport_attempts"])
             self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
-            # 0.7.5 recovery: a stalled fire settle-waits and re-fires ONCE; both
-            # stalls here, so it still fails closed to pending (attempts still 1).
-            self.assertEqual(["prompt-stalled", "wait", "prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
         with self.subTest("say-non-info"), tempfile.TemporaryDirectory() as td:
             env, log = self._env(td)
             env["FAKE_WAIT_STALL"] = "1"
@@ -2910,7 +2929,7 @@ class ObservedConfirmationTests(unittest.TestCase):
             self.assertEqual("deferred", stored["delivery_path"])
             self.assertEqual(1, stored["transport_attempts"])
             self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
-            self.assertEqual(["prompt-stalled", "wait", "prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
 
     def test_ta1b_observed_state_change_confirms_exactly_as_before(self):
         with self.subTest("say-info-completed"), tempfile.TemporaryDirectory() as td:
@@ -3047,15 +3066,15 @@ class ObservedConfirmationTests(unittest.TestCase):
 
 
 class SeqConfirmationFallbackTests(unittest.TestCase):
-    """TUR-505 amendment A2 (soak finding 2): confirmation = (--wait matched
-    state) OR (state_change_seq ADVANCED across the prompt). A send into a
-    WORKING pane delivers (submit/queue) but --wait cannot match
-    idle/done/blocked mid-turn, so the confirm-timeout was a false negative
-    that burned retries despite delivery. The seq is read via `agent get`
-    (structured field, no pane text) immediately BEFORE the prompt and again
-    AFTER the --wait outcome; advanced = confirmed even on --wait timeout;
-    unchanged + no match = fail closed exactly as A1; any seq read failure =
-    fail closed. Test names carry the contract TA2 letters."""
+    """gh#31: per-message submission-correlated confirmation REPLACES the global
+    state_change_seq heuristic (which produced a stuck-in-composer false positive
+    when unrelated churn advanced the shared counter, and a duplicate-flood false
+    negative when a continuously-working target never advanced it). The transport
+    now FIRES ONLY into a non-working target (agent_status idle|done) and confirms
+    on THIS prompt's own outcome: agent_prompt_stalled = swallow (retry); a settled
+    agent_status idle|done|blocked, or a timeout meaning a turn started from a
+    non-working start = delivered. A working/unreadable target DEFERS without a
+    fire. Test names keep the TA2 letters for continuity."""
 
     ID_1 = "20260722T000000-11-111"
 
@@ -3075,13 +3094,21 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             env["FAKE_SEQ_ADVANCES"] = "1"
         return env, log
 
+    def _timeout_env(self, td):
+        # A fire into a non-working (default idle) target whose turn STARTS but
+        # does not settle in the window: herdr returns a timeout (not a stall),
+        # which is a delivered send. FAKE_PROMPT_TIMEOUT models exactly that.
+        env, log = self._env(td)
+        env["FAKE_PROMPT_TIMEOUT"] = "1"
+        return env, log
+
     def test_ta2a_wait_timeout_with_advanced_seq_confirms_the_working_pane_send(self):
-        # The live false negative: --wait cannot match a state mid-turn
-        # (agent_prompt_stalled) but the submission landed and the seq
-        # advanced. Pre-fix this stayed pending/unconfirmed (the captured
-        # red); post-fix it is CONFIRMED with exactly one fire and no retry.
+        # gh#31: a turn STARTED from a non-working target but did not settle in
+        # the window. herdr returns a timeout (NOT agent_prompt_stalled), which
+        # is a delivered send. Confirmed with exactly one fire and no retry,
+        # from the prompt's own outcome (no global seq).
         with self.subTest("say-info-completed"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
+            env, log = self._timeout_env(td)
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
                 env=env, capture_output=True, text=True,
@@ -3095,12 +3122,12 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual(1, stored["transport_attempts"])
             self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
             # Exactly one fire, and a follow-up drain never re-fires.
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
             redrain = self._drain(env)
             self.assertEqual(0, redrain.returncode, redrain.stderr)
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
         with self.subTest("say-non-info-direct-promotion"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
+            env, log = self._timeout_env(td)
             result = subprocess.run(
                 ["bash", str(SAY), "--kind", "command", "agent1", "do work"],
                 env=env, capture_output=True, text=True,
@@ -3112,9 +3139,9 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual("direct", stored["delivery_path"])
             self.assertEqual(1, stored["transport_attempts"])
             self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).exists())
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
         with self.subTest("drain-confirmed-item-removed"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
+            env, log = self._timeout_env(td)
             state = self._seed(td, self.ID_1, kind="info", message="fyi update")
             result = self._drain(env)
             self.assertEqual(0, result.returncode, result.stderr)
@@ -3124,7 +3151,7 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual("direct", stored["delivery_path"])
             self.assertEqual(1, stored["transport_attempts"])
             self.assertFalse((self._base(td) / "inbox/agent1" / self.ID_1).exists())
-            self.assertEqual(["prompt-stalled"], log.read_text().splitlines())
+            self.assertEqual(["prompt"], log.read_text().splitlines())
 
     def test_ta2b_true_swallow_with_unchanged_seq_stays_fail_closed_pending(self):
         # A1 law intact: rc=0 + agent_prompt_stalled + seq UNCHANGED is a true
@@ -3154,32 +3181,40 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual(1, stored["transport_attempts"])
             self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
 
-    def test_ta2c_persistent_seq_read_failure_stays_unconfirmed_across_the_refire(self):
-        # In a working pane every prompt reports agent_prompt_stalled, so the
-        # stall-recovery re-fire runs; a seq read failure that RECURS across both
-        # attempts (FAKE_GET_FAIL_FROM=3 fails the first post-outcome read and every
-        # read after it) never confirms and stays pending. A merely transient read
-        # failure would be recovered by the re-fire.
-        with self.subTest("say"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
-            env["FAKE_GET_COUNT_FILE"] = str(Path(td) / "get-count")
-            env["FAKE_GET_FAIL_FROM"] = "3"
-            result = subprocess.run(
-                ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
-                env=env, capture_output=True, text=True,
-            )
-            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
-            self.assertNotIn("status=completed", result.stdout)
-            state = next(iter((self._base(td) / "messages").glob("*.toml")))
-            stored = self._load(state)
-            self.assertEqual("pending", stored["status"])
-            self.assertEqual("deferred", stored["delivery_path"])
-            self.assertEqual(1, stored["transport_attempts"])
-            self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
-        with self.subTest("drain"), tempfile.TemporaryDirectory() as td:
-            env, log = self._seq_env(td)
-            env["FAKE_GET_COUNT_FILE"] = str(Path(td) / "get-count")
-            env["FAKE_GET_FAIL_FROM"] = "3"
+    def test_ta2c_seq_read_failure_on_either_side_is_unconfirmed_fail_closed(self):
+        # gh#31: firing is gated on a readable NON-WORKING agent_status. A
+        # working target, or one whose status cannot be read, DEFERS: no fire,
+        # no attempt burn, item retained. This is where a send that cannot be
+        # confirmed is held rather than fired-then-misclassified.
+        def _fired(log):
+            return log.exists() and "prompt" in log.read_text()
+        for label, extra in (
+            ("say-working", {"FAKE_AGENT_STATUS": "working"}),
+            ("say-unreadable", {"FAKE_GET_COUNT_FILE": None, "FAKE_GET_FAIL_AT": "2"}),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                env, log = self._env(td)
+                for k, v in extra.items():
+                    env[k] = str(Path(td) / "get-count") if v is None else v
+                result = subprocess.run(
+                    ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
+                    env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+                self.assertNotIn("status=completed", result.stdout)
+                state = next(iter((self._base(td) / "messages").glob("*.toml")))
+                stored = self._load(state)
+                self.assertEqual("pending", stored["status"])
+                self.assertEqual("deferred", stored["delivery_path"])
+                self.assertEqual(0, stored.get("transport_attempts", 0))
+                self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
+                self.assertFalse(_fired(log), "must not fire into a non-eligible target")
+        with self.subTest("drain-working"), tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_AGENT_STATUS"] = "working"
+            # Large age bound so the fixed old seed exercises the pure-defer path
+            # (the aged-out stall is covered by DeferralBoundTests below).
+            env["OCTO_TRANSPORT_DEFER_MAX_AGE_S"] = "9999999999"
             state = self._seed(td, self.ID_1, kind="info", message="fyi update")
             result = self._drain(env)
             self.assertEqual(0, result.returncode, result.stderr)
@@ -3187,35 +3222,15 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual("pending", stored["status"])
             self.assertEqual("deferred", stored["delivery_path"])
             self.assertTrue((self._base(td) / "inbox/agent1" / self.ID_1).is_file())
-
-    def test_ta1f_stalled_fire_recovers_on_the_single_refire(self):
-        # 0.7.5 stall recovery: the FIRST fire stalls (dirty composer), the
-        # transport settle-waits (agent wait) and re-fires exactly ONCE, and the
-        # re-fire lands -> the message is delivered, not left pending. The fire log
-        # is prompt-stalled, wait, prompt (the recovered submit).
-        with self.subTest("say-info"), tempfile.TemporaryDirectory() as td:
-            env, log = self._env(td)
-            env["FAKE_WAIT_STALL_ONCE"] = "1"
-            env["FAKE_STALL_DONE"] = str(Path(td) / "stall-done")
-            result = subprocess.run(
-                ["bash", str(SAY), "--kind", "info", "agent1", "fyi update"],
-                env=env, capture_output=True, text=True,
-            )
-            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-            self.assertIn("status=completed", result.stdout)
-            state = next(iter((self._base(td) / "messages").glob("*.toml")))
-            stored = self._load(state)
-            self.assertEqual("completed", stored["status"])
-            self.assertEqual("direct", stored["delivery_path"])
-            self.assertFalse((self._base(td) / "inbox/agent1" / state.stem).is_file())
-            self.assertEqual(["prompt-stalled", "wait", "prompt"], log.read_text().splitlines())
+            self.assertFalse(_fired(log), "drain must not fire into a working target")
 
     def test_ta2d_seq_reads_bracket_the_prompt_pre_prompt_and_post_outcome(self):
-        # Order law: the pre seq read is the agent get immediately before the
-        # prompt, and the post seq read follows the --wait outcome.
-        expected = ["agent-get", "agent-get", "prompt", "agent-get"]
+        # gh#31 order law: no post-fire agent get. The confirmation is the
+        # prompt's own outcome, so the call order is resolve-pane (get), gate on
+        # agent_status (get), then the single prompt -- and nothing after it.
+        expected = ["agent-get", "agent-get", "prompt"]
         with self.subTest("say"), tempfile.TemporaryDirectory() as td:
-            env, _ = self._seq_env(td)
+            env, _ = self._env(td)
             order = Path(td) / "call-order"
             env["FAKE_CALL_ORDER"] = str(order)
             result = subprocess.run(
@@ -3225,7 +3240,7 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             self.assertEqual(expected, order.read_text().splitlines())
         with self.subTest("drain"), tempfile.TemporaryDirectory() as td:
-            env, _ = self._seq_env(td)
+            env, _ = self._env(td)
             order = Path(td) / "call-order"
             env["FAKE_CALL_ORDER"] = str(order)
             self._seed(td, self.ID_1)
@@ -3262,6 +3277,211 @@ class SeqConfirmationFallbackTests(unittest.TestCase):
             stalled_lines = "\n".join(report["stalled_lines"])
             self.assertIn("TRANSPORT STALLED", stalled_lines)
             self.assertIn(message_id, stalled_lines)
+
+
+class GH31StarvationAndConfirmTests(unittest.TestCase):
+    """gh#31 operator rulings + codex hardening: cap-reached stalls before the
+    busy gate; a deferral aged past one sweep cycle stalls LOUD (visibility over
+    silence); confirmation parses the STRUCTURED herdr result so an error payload
+    carrying delivery-ish tokens is never misread; a sub-floor timeout is not
+    turn-start proof; and a neutral caller can drain every target on its behalf."""
+
+    ID_1 = "20260722T000000-11-111"
+
+    _env = MessageLockProtocolTests._env
+    _base = MessageLockProtocolTests._base
+    _load = MessageLockProtocolTests._load
+    _seed = MessageLockProtocolTests._seed
+    _drain = MessageLockProtocolTests._drain
+
+    @staticmethod
+    def _fired(log):
+        return log.exists() and "prompt" in log.read_text()
+
+    def test_cap_reached_stalls_before_the_busy_gate(self):
+        # RULING: a cap-reached message stalls LOUD regardless of the target
+        # being busy; the cap check precedes the eligibility gate.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_AGENT_STATUS"] = "working"
+            env["OCTO_TRANSPORT_ATTEMPT_CAP"] = "2"
+            env["OCTO_TRANSPORT_DEFER_MAX_AGE_S"] = "9999999999"  # isolate the cap
+            state = self._seed(td, self.ID_1, attempts=2)  # already at cap
+            result = self._drain(env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("status=stalled", result.stdout)
+            self.assertEqual("stalled", self._load(state)["status"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / self.ID_1).exists())
+            self.assertFalse(self._fired(log), "never fired into the busy target")
+
+    def test_deferral_ages_out_to_a_loud_stall(self):
+        # RULING: a defer older than one sweep cycle ages out to a LOUD stall in
+        # ONE place - the operator-sweep - regardless of target liveness, modal,
+        # or self-working. herdr-drain no longer ages.
+        import os as _os
+        module = _load_operator_sweep_module()
+        for label, extra in (
+            ("plain-old", {}),
+            ("modal-blocked", {"status": "queued", "path": "modal-queued"}),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                env, _ = self._env(td)
+                state = self._seed(td, self.ID_1, kind="info", message="fyi", **extra)
+                report = module.transport_message_report(
+                    self._base(td) / "messages",
+                    self._base(td) / "inbox",
+                    self._base(td) / "locks",
+                    now=_os.path.getmtime(state) + 10**9,  # far past the 900s bound
+                )
+                self.assertIn(self.ID_1, "\n".join(report["stalled_lines"]))
+                self.assertIn("deferral_aged_out", "\n".join(report["stalled_lines"]))
+                self.assertEqual("stalled", self._load(state)["status"])
+        # A fresh (young) deferral is NOT aged out by the sweep.
+        with self.subTest("young-not-aged"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            state = self._seed(td, self.ID_1, kind="info", message="fyi")
+            report = module.transport_message_report(
+                self._base(td) / "messages",
+                self._base(td) / "inbox",
+                self._base(td) / "locks",
+                now=module._created_epoch(self._load(state)) + 10,  # 10s old << 900s
+            )
+            self.assertNotIn("deferral_aged_out", "\n".join(report["stalled_lines"]))
+            self.assertEqual("pending", self._load(state)["status"])
+
+    def test_agent_error_payload_is_not_confirmed_despite_delivery_tokens(self):
+        # Codex HIGH-3: a hard error (agent_not_running) whose message embeds
+        # 'timed out'/'working' must NOT be read as delivered; the structured
+        # confirmer keys on error.code, not free text.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_PROMPT_ERROR"] = "agent_not_running"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "hi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertNotIn("status=completed", result.stdout)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            stored = self._load(state)
+            self.assertEqual("pending", stored["status"])
+            self.assertEqual("deferred", stored["delivery_path"])
+            self.assertTrue((self._base(td) / "inbox/agent1" / state.stem).is_file())
+
+    def test_sub_floor_timeout_is_not_delivery_proof(self):
+        # Codex HIGH-3: a --wait timeout below herdr's 5000ms state-change floor
+        # is NOT proof a turn began, so it must not confirm; above the floor it
+        # does (turn started).
+        with self.subTest("sub-floor -> unconfirmed"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            env["FAKE_PROMPT_TIMEOUT"] = "1"
+            env["OCTO_PROMPT_CONFIRM_TIMEOUT_MS"] = "3000"  # below the 5000 floor
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "hi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            self.assertEqual("pending", self._load(state)["status"])
+        with self.subTest("above-floor -> confirmed"), tempfile.TemporaryDirectory() as td:
+            env, _ = self._env(td)
+            env["FAKE_PROMPT_TIMEOUT"] = "1"  # default 15000ms timeout > floor
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1", "hi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            self.assertEqual("completed", self._load(state)["status"])
+
+    def test_sweep_aging_preserves_unknown_fields(self):
+        # Codex MEDIUM-5: the status-only rewrite must preserve every field,
+        # including one this helper does not know about.
+        import os as _os
+        module = _load_operator_sweep_module()
+        with tempfile.TemporaryDirectory() as td:
+            base = self._base(td)
+            (base / "messages").mkdir(parents=True, exist_ok=True)
+            state = base / "messages" / f"{self.ID_1}.toml"
+            state.write_text(
+                "schema_version = 1\n"
+                f'message_id = "{self.ID_1}"\n'
+                'target = "agent1"\n'
+                'kind = "info"\n'
+                'status = "pending"\n'
+                'delivery_path = "deferred"\n'
+                'transport_attempts = 2\n'
+                'artifact = ""\n'
+                'message = "hi"\n'
+                'created_at = "2026-07-22T00:00:00Z"\n'
+                'sentinel_field = "keep-me"\n'
+                'sentinel_float = 1.5\n'
+                'sentinel_list = [1, 2, 3]\n'
+            )
+            inbox = base / "inbox" / "agent1"
+            inbox.mkdir(parents=True, exist_ok=True)
+            (inbox / self.ID_1).write_text(self.ID_1 + "\n")
+            module.transport_message_report(
+                base / "messages", base / "inbox", base / "locks",
+                now=_os.path.getmtime(state) + 10**9,
+            )
+            stored = self._load(state)
+            self.assertEqual("stalled", stored["status"])
+            self.assertEqual("keep-me", stored["sentinel_field"])
+            self.assertEqual(2, stored["transport_attempts"])
+            # Non-string types survive byte-for-byte (raw-line replace, not re-emit).
+            self.assertEqual(1.5, stored["sentinel_float"])
+            self.assertEqual([1, 2, 3], stored["sentinel_list"])
+
+    def test_pane_form_target_is_gated_not_bypassed(self):
+        # Codex HIGH-4: pane-form targets no longer bypass the eligibility gate,
+        # so an unsound timeout/working confirmation can never apply to them.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            env["FAKE_AGENT_STATUS"] = "working"
+            result = subprocess.run(
+                ["bash", str(SAY), "--kind", "info", "agent1:p1", "hi"],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertFalse(self._fired(log), "pane-form must be gated, not auto-fired")
+
+    def test_concurrent_same_target_is_serialized_by_per_target_lock(self):
+        # Codex BLOCKER-2: while another fire to the target is in flight (its
+        # per-target lock held), a send DEFERS rather than racing the idle
+        # window; this is what closes the two-message TOCTOU.
+        import fcntl
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)
+            locks = self._base(td) / "locks"
+            locks.mkdir(parents=True, exist_ok=True)
+            tlock = locks / "target-agent1.lock"
+            tlock.write_text("")
+            with tlock.open("a") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                result = subprocess.run(
+                    ["bash", str(SAY), "--kind", "info", "agent1", "hi"],
+                    env=env, capture_output=True, text=True,
+                )
+            self.assertEqual(75, result.returncode, result.stdout + result.stderr)
+            self.assertFalse(self._fired(log), "must not fire while the target lock is held")
+            state = next(iter((self._base(td) / "messages").glob("*.toml")))
+            self.assertEqual("pending", self._load(state)["status"])
+
+    def test_drain_all_delivers_to_each_idle_target_on_its_behalf(self):
+        # RULING: a neutral caller drains every target's inbox, gated ONLY on
+        # each target's state, so an idle target is delivered even though it
+        # could never self-deliver while working.
+        with tempfile.TemporaryDirectory() as td:
+            env, log = self._env(td)  # default idle
+            s1 = self._seed(td, "20260722T000000-11-111", target="agent1", kind="info", message="a")
+            s2 = self._seed(td, "20260722T000001-22-222", target="agent2", kind="info", message="b")
+            result = subprocess.run(["bash", str(DRAIN), "--all"], env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("completed", self._load(s1)["status"])
+            self.assertEqual("completed", self._load(s2)["status"])
+            self.assertFalse((self._base(td) / "inbox/agent1" / s1.stem).exists())
+            self.assertFalse((self._base(td) / "inbox/agent2" / s2.stem).exists())
 
 
 if __name__ == "__main__":

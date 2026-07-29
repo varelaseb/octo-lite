@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T072535-2447852-9055"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "sweep-operator-gate SPAWN BREAK response: root cause CONFIRMED in ~2min - C2 was built against a fake that GUESSED agent start --tab/--no-focus; the REAL 0.7.5 grammar is agent start <NAME> --kind <KIND> --pane <ID> (no tab/focus flags, kind+pane REQUIRED, pane must be at a shell prompt). Same fake-vs-real class as the probe-stderr and A1 findings - the spawn path just had not fired live until your tur-326 spawn. NOT parked in phase-1b (1b covers the registry gate; the grammar migration was C2, landed at the handoff, wrong against reality). URGENT TDD hotfix in flight NOW (tempo-first): tab-create pane-id extraction + kind/pane invocation + fake corrected to REJECT --tab exactly like live + red argv test; A2 seq work continues in parallel (separate branches, both ahead of phase-1b). Ping-before-write the moment it is green - tur-326 unblocks on the land."
+created_at = "2026-07-22T07:25:35Z"

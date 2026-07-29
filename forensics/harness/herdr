@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Forensic herdr 0.7.5 STUB for gh#31 reproduction harness.
+# Emulates the exact contract that the real herdr documents:
+#  - agent get -> AgentInfo JSON with `agent_status` + `state_change_seq`
+#    (NOTE: field is agent_status, NOT state; state_change_seq is a GLOBAL
+#     per-agent status-change counter, uncorrelated to any single prompt).
+#  - agent prompt --wait --timeout -> emits an agent_prompted AgentInfo and
+#    a settle outcome. Scenario vars decide whether the prompt was ACTUALLY
+#    submitted (recorded to $HARNESS_SINK) and how the global seq moves,
+#    fully DECOUPLING real delivery from the confirmation signal the wrapper
+#    reads. That decoupling is the whole point of the repro.
+#
+# Scenario vars (env):
+#   HARNESS_SEQ_FILE   file holding current state_change_seq (int)
+#   HARNESS_STATUS     agent_status reported by `agent get` (idle|working|...)
+#   HARNESS_SUBMIT     yes|no : did this prompt REALLY submit into a turn
+#   HARNESS_SEQ_DELTA  int added to seq DURING the prompt (models a status
+#                      change, related OR unrelated to this message)
+#   HARNESS_OUTCOME    settled|timeout|stalled : shape of prompt --wait output
+#   HARNESS_SINK       file the delivered body is appended to when SUBMIT=yes
+#   HARNESS_PANE       pane id to report (default w0:pX)
+set -euo pipefail
+
+seq_file="${HARNESS_SEQ_FILE:?}"
+status="${HARNESS_STATUS:-idle}"
+pane="${HARNESS_PANE:-w0:pX}"
+[[ -f "$seq_file" ]] || echo 100 >"$seq_file"
+
+emit_agent_info() { # $1 status
+  local seq; seq="$(<"$seq_file")"
+  printf '{"id":"cli:agent:%s","result":{"agent":{"agent":"claude","agent_status":"%s","name":"stub","pane_id":"%s","state_change_seq":%s},"type":"%s"}}\n' \
+    "$2" "$1" "$pane" "$seq" "$3"
+}
+
+case "${1:-}" in
+  agent)
+    shift
+    case "${1:-}" in
+      get)
+        # `agent get NAME`
+        emit_agent_info "$status" "get" "agent_info"
+        exit 0
+        ;;
+      prompt)
+        shift
+        # args: PANE BODY [--wait] [--timeout MS] ...
+        p_pane="${1:-}"; body="${2:-}"
+        # Record REAL delivery iff the scenario says it truly submitted.
+        if [[ "${HARNESS_SUBMIT:-no}" == "yes" && -n "${HARNESS_SINK:-}" ]]; then
+          printf '%s\n' "$body" >>"$HARNESS_SINK"
+        fi
+        # Apply the global seq movement (related or incidental status change).
+        delta="${HARNESS_SEQ_DELTA:-0}"
+        if (( delta != 0 )); then
+          echo $(( $(<"$seq_file") + delta )) >"$seq_file"
+        fi
+        case "${HARNESS_OUTCOME:-timeout}" in
+          settled)
+            # Successful settle to idle: herdr prints the agent_prompted
+            # AgentInfo with agent_status (NOT "state").
+            emit_agent_info idle "prompt" "agent_prompted"
+            exit 0
+            ;;
+          timeout)
+            # Busy pane whose turn outlived --timeout: real 0.7.5 exits non-zero
+            # with a STRUCTURED timeout error.
+            printf '{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:prompt"}\n'
+            exit 1
+            ;;
+          stalled)
+            # True swallow: no observed state change within 5000ms.
+            printf '{"error":{"code":"agent_prompt_stalled","message":"agent prompt produced no observed state change within 5000ms"},"id":"cli:agent:prompt"}\n'
+            exit 1
+            ;;
+        esac
+        ;;
+      *) echo "stub: unsupported agent subcmd ${1:-}" >&2; exit 2 ;;
+    esac
+    ;;
+  pane)
+    shift
+    # `pane read ... ` for dialog_open: emit no modal markers.
+    exit 0
+    ;;
+  *) echo "stub: unsupported cmd ${1:-}" >&2; exit 2 ;;
+esac

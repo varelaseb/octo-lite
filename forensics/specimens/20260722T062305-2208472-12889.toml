@@ -1,0 +1,10 @@
+schema_version = 1
+message_id = "20260722T062305-2208472-12889"
+target = "operating-model-ops-2"
+kind = "info"
+status = "stalled"
+delivery_path = "deferred"
+transport_attempts = 3
+artifact = ""
+message = "A1 LIVE VERIFY PROBE landed in tur-508. Replying via herdr-say (composer-safe: it reads the pane only to detect a modal, pastes over any ghost/dirty composer text, never bare-Enters pretyped text). Reporting the TRUE returned status below, not a false completion."
+created_at = "2026-07-22T06:23:05Z"

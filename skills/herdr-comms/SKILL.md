@@ -29,28 +29,43 @@ composer state, consumption, or delivery. Modal-safe: an open dialog defers,
 queues immediately, returns 75, never force-submits.
 Queued and pending are not acknowledged or completed.
 
-Delivery confirmation is observed state, never the exit code: a prompt can
-return rc 0 without submitting when the composer holds residual text. Every
-fire runs `agent prompt --wait --timeout` with
-`OCTO_PROMPT_CONFIRM_TIMEOUT_MS` milliseconds (default 15000, invalid falls
-back to the default with a warning); only a matched post-submission state
-(idle, done, blocked) confirms. `agent_prompt_stalled`, a timeout, a nonzero
-rc, or any unmatched outcome is unconfirmed: the message stays pending with
-its retry item for `herdr-drain`, under the attempt cap.
+Delivery confirmation is per-message and submission-correlated, never the exit
+code and never a global counter (gh#31: the old `state_change_seq` heuristic
+both false-confirmed a stuck-in-composer send on unrelated churn and
+false-failed a delivered send into a busy pane). A send FIRES ONLY into a
+NON-WORKING target (`agent_status` idle or done); a working, blocked, or
+unreadable target DEFERS with no fire and no attempt burn, held for a later
+`herdr-drain` when the target idles. From that gated non-working start the
+prompt's OWN outcome is the proof: `agent_prompt_stalled` is a swallow
+(unconfirmed, retry); a settled `agent_status` idle|done|blocked, or a timeout
+meaning the turn started but has not settled, is delivered. Every fire runs
+`agent prompt --wait --timeout` with `OCTO_PROMPT_CONFIRM_TIMEOUT_MS`
+milliseconds (default 15000, invalid falls back to the default with a warning).
+An unconfirmed outcome keeps the message pending with its retry item for
+`herdr-drain`, under the attempt cap.
 
 Transport class: bounded duplicate-prone transport with no delivery
 guarantee. A message may arrive zero times, once, or up to the retry cap per
 epoch. Every transported body carries `[msg:<id>]`, info included, so
-duplicates are id-correlated. Only herdr-ack proves delivery; an
-observed-state-confirmed info submit completes on its own.
+duplicates are id-correlated. Only herdr-ack proves delivery; a
+confirmed info submit completes on its own.
 
-On every wake, run `herdr-drain <own-agent-name>`. It fires only when the
-prompt is safe, and a pending retry re-fires the same atomic prompt with the
-same message id, which never double-submits partially-pasted text. Retries
-are capped by `OCTO_TRANSPORT_ATTEMPT_CAP` (default 3, per epoch): at the cap
-the message goes stalled, never auto-fires again, and the operator sweep
-surfaces it loudly every cycle. `herdr-drain --resume <id>` starts a new
-epoch (stalled to pending, attempts reset to 0). State reads, attempt
+On every wake, run `herdr-drain <own-agent-name>`. It fires only into a
+non-working target, and a pending retry re-fires the same atomic prompt with
+the same message id, which never double-submits partially-pasted text. Because
+a target cannot deliver to itself while it is working, the operator sweep runs
+`herdr-drain --all` each cycle to deliver every target's deferred inbox on its
+behalf, then ages any still-stuck message. Concurrent sends to one target are
+serialized by a non-blocking per-target lock (`locks/target-<target>.lock`) so
+a loser defers rather than racing the idle window. Retries are capped by
+`OCTO_TRANSPORT_ATTEMPT_CAP` (default 3, per epoch): at the cap the message
+goes stalled. A busy target defers, but the sweep stalls any retryable message
+older than `OCTO_TRANSPORT_DEFER_MAX_AGE_S` (default 900s), so a stuck message
+is surfaced within about the threshold plus one sweep interval (a further
+interval only on momentary lock contention), always bounded, never unseen. A
+stalled message never auto-fires again and the sweep surfaces it loudly every
+cycle. `herdr-drain --resume <id>`
+starts a new epoch (stalled to pending, attempts reset to 0). State reads, attempt
 increments, and fires all run under the permanent per-message flock
 `locks/<id>.lock`; nothing ever unlinks a lock. Reclamation is runbook-only:
 `docs/runbooks/herdr-comms-lock-reclamation.md`.
