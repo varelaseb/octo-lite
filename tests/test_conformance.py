@@ -544,7 +544,10 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertNotIn("--target In Progress", text)
         implement = text[text.index("if (mode === 'implement')"):text.index("if (mode === 'code-review')")]
         self.assertIn("=== 'Shaped'", implement)
+        self.assertNotIn("assertReadyEnvelope", text)
+        self.assertLess(implement.index("deriveDeliveryEntry("), implement.index("loopFire("))
         self.assertLess(implement.index("loopFire("), implement.index("spawnWorker('implementer'"))
+        self.assertIn("delivery-entry-output-receipt", implement)
         self.assertIn("delivery spawn at Shaped rejected", text)
         # The single ruling-15 orchestrator-performed manual Shaped -> Todo for TUR-447
         # is the one recorded non-recurring exception, held in a comment, never in code.

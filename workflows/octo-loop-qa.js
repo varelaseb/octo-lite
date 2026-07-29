@@ -1,7 +1,7 @@
 export const meta = {
   name: 'octo-loop-qa',
   description: 'Native workflow-subagent delivery loop: gate, spawn, and bind one fresh exact-head worker pass per invocation',
-  whenToUse: 'Shaped or Todo Linear work with a clear exact-head shaping verdict, journalled bound inputs, and a per-pass brief',
+  whenToUse: 'Shaped or Todo Linear work declared by issue, PR, and exact head',
   phases: [
     { title: 'Implement' },
     { title: 'Code Review' },
@@ -201,57 +201,6 @@ function assertManifestShape(manifest = {}) {
     return { shape, role, purpose: manifest.purpose }
   }
   throw new Error(`unknown manifest shape ${shape}`)
-}
-
-// Readiness envelope (delivery-lifecycle delivery-entry-gate, shaping-state; role-runtime
-// launch-linear-state-gate). The loop derives its worktree from the process cwd and its branch from
-// git (loop-runs-on-cwd-and-branch); readiness still validates the bound shaping verdict, the exact
-// head, the canonical repo slug, the PR number (never a URL), and worktree containment before the one
-// mechanical Shaped -> Todo fire, but performs no provision-record read or launch-revision check.
-function assertReadyEnvelope(envelope) {
-  for (const field of [
-    'issue',
-    'repo',
-    'pr',
-    'branch',
-    'shaping_head',
-    'spec_revision',
-    'linear_revision',
-    'linear_fingerprint',
-    'linear_state',
-    'pr_head',
-    'pr_base',
-    'topology_revision',
-    'shaping_verdict',
-    'shaping_verdict_head',
-    'shaping_reviewer_receipt',
-    'conversation_cutoff',
-  ]) required(envelope[field], field)
-  assertRepoSlug(envelope.repo_slug, 'repo_slug')
-  requiredPrNumber(envelope.pr, 'PR')
-  assertContainment(required(envelope.worktree_root, 'worktree_root'), required(envelope.worktree, 'worktree'))
-  if (!Array.isArray(envelope.conversation_log_references) || envelope.conversation_log_references.length === 0) {
-    throw new Error('conversation log references required')
-  }
-  if (!['Shaped', 'Todo'].includes(envelope.linear_state)) {
-    throw new Error('Linear state must be Shaped or Todo')
-  }
-  if (envelope.shaping_verdict !== 'clear') throw new Error('shaping verdict not clear')
-  if (envelope.shaping_verdict_head !== envelope.shaping_head) {
-    throw new Error('shaping verdict head mismatch')
-  }
-  if (envelope.pr_head !== envelope.shaping_head) throw new Error('PR head mismatch')
-  if (!Array.isArray(envelope.spec_blobs) || envelope.spec_blobs.length === 0) {
-    throw new Error('spec blobs required')
-  }
-  if (!Array.isArray(envelope.adr_blobs)) throw new Error('ADR blobs required')
-  if (!Array.isArray(envelope.shaping_verdict_inputs) || envelope.shaping_verdict_inputs.length === 0) {
-    throw new Error('shaping verdict input bindings required')
-  }
-  if (!Array.isArray(envelope.acceptance_criteria) || envelope.acceptance_criteria.length === 0) {
-    throw new Error('acceptance criteria required')
-  }
-  return envelope
 }
 
 // Code-review acceptance (delivery-lifecycle delivery-fix-review, delivery-tdd-reviewer-guard): a
@@ -668,6 +617,41 @@ const FIRE_SCHEMA = {
   },
 }
 
+const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
+  type: 'object',
+  required: [
+    'linear_issue', 'linear_state', 'linear_fingerprint',
+    'repo_slug', 'pr_head', 'pr_base', 'pr_issue',
+    'worktree', 'worktree_root', 'worktree_head',
+    'lane', 'lane_issue', 'branch', 'branch_issue',
+    'shaping_verdict', 'shaping_verdict_head', 'shaping_reviewer_receipt',
+    'spec_blobs', 'adr_blobs', 'contract_hash', 'brief',
+  ],
+  properties: {
+    linear_issue: { type: 'string' },
+    linear_state: { type: 'string' },
+    linear_fingerprint: { type: 'string' },
+    repo_slug: { type: 'string' },
+    pr_head: { type: 'string' },
+    pr_base: { type: 'string' },
+    pr_issue: { type: 'string' },
+    worktree: { type: 'string' },
+    worktree_root: { type: 'string' },
+    worktree_head: { type: 'string' },
+    lane: { type: 'string' },
+    lane_issue: { type: 'string' },
+    branch: { type: 'string' },
+    branch_issue: { type: 'string' },
+    shaping_verdict: { type: 'string' },
+    shaping_verdict_head: { type: 'string' },
+    shaping_reviewer_receipt: { type: 'string' },
+    spec_blobs: { type: 'array', items: { type: 'string' } },
+    adr_blobs: { type: 'array', items: { type: 'string' } },
+    contract_hash: { type: 'string' },
+    brief: { type: 'string' },
+  },
+}
+
 const PUBLISH_SCHEMA = {
   type: 'object',
   required: ['card_url', 'readable'],
@@ -1015,11 +999,100 @@ async function spawnReconciler(phaseTitle) {
   return reconciled
 }
 
+// ADR 0004 delivery entry. The caller declares exactly issue, PR, and head. One read-only pass derives
+// every remaining binding from canonical state. Derivation is verification: disagreements stop here,
+// before the mechanical Shaped -> Todo mutation, and the verified facts become the output receipt.
+async function deriveDeliveryEntry() {
+  const keys = Object.keys(A).sort()
+  if (JSON.stringify(keys) !== JSON.stringify(['head', 'issue', 'pr'])) {
+    throw new Error('delivery entry must declare exactly issue, PR, and head')
+  }
+  const issue = requiredNonEmptyString(A.issue, 'declared issue')
+  requiredPrNumber(A.pr, 'declared PR')
+  const head = requiredNonEmptyString(A.head, 'declared head')
+  const derived = await agent([
+    `Derive delivery entry for issue ${issue}, PR ${A.pr}, head ${head}. One read-only pass; never mutate.`,
+    'Read every remaining fact from its canonical source. Never copy a caller-supplied derived field.',
+    'From the process working directory and git, return worktree, worktree_root, worktree_head, lane,',
+    'lane_issue, branch, branch_issue, and repo_slug from the git origin. Do not read a provision record.',
+    'From the forge, return pr_head, pr_base, and pr_issue for the declared PR in that derived repo.',
+    'From Linear, return linear_issue, linear_state, and its canonical fingerprint.',
+    'From the pinned shaping-review journal, return shaping_verdict, shaping_verdict_head, and',
+    'shaping_reviewer_receipt. From live reads at the derived head, return spec_blobs, adr_blobs,',
+    'the resolved implementer contract_hash, and a brief grounded in the issue and signed sources.',
+    'Normalize every issue binding to the same identifier form as the declared issue.',
+  ].join('\n'), {
+    label: `delivery-entry-derive:${issue}`,
+    phase: 'Implement',
+    schema: DELIVERY_ENTRY_DERIVATION_SCHEMA,
+    agentType: 'Explore',
+    effort: 'low',
+  })
+  if (derived === null) throw new Error('delivery entry derivation returned no result')
+
+  for (const [label, actual] of [
+    ['PR head', derived.pr_head],
+    ['worktree head', derived.worktree_head],
+    ['shaping-verdict head', derived.shaping_verdict_head],
+  ]) {
+    if (requiredNonEmptyString(actual, `derived ${label}`) !== head) {
+      throw new Error(`delivery entry head inconsistency: declared head ${head} disagrees with ${label} ${actual}`)
+    }
+  }
+
+  const issueBindings = [
+    derived.linear_issue,
+    derived.lane_issue,
+    derived.branch_issue,
+    derived.pr_issue,
+  ]
+  if (issueBindings.some((value) => value !== issue)) {
+    throw new Error(
+      `delivery entry refused: one-orchestrator-per-issue rule violated; the worktree lane, branch, ` +
+      `and PR must own ${issue}; spawn a lane for ${issue}`,
+    )
+  }
+  if (derived.shaping_verdict !== 'clear') {
+    throw new Error('delivery entry rejected: derived shaping verdict is not clear')
+  }
+  if (!['Shaped', 'Todo'].includes(derived.linear_state)) {
+    throw new Error(`delivery entry rejected: Linear state ${derived.linear_state} is not Shaped or Todo`)
+  }
+  requiredNonEmptyArray(derived.spec_blobs, 'derived spec blobs')
+  if (!Array.isArray(derived.adr_blobs)) throw new Error('derived ADR blobs required')
+
+  A.repo_slug = assertRepoSlug(derived.repo_slug, 'derived repo slug')
+  A.worktree_root = requiredNonEmptyString(derived.worktree_root, 'derived worktree root')
+  A.worktree = assertContainment(A.worktree_root, requiredNonEmptyString(derived.worktree, 'derived worktree'))
+  A.repo = A.worktree
+  A.branch = requiredNonEmptyString(derived.branch, 'derived branch')
+  A.starting_head = head
+  A.shaping_head = head
+  A.pr_head = derived.pr_head
+  A.pr_base = requiredNonEmptyString(derived.pr_base, 'derived PR base')
+  A.pr_url = `https://github.com/${A.repo_slug}/pull/${A.pr}`
+  A.reply_route = A.pr_url
+  A.review_delivery = A.pr_url
+  A.linear_state = derived.linear_state
+  A.linear_fingerprint = requiredNonEmptyString(derived.linear_fingerprint, 'derived Linear fingerprint')
+  A.shaping_verdict = derived.shaping_verdict
+  A.shaping_verdict_head = derived.shaping_verdict_head
+  A.shaping_reviewer_receipt = requiredNonEmptyString(
+    derived.shaping_reviewer_receipt,
+    'derived shaping reviewer receipt',
+  )
+  A.spec_blobs = derived.spec_blobs
+  A.adr_blobs = derived.adr_blobs
+  A.contract_hash = requiredNonEmptyString(derived.contract_hash, 'derived contract hash')
+  A.brief = requiredNonEmptyString(derived.brief, 'derived pass brief')
+  return { declared: { issue, pr: A.pr, head }, derived }
+}
+
 // Loop fire (delivery-lifecycle linear-loop-fire-transition, delivery-entry-gate): the one mechanical
 // Shaped -> Todo transition through octo-control linear-transition before any delivery worker spawns.
 async function loopFire() {
   const issue = required(A.issue, 'issue')
-  const controlArgs = required(A.loop_fire_args, 'loop fire control args')
+  const controlArgs = '--reason delivery-entry'
   const fire = await agent([
     'Run exactly this command from the owning orchestrator context, then report it:',
     `octo-control linear-transition ${issue} --expected Shaped --target Todo ${controlArgs}`,
@@ -1055,7 +1128,8 @@ async function postEvidenceCard(phaseTitle, kind, head, manifest, artifacts) {
 // tracker state at the mode boundary, and posts evidence; acceptance builds+posts+sends the package. ----
 
 if (mode === 'implement') {
-  assertReadyEnvelope(A)
+  const receipt = await deriveDeliveryEntry()
+  log(`journal delivery-entry-output-receipt ${JSON.stringify(receipt)}`)
   // Delivery entry: at Shaped this loop performs the one mechanical Shaped -> Todo loop fire and verifies
   // the Todo readback before the implementer spawns (delivery-entry-gate, linear-loop-fire-transition);
   // Shaped never moves directly to In Progress. The single ruling-15 orchestrator-performed manual
@@ -1067,7 +1141,7 @@ if (mode === 'implement') {
     }
     A.linear_state = fired.readback_state
   }
-  const implementation = await spawnWorker('implementer', 'Implement', A.shaping_head, IMPLEMENT_SCHEMA)
+  const implementation = await spawnWorker('implementer', 'Implement', A.head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'implement', implementation }
   return {
     stage: 'code-review-required', issue: A.issue, pr: A.pr, head: implementation.head,

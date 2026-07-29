@@ -106,6 +106,37 @@ function readyEnvelope(overrides = {}) {
   }
 }
 
+function deliveryEntry(overrides = {}) {
+  return { issue: ISSUE, pr: PR, head: HEAD, ...overrides }
+}
+
+function derivedDeliveryEntry(overrides = {}) {
+  return {
+    linear_issue: ISSUE,
+    linear_state: 'Shaped',
+    linear_fingerprint: 'fp-shaped',
+    repo_slug: REPO_SLUG,
+    pr_head: HEAD,
+    pr_base: 'main',
+    pr_issue: ISSUE,
+    worktree: WORKTREE_ABS,
+    worktree_root: WORKTREE_ROOT,
+    worktree_head: HEAD,
+    lane: WORKTREE_REL,
+    lane_issue: ISSUE,
+    branch: BRANCH,
+    branch_issue: ISSUE,
+    shaping_verdict: 'clear',
+    shaping_verdict_head: HEAD,
+    shaping_reviewer_receipt: 'rcpt-1',
+    spec_blobs: SPEC_BLOBS,
+    adr_blobs: [],
+    contract_hash: CONTRACT,
+    brief: 'Implement the signed issue and spec contract.',
+    ...overrides,
+  }
+}
+
 // Build an agent() stub that answers each labelled spawn from a scripted table and records the ordered
 // call sequence so the harness can assert which roles were actually spawned, in order.
 function makeAgent(script) {
@@ -128,14 +159,16 @@ const noop = () => {}
 async function runMode(env, script) {
   const agent = makeAgent(script)
   const factory = loadLoop()
-  const result = await factory(agent, JSON.stringify(env), noop)
-  return { result, calls: agent.calls }
+  const logs = []
+  const result = await factory(agent, JSON.stringify(env), (message) => logs.push(message))
+  return { result, calls: agent.calls, logs }
 }
 
 // ---- implement mode: fires Shaped -> Todo, spawns implementer, returns code-review-required ----
-test('implement mode fires Shaped->Todo then spawns the implementer and returns the pushed head', async () => {
-  const env = readyEnvelope()
-  const { result, calls } = await runMode(env, [
+test('implement mode derives the three-fact delivery entry, journals its output receipt, then fires', async () => {
+  const entry = deliveryEntry()
+  const { result, calls, logs } = await runMode(entry, [
+    ['delivery-entry-derive:', derivedDeliveryEntry()],
     ['loop-fire:', { command: 'octo-control linear-transition', exit_status: 0, readback_state: 'Todo' }],
     ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
     ['implementer:', {
@@ -147,16 +180,45 @@ test('implement mode fires Shaped->Todo then spawns the implementer and returns 
   assert.equal(result.stage, 'code-review-required')
   assert.equal(result.head, NEWHEAD)
   const labels = calls.map((c) => c.label)
-  // The Shaped -> Todo fire runs before the implementer spawn.
+  const deriveAt = labels.findIndex((l) => l.startsWith('delivery-entry-derive:'))
   const fireAt = labels.findIndex((l) => l.startsWith('loop-fire:'))
   const implAt = labels.findIndex((l) => l.startsWith('implementer:'))
-  assert.ok(fireAt >= 0 && implAt > fireAt, 'fire must precede the implementer spawn')
+  assert.ok(deriveAt >= 0 && fireAt > deriveAt && implAt > fireAt, 'derive, receipt, fire, then spawn')
+  const receipt = logs.find((line) => line.startsWith('journal delivery-entry-output-receipt '))
+  assert.ok(receipt, 'the fire must journal the derivation as an output receipt')
+  assert.deepEqual(JSON.parse(receipt.slice(receipt.indexOf('{'))), {
+    declared: entry,
+    derived: derivedDeliveryEntry(),
+  })
+})
+
+test('implement mode fails loud on a head inconsistency before loop fire', async () => {
+  const agent = makeAgent([
+    ['delivery-entry-derive:', derivedDeliveryEntry({ pr_head: NEWHEAD })],
+  ])
+  await assert.rejects(
+    loadLoop()(agent, JSON.stringify(deliveryEntry()), noop),
+    /delivery entry head inconsistency.*declared head.*PR head/,
+  )
+  assert.ok(!agent.calls.some(({ label }) => label.startsWith('loop-fire:')), 'head mismatch must prevent mutation')
+})
+
+test('implement mode enforces one orchestrator per issue before loop fire', async () => {
+  const agent = makeAgent([
+    ['delivery-entry-derive:', derivedDeliveryEntry({ pr_issue: 'TUR-99' })],
+  ])
+  await assert.rejects(
+    loadLoop()(agent, JSON.stringify(deliveryEntry()), noop),
+    /one-orchestrator-per-issue rule.*spawn a lane for TUR-13/,
+  )
+  assert.ok(!agent.calls.some(({ label }) => label.startsWith('loop-fire:')), 'cross-issue fire must prevent mutation')
 })
 
 test('implement mode rejects a delivery spawn at Shaped when the Todo readback is missing', async () => {
-  const env = readyEnvelope()
+  const env = deliveryEntry()
   await assert.rejects(
     runMode(env, [
+      ['delivery-entry-derive:', derivedDeliveryEntry()],
       ['loop-fire:', { command: 'octo-control linear-transition', exit_status: 0, readback_state: 'Shaped' }],
     ]),
     /Todo readback missing/,

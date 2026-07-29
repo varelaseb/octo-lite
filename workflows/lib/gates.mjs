@@ -170,57 +170,6 @@ export function assertManifestShape(manifest = {}) {
   throw new Error(`unknown manifest shape ${shape}`)
 }
 
-// Readiness envelope (delivery-lifecycle delivery-entry-gate, shaping-state; role-runtime
-// launch-linear-state-gate). The loop derives its worktree from the process cwd and its branch from
-// git (loop-runs-on-cwd-and-branch); readiness still validates the bound shaping verdict, the exact
-// head, the canonical repo slug, the PR number (never a URL), and worktree containment before the one
-// mechanical Shaped -> Todo fire, but performs no provision-record read or launch-revision check.
-export function assertReadyEnvelope(envelope) {
-  for (const field of [
-    'issue',
-    'repo',
-    'pr',
-    'branch',
-    'shaping_head',
-    'spec_revision',
-    'linear_revision',
-    'linear_fingerprint',
-    'linear_state',
-    'pr_head',
-    'pr_base',
-    'topology_revision',
-    'shaping_verdict',
-    'shaping_verdict_head',
-    'shaping_reviewer_receipt',
-    'conversation_cutoff',
-  ]) required(envelope[field], field)
-  assertRepoSlug(envelope.repo_slug, 'repo_slug')
-  requiredPrNumber(envelope.pr, 'PR')
-  assertContainment(required(envelope.worktree_root, 'worktree_root'), required(envelope.worktree, 'worktree'))
-  if (!Array.isArray(envelope.conversation_log_references) || envelope.conversation_log_references.length === 0) {
-    throw new Error('conversation log references required')
-  }
-  if (!['Shaped', 'Todo'].includes(envelope.linear_state)) {
-    throw new Error('Linear state must be Shaped or Todo')
-  }
-  if (envelope.shaping_verdict !== 'clear') throw new Error('shaping verdict not clear')
-  if (envelope.shaping_verdict_head !== envelope.shaping_head) {
-    throw new Error('shaping verdict head mismatch')
-  }
-  if (envelope.pr_head !== envelope.shaping_head) throw new Error('PR head mismatch')
-  if (!Array.isArray(envelope.spec_blobs) || envelope.spec_blobs.length === 0) {
-    throw new Error('spec blobs required')
-  }
-  if (!Array.isArray(envelope.adr_blobs)) throw new Error('ADR blobs required')
-  if (!Array.isArray(envelope.shaping_verdict_inputs) || envelope.shaping_verdict_inputs.length === 0) {
-    throw new Error('shaping verdict input bindings required')
-  }
-  if (!Array.isArray(envelope.acceptance_criteria) || envelope.acceptance_criteria.length === 0) {
-    throw new Error('acceptance criteria required')
-  }
-  return envelope
-}
-
 // Code-review acceptance (delivery-lifecycle delivery-fix-review, delivery-tdd-reviewer-guard): a
 // clear verdict advances to QA, a blocking verdict returns fresh findings for a fix pass.
 export function acceptCodeReview(expectedHead, expectedPr, review) {
