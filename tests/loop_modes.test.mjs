@@ -167,6 +167,28 @@ function deliveryEntry(overrides = {}) {
   return { issue: ISSUE, pr: PR, head: HEAD, ...overrides }
 }
 
+// A DOWNSTREAM mode (code-review, fix, evidence, qa-review, acceptance) declares ONLY the three facts,
+// its mode, and its own mode inputs (delivery-mode-envelope, delivery-mode-anti-forgery). It NEVER
+// pre-supplies a derived envelope field: the loop derives the same envelope the implement entry binds
+// BEFORE the mode dispatch. The advanced head is NEWHEAD (the mode runs past the implement entry head).
+function downstreamEntry(mode, inputs = {}) {
+  return { issue: ISSUE, pr: PR, head: NEWHEAD, mode, ...inputs }
+}
+
+// The derivation agent's response for a downstream pass: the same derived envelope, at the advanced
+// head, with the LIVE Linear state In Progress (a downstream mode runs after the Shaped -> Todo entry
+// fire). The universal checks (worktree-head agreement, one-orchestrator binding, canonical-source
+// presence, containment) still run; the four-way head + Shaped/Todo entry-state gate is implement-only.
+function derivedInProgress(overrides = {}) {
+  return derivedDeliveryEntry({
+    linear_state: 'In Progress',
+    worktree_head: NEWHEAD,
+    pr_head: NEWHEAD,
+    shaping_verdict_head: NEWHEAD,
+    ...overrides,
+  })
+}
+
 function derivedDeliveryEntry(overrides = {}) {
   return {
     linear_issue: ISSUE,
@@ -287,27 +309,34 @@ test('implement mode rejects a delivery spawn at Shaped when the Todo readback i
   )
 })
 
-// ---- code-review mode: spawns the OpenAI code-reviewer through the relay, returns clear|fix ----
-test('code-review mode spawns the code-reviewer through the relay and advances on a clear verdict', async () => {
-  const env = readyEnvelope({ mode: 'code-review', head: NEWHEAD, linear_state: 'In Progress', cycle: 1 })
+// ---- code-review mode: derives the envelope, then spawns the OpenAI code-reviewer through the relay ----
+// The mode declares ONLY {issue, pr, head, mode, cycle}; the loop derives linear_state, worktree,
+// contract_hash, brief, and spec_blobs from the mocked derivation agent BEFORE the reviewer spawns
+// (delivery-mode-envelope). No pre-supplied envelope field.
+test('code-review mode derives the envelope then spawns the code-reviewer through the relay and advances on a clear verdict', async () => {
+  const env = downstreamEntry('code-review', { cycle: 1 })
   const payload = JSON.stringify({ verdict: 'clear', findings: [], comment_url: `${PR_URL}#rev` })
   const { result, calls } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
     ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
     ['code-reviewer-relay:', relayResult(payload)],
     ['code-reviewer-rollout:', rolloutFor(payload)],
     ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [], comment_url: `${PR_URL}#rev` }],
   ])
   assert.equal(result.stage, 'code-clear')
-  // The reviewer ran through the relay path (a distinct relay spawn and an independent rollout read).
+  // The envelope was derived before dispatch, then the reviewer ran through the relay path.
   const labels = calls.map((c) => c.label)
-  assert.ok(labels.some((l) => l.startsWith('code-reviewer-relay:')), 'code-reviewer must use the relay path')
+  const deriveAt = labels.findIndex((l) => l.startsWith('delivery-entry-derive:'))
+  const relayAt = labels.findIndex((l) => l.startsWith('code-reviewer-relay:'))
+  assert.ok(deriveAt >= 0 && relayAt > deriveAt, 'derive the envelope before the reviewer spawns')
   assert.ok(labels.some((l) => l.startsWith('code-reviewer-rollout:')), 'independent rollout read required')
 })
 
 test('code-review mode returns fix-required with findings on a blocking verdict', async () => {
-  const env = readyEnvelope({ mode: 'code-review', head: NEWHEAD, linear_state: 'In Progress', cycle: 1 })
+  const env = downstreamEntry('code-review', { cycle: 1 })
   const payload = JSON.stringify({ verdict: 'blocking', findings: ['bug'], comment_url: `${PR_URL}#rev` })
   const { result } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
     ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
     ['code-reviewer-relay:', relayResult(payload)],
     ['code-reviewer-rollout:', rolloutFor(payload)],
@@ -317,11 +346,12 @@ test('code-review mode returns fix-required with findings on a blocking verdict'
   assert.deepEqual(result.findings, ['bug'])
 })
 
-// ---- fix mode: spawns implementer, returns code-review-required ----
-test('fix mode spawns the implementer and returns code-review-required at the next cycle', async () => {
-  const env = readyEnvelope({ mode: 'fix', head: NEWHEAD, linear_state: 'In Progress', cycle: 1, findings: ['bug'] })
+// ---- fix mode: derives the envelope, spawns implementer, returns code-review-required ----
+test('fix mode derives the envelope, spawns the implementer, and returns code-review-required at the next cycle', async () => {
+  const env = downstreamEntry('fix', { cycle: 1, findings: ['bug'] })
   const finalHead = 'cccccccccccccccccccccccccccccccccccccccc'
-  const { result } = await runMode(env, [
+  const { result, calls } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
     ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
     ['implementer:', {
       issue: ISSUE, pr_url: PR_URL, branch: BRANCH, head: finalHead,
@@ -332,15 +362,17 @@ test('fix mode spawns the implementer and returns code-review-required at the ne
   assert.equal(result.stage, 'code-review-required')
   assert.equal(result.head, finalHead)
   assert.equal(result.cycle, 2)
+  const labels = calls.map((c) => c.label)
+  const deriveAt = labels.findIndex((l) => l.startsWith('delivery-entry-derive:'))
+  const implAt = labels.findIndex((l) => l.startsWith('implementer:'))
+  assert.ok(deriveAt >= 0 && implAt > deriveAt, 'derive the envelope before the implementer spawns')
 })
 
-// ---- evidence mode: spawns qa-capture, posts the evidence card, returns qa-review-required ----
-test('evidence mode spawns qa-capture, posts the evidence card, and returns qa-review-required', async () => {
-  const env = readyEnvelope({
-    mode: 'evidence', head: NEWHEAD, linear_state: 'In Progress',
-    code_review: { verdict: 'clear', head: NEWHEAD },
-  })
+// ---- evidence mode: derives the envelope, spawns qa-capture, posts the card, returns qa-review-required ----
+test('evidence mode derives the envelope, spawns qa-capture, posts the evidence card, and returns qa-review-required', async () => {
+  const env = downstreamEntry('evidence', { code_review: { verdict: 'clear', head: NEWHEAD } })
   const { result, calls } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
     ['qa-capture-runtime:', RESOLVED_WORKER_RUNTIME],
     ['qa-capture:', { head: NEWHEAD, plan: [{}], manifest: 'm1', artifacts: ['shot.png'], card_url: '', blocked: false }],
     ['publish-visual:', { card_url: `${PR_URL}#card`, readable: true }],
@@ -348,7 +380,9 @@ test('evidence mode spawns qa-capture, posts the evidence card, and returns qa-r
   assert.equal(result.stage, 'qa-review-required')
   assert.equal(result.card_url, `${PR_URL}#card`)
   const labels = calls.map((c) => c.label)
-  assert.ok(labels.some((l) => l.startsWith('qa-capture:')), 'qa-capture spawned')
+  const deriveAt = labels.findIndex((l) => l.startsWith('delivery-entry-derive:'))
+  const captureAt = labels.findIndex((l) => l.startsWith('qa-capture:'))
+  assert.ok(deriveAt >= 0 && captureAt > deriveAt, 'derive the envelope before qa-capture spawns')
   assert.ok(labels.some((l) => l.startsWith('publish-visual:')), 'evidence card posted')
 })
 
@@ -356,12 +390,12 @@ test('evidence mode spawns qa-capture, posts the evidence card, and returns qa-r
 test('backend evidence mode returns the default manifest so the evidence->qa-review round-trip does not fail closed', async () => {
   // Backend-only delivery (user_facing:false), no A.manifest supplied: the branch defaults to
   // 'backend-packet'. The returned result must include that manifest so the next qa-review pass (which
-  // requires A.manifest) does not fail closed on the manifest reason.
-  const evidenceEnv = readyEnvelope({
-    mode: 'evidence', head: NEWHEAD, linear_state: 'In Progress', user_facing: false,
-    code_review: { verdict: 'clear', head: NEWHEAD },
+  // requires A.manifest) does not fail closed on the manifest reason. Each mode derives its own envelope.
+  const evidenceEnv = downstreamEntry('evidence', {
+    user_facing: false, code_review: { verdict: 'clear', head: NEWHEAD },
   })
   const { result: evidenceResult } = await runMode(evidenceEnv, [
+    ['delivery-entry-derive:', derivedInProgress()],
     ['publish-nonvisual:', { card_url: `${PR_URL}#backend-card`, readable: true }],
   ])
   assert.equal(evidenceResult.stage, 'qa-review-required')
@@ -369,12 +403,12 @@ test('backend evidence mode returns the default manifest so the evidence->qa-rev
   assert.equal(evidenceResult.manifest, 'backend-packet')
 
   // Feed the returned evidence result straight into qa-review: it must NOT throw the manifest error.
-  const qaEnv = readyEnvelope({
-    mode: 'qa-review', head: evidenceResult.head, linear_state: 'In Progress',
-    card_url: evidenceResult.card_url, manifest: evidenceResult.manifest,
+  const qaEnv = downstreamEntry('qa-review', {
+    head: evidenceResult.head, card_url: evidenceResult.card_url, manifest: evidenceResult.manifest,
   })
   const payload = JSON.stringify({ verdict: 'satisfied' })
   const { result: qaResult } = await runMode(qaEnv, [
+    ['delivery-entry-derive:', derivedInProgress()],
     ['qa-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
     ['qa-reviewer-relay:', relayResult(payload)],
     ['qa-reviewer-rollout:', rolloutFor(payload)],
@@ -386,13 +420,12 @@ test('backend evidence mode returns the default manifest so the evidence->qa-rev
   assert.equal(qaResult.stage, 'acceptance-required')
 })
 
-// ---- qa-review mode: spawns qa-reviewer through the relay, returns acceptance-required|fix ----
-test('qa-review mode spawns the qa-reviewer through the relay and advances to acceptance on satisfied', async () => {
-  const env = readyEnvelope({
-    mode: 'qa-review', head: NEWHEAD, linear_state: 'In Progress', card_url: `${PR_URL}#card`, manifest: 'm1',
-  })
+// ---- qa-review mode: derives the envelope, spawns qa-reviewer through the relay ----
+test('qa-review mode derives the envelope then spawns the qa-reviewer through the relay and advances to acceptance on satisfied', async () => {
+  const env = downstreamEntry('qa-review', { card_url: `${PR_URL}#card`, manifest: 'm1' })
   const payload = JSON.stringify({ verdict: 'satisfied' })
   const { result, calls } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
     ['qa-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
     ['qa-reviewer-relay:', relayResult(payload)],
     ['qa-reviewer-rollout:', rolloutFor(payload)],
@@ -403,18 +436,20 @@ test('qa-review mode spawns the qa-reviewer through the relay and advances to ac
   ])
   assert.equal(result.stage, 'acceptance-required')
   const labels = calls.map((c) => c.label)
-  assert.ok(labels.some((l) => l.startsWith('qa-reviewer-relay:')), 'qa-reviewer must use the relay path')
+  const deriveAt = labels.findIndex((l) => l.startsWith('delivery-entry-derive:'))
+  const relayAt = labels.findIndex((l) => l.startsWith('qa-reviewer-relay:'))
+  assert.ok(deriveAt >= 0 && relayAt > deriveAt, 'derive the envelope before the qa-reviewer spawns')
 })
 
-// ---- acceptance mode: BUILDS + POSTS + SENDS the package, NEVER self-accepts ----
-test('acceptance mode builds, posts, and sends the acceptance package and never self-accepts', async () => {
-  const env = readyEnvelope({
-    mode: 'acceptance', head: NEWHEAD, linear_state: 'In Progress',
+// ---- acceptance mode: derives the envelope, then BUILDS + POSTS + SENDS the package, NEVER self-accepts ----
+test('acceptance mode derives the envelope then builds, posts, and sends the acceptance package and never self-accepts', async () => {
+  const env = downstreamEntry('acceptance', {
     code_review: { verdict: 'clear', head: NEWHEAD },
     qa_review: { verdict: 'satisfied', head: NEWHEAD },
     card_url: `${PR_URL}#card`, summary: 'collapsed the loop to six modes',
   })
   const { result, calls } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
     ['acceptance-publish:', { card_url: `${PR_URL}#pkg`, readable: true }],
     ['acceptance-send:', { sent: true, route: 'operator-pane' }],
   ])
@@ -422,22 +457,24 @@ test('acceptance mode builds, posts, and sends the acceptance package and never 
   assert.equal(result.package.self_accepted, false)
   assert.equal(result.package_url, `${PR_URL}#pkg`)
   const labels = calls.map((c) => c.label)
-  // The package is posted to the evidence site and then sent to the operator, in that order.
+  // The envelope is derived first, then the package is posted to the evidence site and then sent.
+  const deriveAt = labels.findIndex((l) => l.startsWith('delivery-entry-derive:'))
   const pubAt = labels.findIndex((l) => l.startsWith('acceptance-publish:'))
   const sendAt = labels.findIndex((l) => l.startsWith('acceptance-send:'))
-  assert.ok(pubAt >= 0 && sendAt > pubAt, 'package must be posted then sent')
+  assert.ok(deriveAt >= 0 && pubAt > deriveAt && sendAt > pubAt, 'derive, then post, then send')
   // No mode ever runs an acceptance/merge/transition itself; the returned next says the operator decides.
   assert.match(result.next, /operator/i)
 })
 
 test('acceptance mode fails closed without a satisfied exact-head qa-review verdict', async () => {
-  const env = readyEnvelope({
-    mode: 'acceptance', head: NEWHEAD, linear_state: 'In Progress',
+  const env = downstreamEntry('acceptance', {
     code_review: { verdict: 'clear', head: NEWHEAD },
     qa_review: { verdict: 'satisfied', head: 'wrong-head' },
     card_url: `${PR_URL}#card`, summary: 'x',
   })
-  await assert.rejects(runMode(env, []), /satisfied exact-head qa-review/)
+  await assert.rejects(runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
+  ]), /satisfied exact-head qa-review/)
 })
 
 // ---- removed-gates guard: ADR 0003 trust-root/observer/readback/launch-revision symbols are gone ----
