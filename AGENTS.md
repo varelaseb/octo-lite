@@ -42,7 +42,7 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
 
 - Spec format: spec-chat
 - Canonical spec paths: spec/domains/operating-model.spec.html, spec/domains/delivery-lifecycle.spec.html, spec/domains/role-runtime.spec.html, spec/domains/operator-control.spec.html
-- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html, spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0003-drop-loop-trust-root.spec.html
+- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html, spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0003-drop-loop-trust-root.spec.html, spec/adr/0004-derive-delivery-entry.spec.html
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0004: delete the readiness envelope, derive delivery entry from (issue, pr, head)</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header" id="header">
+<h1>ADR 0004: delete the readiness envelope, derive delivery entry from (issue, pr, head)</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/delivery-lifecycle.spec.html">delivery lifecycle</a> / ADR 0004</nav>
+<p>Decisions closing the operator grill on octo-lite issue 34, 2026-07-27.</p>
+</header>
+
+<section data-anchor="status" id="status">
+<h2>Status</h2>
+<p data-anchor="status-value" id="status-value">Accepted.</p>
+</section>
+
+<section data-anchor="context" id="context">
+<h2>Context</h2>
+<p data-anchor="context-thirty-fields" id="context-thirty-fields">Delivery entry required a hand-assembled readiness envelope of roughly thirty fields, and the operator judged that ceremony insane.</p>
+<p data-anchor="context-mechanically-derivable" id="context-mechanically-derivable">The TUR-425 green pass proved every envelope field is mechanically derivable, because the orchestrator assembled the whole envelope by hand from canonical sources and it passed, which shows the hand assembly added ceremony, not trust.</p>
+<p data-anchor="context-already-derives" id="context-already-derives">ADR 0003 already had the loop derive its worktree from the process working directory and its branch from git and drop the loop trust root, so a residual readiness envelope was a half-finished derivation left partly hand-declared on top of an already-lean loop.</p>
+<p data-anchor="context-reuse-machinery" id="context-reuse-machinery">Issue 33 proposed a host re-pin operation, which is machinery to support reusing one orchestrator across issues, an arrangement the operator ruled out.</p>
+</section>
+
+<section data-anchor="decision" id="decision">
+<h2>Decision</h2>
+
+<section data-anchor="decision-entry" id="decision-entry">
+<h3>Entry declares three facts</h3>
+<p data-anchor="decision-three-facts" id="decision-three-facts">A delivery pass declares exactly the issue, the PR, and the head, and the readiness envelope is deleted as an input concept, not simplified.</p>
+<p data-anchor="decision-derive-rest" id="decision-derive-rest">The loop derives every other binding at fire from its one canonical source, Linear, the forge, git, the pinned shaping-verdict comment, and any QA artifacts, so deriving each binding is the verification.</p>
+<p data-anchor="decision-fail-loud" id="decision-fail-loud">The loop fails loud on any inconsistency, in particular when the declared head, the PR head, the worktree head, and the shaping-verdict head disagree, stopping before any mutation rather than accepting an asserted field.</p>
+<p data-anchor="decision-output-receipt" id="decision-output-receipt">The loop journals the full derivation as an output receipt produced by the fire, replacing the hand-assembled input envelope, so the durable record is what the loop verified rather than what a caller asserted.</p>
+</section>
+
+<section data-anchor="decision-one-orchestrator" id="decision-one-orchestrator">
+<h3>One orchestrator per issue, enforced</h3>
+<p data-anchor="decision-born-together" id="decision-born-together">Exactly one orchestrator owns an issue together with its lane, worktree, and pins, born together at the correct head and retired together when the work is done.</p>
+<p data-anchor="decision-cross-issue-error" id="decision-cross-issue-error">A fire whose declared issue does not match the worktree lane, branch, and PR is refused with a clear error that names the one-orchestrator-per-issue rule and the fix of spawning a lane for that issue, so the rule is enforced rather than merely gated.</p>
+<p data-anchor="decision-fresh-spawn" id="decision-fresh-spawn">Phase transitions re-spawn fresh at current truth rather than re-pinning an existing session, provision pins are born correct and die with the session, and no re-pin support path exists, so issue 33 is superseded.</p>
+</section>
+
+<section data-anchor="decision-anti-forgery" id="decision-anti-forgery">
+<h3>Anti-forgery unchanged</h3>
+<p data-anchor="decision-forgery-stays" id="decision-forgery-stays">The anti-forgery property is unchanged or stronger: the loop keeps deriving its identity from the process working directory and git and never reads the host-authored provision record to enter, the record stays cleanup-ownership only per ADR 0003, the OpenAI reviewer relay-provenance gate is retained, and the head cross-check is a stronger guarantee than a hand-declared field it replaces.</p>
+</section>
+</section>
+
+<section data-anchor="consequences" id="consequences">
+<h2>Consequences</h2>
+<p data-anchor="consequence-lean-entry" id="consequence-lean-entry">Delivery entry becomes one command carrying three facts, and the readiness envelope, its builder, and its readiness check are removed from an already-lean loop.</p>
+<p data-anchor="consequence-derivation-cost" id="consequence-derivation-cost">The loop does more work at fire deriving and cross-checking, and a single head inconsistency now stops the pass loudly instead of being silently reconciled by a hand-declared field.</p>
+<p data-anchor="consequence-no-reuse" id="consequence-no-reuse">Reusing one orchestrator across issues is no longer possible, and the re-pin operation is removed rather than maintained.</p>
+</section>
+
+<section data-anchor="related" id="related">
+<h2>Related</h2>
+<p data-anchor="related-issue" id="related-issue">Origin: octo-lite issue 34. Supersedes: issue 33.</p>
+<p data-anchor="related-specs" id="related-specs">Amended: <a href="../domains/delivery-lifecycle.spec.html#delivery-entry-gate">delivery-lifecycle delivery entry gate</a>, <a href="../domains/role-runtime.spec.html#launch-stream-envelope-builder">role-runtime launch stream envelope</a>.</p>
+<p data-anchor="related-foundation" id="related-foundation">Builds on: <a href="0003-drop-loop-trust-root.spec.html">ADR 0003</a>, which dropped the loop trust root and the independent observer and left the loop deriving its worktree from cwd and branch from git.</p>
+</section>
+</article>
+</body>
+</html>
