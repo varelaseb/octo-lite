@@ -276,6 +276,57 @@ test('implement mode derives the three-fact delivery entry, journals its output 
   })
 })
 
+test('implement mode admits a declared head descended from the shaping-cleared head', async () => {
+  const shapingClearedHead = '9999999999999999999999999999999999999999'
+  const run = runMode(deliveryEntry(), [
+    ['delivery-entry-derive:', derivedDeliveryEntry({
+      shaping_verdict_head: shapingClearedHead,
+      shaping_head_descends: true,
+    })],
+    ['loop-fire:', { command: 'octo-control linear-transition', exit_status: 0, readback_state: 'Todo' }],
+    ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
+    ['implementer:', {
+      issue: ISSUE, pr_url: PR_URL, branch: BRANCH, head: NEWHEAD,
+      red_commit: RED_COMMIT, green_commit: GREEN_COMMIT, final_commit: NEWHEAD,
+      bound_test: { ...BOUND_TEST }, validation: 'node --test', blocked: false,
+    }],
+  ])
+
+  await assert.doesNotReject(run, 'ancestor-descended implement entry must be admitted')
+  const { result, calls } = await run
+  assert.equal(result.stage, 'code-review-required')
+  assert.ok(
+    calls.some(({ label }) => label.startsWith('loop-fire:')),
+    'ancestor-descended implement entry must reach loop fire',
+  )
+  assert.ok(
+    calls.some(({ label }) => label.startsWith('implementer:')),
+    'ancestor-descended implement entry must spawn the implementer',
+  )
+})
+
+test('implement mode refuses a declared head that does not descend from the shaping-cleared head', async () => {
+  const shapingClearedHead = '9999999999999999999999999999999999999999'
+  const agent = makeAgent([
+    ['delivery-entry-derive:', derivedDeliveryEntry({
+      shaping_verdict_head: shapingClearedHead,
+      shaping_head_descends: false,
+    })],
+  ])
+
+  await assert.rejects(
+    loadLoop()(agent, JSON.stringify(deliveryEntry()), noop),
+    new RegExp(
+      `delivery entry rejected: declared head ${HEAD} does not descend from ` +
+      `shaping-verdict head ${shapingClearedHead}`,
+    ),
+  )
+  assert.ok(
+    !agent.calls.some(({ label }) => label.startsWith('loop-fire:')),
+    'non-descended implement entry must prevent mutation',
+  )
+})
+
 test('implement mode fails loud on a head inconsistency before loop fire', async () => {
   const agent = makeAgent([
     ['delivery-entry-derive:', derivedDeliveryEntry({ pr_head: NEWHEAD })],
