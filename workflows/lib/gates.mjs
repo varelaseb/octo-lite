@@ -413,6 +413,14 @@ export function assertResumeSandboxConfig(resumeArgv) {
   if (configEntries.some((entry) => entry.value === 'workspace-write' || entry.value === 'danger-full-access')) {
     throw new Error('resume sandbox rejected: reviewer resume must stay sandbox_mode=read-only')
   }
+  // gh#60 config-KEY allowlist: the benign reviewer-resume -c keys are exactly sandbox_mode,
+  // model_reasoning_effort, service_tier. Any other key (future_privilege, sandbox_permissions
+  // disk-access, ...) is rejected by absence - form-independent, no bad-key enumeration.
+  const allowedResumeConfigKeys = new Set(['sandbox_mode', 'model_reasoning_effort', 'service_tier'])
+  const unrecognizedKey = configEntries.find((entry) => !allowedResumeConfigKeys.has(entry.key))
+  if (unrecognizedKey) {
+    throw new Error(`resume sandbox rejected: unrecognized resume config key '${unrecognizedKey.key}'`)
+  }
   // Exactly one sandbox_mode config entry, and its value is exactly read-only.
   const modes = configEntries.filter((entry) => entry.key === 'sandbox_mode').map((entry) => entry.value)
   if (modes.length !== 1) {
