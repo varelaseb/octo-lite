@@ -237,6 +237,8 @@ test('launch-review-least-privilege admits benign read-only resume and rejects e
     [...RESUME, '-c', 'sandbox_mode="danger-full-access"'],
     // gh#60: -o present must NOT let a privilege flag through - workspace-write still rejected.
     [...RESUME, ...READ_ONLY_C, '-o', '/tmp/x.txt', '-c', 'sandbox_mode="workspace-write"'],
+    // gh#60: -C present must NOT let a privilege flag through either.
+    [...RESUME, ...READ_ONLY_C, '-C', '/root/wt', '-c', 'sandbox_mode="workspace-write"'],
     // gh#60 config-KEY allowlist: an unknown resume config key alongside a valid read-only mode.
     [...RESUME, ...READ_ONLY_C, '-c', 'future_privilege=true'],
     // A sandbox-affecting config key not on the allowlist (disk read-access permission list).
@@ -261,6 +263,9 @@ test('launch-review-least-privilege admits benign read-only resume and rejects e
     [...RESUME, ...READ_ONLY_C, '-o', '/tmp/cr-last-message.txt'],
     [...RESUME, ...READ_ONLY_C, '--output-last-message', '/tmp/cr-last-message.txt'],
     [...RESUME, ...READ_ONLY_C, '--output-last-message=/tmp/cr-last-message.txt'],
+    // gh#60: the benign -C/--cd working-directory flag (the relay pins the review worktree via -C <path>).
+    [...RESUME, ...READ_ONLY_C, '-C', '/root/wt'],
+    [...RESUME, ...READ_ONLY_C, '--cd', '/root/wt'],
     [...RESUME, '-c', 'sandbox_mode="read-only"'],
     [...RESUME, '--config', 'sandbox_mode="read-only"'],
     [...RESUME, '--config=sandbox_mode="read-only"'],
