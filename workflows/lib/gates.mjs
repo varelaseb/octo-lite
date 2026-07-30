@@ -385,6 +385,9 @@ function collectBenignResumeConfig(argv) {
     if (token === '-o' || token === '--output-last-message') { i += 1; continue } // benign host output file (verdict capture; no sandbox privilege)
     if (token.startsWith('--output-last-message=')) continue // attached long output file
     if (token.startsWith('-o') && token.length > 2) continue // attached short output file
+    if (token === '-C' || token === '--cd') { i += 1; continue } // benign working-directory (relay pins review worktree; no sandbox privilege)
+    if (token.startsWith('--cd=')) continue // attached long cd
+    if (token.startsWith('-C') && token.length > 2) continue // attached short cd
     if (token === '-c' || token === '--config') { // separated config value
       if (typeof argv[i + 1] === 'string') configValues.push(argv[i + 1])
       i += 1
