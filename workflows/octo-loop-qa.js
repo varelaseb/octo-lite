@@ -850,11 +850,14 @@ function resolverCommand(role, worktreeAbs) {
   const replyRoute = A.reply_route ?? A.pr_url ?? required(A.pr, 'pr')
   const executionLocation = A.execution_location ?? 'local'
   const reviewDelivery = A.review_delivery ?? A.pr_url ?? required(A.pr, 'pr')
-  // The loop runs inside its provisioned worktree and derives paths from cwd; the resolver is the
-  // worktree-relative role_resolver.py. Every interpolated value is POSIX single-quoted (residual 1).
-  const resolverPath = 'workflows/lib/role_resolver.py'
+  // The resolver + roles.toml live in the CONTROL repo, NOT the (possibly target-repo) worktree the
+  // relay subagent runs from, so both the script path and --root must be absolute control-repo paths
+  // (gh#60 followup: a bare worktree-relative path fails file-not-found -> runtime UNRESOLVED ->
+  // privilege-widening fallback -> classifier block).
+  const controlRoot = '/root/octo-lite'
+  const resolverPath = controlRoot + '/workflows/lib/role_resolver.py'
   const parts = [
-    'python3', resolverPath, 'resolve', role,
+    'python3', resolverPath, '--root', controlRoot, 'resolve', role,
     '--spawn-id', shellQuote(spawnId),
     '--parent', shellQuote(parent),
     '--reply-route', shellQuote(replyRoute),
