@@ -419,9 +419,11 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertIn("CODEX_HOME/sessions", relay)
         self.assertIn("independent-rollout-subagent", relay)
         self.assertIn("claimed_session_id", relay)
-        # Sandbox law: read-only-first bootstrap, resume via -c sandbox_mode config never -s.
+        # Sandbox law: read-only-first bootstrap, resume via -c sandbox_mode config never -s, and the
+        # whole reviewer grant is read-only plus no-network (launch-review-least-privilege): the relay
+        # brief never resumes into workspace-write.
         self.assertIn("read-only", relay)
-        self.assertIn('sandbox_mode="workspace-write"', relay)
+        self.assertNotIn('sandbox_mode="workspace-write"', relay)
         # The composite gate and relay-verbatim verification are both reachable through the
         # parametrized accept function, defaulting to acceptOpenaiReviewRelay for reviewers and
         # acceptShapingReviewRelay for the shaping-review cutover path.

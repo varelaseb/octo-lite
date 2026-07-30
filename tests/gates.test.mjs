@@ -148,8 +148,7 @@ function relay(payload) {
   return {
     claimed_session_id: 's1', payload,
     bootstrap_argv: ['codex', 'exec', '-s', 'read-only'],
-    resume_argv: ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true'],
-    needs_live_reads: true,
+    resume_argv: ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"'],
     worktree_before: { head: 'h', status: '' },
     worktree_after: { head: 'h', status: '' },
   }
@@ -165,14 +164,44 @@ test('verifyRelayVerbatim proves effective identity from the rollout and rejects
   assert.throws(() => verifyRelayVerbatim(RUNTIME, 's1', 'hello', { provider: 'anthropic', model: 'gpt-5.6-sol', effort: 'high', final_message: 'hello' }), /provider substitution/)
 })
 
-test('sandbox-law predicates enforce read-only bootstrap and -c sandbox_mode resume', () => {
+test('sandbox-law predicates enforce read-only bootstrap and a read-only -c sandbox_mode resume', () => {
   assert.deepEqual(assertReadOnlyFirstBootstrap(['codex', 'exec', '-s', 'read-only']), { sandbox_mode: 'read-only' })
   assert.throws(() => assertReadOnlyFirstBootstrap(['codex', 'exec', '-s', 'workspace-write']), /read-only-first/)
-  assert.throws(() => assertResumeSandboxConfig(['codex', 'resume', '-s', 'workspace-write'], { needsLiveReads: true }), /-s flag prohibited/)
+  // Resume admits EXACTLY one read-only -c sandbox_mode config and returns read-only.
   assert.deepEqual(
-    assertResumeSandboxConfig(['codex', 'resume', '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true'], { needsLiveReads: true }),
-    { sandbox_mode: 'workspace-write', needsLiveReads: true },
+    assertResumeSandboxConfig(['codex', 'resume', '-c', 'sandbox_mode="read-only"']),
+    { sandbox_mode: 'read-only' },
   )
+  // A workspace-write resume is rejected.
+  assert.throws(() => assertResumeSandboxConfig(['codex', 'resume', '-c', 'sandbox_mode="workspace-write"']), /read-only/)
+  // A network-access resume config is rejected even alongside read-only.
+  assert.throws(
+    () => assertResumeSandboxConfig(['codex', 'resume', '-c', 'sandbox_mode="read-only"', '-c', 'sandbox_workspace_write.network_access=true']),
+    /network/,
+  )
+  // A top-level -s resume is rejected.
+  assert.throws(() => assertResumeSandboxConfig(['codex', 'resume', '-s', 'read-only']), /-s flag prohibited/)
+})
+
+// launch-review-least-privilege conformance probe (role-runtime launch-review-least-privilege): the
+// whole reviewer grant is read-only plus no-network. Fired across the reviewer resume argv space,
+// read-only is the ONLY admitted resume config; every workspace-write or network-access resume is
+// rejected.
+test('launch-review-least-privilege admits read-only-only and rejects workspace-write or network resumes', () => {
+  assert.deepEqual(
+    assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"']),
+    { sandbox_mode: 'read-only' },
+  )
+  const rejected = [
+    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="workspace-write"'],
+    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true'],
+    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="danger-full-access"'],
+    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '-c', 'sandbox_workspace_write.network_access=true'],
+    ['codex', 'exec', 'resume', 's1', '-s', 'workspace-write'],
+  ]
+  for (const argv of rejected) {
+    assert.throws(() => assertResumeSandboxConfig(argv), /rejected/)
+  }
 })
 
 test('assertReviewWorktreeImmutable rejects a mutated review worktree', () => {
