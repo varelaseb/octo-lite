@@ -375,23 +375,19 @@ function verifyRelayVerbatim(expectedRuntime, claimedSessionId, relayPayload, ro
 
 // Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config,
 // launch-review-least-privilege). A review pass is read-only end to end: read-only plus no-network is
-// the whole grant. Every OpenAI resume selects its sandbox through EXACTLY ONE -c sandbox_mode=read-only
-// config, never a top-level sandbox-selecting or sandbox-bypassing flag (the installed CLI resume
-// subcommand rejects the short -s but still accepts the long --sandbox and the
-// --dangerously-bypass-approvals-and-sandbox switch), and any other mode or any
-// sandbox_workspace_write.network_access config is rejected.
-const RESUME_PRIVILEGE_FLAGS = new Set(['-s', '--sandbox', '--dangerously-bypass-approvals-and-sandbox'])
-
-function topLevelSandboxFlag(argv) {
-  return argv.find((token) => RESUME_PRIVILEGE_FLAGS.has(token))
-}
-
-// Config parsing over the installed CLI's REAL config surface: the codex CLI documents --config as
-// the long alias of -c, and TOML tolerates whitespace around =. Each config flag consumes the FOLLOWING
-// argv token as one config entry, split on the FIRST = with key and value trimmed and any surrounding
-// matched quotes stripped from the value. Parsing here (not a -c-only, attached-value, no-whitespace
-// startsWith match) closes the alias/whitespace bypass so a reintroduced privilege cannot regress unseen.
-const CONFIG_FLAGS = new Set(['-c', '--config'])
+// the whole grant. gh#60 reshape: the resume-sandbox gate is FORM-INDEPENDENT BY CONSTRUCTION. Instead
+// of chasing individual privileged spellings with a position-based rejectlist (which kept failing open
+// on new clap spellings), it NORMALIZES the complete installed codex CLI option surface and then
+// ALLOWS exactly one benign content and REJECTS everything else: the ONLY sandbox/privilege content
+// permitted on a reviewer resume is a single sandbox_mode=read-only config, and ANY other
+// sandbox/workspace/network/danger/top-level-sandbox content in ANY spelling is rejected.
+//
+// Installed codex CLI (clap) surface for the sandbox-relevant options:
+//   - sandbox selection  -s / --sandbox   (values read-only|workspace-write|danger-full-access)
+//   - config             -c / --config    (value is one TOML key=value entry)
+//   - bypass (boolean)   --dangerously-bypass-approvals-and-sandbox
+// A short flag -x takes its value attached (-xVALUE) or as the next token (-x VALUE); a long flag --xx
+// takes its value as --xx=VALUE or as the next token (--xx VALUE); a boolean flag stands alone.
 
 function stripSurroundingQuotes(value) {
   const first = value.charAt(0)
@@ -401,37 +397,72 @@ function stripSurroundingQuotes(value) {
   return value
 }
 
-function configEntries(argv) {
-  const entries = []
-  for (let i = 0; i + 1 < argv.length; i += 1) {
-    if (!CONFIG_FLAGS.has(argv[i]) || typeof argv[i + 1] !== 'string') continue
-    const token = argv[i + 1]
-    const eq = token.indexOf('=')
-    if (eq === -1) continue
-    entries.push({ key: token.slice(0, eq).trim(), value: stripSurroundingQuotes(token.slice(eq + 1).trim()) })
-  }
-  return entries
-}
+const BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox'
 
-function configValues(argv, key) {
-  return configEntries(argv).filter((entry) => entry.key === key).map((entry) => entry.value)
+// Normalize the resume argv over exactly the sandbox-relevant option surface into (a) top-level
+// sandbox selections (each recorded by the canonical flag that introduced it), (b) the boolean bypass
+// presence, and (c) config entries (key=value split on the FIRST =, key and value trimmed, surrounding
+// matched quotes stripped from the value). Every other token (codex, exec, resume, the session id)
+// carries no sandbox content and is ignored. Both attached and separated value forms are handled, so
+// no spelling escapes normalization.
+function normalizeResumeSandboxSurface(argv) {
+  const sandboxSelections = []
+  const configValues = []
+  let bypass = false
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i]
+    if (typeof token !== 'string') continue
+    const base = token.includes('=') ? token.slice(0, token.indexOf('=')) : token
+    if (base === BYPASS_FLAG) { bypass = true; continue }
+    if (token === '-s' || token === '--sandbox') { sandboxSelections.push(token); i += 1; continue }
+    if (token.startsWith('--sandbox=')) { sandboxSelections.push('--sandbox'); continue }
+    if (token.startsWith('-s') && token.length > 2) { sandboxSelections.push('-s'); continue }
+    if (token === '-c' || token === '--config') {
+      if (typeof argv[i + 1] === 'string') configValues.push(argv[i + 1])
+      i += 1
+      continue
+    }
+    if (token.startsWith('--config=')) { configValues.push(token.slice('--config='.length)); continue }
+    if (token.startsWith('-c') && token.length > 2) { configValues.push(token.slice(2)); continue }
+  }
+  const configEntries = configValues.map((raw) => {
+    const eq = raw.indexOf('=')
+    if (eq === -1) return { key: raw.trim(), value: '' }
+    return { key: raw.slice(0, eq).trim(), value: stripSurroundingQuotes(raw.slice(eq + 1).trim()) }
+  })
+  return { sandboxSelections, bypass, configEntries }
 }
 
 function assertResumeSandboxConfig(resumeArgv) {
   requiredNonEmptyArray(resumeArgv, 'resume argv')
-  const privilegeFlag = topLevelSandboxFlag(resumeArgv)
-  if (privilegeFlag) {
-    throw new Error(`resume sandbox rejected: top-level ${privilegeFlag} flag prohibited on resume, use -c sandbox_mode config`)
+  const { sandboxSelections, bypass, configEntries } = normalizeResumeSandboxSurface(resumeArgv)
+  // No top-level sandbox selection at all: resume selects sandbox only via -c/--config config.
+  if (sandboxSelections.length > 0) {
+    throw new Error(`resume sandbox rejected: top-level ${sandboxSelections[0]} flag prohibited on resume, use -c sandbox_mode config`)
   }
-  const modes = configValues(resumeArgv, 'sandbox_mode')
+  // No sandbox-bypass flag in any spelling.
+  if (bypass) {
+    throw new Error(`resume sandbox rejected: ${BYPASS_FLAG} prohibited on resume`)
+  }
+  // Zero *network_access* entries.
+  if (configEntries.some((entry) => entry.key.includes('network_access'))) {
+    throw new Error('resume sandbox rejected: read-only resume grants no network_access')
+  }
+  // Zero sandbox_workspace_write.* entries.
+  if (configEntries.some((entry) => entry.key.startsWith('sandbox_workspace_write.'))) {
+    throw new Error('resume sandbox rejected: read-only resume grants no sandbox_workspace_write config')
+  }
+  // No config entry whose value is workspace-write or danger-full-access, in any spelling.
+  if (configEntries.some((entry) => entry.value === 'workspace-write' || entry.value === 'danger-full-access')) {
+    throw new Error('resume sandbox rejected: reviewer resume must stay sandbox_mode=read-only')
+  }
+  // Exactly one sandbox_mode config entry, and its value is exactly read-only.
+  const modes = configEntries.filter((entry) => entry.key === 'sandbox_mode').map((entry) => entry.value)
   if (modes.length !== 1) {
     throw new Error('resume sandbox rejected: exactly one -c sandbox_mode config required')
   }
   if (modes[0] !== 'read-only') {
     throw new Error('resume sandbox rejected: reviewer resume must stay sandbox_mode=read-only')
-  }
-  if (configValues(resumeArgv, 'sandbox_workspace_write.network_access').length > 0) {
-    throw new Error('resume sandbox rejected: read-only resume grants no network_access')
   }
   return { sandbox_mode: 'read-only' }
 }
