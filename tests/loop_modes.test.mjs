@@ -178,13 +178,15 @@ function downstreamEntry(mode, inputs = {}) {
 // The derivation agent's response for a downstream pass: the same derived envelope, at the advanced
 // head, with the LIVE Linear state In Progress (a downstream mode runs after the Shaped -> Todo entry
 // fire). The universal checks (worktree-head agreement, one-orchestrator binding, canonical-source
-// presence, containment) still run; the four-way head + Shaped/Todo entry-state gate is implement-only.
+// presence, containment) still run; three-way within-fire head agreement, shaping ancestor-descent,
+// and the Shaped/Todo entry-state gate are implement-only.
 function derivedInProgress(overrides = {}) {
   return derivedDeliveryEntry({
     linear_state: 'In Progress',
     worktree_head: NEWHEAD,
     pr_head: NEWHEAD,
     shaping_verdict_head: NEWHEAD,
+    shaping_head_descends: true,
     ...overrides,
   })
 }
@@ -209,6 +211,7 @@ function derivedDeliveryEntry(overrides = {}) {
     branch_issue: ISSUE,
     shaping_verdict: 'clear',
     shaping_verdict_head: HEAD,
+    shaping_head_descends: true,
     shaping_reviewer_receipt: 'rcpt-1',
     spec_blobs: SPEC_BLOBS,
     adr_blobs: [],

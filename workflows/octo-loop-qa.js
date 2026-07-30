@@ -634,7 +634,8 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     'worktree', 'worktree_root', 'worktree_head',
     'worktree_common_dir', 'worktree_root_common_dir',
     'lane', 'lane_issue', 'branch', 'branch_issue',
-    'shaping_verdict', 'shaping_verdict_head', 'shaping_reviewer_receipt',
+    'shaping_verdict', 'shaping_verdict_head', 'shaping_head_descends',
+    'shaping_reviewer_receipt',
     'spec_blobs', 'adr_blobs', 'contract_hash', 'brief',
     'stream', 'caller', 'parent',
   ],
@@ -657,6 +658,7 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     branch_issue: { type: 'string' },
     shaping_verdict: { type: 'string' },
     shaping_verdict_head: { type: 'string' },
+    shaping_head_descends: { type: 'boolean' },
     shaping_reviewer_receipt: { type: 'string' },
     spec_blobs: { type: 'array', items: { type: 'string' } },
     adr_blobs: { type: 'array', items: { type: 'string' } },
@@ -1055,8 +1057,9 @@ const MODE_INPUT_KEYS = new Set([
 // qa-review / acceptance) runs with the same host-verified envelope the implement entry binds, not an
 // unset one. Derivation is verification: the UNIVERSAL inconsistencies (worktree-head disagreement,
 // foreign-issue binding, missing canonical source, containment escape) stop every mode here; the
-// four-way head agreement and the Shaped/Todo entry-state gate are IMPLEMENT-entry only, because a
-// downstream mode derives at its own advanced head. The verified facts become the output receipt.
+// three-way within-fire head agreement, shaping ancestor-descent, and the Shaped/Todo entry-state
+// gate are IMPLEMENT-entry only, because a downstream mode derives at its own advanced head. The
+// verified facts become the output receipt.
 async function deriveDeliveryEntry(mode) {
   const issue = requiredNonEmptyString(A.issue, 'declared issue')
   requiredPrNumber(A.pr, 'declared PR')
@@ -1081,7 +1084,9 @@ async function deriveDeliveryEntry(mode) {
     'From the forge, return pr_head, pr_base, and pr_issue for the declared PR in that derived repo.',
     'From Linear, return linear_issue, linear_state, and its canonical fingerprint.',
     'From the pinned shaping-review journal, return shaping_verdict, shaping_verdict_head, and',
-    'shaping_reviewer_receipt. From live reads at the derived head, return spec_blobs, adr_blobs,',
+    'shaping_reviewer_receipt. Compute shaping_head_descends with `git merge-base --is-ancestor',
+    '<shaping_verdict_head> <head>`: exit 0 means true, inclusive of equal; otherwise false.',
+    'From live reads at the derived head, return spec_blobs, adr_blobs,',
     'the resolved implementer contract_hash, and a brief grounded in the issue and signed sources.',
     'From the host-owned stream registry, find the orchestrator stream whose stream.toml records this',
     'exact issue and child_role orchestrator, and return stream as its absolute directory, caller as',
@@ -1121,18 +1126,21 @@ async function deriveDeliveryEntry(mode) {
   requiredNonEmptyArray(derived.spec_blobs, 'derived spec blobs')
   if (!Array.isArray(derived.adr_blobs)) throw new Error('derived ADR blobs required')
 
-  // IMPLEMENT-ENTRY ONLY (delivery-entry-gate-scope): the four-way head agreement plus the clear
-  // shaping verdict and the Shaped/Todo entry-state gate guard the ONE mechanical Shaped -> Todo entry.
-  // A downstream mode derives at its own advanced head and past the entry, so these do not apply.
+  // IMPLEMENT-ENTRY ONLY (delivery-entry-gate-scope): strict three-way within-fire head agreement,
+  // shaping ancestor-descent, the clear shaping verdict, and the Shaped/Todo entry-state gate guard
+  // the ONE mechanical Shaped -> Todo entry. A downstream mode derives at its own advanced head and
+  // past the entry, so these do not apply.
   const implementEntry = mode === 'implement'
   if (implementEntry) {
-    for (const [label, actual] of [
-      ['PR head', derived.pr_head],
-      ['shaping-verdict head', derived.shaping_verdict_head],
-    ]) {
-      if (requiredNonEmptyString(actual, `derived ${label}`) !== head) {
-        throw new Error(`delivery entry head inconsistency: declared head ${head} disagrees with ${label} ${actual}`)
-      }
+    if (requiredNonEmptyString(derived.pr_head, 'derived PR head') !== head) {
+      throw new Error(`delivery entry head inconsistency: declared head ${head} disagrees with PR head ${derived.pr_head}`)
+    }
+    requiredNonEmptyString(derived.shaping_verdict_head, 'derived shaping-verdict head')
+    if (!derived.shaping_head_descends) {
+      throw new Error(
+        'delivery entry rejected: declared head ' + head +
+        ' does not descend from shaping-verdict head ' + derived.shaping_verdict_head,
+      )
     }
     if (derived.shaping_verdict !== 'clear') {
       throw new Error('delivery entry rejected: derived shaping verdict is not clear')
