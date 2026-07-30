@@ -421,6 +421,7 @@ function collectBenignResumeConfig(argv) {
     if (token === '-C' || token === '--cd') { i += 1; continue } // benign working-directory (relay pins review worktree; no sandbox privilege)
     if (token.startsWith('--cd=')) continue // attached long cd
     if (token.startsWith('-C') && token.length > 2) continue // attached short cd
+    if (token === '--skip-git-repo-check') continue // benign git-boundary skip (no sandbox privilege)
     if (token === '-c' || token === '--config') { // separated config value
       if (typeof argv[i + 1] === 'string') configValues.push(argv[i + 1])
       i += 1
@@ -456,7 +457,7 @@ function assertResumeSandboxConfig(resumeArgv) {
   // keys - sandbox_mode, model_reasoning_effort, model_service_tier (service_tier legacy-name kept for
   // safety). Any other key (future_privilege, sandbox_permissions
   // disk-access, ...) is rejected by absence - form-independent, no bad-key enumeration.
-  const allowedResumeConfigKeys = new Set(['sandbox_mode', 'model_reasoning_effort', 'model_service_tier', 'service_tier'])
+  const allowedResumeConfigKeys = new Set(['sandbox_mode', 'model_reasoning_effort', 'model_service_tier', 'model_provider', 'service_tier'])
   const unrecognizedKey = configEntries.find((entry) => !allowedResumeConfigKeys.has(entry.key))
   if (unrecognizedKey) {
     throw new Error(`resume sandbox rejected: unrecognized resume config key '${unrecognizedKey.key}'`)
