@@ -373,9 +373,12 @@ function verifyRelayVerbatim(expectedRuntime, claimedSessionId, relayPayload, ro
   return { provider, model: record.model, effort: record.effort, final_message: finalMessage }
 }
 
-// Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config).
-// Every OpenAI resume selects its sandbox through -c sandbox_mode=... config, never the top-level -s
-// flag, because the installed CLI resume subcommand rejects -s while the exec bootstrap still accepts it.
+// Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config,
+// launch-review-least-privilege). A review pass is read-only end to end: read-only plus no-network is
+// the whole grant. Every OpenAI resume selects its sandbox through EXACTLY ONE -c sandbox_mode=read-only
+// config, never the top-level -s flag (the installed CLI resume subcommand rejects -s while the exec
+// bootstrap still accepts it), and any other mode or any sandbox_workspace_write.network_access config
+// is rejected.
 function hasTopLevelSandboxFlag(argv) {
   return argv.some((token, index) => token === '-s' && index + 1 < argv.length)
 }
@@ -390,7 +393,7 @@ function configValues(argv, key) {
   return values
 }
 
-function assertResumeSandboxConfig(resumeArgv, { needsLiveReads = false } = {}) {
+function assertResumeSandboxConfig(resumeArgv) {
   requiredNonEmptyArray(resumeArgv, 'resume argv')
   if (hasTopLevelSandboxFlag(resumeArgv)) {
     throw new Error('resume sandbox rejected: top-level -s flag prohibited on resume, use -c sandbox_mode config')
@@ -400,18 +403,13 @@ function assertResumeSandboxConfig(resumeArgv, { needsLiveReads = false } = {}) 
     throw new Error('resume sandbox rejected: exactly one -c sandbox_mode config required')
   }
   const mode = modes[0].replace(/^"|"$/g, '')
-  if (needsLiveReads) {
-    if (mode !== 'workspace-write') {
-      throw new Error('resume sandbox rejected: live-read resume requires sandbox_mode=workspace-write')
-    }
-    const network = configValues(resumeArgv, 'sandbox_workspace_write.network_access')
-    if (network.length !== 1 || network[0] !== 'true') {
-      throw new Error('resume sandbox rejected: workspace-write resume requires network_access=true')
-    }
-  } else if (mode !== 'read-only') {
-    throw new Error('resume sandbox rejected: non-live-read resume must stay sandbox_mode=read-only')
+  if (mode !== 'read-only') {
+    throw new Error('resume sandbox rejected: reviewer resume must stay sandbox_mode=read-only')
   }
-  return { sandbox_mode: mode, needsLiveReads }
+  if (configValues(resumeArgv, 'sandbox_workspace_write.network_access').length > 0) {
+    throw new Error('resume sandbox rejected: read-only resume grants no network_access')
+  }
+  return { sandbox_mode: 'read-only' }
 }
 
 // A review-pass bootstrap must be read-only-first: the exec bootstrap selects the read-only sandbox
@@ -487,7 +485,7 @@ function acceptRelayVerdict(admittedRoles, roleError, role, resolvedRuntime, rel
     throw new Error('relay verbatim rejected: rollout record not from the independent read-only subagent')
   }
   assertReadOnlyFirstBootstrap(relay.bootstrap_argv)
-  assertResumeSandboxConfig(relay.resume_argv, { needsLiveReads: relay.needs_live_reads === true })
+  assertResumeSandboxConfig(relay.resume_argv)
   assertReviewWorktreeImmutable(relay.worktree_before, relay.worktree_after)
   const verified = verifyRelayVerbatim(resolvedRuntime, claimedSessionId, relay.payload, rollout.data)
   return { verdict_payload: verified.final_message, session_id: claimedSessionId, runtime: verified }
@@ -725,14 +723,13 @@ const RELAY_SCHEMA = {
   type: 'object',
   required: [
     'claimed_session_id', 'payload', 'bootstrap_argv', 'resume_argv',
-    'needs_live_reads', 'worktree_before', 'worktree_after',
+    'worktree_before', 'worktree_after',
   ],
   properties: {
     claimed_session_id: { type: 'string' },
     payload: { type: 'string' },
     bootstrap_argv: { type: 'array', items: { type: 'string' } },
     resume_argv: { type: 'array', items: { type: 'string' } },
-    needs_live_reads: { type: 'boolean' },
     worktree_before: WORKTREE_SNAPSHOT_SCHEMA,
     worktree_after: WORKTREE_SNAPSHOT_SCHEMA,
   },
@@ -955,8 +952,9 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
     'Do NOT run a single blocking timeout-bound codex exec: launch it detached via `nohup codex exec ... &` to a log file, then POLL to completion until the codex final assistant message exists.',
     'On ANY cut BEFORE the codex final assistant message exists, RESUME THE SAME session in the background via `codex exec resume <claimed_session_id>` (detached, run-to-completion). The claimed_session_id is STABLE across resumes.',
     'NEVER restart the pass from scratch and NEVER spawn a NEW session on a cut: a restart loses progress and creates provenance ambiguity.',
-    'Bootstrap read-only first (-s read-only); if the pass needs live GitHub or Linear reads, resume with the sandbox selected ONLY through -c sandbox_mode="workspace-write" plus -c sandbox_workspace_write.network_access=true; NEVER use the top-level -s flag on resume.',
-    'Return the codex final assistant message VERBATIM as payload (never summarize or edit it), the claimed_session_id, bootstrap_argv, resume_argv, needs_live_reads, worktree_before, and worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',
+    'The review pass is READ-ONLY end to end. Bootstrap read-only first (-s read-only) and, on any resume, select the STILL-read-only sandbox ONLY through -c sandbox_mode="read-only"; NEVER resume into workspace-write, NEVER grant network_access, and NEVER use the top-level -s flag on resume.',
+    'This LANE supplies every live GitHub and Linear fact the reviewer needs as bound inputs above, and this LANE (never the relay) posts any verdict; the relay only runs the read-only codex pass.',
+    'Return the codex final assistant message VERBATIM as payload (never summarize or edit it), the claimed_session_id, bootstrap_argv, resume_argv, worktree_before, and worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',
   ].join('\n\n')
   const relay = await agent(relayPrompt, {
     label: `${role}-relay:${bound.issue}`, phase: phaseTitle, schema: RELAY_SCHEMA,

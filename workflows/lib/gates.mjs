@@ -340,9 +340,12 @@ export function verifyRelayVerbatim(expectedRuntime, claimedSessionId, relayPayl
   return { provider, model: record.model, effort: record.effort, final_message: finalMessage }
 }
 
-// Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config).
-// Every OpenAI resume selects its sandbox through -c sandbox_mode=... config, never the top-level -s
-// flag, because the installed CLI resume subcommand rejects -s while the exec bootstrap still accepts it.
+// Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config,
+// launch-review-least-privilege). A review pass is read-only end to end: read-only plus no-network is
+// the whole grant. Every OpenAI resume selects its sandbox through EXACTLY ONE -c sandbox_mode=read-only
+// config, never the top-level -s flag (the installed CLI resume subcommand rejects -s while the exec
+// bootstrap still accepts it), and any other mode or any sandbox_workspace_write.network_access config
+// is rejected.
 function hasTopLevelSandboxFlag(argv) {
   return argv.some((token, index) => token === '-s' && index + 1 < argv.length)
 }
@@ -357,7 +360,7 @@ function configValues(argv, key) {
   return values
 }
 
-export function assertResumeSandboxConfig(resumeArgv, { needsLiveReads = false } = {}) {
+export function assertResumeSandboxConfig(resumeArgv) {
   requiredNonEmptyArray(resumeArgv, 'resume argv')
   if (hasTopLevelSandboxFlag(resumeArgv)) {
     throw new Error('resume sandbox rejected: top-level -s flag prohibited on resume, use -c sandbox_mode config')
@@ -367,18 +370,13 @@ export function assertResumeSandboxConfig(resumeArgv, { needsLiveReads = false }
     throw new Error('resume sandbox rejected: exactly one -c sandbox_mode config required')
   }
   const mode = modes[0].replace(/^"|"$/g, '')
-  if (needsLiveReads) {
-    if (mode !== 'workspace-write') {
-      throw new Error('resume sandbox rejected: live-read resume requires sandbox_mode=workspace-write')
-    }
-    const network = configValues(resumeArgv, 'sandbox_workspace_write.network_access')
-    if (network.length !== 1 || network[0] !== 'true') {
-      throw new Error('resume sandbox rejected: workspace-write resume requires network_access=true')
-    }
-  } else if (mode !== 'read-only') {
-    throw new Error('resume sandbox rejected: non-live-read resume must stay sandbox_mode=read-only')
+  if (mode !== 'read-only') {
+    throw new Error('resume sandbox rejected: reviewer resume must stay sandbox_mode=read-only')
   }
-  return { sandbox_mode: mode, needsLiveReads }
+  if (configValues(resumeArgv, 'sandbox_workspace_write.network_access').length > 0) {
+    throw new Error('resume sandbox rejected: read-only resume grants no network_access')
+  }
+  return { sandbox_mode: 'read-only' }
 }
 
 // A review-pass bootstrap must be read-only-first: the exec bootstrap selects the read-only sandbox
@@ -454,7 +452,7 @@ function acceptRelayVerdict(admittedRoles, roleError, role, resolvedRuntime, rel
     throw new Error('relay verbatim rejected: rollout record not from the independent read-only subagent')
   }
   assertReadOnlyFirstBootstrap(relay.bootstrap_argv)
-  assertResumeSandboxConfig(relay.resume_argv, { needsLiveReads: relay.needs_live_reads === true })
+  assertResumeSandboxConfig(relay.resume_argv)
   assertReviewWorktreeImmutable(relay.worktree_before, relay.worktree_after)
   const verified = verifyRelayVerbatim(resolvedRuntime, claimedSessionId, relay.payload, rollout.data)
   return { verdict_payload: verified.final_message, session_id: claimedSessionId, runtime: verified }
