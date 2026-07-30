@@ -198,6 +198,12 @@ test('launch-review-least-privilege admits read-only-only and rejects workspace-
     ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="danger-full-access"'],
     ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '-c', 'sandbox_workspace_write.network_access=true'],
     ['codex', 'exec', 'resume', 's1', '-s', 'workspace-write'],
+    // The installed codex CLI also accepts the long sandbox selector and the bypass
+    // switch; a resume that carries a valid read-only -c sandbox_mode config PLUS one
+    // of these must still be rejected, or the reintroduced privilege regresses unseen.
+    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '--sandbox', 'workspace-write'],
+    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '--dangerously-bypass-approvals-and-sandbox'],
+    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '-s', 'workspace-write'],
   ]
   for (const argv of rejected) {
     assert.throws(() => assertResumeSandboxConfig(argv), /rejected/)

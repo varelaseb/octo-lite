@@ -1586,5 +1586,34 @@ class RelayVerbatimTests(unittest.TestCase):
                 )
 
 
+class OpenaiReviewerResumeReadOnlyTests(unittest.TestCase):
+    """launch-review-sandbox-integrity, launch-review-least-privilege: every octo-lite
+    OpenAI role is a reviewer, so the openai resume argv is read-only END TO END with no
+    workspace-write and no network_access, even when the role's tools include a live
+    linear-read or github-read. The old needs_live_reads branch built a workspace-write
+    plus network resume for exactly those live-read reviewers, violating the grant."""
+
+    def _openai_receipt(self, tools: list[str]) -> dict:
+        return {
+            "spawn_id": str(uuid.uuid4()),
+            "runtime": {
+                "provider": "openai",
+                "model": "gpt-5.6-sol",
+                "effort": "high",
+                "service_tier": "default",
+                "tools": tools,
+            },
+            "workspace": {"worktree": "/root/review-wt"},
+        }
+
+    def test_openai_reviewer_resume_is_read_only_with_no_workspace_write_or_network(self) -> None:
+        for tools in (["linear-read", "github-read"], ["github-read"], ["linear-read"], []):
+            _, mutation = launch_module._provider_argv(self._openai_receipt(tools))
+            argv = " ".join(mutation)
+            self.assertIn('sandbox_mode="read-only"', argv)
+            self.assertNotIn('sandbox_mode="workspace-write"', argv)
+            self.assertNotIn("network_access", argv)
+
+
 if __name__ == "__main__":
     unittest.main()

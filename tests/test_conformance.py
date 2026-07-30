@@ -441,6 +441,19 @@ class CutoverConformanceTests(unittest.TestCase):
         # The loop must not resume with a top-level -s flag anywhere in the relay brief.
         self.assertNotIn("-s workspace-write", relay)
 
+    def test_no_needs_live_reads_regression_in_relay_or_openai_resume(self) -> None:
+        # gh#60 launch-review-least-privilege regression guard: needs_live_reads granted a
+        # live-read reviewer resume workspace-write PLUS network access, violating
+        # read-only end to end. It is removed and stays removed - from the loop's
+        # RELAY_SCHEMA and relay prompt AND from the live launch.py openai resume path,
+        # which is unconditionally read-only.
+        loop = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        self.assertNotIn("needs_live_reads", loop)
+        launch = (ROOT / "octo_lite/launch.py").read_text()
+        self.assertNotIn("needs_live_reads", launch)
+        self.assertNotIn('sandbox_mode="workspace-write"', launch)
+        self.assertNotIn("sandbox_workspace_write.network_access", launch)
+
     def test_workflow_loop_passes_only_real_agent_opts_at_every_call_site(self) -> None:
         # TUR-447 F1 Unit B correction: the real Workflow agent() API accepts ONLY the
         # opt keys {label, phase, schema, model, effort, isolation, agentType}. An invented
