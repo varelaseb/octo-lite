@@ -367,7 +367,9 @@ function verifyRelayVerbatim(expectedRuntime, claimedSessionId, relayPayload, ro
   if (typeof finalMessage !== 'string' || finalMessage === '') {
     throw new Error(`relay verbatim rejected: no final assistant message in rollout record for ${claimedSessionId}`)
   }
-  if (relayPayload !== finalMessage) {
+  // Byte-exact on verdict CONTENT; leading/trailing whitespace normalized (a relay transcription may
+  // add a trailing newline non-deterministically - a genuine clear must not die on one whitespace byte).
+  if (String(relayPayload).trim() !== String(finalMessage).trim()) {
     throw new Error('relay verbatim rejected: payload mismatch with rollout record')
   }
   return { provider, model: record.model, effort: record.effort, final_message: finalMessage }
