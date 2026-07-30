@@ -210,6 +210,36 @@ test('launch-review-least-privilege admits read-only-only and rejects workspace-
   }
 })
 
+// gh#60 config-parser hardening (role-runtime launch-review-least-privilege): the resume-sandbox
+// gate must parse config through the installed CLI's REAL config surface, or a reintroduced write or
+// network privilege regresses unseen. The installed codex CLI documents --config as the long alias of
+// -c, and TOML tolerates whitespace around =. Each of these smuggles a privileged sandbox past the old
+// -c-only, attached-value, no-whitespace parser and MUST be rejected; the alias read-only form MUST be
+// admitted at parity with -c.
+test('gh#60 resume config parsing rejects alias/whitespace privilege smuggling and admits alias read-only', () => {
+  // (a) The --config alias smuggles a second, privileged sandbox_mode past the -c-only parser.
+  assert.throws(
+    () => assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '--config', 'sandbox_mode="workspace-write"']),
+    /rejected/,
+  )
+  // (b) The --config alias smuggles network access alongside a read-only sandbox_mode.
+  assert.throws(
+    () => assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '--config', 'sandbox_workspace_write.network_access=true']),
+    /network/,
+  )
+  // (c) Whitespace around = evaded the old startsWith match; the workspace-write mode must be
+  // recognized as a REAL sandbox_mode (rejected because not read-only), never treated as absent.
+  assert.throws(
+    () => assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode = "workspace-write"']),
+    /reviewer resume must stay sandbox_mode=read-only/,
+  )
+  // Positive parity: the --config alias read-only form is admitted exactly like -c.
+  assert.deepEqual(
+    assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '--config', 'sandbox_mode="read-only"']),
+    { sandbox_mode: 'read-only' },
+  )
+})
+
 test('assertReviewWorktreeImmutable rejects a mutated review worktree', () => {
   assert.deepEqual(assertReviewWorktreeImmutable({ head: 'h', status: '' }, { head: 'h', status: '' }), { head: 'h', status: '' })
   assert.throws(() => assertReviewWorktreeImmutable({ head: 'h', status: '' }, { head: 'other', status: '' }), /HEAD changed/)
