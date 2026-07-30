@@ -252,7 +252,7 @@ test('launch-review-least-privilege admits benign read-only resume and rejects e
   // session id, and a bare - stdin positional).
   const CANONICAL_RELAY_RESUME = [
     'codex', 'exec', 'resume', '--json', '-m', 'gpt-5.6-sol',
-    '-c', 'model_reasoning_effort="high"', '-c', 'service_tier="default"',
+    '-c', 'model_reasoning_effort="high"', '-c', 'model_service_tier="default"',
     '-c', 'sandbox_mode="read-only"', 's1', '-',
   ]
   // ADMIT parity: every read-only spelling the installed CLI accepts (short/long, attached/separated).
