@@ -415,6 +415,9 @@ function collectBenignResumeConfig(argv) {
     if (token === '-m' || token === '--model') { i += 1; continue } // separated model value
     if (token.startsWith('--model=')) continue // attached long model value
     if (token.startsWith('-m') && token.length > 2) continue // attached short model value
+    if (token === '-o' || token === '--output-last-message') { i += 1; continue } // benign host output file (verdict capture; no sandbox privilege)
+    if (token.startsWith('--output-last-message=')) continue // attached long output file
+    if (token.startsWith('-o') && token.length > 2) continue // attached short output file
     if (token === '-c' || token === '--config') { // separated config value
       if (typeof argv[i + 1] === 'string') configValues.push(argv[i + 1])
       i += 1
