@@ -184,60 +184,70 @@ test('sandbox-law predicates enforce read-only bootstrap and a read-only -c sand
 })
 
 // launch-review-least-privilege conformance probe (role-runtime launch-review-least-privilege): the
-// whole reviewer grant is read-only plus no-network. Fired across the reviewer resume argv space,
-// read-only is the ONLY admitted resume config; every workspace-write or network-access resume is
-// rejected.
-test('launch-review-least-privilege admits read-only-only and rejects workspace-write or network resumes', () => {
-  assert.deepEqual(
-    assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"']),
-    { sandbox_mode: 'read-only' },
-  )
+// whole reviewer grant is read-only plus no-network. gh#60 reshape: the resume-sandbox gate is
+// FORM-INDEPENDENT BY CONSTRUCTION. It normalizes the complete installed codex CLI option surface
+// (short and long, attached and separated, aliased, quoted, and whitespace forms) and admits a
+// reviewer resume ONLY when its sole sandbox/privilege content is exactly one read-only sandbox_mode
+// config, rejecting every workspace-write, network-access, sandbox-bypass, or top-level sandbox token
+// in ANY spelling. This probe iterates the full reject/admit table across every installed-CLI spelling
+// so a reintroduced write or network privilege in a new spelling cannot regress unseen.
+const RESUME = ['codex', 'exec', 'resume', 's1']
+const READ_ONLY_C = ['-c', 'sandbox_mode="read-only"']
+test('launch-review-least-privilege admits read-only-only and rejects every privileged resume spelling', () => {
+  // REJECT: each privileged form, most carrying a legitimate read-only -c alongside it so the probe
+  // proves the reintroduced privilege is caught even when a valid read-only config is also present.
   const rejected = [
-    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="workspace-write"'],
-    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true'],
-    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="danger-full-access"'],
-    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '-c', 'sandbox_workspace_write.network_access=true'],
-    ['codex', 'exec', 'resume', 's1', '-s', 'workspace-write'],
-    // The installed codex CLI also accepts the long sandbox selector and the bypass
-    // switch; a resume that carries a valid read-only -c sandbox_mode config PLUS one
-    // of these must still be rejected, or the reintroduced privilege regresses unseen.
-    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '--sandbox', 'workspace-write'],
-    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '--dangerously-bypass-approvals-and-sandbox'],
-    ['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '-s', 'workspace-write'],
+    // Attached long --config= smuggles a second, privileged sandbox_mode.
+    [...RESUME, ...READ_ONLY_C, '--config=sandbox_mode="workspace-write"'],
+    // Attached long --config= smuggles network access.
+    [...RESUME, ...READ_ONLY_C, '--config=sandbox_workspace_write.network_access=true'],
+    // Attached long sandbox selector.
+    [...RESUME, ...READ_ONLY_C, '--sandbox=workspace-write'],
+    // Separated long sandbox selector.
+    [...RESUME, ...READ_ONLY_C, '--sandbox', 'workspace-write'],
+    // Attached short -c config.
+    [...RESUME, ...READ_ONLY_C, '-csandbox_mode="workspace-write"'],
+    // Separated short -c config.
+    [...RESUME, '-c', 'sandbox_mode="workspace-write"'],
+    // Attached short sandbox selector.
+    [...RESUME, ...READ_ONLY_C, '-sworkspace-write'],
+    // Separated short sandbox selector.
+    [...RESUME, ...READ_ONLY_C, '-s', 'workspace-write'],
+    // Boolean bypass switch.
+    [...RESUME, ...READ_ONLY_C, '--dangerously-bypass-approvals-and-sandbox'],
+    // Repeated -c: a read-only then a workspace-write.
+    [...RESUME, '-c', 'sandbox_mode="read-only"', '-c', 'sandbox_mode="workspace-write"'],
+    // Whitespace TOML form around =.
+    [...RESUME, '-c', 'sandbox_mode = "workspace-write"'],
+    // Separated long --config network access.
+    [...RESUME, ...READ_ONLY_C, '--config', 'sandbox_workspace_write.network_access=true'],
+    // Danger-full-access value.
+    [...RESUME, '-c', 'sandbox_mode="danger-full-access"'],
   ]
   for (const argv of rejected) {
-    assert.throws(() => assertResumeSandboxConfig(argv), /rejected/)
+    assert.throws(() => assertResumeSandboxConfig(argv), /rejected/, `must reject: ${JSON.stringify(argv)}`)
   }
-})
-
-// gh#60 config-parser hardening (role-runtime launch-review-least-privilege): the resume-sandbox
-// gate must parse config through the installed CLI's REAL config surface, or a reintroduced write or
-// network privilege regresses unseen. The installed codex CLI documents --config as the long alias of
-// -c, and TOML tolerates whitespace around =. Each of these smuggles a privileged sandbox past the old
-// -c-only, attached-value, no-whitespace parser and MUST be rejected; the alias read-only form MUST be
-// admitted at parity with -c.
-test('gh#60 resume config parsing rejects alias/whitespace privilege smuggling and admits alias read-only', () => {
-  // (a) The --config alias smuggles a second, privileged sandbox_mode past the -c-only parser.
+  // ADMIT parity: every read-only spelling the installed CLI accepts (short/long, attached/separated).
+  const admitted = [
+    [...RESUME, '-c', 'sandbox_mode="read-only"'],
+    [...RESUME, '--config', 'sandbox_mode="read-only"'],
+    [...RESUME, '--config=sandbox_mode="read-only"'],
+    [...RESUME, '-csandbox_mode="read-only"'],
+  ]
+  for (const argv of admitted) {
+    assert.deepEqual(assertResumeSandboxConfig(argv), { sandbox_mode: 'read-only' }, `must admit: ${JSON.stringify(argv)}`)
+  }
+  // The network-access and whitespace-mode forms carry their specific messages.
   assert.throws(
-    () => assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '--config', 'sandbox_mode="workspace-write"']),
-    /rejected/,
-  )
-  // (b) The --config alias smuggles network access alongside a read-only sandbox_mode.
-  assert.throws(
-    () => assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode="read-only"', '--config', 'sandbox_workspace_write.network_access=true']),
+    () => assertResumeSandboxConfig([...RESUME, ...READ_ONLY_C, '--config', 'sandbox_workspace_write.network_access=true']),
     /network/,
   )
-  // (c) Whitespace around = evaded the old startsWith match; the workspace-write mode must be
-  // recognized as a REAL sandbox_mode (rejected because not read-only), never treated as absent.
   assert.throws(
-    () => assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '-c', 'sandbox_mode = "workspace-write"']),
+    () => assertResumeSandboxConfig([...RESUME, '-c', 'sandbox_mode = "workspace-write"']),
     /reviewer resume must stay sandbox_mode=read-only/,
   )
-  // Positive parity: the --config alias read-only form is admitted exactly like -c.
-  assert.deepEqual(
-    assertResumeSandboxConfig(['codex', 'exec', 'resume', 's1', '--config', 'sandbox_mode="read-only"']),
-    { sandbox_mode: 'read-only' },
-  )
+  // The top-level short -s form keeps its named message.
+  assert.throws(() => assertResumeSandboxConfig([...RESUME, '-s', 'read-only']), /-s flag prohibited/)
 })
 
 test('assertReviewWorktreeImmutable rejects a mutated review worktree', () => {
