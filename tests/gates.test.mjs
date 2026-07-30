@@ -160,6 +160,10 @@ function rollout(payload) {
 test('verifyRelayVerbatim proves effective identity from the rollout and rejects a payload edit', () => {
   const verified = verifyRelayVerbatim(RUNTIME, 's1', 'hello', { provider: 'openai', model: 'gpt-5.6-sol', effort: 'high', final_message: 'hello' })
   assert.equal(verified.final_message, 'hello')
+  // Trailing/leading whitespace (relay transcription adds a trailing newline non-deterministically) is
+  // normalized: content-identical payloads admit; only the verdict CONTENT must match, not surrounding ws.
+  assert.equal(verifyRelayVerbatim(RUNTIME, 's1', 'hello\n', { provider: 'openai', model: 'gpt-5.6-sol', effort: 'high', final_message: 'hello' }).final_message, 'hello')
+  assert.equal(verifyRelayVerbatim(RUNTIME, 's1', 'hello', { provider: 'openai', model: 'gpt-5.6-sol', effort: 'high', final_message: '  hello  ' }).final_message, '  hello  ')
   assert.throws(() => verifyRelayVerbatim(RUNTIME, 's1', 'edited', { provider: 'openai', model: 'gpt-5.6-sol', effort: 'high', final_message: 'hello' }), /payload mismatch/)
   assert.throws(() => verifyRelayVerbatim(RUNTIME, 's1', 'hello', { provider: 'anthropic', model: 'gpt-5.6-sol', effort: 'high', final_message: 'hello' }), /provider substitution/)
 })
