@@ -179,29 +179,34 @@ test('sandbox-law predicates enforce read-only bootstrap and a read-only -c sand
     () => assertResumeSandboxConfig(['codex', 'resume', '-c', 'sandbox_mode="read-only"', '-c', 'sandbox_workspace_write.network_access=true']),
     /network/,
   )
-  // A top-level -s resume is rejected.
-  assert.throws(() => assertResumeSandboxConfig(['codex', 'resume', '-s', 'read-only']), /-s flag prohibited/)
+  // A top-level -s resume is rejected: -s is not on the benign resume allowlist.
+  assert.throws(() => assertResumeSandboxConfig(['codex', 'resume', '-s', 'read-only']), /forbidden or unrecognized resume flag/)
+  // The Codex 0.146.0 --yolo alias of --dangerously-bypass-approvals-and-sandbox is rejected too:
+  // it is not on the benign allowlist, so no privilege alias has to be enumerated to close it.
+  assert.throws(() => assertResumeSandboxConfig(['codex', 'resume', '-c', 'sandbox_mode="read-only"', '--yolo']), /forbidden or unrecognized resume flag/)
 })
 
 // launch-review-least-privilege conformance probe (role-runtime launch-review-least-privilege): the
-// whole reviewer grant is read-only plus no-network. gh#60 reshape: the resume-sandbox gate is
-// FORM-INDEPENDENT BY CONSTRUCTION. It normalizes the complete installed codex CLI option surface
-// (short and long, attached and separated, aliased, quoted, and whitespace forms) and admits a
-// reviewer resume ONLY when its sole sandbox/privilege content is exactly one read-only sandbox_mode
-// config, rejecting every workspace-write, network-access, sandbox-bypass, or top-level sandbox token
-// in ANY spelling. This probe iterates the full reject/admit table across every installed-CLI spelling
-// so a reintroduced write or network privilege in a new spelling cannot regress unseen.
+// whole reviewer grant is read-only plus no-network. gh#60 terminal allowlist: the resume-sandbox gate
+// is FORM-INDEPENDENT AND ALIAS-INDEPENDENT BY CONSTRUCTION. The ONLY flags a benign reviewer resume
+// ever carries are --json (boolean), -m/--model (value), and -c/--config (value); every other flag
+// token in ANY clap spelling -- -s, --sandbox, --dangerously-bypass-approvals-and-sandbox, its --yolo
+// alias, or ANY unknown flag -- is simply not on the benign allowlist and is rejected without being
+// enumerated, so a future privilege alias cannot fail open. Over the -c/--config entries exactly one
+// read-only sandbox_mode is required and every workspace-write, danger-full-access, network-access, or
+// sandbox_workspace_write content is rejected in any spelling. This probe iterates the full
+// reject/admit table so a reintroduced write, network, or bypass privilege cannot regress unseen.
 const RESUME = ['codex', 'exec', 'resume', 's1']
 const READ_ONLY_C = ['-c', 'sandbox_mode="read-only"']
-test('launch-review-least-privilege admits read-only-only and rejects every privileged resume spelling', () => {
-  // REJECT: each privileged form, most carrying a legitimate read-only -c alongside it so the probe
-  // proves the reintroduced privilege is caught even when a valid read-only config is also present.
+test('launch-review-least-privilege admits benign read-only resume and rejects every non-allowlisted flag', () => {
+  // REJECT: each privileged/unknown flag form, most carrying a legitimate read-only -c alongside it so
+  // the probe proves the reintroduced privilege is caught even when a valid read-only config is present.
   const rejected = [
     // Attached long --config= smuggles a second, privileged sandbox_mode.
     [...RESUME, ...READ_ONLY_C, '--config=sandbox_mode="workspace-write"'],
     // Attached long --config= smuggles network access.
     [...RESUME, ...READ_ONLY_C, '--config=sandbox_workspace_write.network_access=true'],
-    // Attached long sandbox selector.
+    // Attached long sandbox selector (not on the benign allowlist).
     [...RESUME, ...READ_ONLY_C, '--sandbox=workspace-write'],
     // Separated long sandbox selector.
     [...RESUME, ...READ_ONLY_C, '--sandbox', 'workspace-write'],
@@ -215,6 +220,10 @@ test('launch-review-least-privilege admits read-only-only and rejects every priv
     [...RESUME, ...READ_ONLY_C, '-s', 'workspace-write'],
     // Boolean bypass switch.
     [...RESUME, ...READ_ONLY_C, '--dangerously-bypass-approvals-and-sandbox'],
+    // The Codex 0.146.0 --yolo alias of the bypass switch: closed by the allowlist, not enumerated.
+    [...RESUME, ...READ_ONLY_C, '--yolo'],
+    // An arbitrary unknown/future flag alongside a valid read-only config.
+    [...RESUME, ...READ_ONLY_C, '--frobnicate'],
     // Repeated -c: a read-only then a workspace-write.
     [...RESUME, '-c', 'sandbox_mode="read-only"', '-c', 'sandbox_mode="workspace-write"'],
     // Whitespace TOML form around =.
@@ -227,8 +236,17 @@ test('launch-review-least-privilege admits read-only-only and rejects every priv
   for (const argv of rejected) {
     assert.throws(() => assertResumeSandboxConfig(argv), /rejected/, `must reject: ${JSON.stringify(argv)}`)
   }
+  // ADMIT parity: the exact canonical relay resume argv the launch relay legitimately emits MUST be
+  // admitted so real reviewer runs never false-reject (--json boolean, -m model, three -c configs, the
+  // session id, and a bare - stdin positional).
+  const CANONICAL_RELAY_RESUME = [
+    'codex', 'exec', 'resume', '--json', '-m', 'gpt-5.6-sol',
+    '-c', 'model_reasoning_effort="high"', '-c', 'service_tier="default"',
+    '-c', 'sandbox_mode="read-only"', 's1', '-',
+  ]
   // ADMIT parity: every read-only spelling the installed CLI accepts (short/long, attached/separated).
   const admitted = [
+    CANONICAL_RELAY_RESUME,
     [...RESUME, '-c', 'sandbox_mode="read-only"'],
     [...RESUME, '--config', 'sandbox_mode="read-only"'],
     [...RESUME, '--config=sandbox_mode="read-only"'],
@@ -246,8 +264,10 @@ test('launch-review-least-privilege admits read-only-only and rejects every priv
     () => assertResumeSandboxConfig([...RESUME, '-c', 'sandbox_mode = "workspace-write"']),
     /reviewer resume must stay sandbox_mode=read-only/,
   )
-  // The top-level short -s form keeps its named message.
-  assert.throws(() => assertResumeSandboxConfig([...RESUME, '-s', 'read-only']), /-s flag prohibited/)
+  // A non-allowlisted flag (short -s, the --yolo bypass alias, or an unknown flag) carries the clear
+  // forbidden-flag message.
+  assert.throws(() => assertResumeSandboxConfig([...RESUME, '-s', 'read-only']), /forbidden or unrecognized resume flag/)
+  assert.throws(() => assertResumeSandboxConfig([...RESUME, ...READ_ONLY_C, '--yolo']), /forbidden or unrecognized resume flag/)
 })
 
 test('assertReviewWorktreeImmutable rejects a mutated review worktree', () => {
