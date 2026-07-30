@@ -192,8 +192,11 @@ test('sandbox-law predicates enforce read-only bootstrap and a read-only -c sand
 // ever carries are --json (boolean), -m/--model (value), and -c/--config (value); every other flag
 // token in ANY clap spelling -- -s, --sandbox, --dangerously-bypass-approvals-and-sandbox, its --yolo
 // alias, or ANY unknown flag -- is simply not on the benign allowlist and is rejected without being
-// enumerated, so a future privilege alias cannot fail open. Over the -c/--config entries exactly one
-// read-only sandbox_mode is required and every workspace-write, danger-full-access, network-access, or
+// enumerated, so a future privilege alias cannot fail open. Over the -c/--config entries the config
+// KEY is itself allowlisted to exactly {sandbox_mode, model_reasoning_effort, service_tier}: any other
+// key (future_privilege, sandbox_permissions, or any unknown sandbox-affecting key) is rejected, so a
+// future relay edit reintroducing a write/network config key fails closed. Exactly one read-only
+// sandbox_mode is required and every workspace-write, danger-full-access, network-access, or
 // sandbox_workspace_write content is rejected in any spelling. This probe iterates the full
 // reject/admit table so a reintroduced write, network, or bypass privilege cannot regress unseen.
 const RESUME = ['codex', 'exec', 'resume', 's1']
@@ -232,6 +235,10 @@ test('launch-review-least-privilege admits benign read-only resume and rejects e
     [...RESUME, ...READ_ONLY_C, '--config', 'sandbox_workspace_write.network_access=true'],
     // Danger-full-access value.
     [...RESUME, '-c', 'sandbox_mode="danger-full-access"'],
+    // gh#60 config-KEY allowlist: an unknown resume config key alongside a valid read-only mode.
+    [...RESUME, ...READ_ONLY_C, '-c', 'future_privilege=true'],
+    // A sandbox-affecting config key not on the allowlist (disk read-access permission list).
+    [...RESUME, ...READ_ONLY_C, '-c', 'sandbox_permissions="[disk-full-read-access]"'],
   ]
   for (const argv of rejected) {
     assert.throws(() => assertResumeSandboxConfig(argv), /rejected/, `must reject: ${JSON.stringify(argv)}`)
@@ -268,6 +275,13 @@ test('launch-review-least-privilege admits benign read-only resume and rejects e
   // forbidden-flag message.
   assert.throws(() => assertResumeSandboxConfig([...RESUME, '-s', 'read-only']), /forbidden or unrecognized resume flag/)
   assert.throws(() => assertResumeSandboxConfig([...RESUME, ...READ_ONLY_C, '--yolo']), /forbidden or unrecognized resume flag/)
+  // gh#60 config-KEY allowlist: a -c/--config key outside {sandbox_mode, model_reasoning_effort,
+  // service_tier} carries the clear unrecognized-key message, closing -c future_privilege=true and any
+  // other unknown sandbox-affecting config key a future relay edit might reintroduce.
+  assert.throws(
+    () => assertResumeSandboxConfig([...RESUME, ...READ_ONLY_C, '-c', 'future_privilege=true']),
+    /unrecognized resume config key/,
+  )
 })
 
 test('assertReviewWorktreeImmutable rejects a mutated review worktree', () => {
