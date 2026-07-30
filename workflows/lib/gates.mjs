@@ -353,14 +353,35 @@ function topLevelSandboxFlag(argv) {
   return argv.find((token) => RESUME_PRIVILEGE_FLAGS.has(token))
 }
 
-function configValues(argv, key) {
-  const values = []
-  for (let i = 0; i + 1 < argv.length; i += 1) {
-    if (argv[i] === '-c' && typeof argv[i + 1] === 'string' && argv[i + 1].startsWith(`${key}=`)) {
-      values.push(argv[i + 1].slice(key.length + 1))
-    }
+// Config parsing over the installed CLI's REAL config surface: the codex CLI documents --config as
+// the long alias of -c, and TOML tolerates whitespace around =. Each config flag consumes the FOLLOWING
+// argv token as one config entry, split on the FIRST = with key and value trimmed and any surrounding
+// matched quotes stripped from the value. Parsing here (not a -c-only, attached-value, no-whitespace
+// startsWith match) closes the alias/whitespace bypass so a reintroduced privilege cannot regress unseen.
+const CONFIG_FLAGS = new Set(['-c', '--config'])
+
+function stripSurroundingQuotes(value) {
+  const first = value.charAt(0)
+  if (value.length >= 2 && (first === '"' || first === "'") && value.charAt(value.length - 1) === first) {
+    return value.slice(1, -1)
   }
-  return values
+  return value
+}
+
+function configEntries(argv) {
+  const entries = []
+  for (let i = 0; i + 1 < argv.length; i += 1) {
+    if (!CONFIG_FLAGS.has(argv[i]) || typeof argv[i + 1] !== 'string') continue
+    const token = argv[i + 1]
+    const eq = token.indexOf('=')
+    if (eq === -1) continue
+    entries.push({ key: token.slice(0, eq).trim(), value: stripSurroundingQuotes(token.slice(eq + 1).trim()) })
+  }
+  return entries
+}
+
+function configValues(argv, key) {
+  return configEntries(argv).filter((entry) => entry.key === key).map((entry) => entry.value)
 }
 
 export function assertResumeSandboxConfig(resumeArgv) {
@@ -373,8 +394,7 @@ export function assertResumeSandboxConfig(resumeArgv) {
   if (modes.length !== 1) {
     throw new Error('resume sandbox rejected: exactly one -c sandbox_mode config required')
   }
-  const mode = modes[0].replace(/^"|"$/g, '')
-  if (mode !== 'read-only') {
+  if (modes[0] !== 'read-only') {
     throw new Error('resume sandbox rejected: reviewer resume must stay sandbox_mode=read-only')
   }
   if (configValues(resumeArgv, 'sandbox_workspace_write.network_access').length > 0) {
