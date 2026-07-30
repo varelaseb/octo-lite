@@ -178,13 +178,15 @@ function downstreamEntry(mode, inputs = {}) {
 // The derivation agent's response for a downstream pass: the same derived envelope, at the advanced
 // head, with the LIVE Linear state In Progress (a downstream mode runs after the Shaped -> Todo entry
 // fire). The universal checks (worktree-head agreement, one-orchestrator binding, canonical-source
-// presence, containment) still run; the four-way head + Shaped/Todo entry-state gate is implement-only.
+// presence, containment) still run; three-way within-fire head agreement, shaping ancestor-descent,
+// and the Shaped/Todo entry-state gate are implement-only.
 function derivedInProgress(overrides = {}) {
   return derivedDeliveryEntry({
     linear_state: 'In Progress',
     worktree_head: NEWHEAD,
     pr_head: NEWHEAD,
     shaping_verdict_head: NEWHEAD,
+    shaping_head_descends: true,
     ...overrides,
   })
 }
@@ -209,6 +211,7 @@ function derivedDeliveryEntry(overrides = {}) {
     branch_issue: ISSUE,
     shaping_verdict: 'clear',
     shaping_verdict_head: HEAD,
+    shaping_head_descends: true,
     shaping_reviewer_receipt: 'rcpt-1',
     spec_blobs: SPEC_BLOBS,
     adr_blobs: [],
@@ -274,6 +277,57 @@ test('implement mode derives the three-fact delivery entry, journals its output 
     declared: entry,
     derived: derivedDeliveryEntry(),
   })
+})
+
+test('implement mode admits a declared head descended from the shaping-cleared head', async () => {
+  const shapingClearedHead = '9999999999999999999999999999999999999999'
+  const run = runMode(deliveryEntry(), [
+    ['delivery-entry-derive:', derivedDeliveryEntry({
+      shaping_verdict_head: shapingClearedHead,
+      shaping_head_descends: true,
+    })],
+    ['loop-fire:', { command: 'octo-control linear-transition', exit_status: 0, readback_state: 'Todo' }],
+    ['implementer-runtime:', RESOLVED_WORKER_RUNTIME],
+    ['implementer:', {
+      issue: ISSUE, pr_url: PR_URL, branch: BRANCH, head: NEWHEAD,
+      red_commit: RED_COMMIT, green_commit: GREEN_COMMIT, final_commit: NEWHEAD,
+      bound_test: { ...BOUND_TEST }, validation: 'node --test', blocked: false,
+    }],
+  ])
+
+  await assert.doesNotReject(run, 'ancestor-descended implement entry must be admitted')
+  const { result, calls } = await run
+  assert.equal(result.stage, 'code-review-required')
+  assert.ok(
+    calls.some(({ label }) => label.startsWith('loop-fire:')),
+    'ancestor-descended implement entry must reach loop fire',
+  )
+  assert.ok(
+    calls.some(({ label }) => label.startsWith('implementer:')),
+    'ancestor-descended implement entry must spawn the implementer',
+  )
+})
+
+test('implement mode refuses a declared head that does not descend from the shaping-cleared head', async () => {
+  const shapingClearedHead = '9999999999999999999999999999999999999999'
+  const agent = makeAgent([
+    ['delivery-entry-derive:', derivedDeliveryEntry({
+      shaping_verdict_head: shapingClearedHead,
+      shaping_head_descends: false,
+    })],
+  ])
+
+  await assert.rejects(
+    loadLoop()(agent, JSON.stringify(deliveryEntry()), noop),
+    new RegExp(
+      `delivery entry rejected: declared head ${HEAD} does not descend from ` +
+      `shaping-verdict head ${shapingClearedHead}`,
+    ),
+  )
+  assert.ok(
+    !agent.calls.some(({ label }) => label.startsWith('loop-fire:')),
+    'non-descended implement entry must prevent mutation',
+  )
 })
 
 test('implement mode fails loud on a head inconsistency before loop fire', async () => {
