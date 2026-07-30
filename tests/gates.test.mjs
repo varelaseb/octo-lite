@@ -235,6 +235,8 @@ test('launch-review-least-privilege admits benign read-only resume and rejects e
     [...RESUME, ...READ_ONLY_C, '--config', 'sandbox_workspace_write.network_access=true'],
     // Danger-full-access value.
     [...RESUME, '-c', 'sandbox_mode="danger-full-access"'],
+    // gh#60: -o present must NOT let a privilege flag through - workspace-write still rejected.
+    [...RESUME, ...READ_ONLY_C, '-o', '/tmp/x.txt', '-c', 'sandbox_mode="workspace-write"'],
     // gh#60 config-KEY allowlist: an unknown resume config key alongside a valid read-only mode.
     [...RESUME, ...READ_ONLY_C, '-c', 'future_privilege=true'],
     // A sandbox-affecting config key not on the allowlist (disk read-access permission list).
@@ -254,6 +256,11 @@ test('launch-review-least-privilege admits benign read-only resume and rejects e
   // ADMIT parity: every read-only spelling the installed CLI accepts (short/long, attached/separated).
   const admitted = [
     CANONICAL_RELAY_RESUME,
+    // gh#60: the benign -o/--output-last-message host output file (how the relay captures the verdict);
+    // no sandbox privilege, matches bootstrap. Both spellings, attached and separated.
+    [...RESUME, ...READ_ONLY_C, '-o', '/tmp/cr-last-message.txt'],
+    [...RESUME, ...READ_ONLY_C, '--output-last-message', '/tmp/cr-last-message.txt'],
+    [...RESUME, ...READ_ONLY_C, '--output-last-message=/tmp/cr-last-message.txt'],
     [...RESUME, '-c', 'sandbox_mode="read-only"'],
     [...RESUME, '--config', 'sandbox_mode="read-only"'],
     [...RESUME, '--config=sandbox_mode="read-only"'],
