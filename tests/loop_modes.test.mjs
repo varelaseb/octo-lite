@@ -112,14 +112,13 @@ const RED_COMMIT = 'redc0mm1t00000000000000000000000000000001'
 const GREEN_COMMIT = 'greenc0mm1t0000000000000000000000000000002'
 const BOUND_TEST = { path: 'tests/loop_modes.test.mjs', digest: 'sha256:bounddigest' }
 
-// A healthy OpenAI relay result: read-only bootstrap, workspace-write resume via -c sandbox_mode config,
+// A healthy OpenAI relay result: read-only bootstrap, read-only resume via -c sandbox_mode config,
 // unchanged worktree, verbatim payload backed by the independently-read rollout record.
 function relayResult(payload) {
   return {
     claimed_session_id: 'sess-1', payload,
     bootstrap_argv: ['codex', 'exec', '-s', 'read-only'],
-    resume_argv: ['codex', 'exec', 'resume', 'sess-1', '-c', 'sandbox_mode="workspace-write"', '-c', 'sandbox_workspace_write.network_access=true'],
-    needs_live_reads: true,
+    resume_argv: ['codex', 'exec', 'resume', 'sess-1', '-c', 'sandbox_mode="read-only"'],
     worktree_before: { head: HEAD, status: '' },
     worktree_after: { head: HEAD, status: '' },
   }

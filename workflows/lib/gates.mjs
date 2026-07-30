@@ -340,45 +340,88 @@ export function verifyRelayVerbatim(expectedRuntime, claimedSessionId, relayPayl
   return { provider, model: record.model, effort: record.effort, final_message: finalMessage }
 }
 
-// Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config).
-// Every OpenAI resume selects its sandbox through -c sandbox_mode=... config, never the top-level -s
-// flag, because the installed CLI resume subcommand rejects -s while the exec bootstrap still accepts it.
-function hasTopLevelSandboxFlag(argv) {
-  return argv.some((token, index) => token === '-s' && index + 1 < argv.length)
+// Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config,
+// launch-review-least-privilege). A review pass is read-only end to end: read-only plus no-network is
+// the whole grant. gh#60 terminal allowlist: the resume-sandbox gate is FORM-INDEPENDENT AND
+// ALIAS-INDEPENDENT BY CONSTRUCTION. Enumerating privilege flags can never be complete (the --yolo
+// alias of --dangerously-bypass-approvals-and-sandbox failed open, and future aliases would too), so
+// the gate STOPS enumerating privilege and instead ALLOWLISTS the tiny set of benign flags a reviewer
+// resume ever carries. The relay legitimately emits exactly:
+//   codex exec resume --json -m <model> -c model_reasoning_effort="..." -c service_tier="..." \
+//       -c sandbox_mode="read-only" <session-id> -
+// so the ONLY flags on the benign allowlist are --json (boolean), -m/--model (value), and -c/--config
+// (value); the only positionals are codex, exec, resume, exactly one session-id token, and a bare -.
+// Any token that begins with - and is not a bare - must resolve to one of those benign options in any
+// clap spelling (attached -mVALUE/--model=VALUE/-cENTRY/--config=ENTRY or separated -m VALUE etc); ANY
+// other flag -- -s, --sandbox, --dangerously-bypass-approvals-and-sandbox, --yolo, or any unknown flag
+// -- is not on the allowlist and is rejected, which closes every privilege alias without enumerating
+// it. Over the -c/--config entries exactly one sandbox_mode=read-only is required, and any
+// workspace-write, danger-full-access, network-access, or sandbox_workspace_write content is rejected.
+
+function stripSurroundingQuotes(value) {
+  const first = value.charAt(0)
+  if (value.length >= 2 && (first === '"' || first === "'") && value.charAt(value.length - 1) === first) {
+    return value.slice(1, -1)
+  }
+  return value
 }
 
-function configValues(argv, key) {
-  const values = []
-  for (let i = 0; i + 1 < argv.length; i += 1) {
-    if (argv[i] === '-c' && typeof argv[i + 1] === 'string' && argv[i + 1].startsWith(`${key}=`)) {
-      values.push(argv[i + 1].slice(key.length + 1))
+// Walk the resume argv over the benign-flag allowlist and collect the -c/--config entries. Positionals
+// (codex, exec, resume, the session id, and a bare -) carry no flags and are skipped; --json is a
+// benign boolean; -m/--model consumes a benign model value (attached or separated); -c/--config
+// consumes a config entry (attached or separated). ANY other token that begins with - is a
+// forbidden/unrecognized resume flag and is rejected. Config entries are parsed key=value on the FIRST
+// =, key and value trimmed, surrounding matched quotes stripped from the value.
+function collectBenignResumeConfig(argv) {
+  const configValues = []
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i]
+    if (typeof token !== 'string') continue
+    if (!token.startsWith('-') || token === '-') continue // positional (session id, bare - stdin)
+    if (token === '--json') continue // benign boolean
+    if (token === '-m' || token === '--model') { i += 1; continue } // separated model value
+    if (token.startsWith('--model=')) continue // attached long model value
+    if (token.startsWith('-m') && token.length > 2) continue // attached short model value
+    if (token === '-c' || token === '--config') { // separated config value
+      if (typeof argv[i + 1] === 'string') configValues.push(argv[i + 1])
+      i += 1
+      continue
     }
+    if (token.startsWith('--config=')) { configValues.push(token.slice('--config='.length)); continue }
+    if (token.startsWith('-c') && token.length > 2) { configValues.push(token.slice(2)); continue }
+    throw new Error(`resume sandbox rejected: forbidden or unrecognized resume flag ${token}`)
   }
-  return values
+  return configValues.map((raw) => {
+    const eq = raw.indexOf('=')
+    if (eq === -1) return { key: raw.trim(), value: '' }
+    return { key: raw.slice(0, eq).trim(), value: stripSurroundingQuotes(raw.slice(eq + 1).trim()) }
+  })
 }
 
-export function assertResumeSandboxConfig(resumeArgv, { needsLiveReads = false } = {}) {
+export function assertResumeSandboxConfig(resumeArgv) {
   requiredNonEmptyArray(resumeArgv, 'resume argv')
-  if (hasTopLevelSandboxFlag(resumeArgv)) {
-    throw new Error('resume sandbox rejected: top-level -s flag prohibited on resume, use -c sandbox_mode config')
+  const configEntries = collectBenignResumeConfig(resumeArgv)
+  // Zero *network_access* entries.
+  if (configEntries.some((entry) => entry.key.includes('network_access'))) {
+    throw new Error('resume sandbox rejected: read-only resume grants no network_access')
   }
-  const modes = configValues(resumeArgv, 'sandbox_mode')
+  // Zero sandbox_workspace_write.* entries.
+  if (configEntries.some((entry) => entry.key.startsWith('sandbox_workspace_write.'))) {
+    throw new Error('resume sandbox rejected: read-only resume grants no sandbox_workspace_write config')
+  }
+  // No config entry whose value is workspace-write or danger-full-access, in any spelling.
+  if (configEntries.some((entry) => entry.value === 'workspace-write' || entry.value === 'danger-full-access')) {
+    throw new Error('resume sandbox rejected: reviewer resume must stay sandbox_mode=read-only')
+  }
+  // Exactly one sandbox_mode config entry, and its value is exactly read-only.
+  const modes = configEntries.filter((entry) => entry.key === 'sandbox_mode').map((entry) => entry.value)
   if (modes.length !== 1) {
     throw new Error('resume sandbox rejected: exactly one -c sandbox_mode config required')
   }
-  const mode = modes[0].replace(/^"|"$/g, '')
-  if (needsLiveReads) {
-    if (mode !== 'workspace-write') {
-      throw new Error('resume sandbox rejected: live-read resume requires sandbox_mode=workspace-write')
-    }
-    const network = configValues(resumeArgv, 'sandbox_workspace_write.network_access')
-    if (network.length !== 1 || network[0] !== 'true') {
-      throw new Error('resume sandbox rejected: workspace-write resume requires network_access=true')
-    }
-  } else if (mode !== 'read-only') {
-    throw new Error('resume sandbox rejected: non-live-read resume must stay sandbox_mode=read-only')
+  if (modes[0] !== 'read-only') {
+    throw new Error('resume sandbox rejected: reviewer resume must stay sandbox_mode=read-only')
   }
-  return { sandbox_mode: mode, needsLiveReads }
+  return { sandbox_mode: 'read-only' }
 }
 
 // A review-pass bootstrap must be read-only-first: the exec bootstrap selects the read-only sandbox
@@ -454,7 +497,7 @@ function acceptRelayVerdict(admittedRoles, roleError, role, resolvedRuntime, rel
     throw new Error('relay verbatim rejected: rollout record not from the independent read-only subagent')
   }
   assertReadOnlyFirstBootstrap(relay.bootstrap_argv)
-  assertResumeSandboxConfig(relay.resume_argv, { needsLiveReads: relay.needs_live_reads === true })
+  assertResumeSandboxConfig(relay.resume_argv)
   assertReviewWorktreeImmutable(relay.worktree_before, relay.worktree_after)
   const verified = verifyRelayVerbatim(resolvedRuntime, claimedSessionId, relay.payload, rollout.data)
   return { verdict_payload: verified.final_message, session_id: claimedSessionId, runtime: verified }
