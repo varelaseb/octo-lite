@@ -500,15 +500,20 @@ function assertReviewWorktreeImmutable(before, after) {
   if (before.head !== after.head) {
     throw new Error('review sandbox rejected: review-pass worktree HEAD changed')
   }
-  const beforeStatus = before.status ?? ''
-  const afterStatus = after.status ?? ''
-  if (typeof beforeStatus !== 'string' || typeof afterStatus !== 'string') {
+  const rawBefore = before.status ?? ''
+  const rawAfter = after.status ?? ''
+  if (typeof rawBefore !== 'string' || typeof rawAfter !== 'string') {
     throw new Error('review sandbox rejected: worktree status must be a string')
   }
+  // A clean tree = empty `git status --porcelain`; a relay may transcribe that as the word 'clean'.
+  // Normalize both forms to '' (clean); any REAL porcelain line is a genuine change and still rejects.
+  const norm = (s) => { const t = String(s).trim(); return (t === '' || t.toLowerCase() === 'clean') ? '' : t }
+  const beforeStatus = norm(rawBefore)
+  const afterStatus = norm(rawAfter)
   if (beforeStatus !== afterStatus || afterStatus !== '') {
     throw new Error('review sandbox rejected: review-pass worktree status changed')
   }
-  return { head: after.head, status: afterStatus }
+  return { head: after.head, status: rawAfter }
 }
 
 // Composite fail-closed relay verdict acceptance (role-runtime role-openai-relay,

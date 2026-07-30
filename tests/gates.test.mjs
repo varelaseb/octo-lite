@@ -309,6 +309,11 @@ test('assertReviewWorktreeImmutable rejects a mutated review worktree', () => {
   assert.deepEqual(assertReviewWorktreeImmutable({ head: 'h', status: '' }, { head: 'h', status: '' }), { head: 'h', status: '' })
   assert.throws(() => assertReviewWorktreeImmutable({ head: 'h', status: '' }, { head: 'other', status: '' }), /HEAD changed/)
   assert.throws(() => assertReviewWorktreeImmutable({ head: 'h', status: '' }, { head: 'h', status: ' M f' }), /status changed/)
+  // Relay may report a clean tree as the word 'clean' instead of verbatim empty porcelain - both mean clean.
+  assert.deepEqual(assertReviewWorktreeImmutable({ head: 'h', status: 'clean' }, { head: 'h', status: 'clean' }), { head: 'h', status: 'clean' })
+  assert.deepEqual(assertReviewWorktreeImmutable({ head: 'h', status: '' }, { head: 'h', status: 'clean' }), { head: 'h', status: 'clean' })
+  // A REAL dirty status is still rejected even if the other side says clean.
+  assert.throws(() => assertReviewWorktreeImmutable({ head: 'h', status: 'clean' }, { head: 'h', status: ' M f' }), /status changed/)
 })
 
 test('acceptOpenaiReviewRelay accepts a good reviewer relay and rejects a relay-supplied rollout', () => {
