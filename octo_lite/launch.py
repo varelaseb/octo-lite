@@ -361,9 +361,9 @@ READ_ONLY_WORKTREE_ROLES = frozenset({"shaping-reviewer", "code-reviewer", "qa-r
 
 
 def _verify_review_worktree_unmutated(receipt: Mapping[str, Any], stage: str) -> None:
-    """A read-only role's OpenAI resume may run under workspace-write plus network
-    access to reach live GitHub or Linear; this independently proves that capability
-    was never used to change the review-pass worktree itself."""
+    """A read-only role's OpenAI resume stays read-only end to end (no workspace-write,
+    no network access); this independently proves the review-pass worktree HEAD and
+    status were never mutated during the pass."""
     if receipt["role"]["name"] not in READ_ONLY_WORKTREE_ROLES:
         return
     worktree = Path(receipt["workspace"]["worktree"])
@@ -1159,21 +1159,16 @@ def _provider_argv(receipt: Mapping[str, Any]) -> tuple[list[str], list[str]]:
             "codex", "exec", "--json", "-C", worktree, "-m", runtime["model"],
             *config, "-s", "read-only", "-",
         ]
-        # A review pass whose tools include a live GitHub or Linear read needs
-        # network for its resumed pass; read-only sandbox never grants network,
-        # so that resume explicitly opts into workspace-write plus network access
-        # instead. Every other OpenAI resume stays read-only. The installed CLI's
-        # resume subcommand rejects the top-level -s flag (exit 2, "unexpected
-        # argument '-s'"), so sandbox selection goes through -c config instead;
-        # only the exec bootstrap above still accepts -s.
-        needs_live_reads = {"linear-read", "github-read"} & set(runtime["tools"])
-        resume_sandbox = (
-            ["-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true"]
-            if needs_live_reads else ["-c", 'sandbox_mode="read-only"']
-        )
+        # Every octo-lite OpenAI role is a reviewer (code-reviewer, qa-reviewer,
+        # shaping-reviewer) and a review pass is read-only END TO END
+        # (launch-review-sandbox-integrity, launch-review-least-privilege): the resume
+        # never opts into workspace-write or network access. The installed CLI's resume
+        # subcommand rejects the top-level -s flag (exit 2, "unexpected argument '-s'"),
+        # so sandbox selection goes through -c config; only the exec bootstrap above
+        # still accepts -s.
         mutation = [
             "codex", "exec", "resume", "--json", "-m", runtime["model"],
-            *config, *resume_sandbox, "{provider_session_id}", "-",
+            *config, "-c", 'sandbox_mode="read-only"', "{provider_session_id}", "-",
         ]
     else:
         raise GateError("unsupported provider")

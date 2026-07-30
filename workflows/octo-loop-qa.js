@@ -376,11 +376,14 @@ function verifyRelayVerbatim(expectedRuntime, claimedSessionId, relayPayload, ro
 // Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config,
 // launch-review-least-privilege). A review pass is read-only end to end: read-only plus no-network is
 // the whole grant. Every OpenAI resume selects its sandbox through EXACTLY ONE -c sandbox_mode=read-only
-// config, never the top-level -s flag (the installed CLI resume subcommand rejects -s while the exec
-// bootstrap still accepts it), and any other mode or any sandbox_workspace_write.network_access config
-// is rejected.
-function hasTopLevelSandboxFlag(argv) {
-  return argv.some((token, index) => token === '-s' && index + 1 < argv.length)
+// config, never a top-level sandbox-selecting or sandbox-bypassing flag (the installed CLI resume
+// subcommand rejects the short -s but still accepts the long --sandbox and the
+// --dangerously-bypass-approvals-and-sandbox switch), and any other mode or any
+// sandbox_workspace_write.network_access config is rejected.
+const RESUME_PRIVILEGE_FLAGS = new Set(['-s', '--sandbox', '--dangerously-bypass-approvals-and-sandbox'])
+
+function topLevelSandboxFlag(argv) {
+  return argv.find((token) => RESUME_PRIVILEGE_FLAGS.has(token))
 }
 
 function configValues(argv, key) {
@@ -395,8 +398,9 @@ function configValues(argv, key) {
 
 function assertResumeSandboxConfig(resumeArgv) {
   requiredNonEmptyArray(resumeArgv, 'resume argv')
-  if (hasTopLevelSandboxFlag(resumeArgv)) {
-    throw new Error('resume sandbox rejected: top-level -s flag prohibited on resume, use -c sandbox_mode config')
+  const privilegeFlag = topLevelSandboxFlag(resumeArgv)
+  if (privilegeFlag) {
+    throw new Error(`resume sandbox rejected: top-level ${privilegeFlag} flag prohibited on resume, use -c sandbox_mode config`)
   }
   const modes = configValues(resumeArgv, 'sandbox_mode')
   if (modes.length !== 1) {
