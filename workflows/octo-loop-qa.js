@@ -375,19 +375,21 @@ function verifyRelayVerbatim(expectedRuntime, claimedSessionId, relayPayload, ro
 
 // Sandbox-law predicates (role-runtime launch-review-sandbox-integrity, launch-resume-sandbox-config,
 // launch-review-least-privilege). A review pass is read-only end to end: read-only plus no-network is
-// the whole grant. gh#60 reshape: the resume-sandbox gate is FORM-INDEPENDENT BY CONSTRUCTION. Instead
-// of chasing individual privileged spellings with a position-based rejectlist (which kept failing open
-// on new clap spellings), it NORMALIZES the complete installed codex CLI option surface and then
-// ALLOWS exactly one benign content and REJECTS everything else: the ONLY sandbox/privilege content
-// permitted on a reviewer resume is a single sandbox_mode=read-only config, and ANY other
-// sandbox/workspace/network/danger/top-level-sandbox content in ANY spelling is rejected.
-//
-// Installed codex CLI (clap) surface for the sandbox-relevant options:
-//   - sandbox selection  -s / --sandbox   (values read-only|workspace-write|danger-full-access)
-//   - config             -c / --config    (value is one TOML key=value entry)
-//   - bypass (boolean)   --dangerously-bypass-approvals-and-sandbox
-// A short flag -x takes its value attached (-xVALUE) or as the next token (-x VALUE); a long flag --xx
-// takes its value as --xx=VALUE or as the next token (--xx VALUE); a boolean flag stands alone.
+// the whole grant. gh#60 terminal allowlist: the resume-sandbox gate is FORM-INDEPENDENT AND
+// ALIAS-INDEPENDENT BY CONSTRUCTION. Enumerating privilege flags can never be complete (the --yolo
+// alias of --dangerously-bypass-approvals-and-sandbox failed open, and future aliases would too), so
+// the gate STOPS enumerating privilege and instead ALLOWLISTS the tiny set of benign flags a reviewer
+// resume ever carries. The relay legitimately emits exactly:
+//   codex exec resume --json -m <model> -c model_reasoning_effort="..." -c service_tier="..." \
+//       -c sandbox_mode="read-only" <session-id> -
+// so the ONLY flags on the benign allowlist are --json (boolean), -m/--model (value), and -c/--config
+// (value); the only positionals are codex, exec, resume, exactly one session-id token, and a bare -.
+// Any token that begins with - and is not a bare - must resolve to one of those benign options in any
+// clap spelling (attached -mVALUE/--model=VALUE/-cENTRY/--config=ENTRY or separated -m VALUE etc); ANY
+// other flag -- -s, --sandbox, --dangerously-bypass-approvals-and-sandbox, --yolo, or any unknown flag
+// -- is not on the allowlist and is rejected, which closes every privilege alias without enumerating
+// it. Over the -c/--config entries exactly one sandbox_mode=read-only is required, and any
+// workspace-write, danger-full-access, network-access, or sandbox_workspace_write content is rejected.
 
 function stripSurroundingQuotes(value) {
   const first = value.charAt(0)
@@ -397,53 +399,41 @@ function stripSurroundingQuotes(value) {
   return value
 }
 
-const BYPASS_FLAG = '--dangerously-bypass-approvals-and-sandbox'
-
-// Normalize the resume argv over exactly the sandbox-relevant option surface into (a) top-level
-// sandbox selections (each recorded by the canonical flag that introduced it), (b) the boolean bypass
-// presence, and (c) config entries (key=value split on the FIRST =, key and value trimmed, surrounding
-// matched quotes stripped from the value). Every other token (codex, exec, resume, the session id)
-// carries no sandbox content and is ignored. Both attached and separated value forms are handled, so
-// no spelling escapes normalization.
-function normalizeResumeSandboxSurface(argv) {
-  const sandboxSelections = []
+// Walk the resume argv over the benign-flag allowlist and collect the -c/--config entries. Positionals
+// (codex, exec, resume, the session id, and a bare -) carry no flags and are skipped; --json is a
+// benign boolean; -m/--model consumes a benign model value (attached or separated); -c/--config
+// consumes a config entry (attached or separated). ANY other token that begins with - is a
+// forbidden/unrecognized resume flag and is rejected. Config entries are parsed key=value on the FIRST
+// =, key and value trimmed, surrounding matched quotes stripped from the value.
+function collectBenignResumeConfig(argv) {
   const configValues = []
-  let bypass = false
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]
     if (typeof token !== 'string') continue
-    const base = token.includes('=') ? token.slice(0, token.indexOf('=')) : token
-    if (base === BYPASS_FLAG) { bypass = true; continue }
-    if (token === '-s' || token === '--sandbox') { sandboxSelections.push(token); i += 1; continue }
-    if (token.startsWith('--sandbox=')) { sandboxSelections.push('--sandbox'); continue }
-    if (token.startsWith('-s') && token.length > 2) { sandboxSelections.push('-s'); continue }
-    if (token === '-c' || token === '--config') {
+    if (!token.startsWith('-') || token === '-') continue // positional (session id, bare - stdin)
+    if (token === '--json') continue // benign boolean
+    if (token === '-m' || token === '--model') { i += 1; continue } // separated model value
+    if (token.startsWith('--model=')) continue // attached long model value
+    if (token.startsWith('-m') && token.length > 2) continue // attached short model value
+    if (token === '-c' || token === '--config') { // separated config value
       if (typeof argv[i + 1] === 'string') configValues.push(argv[i + 1])
       i += 1
       continue
     }
     if (token.startsWith('--config=')) { configValues.push(token.slice('--config='.length)); continue }
     if (token.startsWith('-c') && token.length > 2) { configValues.push(token.slice(2)); continue }
+    throw new Error(`resume sandbox rejected: forbidden or unrecognized resume flag ${token}`)
   }
-  const configEntries = configValues.map((raw) => {
+  return configValues.map((raw) => {
     const eq = raw.indexOf('=')
     if (eq === -1) return { key: raw.trim(), value: '' }
     return { key: raw.slice(0, eq).trim(), value: stripSurroundingQuotes(raw.slice(eq + 1).trim()) }
   })
-  return { sandboxSelections, bypass, configEntries }
 }
 
 function assertResumeSandboxConfig(resumeArgv) {
   requiredNonEmptyArray(resumeArgv, 'resume argv')
-  const { sandboxSelections, bypass, configEntries } = normalizeResumeSandboxSurface(resumeArgv)
-  // No top-level sandbox selection at all: resume selects sandbox only via -c/--config config.
-  if (sandboxSelections.length > 0) {
-    throw new Error(`resume sandbox rejected: top-level ${sandboxSelections[0]} flag prohibited on resume, use -c sandbox_mode config`)
-  }
-  // No sandbox-bypass flag in any spelling.
-  if (bypass) {
-    throw new Error(`resume sandbox rejected: ${BYPASS_FLAG} prohibited on resume`)
-  }
+  const configEntries = collectBenignResumeConfig(resumeArgv)
   // Zero *network_access* entries.
   if (configEntries.some((entry) => entry.key.includes('network_access'))) {
     throw new Error('resume sandbox rejected: read-only resume grants no network_access')
