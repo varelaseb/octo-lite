@@ -481,5 +481,67 @@ class VerdictProvenanceGateTest(unittest.TestCase):
         self.assertEqual(out["verdict"], "clear")
 
 
+class ParserEquivalenceDifferentialTest(unittest.TestCase):
+    # GH-65 finding A (final closure): the Python verdict-block parser
+    # (_parse_reviewer_verdict_block) and the JS loop parser
+    # (parseVerifiedReviewerVerdict) MUST enforce ONE strict canonical grammar and
+    # therefore accept and reject EXACTLY the same blocks and derive identical
+    # {verdict, head, findings}. Before the fix they could derive OPPOSITE verdicts
+    # from the SAME payload: a top-level blocking block followed by a [metadata]
+    # TABLE flipping verdict=clear parsed as CLEAR in JS (inner assignment overwrote,
+    # table header silently skipped) but BLOCKING in Python (tomllib kept the table
+    # separate), so host advancement and durable publication disagreed. This is a
+    # REAL cross-language differential: it runs the SAME fixture payloads through the
+    # Python parser here AND shells the LIVE JS parser (tests/verdict_grammar_probe.mjs
+    # over workflows/octo-loop-qa.js) and asserts both agree, case by case.
+    FIXTURE = ROOT / "tests/fixtures/verdict_grammar_cases.json"
+    PROBE = ROOT / "tests/verdict_grammar_probe.mjs"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.cases = json.loads(cls.FIXTURE.read_text())
+        import subprocess
+
+        proc = subprocess.run(
+            ["node", str(cls.PROBE), str(cls.FIXTURE)],
+            check=True, capture_output=True, text=True,
+        )
+        cls.js = {r["name"]: r for r in json.loads(proc.stdout)}
+
+    def _python_result(self, case: dict) -> dict:
+        try:
+            parsed = MODULE._parse_reviewer_verdict_block(case["payload"], case["review_type"])
+        except GateError as error:
+            return {"outcome": "reject", "error": str(error)}
+        return {
+            "outcome": "accept",
+            "parsed": {
+                "verdict": parsed["verdict"],
+                "head": parsed["head"],
+                "findings": parsed["findings"],
+            },
+        }
+
+    def test_python_and_js_parsers_agree_case_by_case(self) -> None:
+        self.assertTrue(self.cases, "the differential fixture must carry cases")
+        for case in self.cases:
+            name = case["name"]
+            with self.subTest(case=name):
+                py = self._python_result(case)
+                js = self.js[name]
+                # 1. The two IMPLEMENTATIONS agree on accept vs reject (never divergent).
+                self.assertEqual(
+                    py["outcome"], js["outcome"],
+                    f"parser DIVERGENCE on {name}: python={py['outcome']} js={js['outcome']}",
+                )
+                # 2. When accepted, they derive IDENTICAL {verdict, head, findings}.
+                if py["outcome"] == "accept":
+                    self.assertEqual(py["parsed"], js["parsed"], f"parsed mismatch on {name}")
+                # 3. Both match the fixture's declared canonical expectation.
+                self.assertEqual(py["outcome"], case["expect"], f"python outcome unexpected on {name}")
+                if case["expect"] == "accept":
+                    self.assertEqual(py["parsed"], case["parsed"], f"python values unexpected on {name}")
+
+
 if __name__ == "__main__":
     unittest.main()
