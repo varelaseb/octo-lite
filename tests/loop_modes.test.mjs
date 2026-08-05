@@ -132,6 +132,31 @@ function rolloutFor(payload, runtime = RESOLVED_REVIEWER_RUNTIME) {
   }
 }
 
+// The canonical octo-lite-verdict block a real reviewer ends its final message with (the same shape
+// octo_lite.runtime.verdict_body emits). GH-65 finding A1: the loop host-parses THIS verified payload to
+// bind advancement, never an LLM agent claim, so the reviewer payload must carry the authoritative block.
+function verdictBlock(verdict, findings = [], head = NEWHEAD, reviewType = 'code') {
+  return [
+    `<!-- octo-lite-verdict:${reviewType} -->`,
+    '```toml',
+    'schema_version = 1',
+    `review_type = "${reviewType}"`,
+    `verdict = "${verdict}"`,
+    `head = "${head}"`,
+    'bound_inputs = []',
+    `findings = ${JSON.stringify(findings)}`,
+    'reviewer_receipt = "reviewer-own-receipt"',
+    'conversation_log_references = []',
+    'conversation_cutoff = ""',
+    '```',
+  ].join('\n')
+}
+
+// A full reviewer final message: naming prose then the authoritative verdict block as its final content.
+function verdictPayload(verdict, findings = [], head = NEWHEAD, reviewType = 'code') {
+  return `Code review of PR ${PR} at head ${head}.\n` + verdictBlock(verdict, findings, head, reviewType)
+}
+
 function readyEnvelope(overrides = {}) {
   return {
     mode: 'implement',
@@ -406,7 +431,7 @@ test('implement mode rejects a delivery spawn at Shaped when the Todo readback i
 // (delivery-mode-envelope). No pre-supplied envelope field.
 test('code-review mode derives the envelope then spawns the code-reviewer through the relay and advances on a clear verdict', async () => {
   const env = downstreamEntry('code-review', { cycle: 1 })
-  const payload = JSON.stringify({ verdict: 'clear', findings: [], comment_url: `${PR_URL}#rev` })
+  const payload = verdictPayload('clear', [])
   const { result, calls } = await runMode(env, [
     ['delivery-entry-derive:', derivedInProgress()],
     ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
@@ -433,7 +458,7 @@ test('code-review mode propagates the verified reviewer session id into the verd
   // --reviewer-session-id, and surfaces it on the review result so item-3b's required arg never breaks
   // the running loop.
   const env = downstreamEntry('code-review', { cycle: 1 })
-  const payload = JSON.stringify({ verdict: 'clear', findings: [] })
+  const payload = verdictPayload('clear', [])
   let publishPrompt = ''
   const { result } = await runMode(env, [
     ['delivery-entry-derive:', derivedInProgress()],
@@ -459,7 +484,7 @@ test('code-review mode propagates the verified reviewer session id into the verd
 
 test('code-review mode returns fix-required with findings on a blocking verdict', async () => {
   const env = downstreamEntry('code-review', { cycle: 1 })
-  const payload = JSON.stringify({ verdict: 'blocking', findings: ['bug'], comment_url: `${PR_URL}#rev` })
+  const payload = verdictPayload('blocking', ['bug'])
   const { result } = await runMode(env, [
     ['delivery-entry-derive:', derivedInProgress()],
     ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
@@ -474,34 +499,61 @@ test('code-review mode returns fix-required with findings on a blocking verdict'
   assert.deepEqual(result.findings, ['bug'])
 })
 
-test('code-review advancement binds to the CLI-verified publication, not the LLM binder, on a mismatch', async () => {
-  // GH-65 RE-review finding A: the loop must advance acceptCodeReview on the CLI-VERIFIED verdict/head
-  // (the one octo-control verdict-publish DERIVED and durably published from the reviewer's own rollout
-  // block), NEVER on the separate LLM binder result. Here the verified publication is BLOCKING at the
-  // reviewed head with the reviewer's real findings, while the LLM binder mis-authored CLEAR at that same
-  // head. Binding to the binder would enter code-clear on an unverified verdict even though a blocking
-  // comment was durably posted; the loop MUST reflect the verified BLOCKING and route to fix.
+test('code-review advancement binds to the host parse of the verified payload, not any agent claim', async () => {
+  // GH-65 finding A1 (definitive): the loop runs in a process-free VM, so the verdict-publish PUBLISHER
+  // is itself a second LLM whose CLAIMED {verdict, head, findings} cannot be trusted for advancement.
+  // Advancement must bind to a DETERMINISTIC HOST PARSE of the verified reviewer payload
+  // (accepted.verdict_payload, the host-verified verbatim reviewer final message). Here the verified
+  // payload asserts BLOCKING with the reviewer's real findings, while BOTH the LLM binder AND the
+  // publisher agent claim CLEAR (empty findings) at the same head/PR. Binding to either agent claim would
+  // enter code-clear on an unverified verdict; the loop MUST route to fix carrying the reviewer's OWN
+  // verified findings parsed from the payload.
   const env = downstreamEntry('code-review', { cycle: 1 })
-  const payload = JSON.stringify({ verdict: 'blocking', findings: ['real-defect'], comment_url: `${PR_URL}#rev` })
+  const payload = verdictPayload('blocking', ['real-defect'])
   const { result } = await runMode(env, [
     ['delivery-entry-derive:', derivedInProgress()],
     ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
     ['code-reviewer-relay:', relayResult(payload)],
     ['code-reviewer-rollout:', rolloutFor(payload)],
-    // The LLM binder DISAGREES with the verified publication: it says clear (no findings) at the head.
+    // The LLM binder DISAGREES with the verified payload: it claims clear (no findings) at the head.
     ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
-    // The verified publication (octo-control verdict-publish output) is the authority: blocking at the
-    // reviewed head, carrying the reviewer's own findings.
+    // The publisher agent ALSO claims CLEAR (empty findings) at the same head: it is a second unverified
+    // transcription and must NOT drive advancement. It supplies only the display comment url.
     ['code-reviewer-publish:', {
       card_url: `${PR_URL}#published`, readable: true,
-      verdict: 'blocking', head: NEWHEAD, findings: ['real-defect'],
+      verdict: 'clear', head: NEWHEAD, findings: [],
     }],
   ])
-  // Advancement bound to the VERIFIED publication: the binder said clear with NO findings, yet the loop
-  // routes to fix carrying the reviewer's OWN verified findings. Binding to the binder would have entered
-  // code-clear with an empty fix payload.
+  // Advancement bound to the HOST PARSE of the verified payload: both agents said clear with NO findings,
+  // yet the loop routes to fix carrying the reviewer's OWN verified findings. Binding to either agent
+  // would have entered code-clear with an empty fix payload.
   assert.equal(result.stage, 'fix-required')
   assert.deepEqual(result.findings, ['real-defect'])
+})
+
+test('code-review host parse rejects a payload with an earlier example block before the final block', async () => {
+  // GH-65 finding A2 (loop parser mirrors the octo-control rule): a reviewer payload carrying an earlier
+  // CLEAR example block AND a final authoritative BLOCKING block must fail CLOSED, never yield clear. The
+  // host parse requires exactly one octo-lite-verdict marker whose fenced block is the final content.
+  const env = downstreamEntry('code-review', { cycle: 1 })
+  const payload = `Code review of PR ${PR} at head ${NEWHEAD}.\n`
+    + 'For reference a clear block looks like:\n'
+    + verdictBlock('clear', [])
+    + '\nThe authoritative verdict is:\n'
+    + verdictBlock('blocking', ['real-defect'])
+  await assert.rejects(
+    runMode(env, [
+      ['delivery-entry-derive:', derivedInProgress()],
+      ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+      ['code-reviewer-relay:', relayResult(payload)],
+      ['code-reviewer-rollout:', rolloutFor(payload)],
+      ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
+      ['code-reviewer-publish:', {
+        card_url: `${PR_URL}#published`, readable: true, verdict: 'clear', head: NEWHEAD, findings: [],
+      }],
+    ]),
+    /more than one octo-lite-verdict block/,
+  )
 })
 
 // ---- fix mode: derives the envelope, spawns implementer, returns code-review-required ----
