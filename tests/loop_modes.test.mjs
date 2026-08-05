@@ -93,7 +93,9 @@ after(() => {
 const HEAD = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const NEWHEAD = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 const SPEC_BLOBS = ['spec/domains/role-runtime.spec.html:loop-runs-on-cwd-and-branch']
-const CONTRACT = 'c8b0440cacc5188b2926b626ee6f506ced5368ebbda67dc6b1ed0d542cddc34c'
+// GH-65: contract_hash is the target AGENTS.md instruction-contract blob, a 40-hex git
+// object id (git rev-parse <head>:AGENTS.md), not a role blob and not a 64-hex digest.
+const CONTRACT = 'c8b0440cacc5188b2926b626ee6f506ced5368eb'
 
 const RESOLVED_WORKER_RUNTIME = {
   provider: 'anthropic', model: 'claude-opus-5', effort: 'xhigh', service_tier: 'default',
@@ -215,6 +217,8 @@ function derivedDeliveryEntry(overrides = {}) {
     spec_blobs: SPEC_BLOBS,
     adr_blobs: [],
     contract_hash: CONTRACT,
+    // GH-65: the raw `git rev-parse <head>:AGENTS.md` output the loop binds contract_hash to.
+    agents_md_blob: CONTRACT,
     brief: 'Implement the signed issue and spec contract.',
     stream: STREAM_DIR,
     caller: CALLER,
@@ -349,6 +353,40 @@ test('implement mode enforces one orchestrator per issue before loop fire', asyn
     /one-orchestrator-per-issue rule.*spawn a lane for TUR-13/,
   )
   assert.ok(!agent.calls.some(({ label }) => label.startsWith('loop-fire:')), 'cross-issue fire must prevent mutation')
+})
+
+test('implement mode rejects a contract_hash that is not the reviewed-head AGENTS.md blob', async () => {
+  // GH-65 loop-binding-fix item 2 (role-runtime launch-stream-envelope-sources): the loop
+  // binds contract_hash to the target AGENTS.md blob agents_md_blob, re-derived every fire.
+  // A derivation that returns a contract_hash diverging from agents_md_blob (the classic bug:
+  // a role contract blob instead of the target AGENTS.md blob) is rejected fail-closed before
+  // any loop fire or worker spawn, so no worker or bound verdict ever carries the wrong hash.
+  const agent = makeAgent([
+    ['delivery-entry-derive:', derivedDeliveryEntry({
+      contract_hash: 'a307436965a307436965a307436965a307436965',
+      agents_md_blob: CONTRACT,
+    })],
+  ])
+  await assert.rejects(
+    loadLoop()(agent, JSON.stringify(deliveryEntry()), noop),
+    /contract_hash.*is not the reviewed-head AGENTS\.md blob/,
+  )
+  assert.ok(!agent.calls.some(({ label }) => label.startsWith('loop-fire:')), 'wrong contract_hash must prevent mutation')
+})
+
+test('implement mode rejects a malformed non-40-hex AGENTS.md blob', async () => {
+  // GH-65 item 2: the bound AGENTS.md blob must be a well-formed 40-hex git object id; a
+  // 64-hex digest or any malformed id fails closed rather than binding a worker.
+  const agent = makeAgent([
+    ['delivery-entry-derive:', derivedDeliveryEntry({
+      contract_hash: 'c8b0440cacc5188b2926b626ee6f506ced5368ebbda67dc6b1ed0d542cddc34c',
+      agents_md_blob: 'c8b0440cacc5188b2926b626ee6f506ced5368ebbda67dc6b1ed0d542cddc34c',
+    })],
+  ])
+  await assert.rejects(
+    loadLoop()(agent, JSON.stringify(deliveryEntry()), noop),
+    /AGENTS\.md blob.*is not a 40-hex object id/,
+  )
 })
 
 test('implement mode rejects a delivery spawn at Shaped when the Todo readback is missing', async () => {

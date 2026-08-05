@@ -702,7 +702,7 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     'lane', 'lane_issue', 'branch', 'branch_issue',
     'shaping_verdict', 'shaping_verdict_head', 'shaping_head_descends',
     'shaping_reviewer_receipt',
-    'spec_blobs', 'adr_blobs', 'contract_hash', 'brief',
+    'spec_blobs', 'adr_blobs', 'contract_hash', 'agents_md_blob', 'brief',
     'stream', 'caller', 'parent',
   ],
   properties: {
@@ -729,6 +729,7 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     spec_blobs: { type: 'array', items: { type: 'string' } },
     adr_blobs: { type: 'array', items: { type: 'string' } },
     contract_hash: { type: 'string' },
+    agents_md_blob: { type: 'string' },
     brief: { type: 'string' },
     stream: { type: 'string' },
     caller: { type: 'string' },
@@ -1155,8 +1156,12 @@ async function deriveDeliveryEntry(mode) {
     'From the pinned shaping-review journal, return shaping_verdict, shaping_verdict_head, and',
     'shaping_reviewer_receipt. Compute shaping_head_descends with `git merge-base --is-ancestor',
     '<shaping_verdict_head> <head>`: exit 0 means true, inclusive of equal; otherwise false.',
-    'From live reads at the derived head, return spec_blobs, adr_blobs,',
-    'the resolved implementer contract_hash, and a brief grounded in the issue and signed sources.',
+    'From live reads at the derived head, return spec_blobs, adr_blobs, and a brief grounded in the',
+    'issue and signed sources.',
+    'Return agents_md_blob as the EXACT stdout of `git rev-parse <head>:AGENTS.md` at the reviewed',
+    'head: the TARGET worktree AGENTS.md instruction-contract blob a reviewer verdict binds.',
+    'Return contract_hash as that SAME target AGENTS.md blob, NEVER a role contract file blob such as',
+    'roles/<role>.md; the loop binds contract_hash to agents_md_blob and fails closed on any mismatch.',
     'From the host-owned stream registry, find the orchestrator stream whose stream.toml records this',
     'exact issue and child_role orchestrator, and return stream as its absolute directory, caller as',
     'its recorded child_session, and parent as its recorded parent_session (the notify route); loop',
@@ -1247,6 +1252,25 @@ async function deriveDeliveryEntry(mode) {
   A.spec_blobs = derived.spec_blobs
   A.adr_blobs = derived.adr_blobs
   A.contract_hash = requiredNonEmptyString(derived.contract_hash, 'derived contract hash')
+  // FAIL-CLOSED contract-hash bind (GH-65 loop-binding-fix items 1+2, role-runtime
+  // launch-stream-envelope-sources): contract_hash is the TARGET worktree AGENTS.md
+  // instruction-contract blob at the reviewed head, re-derived every fire from `git
+  // rev-parse <head>:AGENTS.md` (returned as agents_md_blob), NEVER a role contract file
+  // blob and never the LLM's free choice. The loop, not the derivation agent, binds it:
+  // agents_md_blob must be a well-formed 40-hex object id and contract_hash must equal it,
+  // else the pass stops fail-closed before any worker spawn. This runs for EVERY delivery
+  // mode (the derivation is hoisted before mode dispatch), so no mode carries a stale or
+  // role-blob contract_hash into a worker or a bound verdict.
+  const agentsMdBlob = requiredNonEmptyString(derived.agents_md_blob, 'derived AGENTS.md blob')
+  if (!/^[0-9a-f]{40}$/.test(agentsMdBlob)) {
+    throw new Error(`delivery entry rejected: derived AGENTS.md blob ${agentsMdBlob} is not a 40-hex object id`)
+  }
+  if (A.contract_hash !== agentsMdBlob) {
+    throw new Error(
+      `delivery entry rejected: contract_hash ${A.contract_hash} is not the reviewed-head AGENTS.md blob ` +
+      `${agentsMdBlob}; contract_hash must be the target AGENTS.md instruction contract, not a role blob`,
+    )
+  }
   A.brief = requiredNonEmptyString(derived.brief, 'derived pass brief')
   A.stream = requiredNonEmptyString(derived.stream, 'derived orchestrator stream directory')
   A.caller = requiredNonEmptyString(derived.caller, 'derived orchestrator caller session')
