@@ -356,6 +356,28 @@ class VerdictProvenanceGateTest(unittest.TestCase):
             self.assertIn("reviewer-observed-nit", gh.posted_body)
             self.assertNotIn("caller-fabricated-finding", gh.posted_body)
 
+    def test_reviewer_verdict_return_carries_the_reviewers_findings(self) -> None:
+        # GH-65 RE-review finding A: verdict-publish RETURNS the verified verdict,
+        # head, AND findings it DERIVED from the reviewer's own rollout block, so the
+        # host loop binds the whole advancement decision (verdict + head + fix
+        # findings) to ONE verified source, never the separate LLM binder. A blocking
+        # reviewer rollout returns its own findings for the fix route.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._use_codex_home(Path(raw))
+            _write_codex_rollout(
+                home, SESSION, model=REVIEWER_MODEL, effort=REVIEWER_EFFORT,
+                final_message=_reviewer_message(verdict="blocking", findings=["reviewer-observed-defect"]),
+            )
+            MODULE.run_json = FakeGh(head=HEAD)
+            out = MODULE.command_verdict(
+                _verdict_args(review_type="code", verdict="blocking", reviewer_session_id=SESSION)
+            )
+            self.assertEqual(out["verdict"], "blocking")
+            self.assertEqual(out["head"], HEAD)
+            self.assertEqual(out["findings"], ["reviewer-observed-defect"])
+
     def test_shaping_verdict_publish_needs_no_reviewer_session(self) -> None:
         # Shaping verdict provenance is the separate journal path; a shaping
         # verdict-publish still publishes without a reviewer rollout session, so the

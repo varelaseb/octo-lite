@@ -467,6 +467,37 @@ test('code-review mode returns fix-required with findings on a blocking verdict'
   assert.deepEqual(result.findings, ['bug'])
 })
 
+test('code-review advancement binds to the CLI-verified publication, not the LLM binder, on a mismatch', async () => {
+  // GH-65 RE-review finding A: the loop must advance acceptCodeReview on the CLI-VERIFIED verdict/head
+  // (the one octo-control verdict-publish DERIVED and durably published from the reviewer's own rollout
+  // block), NEVER on the separate LLM binder result. Here the verified publication is BLOCKING at the
+  // reviewed head with the reviewer's real findings, while the LLM binder mis-authored CLEAR at that same
+  // head. Binding to the binder would enter code-clear on an unverified verdict even though a blocking
+  // comment was durably posted; the loop MUST reflect the verified BLOCKING and route to fix.
+  const env = downstreamEntry('code-review', { cycle: 1 })
+  const payload = JSON.stringify({ verdict: 'blocking', findings: ['real-defect'], comment_url: `${PR_URL}#rev` })
+  const { result } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
+    ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+    ['code-reviewer-relay:', relayResult(payload)],
+    ['code-reviewer-rollout:', rolloutFor(payload)],
+    // The LLM binder DISAGREES with the verified publication: it says clear (no findings) at the head.
+    ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
+    // The verified publication (octo-control verdict-publish output) is the authority: blocking at the
+    // reviewed head, carrying the reviewer's own findings.
+    ['code-reviewer-publish:', {
+      card_url: `${PR_URL}#published`, readable: true,
+      verdict: 'blocking', head: NEWHEAD, findings: ['real-defect'],
+    }],
+  ])
+  assert.equal(result.stage, 'fix-required')
+  assert.deepEqual(result.findings, ['real-defect'])
+  // The durable verdict comment is the verified publication's, not the binder's.
+  assert.equal(result.review.comment_url, `${PR_URL}#published`)
+  // The advancement-bound verdict/head are the verified publication's.
+  assert.equal(result.review.verdict, 'blocking')
+})
+
 // ---- fix mode: derives the envelope, spawns implementer, returns code-review-required ----
 test('fix mode derives the envelope, spawns the implementer, and returns code-review-required at the next cycle', async () => {
   const env = downstreamEntry('fix', { cycle: 1, findings: ['bug'] })
