@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -61,11 +62,28 @@ def _write_codex_rollout(
     rollout.write_text("\n".join(lines) + "\n")
 
 
-def _reviewer_message(pr: int = PR, head: str = HEAD) -> str:
-    # A code-reviewer prose verdict message that binds this exact PR and reviewed head.
+def _reviewer_block(
+    verdict: str = "clear", head: str = HEAD, findings: list[str] | None = None,
+    review_type: str = "code",
+) -> str:
+    # The reviewer's OWN structured verdict, the same canonical octo-lite-verdict
+    # marker/TOML octo_lite.runtime.verdict_body emits, carried verbatim in the
+    # reviewer relay's final rollout message. verdict-publish parses THIS
+    # authoritative block, so the published comment IS the reviewer's own verdict
+    # (its verdict, head, and findings), never a caller re-authoring.
+    return MODULE.verdict_body(review_type, verdict, head, [], findings or [], "reviewer-own-receipt")
+
+
+def _reviewer_message(
+    pr: int = PR, head: str = HEAD, verdict: str = "clear", findings: list[str] | None = None,
+) -> str:
+    # A code-reviewer verdict message that names this PR and reviewed head in prose
+    # AND carries the reviewer's authoritative octo-lite-verdict block that
+    # verdict-publish binds the published verdict semantics to.
     return (
         f"Code review of PR {pr} at head {head}.\n"
-        f"verdict: clear -- the committed red and green hold at this exact head.\n"
+        f"verdict: {verdict} -- the committed red and green hold at this exact head.\n"
+        + _reviewer_block(verdict=verdict, head=head, findings=findings)
     )
 
 
@@ -239,6 +257,104 @@ class VerdictProvenanceGateTest(unittest.TestCase):
                 MODULE.command_verdict(
                     _verdict_args(review_type="code", reviewer_session_id=SESSION)
                 )
+
+    def test_blocking_reviewer_rollout_cannot_authorize_a_clear_publish(self) -> None:
+        # GH-65 codex finding 1 (hole 1): a BLOCKING reviewer rollout can never back
+        # a --verdict clear publish. The published verdict binds to the reviewer's
+        # OWN asserted verdict in its authoritative octo-lite-verdict block, so
+        # blocking-as-clear is rejected fail-closed even though the head matches.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._use_codex_home(Path(raw))
+            _write_codex_rollout(
+                home, SESSION, model=REVIEWER_MODEL, effort=REVIEWER_EFFORT,
+                final_message=_reviewer_message(verdict="blocking"),
+            )
+            gh = FakeGh(head=HEAD)
+            MODULE.run_json = gh
+            with self.assertRaises(GateError):
+                MODULE.command_verdict(
+                    _verdict_args(review_type="code", verdict="clear", reviewer_session_id=SESSION)
+                )
+            self.assertEqual(gh.posted_body, "", "no verdict comment may be published on a mismatch")
+
+    def test_cross_target_mention_rollout_is_rejected(self) -> None:
+        # GH-65 codex finding 1 (hole 2): a rollout that REVIEWED a DIFFERENT head
+        # but merely MENTIONS the requested PR/head as prior context is rejected. The
+        # authoritative reviewed head is the reviewer's own verdict block head, not a
+        # prose mention, so a different-target verdict cannot advance this head.
+        import tempfile
+
+        other = "e" * 40
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._use_codex_home(Path(raw))
+            message = (
+                f"Prior context: this follows the earlier review of PR {PR} at head {HEAD}.\n"
+                + _reviewer_message(head=other)
+            )
+            _write_codex_rollout(
+                home, SESSION, model=REVIEWER_MODEL, effort=REVIEWER_EFFORT,
+                final_message=message,
+            )
+            gh = FakeGh(head=HEAD)
+            MODULE.run_json = gh
+            with self.assertRaises(GateError):
+                MODULE.command_verdict(
+                    _verdict_args(review_type="code", head=HEAD, reviewer_session_id=SESSION)
+                )
+            self.assertEqual(gh.posted_body, "", "a cross-target mention may not publish")
+
+    def test_published_verdict_carries_verified_session_and_digest_not_caller_receipt(self) -> None:
+        # GH-65 codex finding 2 (hole 3): the durable published verdict body carries
+        # the VERIFIED reviewer session id and rollout digest as its receipt, never a
+        # caller-supplied --receipt. Readback proves the persisted provenance is the
+        # verified rollout, not caller-authored.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._use_codex_home(Path(raw))
+            payload = _reviewer_message()
+            _write_codex_rollout(
+                home, SESSION, model=REVIEWER_MODEL, effort=REVIEWER_EFFORT, final_message=payload,
+            )
+            gh = FakeGh(head=HEAD)
+            MODULE.run_json = gh
+            MODULE.command_verdict(
+                _verdict_args(
+                    review_type="code", reviewer_session_id=SESSION,
+                    receipt="caller-authored-receipt",
+                )
+            )
+            digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+            self.assertIn(SESSION, gh.posted_body, "published body must carry the verified session id")
+            self.assertIn(digest, gh.posted_body, "published body must carry the verified rollout digest")
+            self.assertNotIn(
+                "caller-authored-receipt", gh.posted_body,
+                "the caller --receipt must never reach the durable verdict body",
+            )
+
+    def test_published_findings_are_the_reviewers_not_caller_authored(self) -> None:
+        # GH-65 codex finding 1: the published findings are the reviewer's OWN, parsed
+        # from its authoritative verdict block, never the caller's --finding values.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._use_codex_home(Path(raw))
+            payload = _reviewer_message(findings=["reviewer-observed-nit"])
+            _write_codex_rollout(
+                home, SESSION, model=REVIEWER_MODEL, effort=REVIEWER_EFFORT, final_message=payload,
+            )
+            gh = FakeGh(head=HEAD)
+            MODULE.run_json = gh
+            MODULE.command_verdict(
+                _verdict_args(
+                    review_type="code", reviewer_session_id=SESSION,
+                    finding=["caller-fabricated-finding"],
+                )
+            )
+            self.assertIn("reviewer-observed-nit", gh.posted_body)
+            self.assertNotIn("caller-fabricated-finding", gh.posted_body)
 
     def test_shaping_verdict_publish_needs_no_reviewer_session(self) -> None:
         # Shaping verdict provenance is the separate journal path; a shaping
