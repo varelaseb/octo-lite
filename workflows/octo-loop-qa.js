@@ -1008,6 +1008,77 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
 // publish DERIVES the published verdict, head, and findings from the reviewer's own authoritative rollout
 // block and persists the verified session id + rollout digest as the receipt. The loop never re-authors
 // the verdict: --verdict/--receipt are omitted so verdict-publish binds exactly the reviewer's own verdict.
+// GH-65 finding A1: the loop runs in a PROCESS-FREE VM sandbox, so it can never trust an LLM agent's
+// CLAIMED verdict for advancement, neither the verdict binder nor the verdict-publish PUBLISHER agent
+// (both are unverified transcriptions). acceptRelayVerdict already returns verdict_payload = the
+// HOST-VERIFIED verbatim reviewer final message (verifyRelayVerbatim, deterministic host code over the
+// independently-read rollout). This DETERMINISTIC host parser extracts {verdict, head, findings} from
+// that verified payload with plain string operations only (no fs, no process, no tomllib), so the
+// advancement decision binds to host-verified data, never an agent claim. It mirrors scripts/octo-control
+// _parse_reviewer_verdict_block EXACTLY (finding A2): require exactly one octo-lite-verdict marker for the
+// review type AND that its fenced toml block be the FINAL non-whitespace content, else fail CLOSED, so an
+// earlier example block or trailing content can never yield clear when the authoritative final verdict is
+// blocking. Because octo-control parses the SAME verbatim message under the SAME rule (re-read via
+// --reviewer-session-id), host advancement and durable publication agree by construction.
+const REVIEW_TYPE_BY_ROLE = { 'code-reviewer': 'code', 'qa-reviewer': 'qa' }
+
+function unquoteTomlScalar(value) {
+  if (value.length >= 2 && value.charAt(0) === '"' && value.charAt(value.length - 1) === '"') {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+function parseVerifiedReviewerVerdict(payload, reviewType) {
+  const text = typeof payload === 'string' ? payload : ''
+  const marker = `<!-- octo-lite-verdict:${reviewType} -->`
+  let count = 0
+  for (let i = text.indexOf(marker); i !== -1; i = text.indexOf(marker, i + marker.length)) count += 1
+  if (count === 0) {
+    throw new Error('verified reviewer verdict rejected: no octo-lite-verdict block in the verified payload')
+  }
+  if (count !== 1) {
+    throw new Error(
+      'verified reviewer verdict rejected: more than one octo-lite-verdict block; the authoritative ' +
+      'verdict must be the single final block, not an earlier example',
+    )
+  }
+  const after = text.slice(text.indexOf(marker) + marker.length)
+  const open = after.indexOf('```toml\n')
+  if (open === -1) throw new Error('verified reviewer verdict rejected: verdict block is not a fenced toml document')
+  const bodyStart = open + '```toml\n'.length
+  const close = after.indexOf('\n```', bodyStart)
+  if (close === -1) throw new Error('verified reviewer verdict rejected: verdict block fence is not closed')
+  if (after.slice(close + '\n```'.length).trim() !== '') {
+    throw new Error('verified reviewer verdict rejected: trailing content after the authoritative verdict block')
+  }
+  const fields = {}
+  for (const rawLine of after.slice(bodyStart, close).split('\n')) {
+    const eq = rawLine.indexOf('=')
+    if (eq === -1) continue
+    fields[rawLine.slice(0, eq).trim()] = rawLine.slice(eq + 1).trim()
+  }
+  if (unquoteTomlScalar(fields.review_type ?? '') !== reviewType) {
+    throw new Error('verified reviewer verdict rejected: verdict block review type mismatch')
+  }
+  const verdict = unquoteTomlScalar(fields.verdict ?? '')
+  if (verdict !== 'clear' && verdict !== 'blocking') {
+    throw new Error('verified reviewer verdict rejected: verdict is not clear or blocking')
+  }
+  const head = unquoteTomlScalar(fields.head ?? '')
+  if (head === '') throw new Error('verified reviewer verdict rejected: verdict block carries no reviewed head')
+  let findings
+  try {
+    findings = JSON.parse(fields.findings ?? '[]')
+  } catch (error) {
+    throw new Error('verified reviewer verdict rejected: verdict block findings malformed')
+  }
+  if (!Array.isArray(findings) || findings.some((item) => typeof item !== 'string')) {
+    throw new Error('verified reviewer verdict rejected: verdict block findings malformed')
+  }
+  return { verdict, head, findings }
+}
+
 async function publishReviewerVerdict(role, phaseTitle, bound, accepted, verdict) {
   // The host loop actively publishes the code verdict (the running loop's real publication site); the
   // review-type is the fixed literal `code`, kept statically checkable by the embedded-cli-drift-probe.
@@ -1137,18 +1208,25 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
   // the required --reviewer-session-id is always available and the running loop never breaks on it.
   verdict.reviewer_session_id = accepted.session_id
   log(`journal reviewer-provenance ${role} ${bound.issue} ${bound.starting_head} session=${accepted.session_id}`)
+  if (emitVerdictBlock) {
+    // GH-65 finding A1: the reviewer emitted its canonical octo-lite-verdict block, so bind the
+    // advancement decision to a DETERMINISTIC HOST PARSE of the host-verified reviewer payload
+    // (accepted.verdict_payload), OVERRIDING the LLM binder above. Neither the binder nor the publisher
+    // agent's claim drives advancement; only this host parse of host-verified data does.
+    const parsed = parseVerifiedReviewerVerdict(accepted.verdict_payload, REVIEW_TYPE_BY_ROLE[role])
+    verdict.verdict = parsed.verdict
+    verdict.head = parsed.head
+    verdict.findings = parsed.findings
+  }
   if (publish) {
     // The host loop (never the reviewer subagent) publishes the durable verdict comment through verdict-
     // publish, routing the verified session id; the published comment IS the reviewer's own gated verdict.
-    // GH-65 RE-review finding A: the ADVANCEMENT decision binds to the CLI-VERIFIED verdict + head +
-    // findings verdict-publish DERIVED from the reviewer's own rollout block, NOT the LLM binder above.
-    // The binder may still mis-author (say clear when the reviewer said blocking); the verified
-    // publication is authoritative, so it OVERRIDES the binder's verdict/head/findings for acceptCodeReview.
+    // GH-65 finding A1: the publisher is a SECOND unverified LLM transcription, so its CLAIMED
+    // verdict/head/findings are NOT trusted for advancement (the host parse above already bound them from
+    // the verified payload; octo-control parses the SAME verbatim message under the SAME rule, so the
+    // durable publication agrees). Only the display comment url, gated by the publisher readback, is used.
     const published = await publish(role, phaseTitle, bound, accepted, verdict)
     verdict.comment_url = published.comment_url
-    verdict.verdict = published.verdict
-    verdict.head = published.head
-    verdict.findings = published.findings
   }
   return verdict
 }
