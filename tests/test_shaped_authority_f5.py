@@ -776,10 +776,16 @@ class VerdictPublishRepoSlugTests(unittest.TestCase):
                 os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
                 GH_HEAD=head, GH_COMMENTS=str(store), GH_CALLS=str(call_log),
             )
+            # Shaping verdict-publish legitimately takes a caller --verdict/--receipt
+            # (with the shaping-only conversation-log reference + cutoff) and needs no
+            # reviewer rollout, so it exercises the review-type-independent slug/path
+            # routing without GH-65's reviewer-session machinery.
             result = subprocess.run(
                 [str(CONTROL), "verdict-publish", "--repo", str(repo),
-                 "--repo-slug", SLUG, "--pr", "7", "--review-type", "code",
-                 "--verdict", "clear", "--head", head, "--receipt", "r-1"],
+                 "--repo-slug", SLUG, "--pr", "7", "--review-type", "shaping",
+                 "--verdict", "clear", "--head", head, "--receipt", "r-1",
+                 "--conversation-log-reference", "log-ref-1",
+                 "--conversation-cutoff", "2026-08-05T00:00:00Z"],
                 capture_output=True, text=True, env=env,
             )
             self.assertEqual(0, result.returncode, result.stderr)
