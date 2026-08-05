@@ -378,6 +378,38 @@ class VerdictProvenanceGateTest(unittest.TestCase):
             self.assertEqual(out["head"], HEAD)
             self.assertEqual(out["findings"], ["reviewer-observed-defect"])
 
+    def test_qa_verdict_with_satisfied_vocab_fails_closed_deferred_to_76(self) -> None:
+        # GH-65 RE-review finding C: QA verdict publication is deferred to issue #76.
+        # The qa reviewer grades with a satisfied/blocking vocabulary, but the
+        # reviewer-rollout block parser (like verdict_body) accepts ONLY
+        # clear/blocking, so a latent standalone qa verdict-publish over a satisfied
+        # block fails CLOSED and posts nothing. No qa verdict publishes in-loop, so no
+        # spec claim asserts one does; the vocabulary reconciliation lands with #76.
+        import tempfile
+
+        satisfied_block = (
+            "<!-- octo-lite-verdict:qa -->\n"
+            "```toml\n"
+            'review_type = "qa"\n'
+            'verdict = "satisfied"\n'
+            f'head = "{HEAD}"\n'
+            "findings = []\n"
+            "```"
+        )
+        message = f"QA review of PR {PR} at head {HEAD}.\n" + satisfied_block
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._use_codex_home(Path(raw))
+            _write_codex_rollout(
+                home, SESSION, model=REVIEWER_MODEL, effort=REVIEWER_EFFORT, final_message=message,
+            )
+            gh = FakeGh(head=HEAD)
+            MODULE.run_json = gh
+            with self.assertRaises(GateError):
+                MODULE.command_verdict(
+                    _verdict_args(review_type="qa", verdict="satisfied", reviewer_session_id=SESSION)
+                )
+            self.assertEqual(gh.posted_body, "", "a satisfied-vocab qa verdict may never publish")
+
     def test_shaping_verdict_publish_needs_no_reviewer_session(self) -> None:
         # Shaping verdict provenance is the separate journal path; a shaping
         # verdict-publish still publishes without a reviewer rollout session, so the
