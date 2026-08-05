@@ -786,6 +786,31 @@ class CutoverConformanceTests(unittest.TestCase):
         self.assertIn("ruling-15", text)
         self.assertIn("TUR-447", text)
 
+    def test_delivery_entry_contract_hash_is_target_agents_md_blob_not_role_blob(self) -> None:
+        # GH-65 loop-binding-fix items 1+2 (role-runtime launch-stream-envelope-sources):
+        # the derived contract_hash is the TARGET worktree AGENTS.md instruction-contract
+        # blob at the reviewed head, produced by `git rev-parse <head>:AGENTS.md`, NEVER a
+        # role contract file blob (roles/<role>.md). The derivation returns the raw git
+        # output as an explicit agents_md_blob field and the loop binds contract_hash to
+        # it fail-closed (well-formed 40-hex AND equal to agents_md_blob) before any worker
+        # spawn, so the LLM's free choice never sets contract_hash. Comments are NOT
+        # stripped here on purpose: the prompt text and the bind are real code/string
+        # literals, and this file's comments deliberately never repeat the asserted tokens.
+        text = (ROOT / "workflows/octo-loop-qa.js").read_text()
+        derive = text[text.index("async function deriveDeliveryEntry"):text.index("async function loopFire")]
+        # Item 1: the derivation prompt sources contract_hash from the target AGENTS.md
+        # blob via git rev-parse and names the role contract file as the FORBIDDEN source.
+        self.assertIn("git rev-parse <head>:AGENTS.md", derive)
+        self.assertIn("roles/<role>.md", derive)
+        # Item 2: agents_md_blob is a REQUIRED derivation-schema field the loop binds.
+        schema = text[text.index("DELIVERY_ENTRY_DERIVATION_SCHEMA"):text.index("PUBLISH_SCHEMA")]
+        self.assertIn("agents_md_blob", schema)
+        # Item 2: fail-closed bind before any worker spawn: contract_hash must be a 40-hex
+        # object id AND must equal the git-derived agents_md_blob, else the loop throws.
+        self.assertRegex(derive, r"A\.contract_hash\s*!==\s*agentsMdBlob")
+        self.assertRegex(derive, r"0-9a-f\]\{40\}")
+        self.assertIn("throw new Error", derive)
+
     def test_loop_runs_on_cwd_and_branch_with_no_trust_root_or_observer(self) -> None:
         # ADR 0003 (drop-loop-trust-root; role-runtime loop-runs-on-cwd-and-branch,
         # launch-provisioning-trust-root; delivery-lifecycle delivery-tdd-reviewer-guard).
