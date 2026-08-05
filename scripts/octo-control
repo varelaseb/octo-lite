@@ -207,18 +207,66 @@ def _read_shaping_verdict_journal(path: Path, issue: str) -> dict:
     return entry
 
 
-def _canonical_shaping_reviewer_identity() -> tuple[str, str]:
-    # Derive the expected reviewer provider identity from the canonical
-    # roles.toml shaping-reviewer runtime (decision-identity-source): the
-    # readback verifies the rollout matches THIS canonical value, like-with-like,
-    # so a journal cannot name its own model/effort and self-authorize.
+def _canonical_reviewer_identity(role_name: str) -> tuple[str, str]:
+    # Derive the expected reviewer relay identity from the canonical roles.toml
+    # runtime (decision-identity-source): the rollout readback verifies the record
+    # matches THIS canonical value, like-with-like, so a self-reported model/effort
+    # can never self-authorize. Every reviewer relay role is openai.
     registry = load_registry(Path(__file__).resolve().parents[1])
-    role = registry.roles.get("shaping-reviewer")
+    role = registry.roles.get(role_name)
     if role is None:
-        raise GateError("canonical roles.toml has no shaping-reviewer role")
+        raise GateError(f"canonical roles.toml has no {role_name} role")
     if role.provider != "openai":
-        raise GateError("canonical shaping-reviewer provider is not openai")
+        raise GateError(f"canonical {role_name} provider is not openai")
     return role.model, role.effort
+
+
+def _canonical_shaping_reviewer_identity() -> tuple[str, str]:
+    return _canonical_reviewer_identity("shaping-reviewer")
+
+
+# GH-65 item 3b verdict provenance (delivery-lifecycle review-comment-artifact,
+# role-runtime role-openai-fail-closed): a published code or qa verdict must be
+# ISSUED by the mapped reviewer relay at the exact reviewed head. verdict-publish
+# resolves the reviewer's codex session id to codex's OWN rollout record
+# (verify_relay_verbatim), proving effective provider=openai and the CANONICAL
+# roles.toml reviewer model/effort, and requires the rollout message to name this
+# exact PR and reviewed head. A publish with no resolvable reviewer rollout, a
+# wrong-identity rollout, or a rollout that reviewed a different head fails closed,
+# so a self-authored or tmp-work verdict can never publish. This REUSES the exact
+# shaping rollout-readback machinery (_rollout_final_message + verify_relay_verbatim),
+# not a parallel provenance mechanism.
+_VERDICT_REVIEWER_ROLE = {"code": "code-reviewer", "qa": "qa-reviewer"}
+
+
+def _verify_rollout_message_binds_head(payload: str, *, pr: int, head: str) -> None:
+    text = payload if isinstance(payload, str) else ""
+    missing: list[str] = []
+    # Exact PR token: `PR `/`#` anchors the front, trailing `(?![0-9])` the back,
+    # so PR 6 does not match PR 60 or PR 16.
+    if not re.search(rf"(?:PR\s*|#)0*{pr}(?![0-9])", text):
+        missing.append("pr")
+    if head not in text:
+        missing.append("head")
+    if missing:
+        raise GateError(
+            "reviewer rollout message does not bind this pr/head: " + ", ".join(missing)
+        )
+
+
+def _verify_reviewer_rollout_binds_head(
+    review_type: str, session_id: str, *, pr: int, head: str, codex_home: Path | None = None,
+) -> str:
+    role_name = _VERDICT_REVIEWER_ROLE[review_type]
+    expected_model, expected_effort = _canonical_reviewer_identity(role_name)
+    payload = _rollout_final_message(session_id, codex_home)
+    verdict_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    verify_relay_verbatim(
+        session_id, payload, verdict_sha256, expected_model, expected_effort,
+        codex_home=codex_home,
+    )
+    _verify_rollout_message_binds_head(payload, pr=pr, head=head)
+    return payload
 
 
 # D4 shaping-verdict journal PRODUCER (role-runtime launch-shaping-authority,
@@ -300,14 +348,14 @@ def command_shaping_verdict_journal_write(args) -> dict:
     }
 
 
-def _rollout_final_message(session_id: str) -> str:
+def _rollout_final_message(session_id: str, codex_home: Path | None = None) -> str:
     # Resolve the verbatim final assistant message from codex's own rollout
     # record. This is the SAME record verify_relay_verbatim proves; reading it
-    # first lets the producer commit to exactly that verbatim payload and its
+    # first lets the caller commit to exactly that verbatim payload and its
     # digest rather than trusting any caller-supplied text.
     from octo_lite.launch import _read_codex_rollout_record  # noqa: E402
 
-    record = _read_codex_rollout_record(session_id)
+    record = _read_codex_rollout_record(session_id, codex_home)
     message = record.get("final_message") or ""
     if not message:
         raise GateError("shaping verdict journal: rollout record has no final assistant message")
@@ -530,12 +578,26 @@ def command_verdict(args) -> dict:
     # gh api, exactly like linear-transition. A filesystem path is never a valid
     # gh slug, so the two are separate arguments and a local path can no longer
     # leak into gh calls.
+    # GH-65 item 3b: a code or qa verdict must carry a reviewer rollout reference.
+    # Check it BEFORE any gh call so a missing reference fails fast fail-closed.
+    review_session = (getattr(args, "reviewer_session_id", None) or "").strip()
+    if args.review_type in _VERDICT_REVIEWER_ROLE and not review_session:
+        raise GateError(
+            f"{args.review_type} verdict-publish requires --reviewer-session-id "
+            "(the reviewer relay rollout that ISSUED this verdict at the reviewed head)"
+        )
     slug = _canonical_slug(args.repo_slug)
     current = run_json(
         ["gh", "pr", "view", str(args.pr), "--repo", slug, "--json", "headRefOid"]
     )["headRefOid"]
     if current != args.head:
         raise GateError("PR HEAD mismatch")
+    # A code/qa verdict binds to a genuine reviewer relay rollout at THIS exact
+    # head; no resolvable reviewer artifact at the head fails closed.
+    if args.review_type in _VERDICT_REVIEWER_ROLE:
+        _verify_reviewer_rollout_binds_head(
+            args.review_type, review_session, pr=args.pr, head=args.head,
+        )
     body = verdict_body(
         args.review_type,
         args.verdict,
@@ -1181,10 +1243,14 @@ def parser() -> argparse.ArgumentParser:
     verdict.add_argument("--repo", required=True, help="local repo path")
     verdict.add_argument("--repo-slug", required=True, help="canonical owner/repo slug for gh api / gh pr view")
     verdict.add_argument("--pr", type=int, required=True)
-    verdict.add_argument("--review-type", choices=["shaping", "code"], required=True)
+    verdict.add_argument("--review-type", choices=["shaping", "code", "qa"], required=True)
     verdict.add_argument("--verdict", choices=["clear", "blocking"], required=True)
     verdict.add_argument("--head", required=True)
     verdict.add_argument("--receipt", required=True)
+    verdict.add_argument(
+        "--reviewer-session-id",
+        help="reviewer relay rollout session id proving a code/qa verdict was issued at the reviewed head",
+    )
     verdict.add_argument("--bound-input", action="append", default=[])
     verdict.add_argument("--finding", action="append", default=[])
     verdict.add_argument("--conversation-log-reference", action="append", default=[])
