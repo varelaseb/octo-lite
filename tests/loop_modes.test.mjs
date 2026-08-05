@@ -412,7 +412,8 @@ test('code-review mode derives the envelope then spawns the code-reviewer throug
     ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
     ['code-reviewer-relay:', relayResult(payload)],
     ['code-reviewer-rollout:', rolloutFor(payload)],
-    ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [], comment_url: `${PR_URL}#rev` }],
+    ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
+    ['code-reviewer-publish:', { card_url: `${PR_URL}#rev`, readable: true }],
   ])
   assert.equal(result.stage, 'code-clear')
   // The envelope was derived before dispatch, then the reviewer ran through the relay path.
@@ -459,7 +460,8 @@ test('code-review mode returns fix-required with findings on a blocking verdict'
     ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
     ['code-reviewer-relay:', relayResult(payload)],
     ['code-reviewer-rollout:', rolloutFor(payload)],
-    ['code-reviewer:', { head: NEWHEAD, verdict: 'blocking', findings: ['bug'], comment_url: `${PR_URL}#rev` }],
+    ['code-reviewer:', { head: NEWHEAD, verdict: 'blocking', findings: ['bug'] }],
+    ['code-reviewer-publish:', { card_url: `${PR_URL}#rev`, readable: true }],
   ])
   assert.equal(result.stage, 'fix-required')
   assert.deepEqual(result.findings, ['bug'])

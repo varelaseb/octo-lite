@@ -591,14 +591,19 @@ const mode = A.mode ?? 'implement'
 
 // Schema-forced structured-result shapes. A worker echoes the bound issue and delivered facts; the
 // loop no longer runs an ack-echo two-phase gate (ADR 0003), so the ack is a plain structured field.
+// GH-65 finding 2: the reviewer binder no longer posts the verdict comment (the host loop publishes it
+// through octo-control verdict-publish bound to the reviewer rollout), so comment_url is supplied by the
+// host publication, not required from the binder. reviewer_session_id is the verified session the loop
+// surfaces onto the review result for the journal and downstream publication.
 const REVIEW_SCHEMA = {
   type: 'object',
-  required: ['head', 'verdict', 'findings', 'comment_url'],
+  required: ['head', 'verdict', 'findings'],
   properties: {
     head: { type: 'string' },
     verdict: { enum: ['clear', 'blocking', 'ambiguous'] },
     findings: { type: 'array', items: { type: 'string' } },
     comment_url: { type: 'string' },
+    reviewer_session_id: { type: 'string' },
   },
 }
 
@@ -679,6 +684,7 @@ const QA_REVIEW_SCHEMA = {
     manifest: { type: 'string' },
     criteria: { type: 'array', items: CRITERION_SCHEMA },
     packet_url: { type: 'string' },
+    reviewer_session_id: { type: 'string' },
   },
 }
 
@@ -979,7 +985,36 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
 // contained worktree path, and the canonical contract TEXT into the relay prompt, reads the rollout
 // record through a SEPARATE independent Explore subagent, and binds the verdict from the verbatim relay
 // payload. The OpenAI reviewer roles never use the plain spawnWorker path.
-async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { admission, accept } = {}) {
+// GH-65 finding 2: publish a code/qa verdict through octo-control verdict-publish FROM THE HOST LOOP,
+// which independently read+verified the reviewer rollout and holds the verified session id. The command
+// routes that verified session id as --reviewer-session-id (item-3b's now-required arg), and verdict-
+// publish DERIVES the published verdict, head, and findings from the reviewer's own authoritative rollout
+// block and persists the verified session id + rollout digest as the receipt. The loop never re-authors
+// the verdict: --verdict/--receipt are omitted so verdict-publish binds exactly the reviewer's own verdict.
+async function publishReviewerVerdict(role, phaseTitle, bound, accepted, verdict) {
+  // The host loop actively publishes the code verdict (the running loop's real publication site); the
+  // review-type is the fixed literal `code`, kept statically checkable by the embedded-cli-drift-probe.
+  if (role !== 'code-reviewer') throw new Error(`host verdict publication is code-review only, not ${role}`)
+  const slug = ghRepoSlug()
+  const repo = required(A.repo, 'repo')
+  const sessionId = requiredNonEmptyString(accepted.session_id, 'verified reviewer session id')
+  const head = requiredNonEmptyString(verdict.head, 'reviewer verdict head')
+  const command = `octo-control verdict-publish --repo ${shellQuote(repo)} --repo-slug ${shellQuote(slug)} --pr ${shellQuote(String(bound.pr))} --review-type code --head ${shellQuote(head)} --reviewer-session-id ${shellQuote(sessionId)}`
+  const published = await agent([
+    `You are a fresh octo-lite verdict publisher for the ${role} verdict of ${bound.issue}. One pass.`,
+    'Run EXACTLY this command and report the published verdict comment. It binds the published verdict to',
+    'the reviewer relay rollout (verify_relay_verbatim) and persists the verified session id and rollout',
+    'digest; never re-author, soften, or restate the verdict here:',
+    command,
+    'Return card_url (the published verdict comment html_url) and readable true only on a clean publish.',
+  ].join('\n'), { label: `${role}-publish:${bound.issue}`, phase: phaseTitle, schema: PUBLISH_SCHEMA, effort: 'low' })
+  if (published === null || published.readable !== true) {
+    throw new Error(`${role} verdict not published through verdict-publish`)
+  }
+  return requiredNonEmptyString(published.card_url, `${role} verdict comment URL`)
+}
+
+async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { admission, accept, publish, emitVerdictBlock } = {}) {
   const admit = admission ?? { purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') }
   assertAdmission(admit)
   const acceptRelay = accept ?? acceptOpenaiReviewRelay
@@ -1026,8 +1061,15 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
     'NEVER restart the pass from scratch and NEVER spawn a NEW session on a cut: a restart loses progress and creates provenance ambiguity.',
     'The review pass is READ-ONLY end to end. Bootstrap read-only first (-s read-only) and, on any resume, select the STILL-read-only sandbox ONLY through -c sandbox_mode="read-only"; NEVER resume into workspace-write, NEVER grant network_access, and NEVER use the top-level -s flag on resume.',
     'This LANE supplies every live GitHub and Linear fact the reviewer needs as bound inputs above, and this LANE (never the relay) posts any verdict; the relay only runs the read-only codex pass.',
+    // GH-65 finding 1: the reviewer's final message must carry its OWN structured verdict as the canonical
+    // octo-lite-verdict fenced block (marker `<!-- octo-lite-verdict:code -->` then a ```toml``` document
+    // with review_type, verdict clear|blocking, the exact reviewed head, and its findings), so the host
+    // loop's verdict-publish binds and publishes THAT authoritative block verbatim rather than a re-authoring.
+    emitVerdictBlock
+      ? 'The codex reviewer MUST end its final message with the canonical octo-lite-verdict block: the exact marker line for this review type, then a fenced ```toml``` document carrying review_type, verdict (clear or blocking), the exact 40-hex reviewed head, and its findings. The host loop parses and publishes THAT authoritative block, so it must be exactly what the reviewer asserted, verbatim.'
+      : '',
     'Return the codex final assistant message VERBATIM as payload (never summarize or edit it), the claimed_session_id, bootstrap_argv, resume_argv, worktree_before, and worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',
-  ].join('\n\n')
+  ].filter(Boolean).join('\n\n')
   const relay = await agent(relayPrompt, {
     label: `${role}-relay:${bound.issue}`, phase: phaseTitle, schema: RELAY_SCHEMA,
   })
@@ -1051,17 +1093,29 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
   // or a top-level -s resume all reject here.
   const accepted = acceptRelay(role, runtime, relay, rollout)
   // The verified rollout final message is the reviewer verdict payload; the reviewer verdict envelope is
-  // bound from the relay pass strictly from that verbatim message.
+  // bound from the relay pass strictly from that verbatim message. When the host loop publishes the
+  // verdict (code/qa, finding 2), the binder does NOT post any comment: the host publishes it through
+  // verdict-publish bound to the reviewer rollout, so a comment is never posted outside that gate.
   const verdict = await agent([
     `You are the ${role} verdict binder for this relay pass. One pass only; read-only.`,
     'The reviewer message is the verified verbatim codex final message below; bind the verdict',
-    'envelope (verdict/findings/urls) strictly from it. Never re-author or soften it:',
+    'envelope (verdict/findings/head) strictly from it. Never re-author or soften it.',
+    publish ? 'Do NOT post any verdict comment: the host loop publishes the verdict through the verdict-publish gate bound to the reviewer rollout.' : '',
     accepted.verdict_payload,
     brief,
-  ].join('\n\n'), {
+  ].filter(Boolean).join('\n\n'), {
     label: `${role}:${bound.issue}`, phase: phaseTitle, schema, agentType: 'Explore',
   })
   if (verdict === null) throw new Error(`${role} verdict binding returned no result`)
+  // GH-65 finding 2: surface the VERIFIED reviewer session id onto the review result and journal it, so
+  // the required --reviewer-session-id is always available and the running loop never breaks on it.
+  verdict.reviewer_session_id = accepted.session_id
+  log(`journal reviewer-provenance ${role} ${bound.issue} ${bound.starting_head} session=${accepted.session_id}`)
+  if (publish) {
+    // The host loop (never the reviewer subagent) publishes the durable verdict comment through verdict-
+    // publish, routing the verified session id; the published comment IS the reviewer's own gated verdict.
+    verdict.comment_url = await publish(role, phaseTitle, bound, accepted, verdict)
+  }
   return verdict
 }
 
@@ -1377,7 +1431,9 @@ if (mode === 'code-review') {
   // The OpenAI code reviewer runs through the codex relay path with independent rollout provenance
   // (role-openai-relay, role-openai-fail-closed), NOT the generic native worker path. This is the
   // delivery-TDD guard (delivery-tdd-reviewer-guard).
-  const review = await spawnOpenaiReviewer('code-reviewer', 'Code Review', head, REVIEW_SCHEMA)
+  const review = await spawnOpenaiReviewer('code-reviewer', 'Code Review', head, REVIEW_SCHEMA, {
+    publish: publishReviewerVerdict, emitVerdictBlock: true,
+  })
   if (review.verdict === 'ambiguous') {
     return { stage: 'return-to-shaping', issue: A.issue, head, review }
   }
