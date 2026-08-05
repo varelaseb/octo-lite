@@ -591,14 +591,19 @@ const mode = A.mode ?? 'implement'
 
 // Schema-forced structured-result shapes. A worker echoes the bound issue and delivered facts; the
 // loop no longer runs an ack-echo two-phase gate (ADR 0003), so the ack is a plain structured field.
+// GH-65 finding 2: the reviewer binder no longer posts the verdict comment (the host loop publishes it
+// through octo-control verdict-publish bound to the reviewer rollout), so comment_url is supplied by the
+// host publication, not required from the binder. reviewer_session_id is the verified session the loop
+// surfaces onto the review result for the journal and downstream publication.
 const REVIEW_SCHEMA = {
   type: 'object',
-  required: ['head', 'verdict', 'findings', 'comment_url'],
+  required: ['head', 'verdict', 'findings'],
   properties: {
     head: { type: 'string' },
     verdict: { enum: ['clear', 'blocking', 'ambiguous'] },
     findings: { type: 'array', items: { type: 'string' } },
     comment_url: { type: 'string' },
+    reviewer_session_id: { type: 'string' },
   },
 }
 
@@ -679,6 +684,7 @@ const QA_REVIEW_SCHEMA = {
     manifest: { type: 'string' },
     criteria: { type: 'array', items: CRITERION_SCHEMA },
     packet_url: { type: 'string' },
+    reviewer_session_id: { type: 'string' },
   },
 }
 
@@ -702,7 +708,7 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     'lane', 'lane_issue', 'branch', 'branch_issue',
     'shaping_verdict', 'shaping_verdict_head', 'shaping_head_descends',
     'shaping_reviewer_receipt',
-    'spec_blobs', 'adr_blobs', 'contract_hash', 'brief',
+    'spec_blobs', 'adr_blobs', 'contract_hash', 'agents_md_blob', 'brief',
     'stream', 'caller', 'parent',
   ],
   properties: {
@@ -729,6 +735,7 @@ const DELIVERY_ENTRY_DERIVATION_SCHEMA = {
     spec_blobs: { type: 'array', items: { type: 'string' } },
     adr_blobs: { type: 'array', items: { type: 'string' } },
     contract_hash: { type: 'string' },
+    agents_md_blob: { type: 'string' },
     brief: { type: 'string' },
     stream: { type: 'string' },
     caller: { type: 'string' },
@@ -742,6 +749,23 @@ const PUBLISH_SCHEMA = {
   properties: {
     card_url: { type: 'string' },
     readable: { type: 'boolean' },
+  },
+}
+
+// GH-65 RE-review finding A: the reviewer verdict publisher returns, in ADDITION to the published
+// comment url, the exact verdict + head + findings octo-control verdict-publish DERIVED from the
+// reviewer's OWN authoritative rollout block. The host loop binds acceptCodeReview to THESE verified
+// values, never the separate LLM binder, so a binder that disagrees at the same head cannot advance an
+// unverified verdict past the durably published one.
+const REVIEWER_PUBLISH_SCHEMA = {
+  type: 'object',
+  required: ['card_url', 'readable', 'verdict', 'head', 'findings'],
+  properties: {
+    card_url: { type: 'string' },
+    readable: { type: 'boolean' },
+    verdict: { type: 'string' },
+    head: { type: 'string' },
+    findings: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -978,7 +1002,208 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
 // contained worktree path, and the canonical contract TEXT into the relay prompt, reads the rollout
 // record through a SEPARATE independent Explore subagent, and binds the verdict from the verbatim relay
 // payload. The OpenAI reviewer roles never use the plain spawnWorker path.
-async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { admission, accept } = {}) {
+// GH-65 finding 2: publish a code/qa verdict through octo-control verdict-publish FROM THE HOST LOOP,
+// which independently read+verified the reviewer rollout and holds the verified session id. The command
+// routes that verified session id as --reviewer-session-id (item-3b's now-required arg), and verdict-
+// publish DERIVES the published verdict, head, and findings from the reviewer's own authoritative rollout
+// block and persists the verified session id + rollout digest as the receipt. The loop never re-authors
+// the verdict: --verdict/--receipt are omitted so verdict-publish binds exactly the reviewer's own verdict.
+// GH-65 finding A1: the loop runs in a PROCESS-FREE VM sandbox, so it can never trust an LLM agent's
+// CLAIMED verdict for advancement, neither the verdict binder nor the verdict-publish PUBLISHER agent
+// (both are unverified transcriptions). acceptRelayVerdict already returns verdict_payload = the
+// HOST-VERIFIED verbatim reviewer final message (verifyRelayVerbatim, deterministic host code over the
+// independently-read rollout). This DETERMINISTIC host parser extracts {verdict, head, findings} from
+// that verified payload with plain string operations only (no fs, no process, no tomllib), so the
+// advancement decision binds to host-verified data, never an agent claim. It mirrors scripts/octo-control
+// _parse_reviewer_verdict_block EXACTLY (finding A2): require exactly one octo-lite-verdict marker for the
+// review type AND that its fenced toml block be the FINAL non-whitespace content, else fail CLOSED, so an
+// earlier example block or trailing content can never yield clear when the authoritative final verdict is
+// blocking. Because octo-control parses the SAME verbatim message under the SAME rule (re-read via
+// --reviewer-session-id), host advancement and durable publication agree by construction.
+const REVIEW_TYPE_BY_ROLE = { 'code-reviewer': 'code', 'qa-reviewer': 'qa' }
+
+// GH-65 finding A (parser equivalence): the ONE strict canonical verdict-block grammar,
+// enforced byte-for-byte identically here and in scripts/octo-control
+// _parse_reviewer_verdict_block. The fenced toml body is a FLAT sequence of `key = value`
+// lines drawn ONLY from this canonical key set (exactly what octo_lite.runtime.verdict_body
+// emits). A toml TABLE header, an array-of-tables, a duplicate key, an unknown key, or a
+// non key=value line fails CLOSED. Because both parsers run this same algorithm they accept
+// and reject exactly the same blocks, so host advancement can never derive a different
+// verdict than durable publication from the same verified payload.
+const CANONICAL_VERDICT_KEYS = new Set([
+  'schema_version', 'review_type', 'verdict', 'head', 'bound_inputs',
+  'findings', 'reviewer_receipt', 'conversation_log_references', 'conversation_cutoff',
+])
+
+function unquoteTomlScalar(value) {
+  if (value.length >= 2 && value.charAt(0) === '"' && value.charAt(value.length - 1) === '"') {
+    return value.slice(1, -1)
+  }
+  return value
+}
+
+// A canonical string array is a JSON array whose every element is a string; anything else
+// (non-array, non-string element, unparseable) is noncanonical. Mirrors the Python
+// _parse_canonical_string_array so findings and bound_inputs validate identically.
+function parseCanonicalStringArray(raw) {
+  let value
+  try {
+    value = JSON.parse(raw)
+  } catch (error) {
+    return null
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) return null
+  return value
+}
+
+// GH-65 Part 2: the ONE byte-level whitespace rule both verdict-block parsers share. The canonical
+// grammar trims/blank-checks with exactly the ASCII whitespace set {0x09 tab, 0x0A LF, 0x0B VT, 0x0C FF,
+// 0x0D CR, 0x20 space}, NEVER JS trim()/Python str.strip(), which disagree on Unicode (JS trim strips
+// U+FEFF/U+2028/U+2029/U+00A0 but not U+0085; Python strip strips U+0085/U+00A0 but not U+FEFF). Any
+// surrounding NON-ASCII-whitespace character is therefore CONTENT and is rejected identically by both
+// implementations, so the two accept and reject byte-for-byte the same blocks (proved forever by the
+// cross-language differential fixture/test). The Python mirror is scripts/octo-control _ascii_trim.
+const ASCII_WHITESPACE = new Set([0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20])
+function asciiTrim(value) {
+  let start = 0
+  let end = value.length
+  while (start < end && ASCII_WHITESPACE.has(value.charCodeAt(start))) start += 1
+  while (end > start && ASCII_WHITESPACE.has(value.charCodeAt(end - 1))) end -= 1
+  return value.slice(start, end)
+}
+
+function parseVerifiedReviewerVerdict(payload, reviewType) {
+  const text = typeof payload === 'string' ? payload : ''
+  const marker = `<!-- octo-lite-verdict:${reviewType} -->`
+  let count = 0
+  for (let i = text.indexOf(marker); i !== -1; i = text.indexOf(marker, i + marker.length)) count += 1
+  if (count === 0) {
+    throw new Error('verified reviewer verdict rejected: no octo-lite-verdict block in the verified payload')
+  }
+  if (count !== 1) {
+    throw new Error(
+      'verified reviewer verdict rejected: more than one octo-lite-verdict block; the authoritative ' +
+      'verdict must be the single final block, not an earlier example',
+    )
+  }
+  const after = text.slice(text.indexOf(marker) + marker.length)
+  const open = after.indexOf('```toml\n')
+  if (open === -1) throw new Error('verified reviewer verdict rejected: verdict block is not a fenced toml document')
+  const bodyStart = open + '```toml\n'.length
+  const close = after.indexOf('\n```', bodyStart)
+  if (close === -1) throw new Error('verified reviewer verdict rejected: verdict block fence is not closed')
+  if (asciiTrim(after.slice(close + '\n```'.length)) !== '') {
+    throw new Error('verified reviewer verdict rejected: trailing content after the authoritative verdict block')
+  }
+  // Strict flat-line canonical grammar (see CANONICAL_VERDICT_KEYS): reject a table
+  // header, an array-of-tables, a duplicate key, an unknown key, or a non key=value line
+  // so a block that hides a `[metadata]` table flipping the verdict can never be silently
+  // reduced to a single top-level assignment (the codex reproducer).
+  const fields = {}
+  for (const rawLine of after.slice(bodyStart, close).split('\n')) {
+    const line = asciiTrim(rawLine)
+    if (line === '') continue
+    if (/^\[.*\]$/.test(line)) {
+      throw new Error('verified reviewer verdict rejected: verdict block carries a toml table header; the canonical body is a flat key = value sequence')
+    }
+    const eq = line.indexOf('=')
+    if (eq === -1) {
+      throw new Error('verified reviewer verdict rejected: verdict block carries a non key = value line')
+    }
+    const key = asciiTrim(line.slice(0, eq))
+    if (Object.prototype.hasOwnProperty.call(fields, key)) {
+      throw new Error('verified reviewer verdict rejected: verdict block carries a duplicate key')
+    }
+    if (!CANONICAL_VERDICT_KEYS.has(key)) {
+      throw new Error('verified reviewer verdict rejected: verdict block carries an unknown key')
+    }
+    fields[key] = asciiTrim(line.slice(eq + 1))
+  }
+  for (const requiredKey of ['review_type', 'verdict', 'head', 'findings']) {
+    if (!Object.prototype.hasOwnProperty.call(fields, requiredKey)) {
+      throw new Error('verified reviewer verdict rejected: verdict block is missing a required canonical key')
+    }
+  }
+  if (unquoteTomlScalar(fields.review_type) !== reviewType) {
+    throw new Error('verified reviewer verdict rejected: verdict block review type mismatch')
+  }
+  const verdict = unquoteTomlScalar(fields.verdict)
+  if (verdict !== 'clear' && verdict !== 'blocking') {
+    throw new Error('verified reviewer verdict rejected: verdict is not clear or blocking')
+  }
+  const head = unquoteTomlScalar(fields.head)
+  if (!/^[0-9a-f]{40}$/.test(head)) {
+    throw new Error('verified reviewer verdict rejected: verdict block head is not a 40-hex object id')
+  }
+  const findings = parseCanonicalStringArray(fields.findings)
+  if (findings === null) {
+    throw new Error('verified reviewer verdict rejected: verdict block findings malformed')
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(fields, 'bound_inputs') &&
+    parseCanonicalStringArray(fields.bound_inputs) === null
+  ) {
+    throw new Error('verified reviewer verdict rejected: verdict block bound_inputs malformed')
+  }
+  return { verdict, head, findings }
+}
+
+async function publishReviewerVerdict(role, phaseTitle, bound, accepted, verdict) {
+  // The host loop actively publishes the code verdict (the running loop's real publication site); the
+  // review-type is the fixed literal `code`, kept statically checkable by the embedded-cli-drift-probe.
+  if (role !== 'code-reviewer') throw new Error(`host verdict publication is code-review only, not ${role}`)
+  const slug = ghRepoSlug()
+  const repo = required(A.repo, 'repo')
+  const sessionId = requiredNonEmptyString(accepted.session_id, 'verified reviewer session id')
+  const head = requiredNonEmptyString(verdict.head, 'reviewer verdict head')
+  const command = `octo-control verdict-publish --repo ${shellQuote(repo)} --repo-slug ${shellQuote(slug)} --pr ${shellQuote(String(bound.pr))} --review-type code --head ${shellQuote(head)} --reviewer-session-id ${shellQuote(sessionId)}`
+  const published = await agent([
+    `You are a fresh octo-lite verdict publisher for the ${role} verdict of ${bound.issue}. One pass.`,
+    'Run EXACTLY this command and report the published verdict comment. It binds the published verdict to',
+    'the reviewer relay rollout (verify_relay_verbatim) and persists the verified session id and rollout',
+    'digest; never re-author, soften, or restate the verdict here:',
+    command,
+    'The command prints a JSON object with url, head, verdict, and findings it DERIVED from the reviewer\'s',
+    'own rollout block. Return card_url as its url (the published verdict comment html_url), readable true',
+    'only on a clean publish, and verdict, head, and findings COPIED VERBATIM from that command output.',
+  ].join('\n'), { label: `${role}-publish:${bound.issue}`, phase: phaseTitle, schema: REVIEWER_PUBLISH_SCHEMA, effort: 'low' })
+  if (published === null || published.readable !== true) {
+    throw new Error(`${role} verdict not published through verdict-publish`)
+  }
+  // GH-65 RE-review finding A: return the CLI-VERIFIED verdict + head + findings (the authoritative
+  // published decision) alongside the comment url, so the loop advances on them, never the LLM binder.
+  return {
+    comment_url: requiredNonEmptyString(published.card_url, `${role} verdict comment URL`),
+    verdict: requiredNonEmptyString(published.verdict, `${role} verified verdict`),
+    head: requiredNonEmptyString(published.head, `${role} verified verdict head`),
+    findings: Array.isArray(published.findings) ? published.findings : [],
+  }
+}
+
+// GH-65 Part 1, the security close (role-runtime role-openai-fail-closed; delivery-lifecycle
+// review-comment-advancement-fails-closed; GH-75 trust-boundary-fails-closed): advance-to-code-clear
+// FAILS CLOSED on ANY publish uncertainty. The deterministic host parse already bound the advancement
+// verdict from host-verified data; a CLEAR advancement additionally REQUIRES the durable publication to
+// return an unambiguous success whose OWN derived verdict is exactly clear at the SAME reviewed head the
+// host parse bound. Anything short of that -- a publisher verdict that is not exactly 'clear' (the
+// durable publication came back blocking, ambiguous, or missing) or a publisher head that does not equal
+// the host-parsed reviewed head -- can NEVER reach code-clear: it throws here, so a false CLEAR is
+// impossible while a false BLOCK is a tolerated safe annoyance. A BLOCKING host parse already routes to
+// a fix pass and can never false-clear, so binding stays on that host-verified blocking verdict with no
+// publisher cross-check on the safe side. (A publish failure/throw and a missing/ambiguous publisher
+// success are already rejected inside the publisher before this runs; this closes the remaining gap
+// where a publisher success CLAIM disagrees with the host-verified clear.)
+function assertPublishedClearAgrees(hostParsed, published) {
+  if (hostParsed.verdict !== 'clear') return
+  if (published.verdict !== 'clear') {
+    throw new Error('advance-to-code-clear rejected: durable publication did not confirm a clear verdict')
+  }
+  if (published.head !== hostParsed.head) {
+    throw new Error('advance-to-code-clear rejected: durable publication head does not match the host-parsed reviewed head')
+  }
+}
+
+async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { admission, accept, publish, emitVerdictBlock } = {}) {
   const admit = admission ?? { purpose: 'delivery', role, linearState: required(A.linear_state, 'linear state') }
   assertAdmission(admit)
   const acceptRelay = accept ?? acceptOpenaiReviewRelay
@@ -1025,8 +1250,15 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
     'NEVER restart the pass from scratch and NEVER spawn a NEW session on a cut: a restart loses progress and creates provenance ambiguity.',
     'The review pass is READ-ONLY end to end. Bootstrap read-only first (-s read-only) and, on any resume, select the STILL-read-only sandbox ONLY through -c sandbox_mode="read-only"; NEVER resume into workspace-write, NEVER grant network_access, and NEVER use the top-level -s flag on resume.',
     'This LANE supplies every live GitHub and Linear fact the reviewer needs as bound inputs above, and this LANE (never the relay) posts any verdict; the relay only runs the read-only codex pass.',
+    // GH-65 finding 1: the reviewer's final message must carry its OWN structured verdict as the canonical
+    // octo-lite-verdict fenced block (marker `<!-- octo-lite-verdict:code -->` then a ```toml``` document
+    // with review_type, verdict clear|blocking, the exact reviewed head, and its findings), so the host
+    // loop's verdict-publish binds and publishes THAT authoritative block verbatim rather than a re-authoring.
+    emitVerdictBlock
+      ? 'The codex reviewer MUST end its final message with the canonical octo-lite-verdict block: the exact marker line for this review type, then a fenced ```toml``` document carrying review_type, verdict (clear or blocking), the exact 40-hex reviewed head, and its findings. The host loop parses and publishes THAT authoritative block, so it must be exactly what the reviewer asserted, verbatim.'
+      : '',
     'Return the codex final assistant message VERBATIM as payload (never summarize or edit it), the claimed_session_id, bootstrap_argv, resume_argv, worktree_before, and worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',
-  ].join('\n\n')
+  ].filter(Boolean).join('\n\n')
   const relay = await agent(relayPrompt, {
     label: `${role}-relay:${bound.issue}`, phase: phaseTitle, schema: RELAY_SCHEMA,
   })
@@ -1050,17 +1282,52 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
   // or a top-level -s resume all reject here.
   const accepted = acceptRelay(role, runtime, relay, rollout)
   // The verified rollout final message is the reviewer verdict payload; the reviewer verdict envelope is
-  // bound from the relay pass strictly from that verbatim message.
+  // bound from the relay pass strictly from that verbatim message. When the host loop publishes the
+  // verdict (code/qa, finding 2), the binder does NOT post any comment: the host publishes it through
+  // verdict-publish bound to the reviewer rollout, so a comment is never posted outside that gate.
   const verdict = await agent([
     `You are the ${role} verdict binder for this relay pass. One pass only; read-only.`,
     'The reviewer message is the verified verbatim codex final message below; bind the verdict',
-    'envelope (verdict/findings/urls) strictly from it. Never re-author or soften it:',
+    'envelope (verdict/findings/head) strictly from it. Never re-author or soften it.',
+    publish ? 'Do NOT post any verdict comment: the host loop publishes the verdict through the verdict-publish gate bound to the reviewer rollout.' : '',
     accepted.verdict_payload,
     brief,
-  ].join('\n\n'), {
+  ].filter(Boolean).join('\n\n'), {
     label: `${role}:${bound.issue}`, phase: phaseTitle, schema, agentType: 'Explore',
   })
   if (verdict === null) throw new Error(`${role} verdict binding returned no result`)
+  // GH-65 finding 2: surface the VERIFIED reviewer session id onto the review result and journal it, so
+  // the required --reviewer-session-id is always available and the running loop never breaks on it.
+  verdict.reviewer_session_id = accepted.session_id
+  log(`journal reviewer-provenance ${role} ${bound.issue} ${bound.starting_head} session=${accepted.session_id}`)
+  if (emitVerdictBlock) {
+    // GH-65 finding A1: the reviewer emitted its canonical octo-lite-verdict block, so bind the
+    // advancement decision to a DETERMINISTIC HOST PARSE of the host-verified reviewer payload
+    // (accepted.verdict_payload), OVERRIDING the LLM binder above. Neither the binder nor the publisher
+    // agent's claim drives advancement; only this host parse of host-verified data does.
+    const parsed = parseVerifiedReviewerVerdict(accepted.verdict_payload, REVIEW_TYPE_BY_ROLE[role])
+    verdict.verdict = parsed.verdict
+    verdict.head = parsed.head
+    verdict.findings = parsed.findings
+  }
+  if (publish) {
+    // The host loop (never the reviewer subagent) publishes the durable verdict comment through verdict-
+    // publish, routing the verified session id; the published comment IS the reviewer's own gated verdict.
+    // GH-65 finding A1: the publisher is a SECOND unverified LLM transcription, so its CLAIMED
+    // verdict/head/findings are NOT trusted for advancement (the host parse above already bound them from
+    // the verified payload; octo-control parses the SAME verbatim message under the SAME rule, so the
+    // durable publication agrees). Only the display comment url, gated by the publisher readback, is used.
+    const published = await publish(role, phaseTitle, bound, accepted, verdict)
+    // GH-65 Part 1, the security close: advance-to-code-clear fails CLOSED unless the durable
+    // publication's OWN derived verdict/head agree with the host parse. verdict.{verdict,head} were just
+    // bound from the deterministic host parse of the host-verified payload (emitVerdictBlock branch
+    // above); the publisher already threw on any publish failure / missing verdict|head. This rejects the
+    // remaining fail-open where a publisher success CLAIM (readable:true + a PR-shaped card_url) whose
+    // returned verdict is not clear, or whose head does not equal the reviewed head, would otherwise reach
+    // code-clear. A false BLOCK is a tolerated safe annoyance; a false CLEAR is made impossible.
+    assertPublishedClearAgrees(verdict, published)
+    verdict.comment_url = published.comment_url
+  }
   return verdict
 }
 
@@ -1155,8 +1422,12 @@ async function deriveDeliveryEntry(mode) {
     'From the pinned shaping-review journal, return shaping_verdict, shaping_verdict_head, and',
     'shaping_reviewer_receipt. Compute shaping_head_descends with `git merge-base --is-ancestor',
     '<shaping_verdict_head> <head>`: exit 0 means true, inclusive of equal; otherwise false.',
-    'From live reads at the derived head, return spec_blobs, adr_blobs,',
-    'the resolved implementer contract_hash, and a brief grounded in the issue and signed sources.',
+    'From live reads at the derived head, return spec_blobs, adr_blobs, and a brief grounded in the',
+    'issue and signed sources.',
+    'Return agents_md_blob as the EXACT stdout of `git rev-parse <head>:AGENTS.md` at the reviewed',
+    'head: the TARGET worktree AGENTS.md instruction-contract blob a reviewer verdict binds.',
+    'Return contract_hash as that SAME target AGENTS.md blob, NEVER a role contract file blob such as',
+    'roles/<role>.md; the loop binds contract_hash to agents_md_blob and fails closed on any mismatch.',
     'From the host-owned stream registry, find the orchestrator stream whose stream.toml records this',
     'exact issue and child_role orchestrator, and return stream as its absolute directory, caller as',
     'its recorded child_session, and parent as its recorded parent_session (the notify route); loop',
@@ -1247,6 +1518,25 @@ async function deriveDeliveryEntry(mode) {
   A.spec_blobs = derived.spec_blobs
   A.adr_blobs = derived.adr_blobs
   A.contract_hash = requiredNonEmptyString(derived.contract_hash, 'derived contract hash')
+  // FAIL-CLOSED contract-hash bind (GH-65 loop-binding-fix items 1+2, role-runtime
+  // launch-stream-envelope-sources): contract_hash is the TARGET worktree AGENTS.md
+  // instruction-contract blob at the reviewed head, re-derived every fire from `git
+  // rev-parse <head>:AGENTS.md` (returned as agents_md_blob), NEVER a role contract file
+  // blob and never the LLM's free choice. The loop, not the derivation agent, binds it:
+  // agents_md_blob must be a well-formed 40-hex object id and contract_hash must equal it,
+  // else the pass stops fail-closed before any worker spawn. This runs for EVERY delivery
+  // mode (the derivation is hoisted before mode dispatch), so no mode carries a stale or
+  // role-blob contract_hash into a worker or a bound verdict.
+  const agentsMdBlob = requiredNonEmptyString(derived.agents_md_blob, 'derived AGENTS.md blob')
+  if (!/^[0-9a-f]{40}$/.test(agentsMdBlob)) {
+    throw new Error(`delivery entry rejected: derived AGENTS.md blob ${agentsMdBlob} is not a 40-hex object id`)
+  }
+  if (A.contract_hash !== agentsMdBlob) {
+    throw new Error(
+      `delivery entry rejected: contract_hash ${A.contract_hash} is not the reviewed-head AGENTS.md blob ` +
+      `${agentsMdBlob}; contract_hash must be the target AGENTS.md instruction contract, not a role blob`,
+    )
+  }
   A.brief = requiredNonEmptyString(derived.brief, 'derived pass brief')
   A.stream = requiredNonEmptyString(derived.stream, 'derived orchestrator stream directory')
   A.caller = requiredNonEmptyString(derived.caller, 'derived orchestrator caller session')
@@ -1353,7 +1643,9 @@ if (mode === 'code-review') {
   // The OpenAI code reviewer runs through the codex relay path with independent rollout provenance
   // (role-openai-relay, role-openai-fail-closed), NOT the generic native worker path. This is the
   // delivery-TDD guard (delivery-tdd-reviewer-guard).
-  const review = await spawnOpenaiReviewer('code-reviewer', 'Code Review', head, REVIEW_SCHEMA)
+  const review = await spawnOpenaiReviewer('code-reviewer', 'Code Review', head, REVIEW_SCHEMA, {
+    publish: publishReviewerVerdict, emitVerdictBlock: true,
+  })
   if (review.verdict === 'ambiguous') {
     return { stage: 'return-to-shaping', issue: A.issue, head, review }
   }

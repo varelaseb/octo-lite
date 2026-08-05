@@ -249,21 +249,26 @@ def verdict_body(
     conversation_log_references: list[str] | None = None,
     conversation_cutoff: str = "",
 ) -> str:
-    if review_type not in {"shaping", "code"}:
+    # GH-65 item 3a: qa is a first-class published verdict type. It mirrors code's
+    # per-type invariants: only the shaping verdict carries conversation-log
+    # references and a cutoff; code and qa carry neither.
+    if review_type not in {"shaping", "code", "qa"}:
         raise GateError("invalid review type")
     if verdict not in {"clear", "blocking"}:
         raise GateError("invalid verdict")
     if not head or not receipt:
         raise GateError("head and receipt required")
     references = list(conversation_log_references or [])
-    if review_type == "shaping" and not references:
-        raise GateError("shaping verdict requires conversation log references")
-    if review_type == "code" and references:
-        raise GateError("code verdict does not carry conversation log references")
-    if review_type == "shaping" and not conversation_cutoff:
-        raise GateError("shaping verdict requires a conversation cutoff")
-    if review_type == "code" and conversation_cutoff:
-        raise GateError("code verdict does not carry a conversation cutoff")
+    if review_type == "shaping":
+        if not references:
+            raise GateError("shaping verdict requires conversation log references")
+        if not conversation_cutoff:
+            raise GateError("shaping verdict requires a conversation cutoff")
+    else:
+        if references:
+            raise GateError(f"{review_type} verdict does not carry conversation log references")
+        if conversation_cutoff:
+            raise GateError(f"{review_type} verdict does not carry a conversation cutoff")
     values = {
         "schema_version": 1,
         "review_type": review_type,

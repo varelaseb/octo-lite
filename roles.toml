@@ -31,17 +31,17 @@ when = "operator-launch"
 [roles.orchestrator]
 contract = "roles/orchestrator.md"
 provider = "anthropic"
-model = "claude-opus-4-8[1m]"
-effort = "high"
+model = "claude-fable-5"
+effort = "xhigh"
 mode = "auto"
 session = "persistent"
 execution = "persistent"
 service_tier = "default"
 tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
 required_skills = ["herdr-comms"]
-# Operator choice at spawn: an orchestrator runs on the default opus runtime or,
-# when the operator wants a Fable orchestrator, on the sanctioned Fable runtime.
-alt_runtimes = [{ model = "claude-fable-5", effort = "xhigh" }]
+# Operator ruling 2026-08-03: Fable xhigh is the default orchestrator runtime;
+# the prior opus runtime stays sanctioned as the overload/pivot alternative.
+alt_runtimes = [{ model = "claude-opus-4-8[1m]", effort = "high" }]
 
 [[roles.orchestrator.conditional_skills]]
 skill = "octo-lite-issue-shaper"
@@ -80,7 +80,7 @@ when = "workflow-blocker"
 [roles.implementer]
 contract = "roles/implementer.md"
 provider = "anthropic"
-model = "claude-fable-5"
+model = "claude-opus-5"
 effort = "medium"
 mode = "auto"
 session = "fresh"

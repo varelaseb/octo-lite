@@ -207,18 +207,227 @@ def _read_shaping_verdict_journal(path: Path, issue: str) -> dict:
     return entry
 
 
-def _canonical_shaping_reviewer_identity() -> tuple[str, str]:
-    # Derive the expected reviewer provider identity from the canonical
-    # roles.toml shaping-reviewer runtime (decision-identity-source): the
-    # readback verifies the rollout matches THIS canonical value, like-with-like,
-    # so a journal cannot name its own model/effort and self-authorize.
+def _canonical_reviewer_identity(role_name: str) -> tuple[str, str]:
+    # Derive the expected reviewer relay identity from the canonical roles.toml
+    # runtime (decision-identity-source): the rollout readback verifies the record
+    # matches THIS canonical value, like-with-like, so a self-reported model/effort
+    # can never self-authorize. Every reviewer relay role is openai.
     registry = load_registry(Path(__file__).resolve().parents[1])
-    role = registry.roles.get("shaping-reviewer")
+    role = registry.roles.get(role_name)
     if role is None:
-        raise GateError("canonical roles.toml has no shaping-reviewer role")
+        raise GateError(f"canonical roles.toml has no {role_name} role")
     if role.provider != "openai":
-        raise GateError("canonical shaping-reviewer provider is not openai")
+        raise GateError(f"canonical {role_name} provider is not openai")
     return role.model, role.effort
+
+
+def _canonical_shaping_reviewer_identity() -> tuple[str, str]:
+    return _canonical_reviewer_identity("shaping-reviewer")
+
+
+# GH-65 item 3b verdict provenance (delivery-lifecycle review-comment-artifact,
+# role-runtime role-openai-fail-closed): a published code or qa verdict must be
+# ISSUED by the mapped reviewer relay at the exact reviewed head. verdict-publish
+# resolves the reviewer's codex session id to codex's OWN rollout record
+# (verify_relay_verbatim), proving effective provider=openai and the CANONICAL
+# roles.toml reviewer model/effort, and requires the rollout message to name this
+# exact PR and reviewed head. A publish with no resolvable reviewer rollout, a
+# wrong-identity rollout, or a rollout that reviewed a different head fails closed,
+# so a self-authored or tmp-work verdict can never publish. This REUSES the exact
+# shaping rollout-readback machinery (_rollout_final_message + verify_relay_verbatim),
+# not a parallel provenance mechanism.
+_VERDICT_REVIEWER_ROLE = {"code": "code-reviewer", "qa": "qa-reviewer"}
+
+
+def _verify_rollout_message_binds_head(payload: str, *, pr: int, head: str) -> None:
+    text = payload if isinstance(payload, str) else ""
+    missing: list[str] = []
+    # Exact PR token: `PR `/`#` anchors the front, trailing `(?![0-9])` the back,
+    # so PR 6 does not match PR 60 or PR 16.
+    if not re.search(rf"(?:PR\s*|#)0*{pr}(?![0-9])", text):
+        missing.append("pr")
+    if head not in text:
+        missing.append("head")
+    if missing:
+        raise GateError(
+            "reviewer rollout message does not bind this pr/head: " + ", ".join(missing)
+        )
+
+
+# GH-65 finding A (parser equivalence): the ONE strict canonical verdict-block
+# grammar, enforced byte-for-byte identically here and in the loop parser
+# workflows/octo-loop-qa.js parseVerifiedReviewerVerdict. The fenced toml body is a
+# FLAT sequence of `key = value` lines drawn ONLY from this canonical key set (exactly
+# what verdict_body emits). Both parsers run the same algorithm, so they accept and
+# reject exactly the same blocks: host advancement can never derive a different verdict
+# than durable publication from the same verified payload.
+_CANONICAL_VERDICT_KEYS = {
+    "schema_version", "review_type", "verdict", "head", "bound_inputs",
+    "findings", "reviewer_receipt", "conversation_log_references", "conversation_cutoff",
+}
+
+
+# GH-65 Part 2: the ONE byte-level whitespace rule both verdict-block parsers share, mirroring the JS
+# loop's asciiTrim (workflows/octo-loop-qa.js). The canonical grammar trims/blank-checks with exactly the
+# ASCII whitespace set {0x09 tab, 0x0A LF, 0x0B VT, 0x0C FF, 0x0D CR, 0x20 space}, NEVER str.strip(),
+# which disagrees with JS trim() on Unicode (str.strip strips U+0085/U+00A0 but not U+FEFF; JS trim
+# strips U+FEFF/U+2028/U+2029/U+00A0 but not U+0085). Any surrounding NON-ASCII-whitespace character is
+# therefore CONTENT and is rejected identically by both implementations, so the two accept and reject
+# byte-for-byte the same blocks (proved forever by the cross-language differential test).
+_ASCII_WHITESPACE = "\t\n\x0b\x0c\r "
+
+
+def _ascii_trim(value: str) -> str:
+    return value.strip(_ASCII_WHITESPACE)
+
+
+def _unquote_toml_scalar(value: str) -> str:
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return value
+
+
+def _parse_canonical_string_array(raw: str):
+    # A canonical string array is a JSON array whose every element is a string;
+    # anything else is noncanonical. Mirrors the JS parseCanonicalStringArray so
+    # findings and bound_inputs validate identically across both parsers.
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return None
+    return value
+
+
+def _parse_reviewer_verdict_block(payload: str, review_type: str) -> dict:
+    # GH-65 codex finding 1: the reviewer's OWN structured verdict, the same
+    # canonical octo-lite-verdict marker/TOML octo_lite.runtime.verdict_body emits,
+    # carried verbatim in the reviewer relay's final rollout message. Parsing THIS
+    # authoritative block (not a prose scan, not a caller re-authoring) yields the
+    # reviewer's actual asserted verdict, reviewed head, and findings, so the
+    # published comment IS the reviewer's own verdict.
+    text = payload if isinstance(payload, str) else ""
+    marker = f"<!-- octo-lite-verdict:{review_type} -->"
+    marker_count = text.count(marker)
+    if marker_count == 0:
+        raise GateError(
+            "reviewer rollout message carries no octo-lite-verdict block: the published "
+            "verdict must be the reviewer's own structured verdict, not a caller re-authoring"
+        )
+    # GH-65 finding A2: the authoritative verdict is the SINGLE octo-lite-verdict block
+    # that is the FINAL non-whitespace content of the reviewer message. Splitting on the
+    # first marker and taking the first fence let a BLOCKING review that quotes an earlier
+    # CLEAR example block publish as clear. Require exactly one marker AND that its fenced
+    # toml block end the message, else fail closed (an earlier or trailing block never wins).
+    if marker_count != 1:
+        raise GateError(
+            "reviewer rollout message carries more than one octo-lite-verdict block: the "
+            "authoritative verdict must be the single final block, not an earlier example"
+        )
+    after = text.split(marker, 1)[1]
+    match = re.search(r"```toml\n(.*?)\n```", after, re.DOTALL)
+    if match is None:
+        raise GateError("reviewer verdict block is not a fenced toml document")
+    if _ascii_trim(after[match.end():]) != "":
+        raise GateError(
+            "reviewer verdict block must be the final content of the reviewer message: "
+            "trailing content after the authoritative verdict block is rejected"
+        )
+    # Strict flat-line canonical grammar (see _CANONICAL_VERDICT_KEYS): reject a table
+    # header, an array-of-tables, a duplicate key, an unknown key, or a non key=value line
+    # so a block that hides a `[metadata]` table flipping the verdict can never be parsed
+    # as a top-level assignment separate from that table (the codex reproducer, which the
+    # old tomllib parse kept as top-level blocking while the JS parser overwrote to clear).
+    fields: dict[str, str] = {}
+    for raw_line in match.group(1).split("\n"):
+        line = _ascii_trim(raw_line)
+        if line == "":
+            continue
+        if re.fullmatch(r"\[.*\]", line):
+            raise GateError(
+                "reviewer verdict block carries a toml table header; the canonical "
+                "body is a flat key = value sequence"
+            )
+        eq = line.find("=")
+        if eq == -1:
+            raise GateError("reviewer verdict block carries a non key = value line")
+        key = _ascii_trim(line[:eq])
+        if key in fields:
+            raise GateError("reviewer verdict block carries a duplicate key")
+        if key not in _CANONICAL_VERDICT_KEYS:
+            raise GateError("reviewer verdict block carries an unknown key")
+        fields[key] = _ascii_trim(line[eq + 1:])
+    for required_key in ("review_type", "verdict", "head", "findings"):
+        if required_key not in fields:
+            raise GateError("reviewer verdict block is missing a required canonical key")
+    if _unquote_toml_scalar(fields["review_type"]) != review_type:
+        raise GateError("reviewer verdict block review type does not match the published review type")
+    verdict_value = _unquote_toml_scalar(fields["verdict"])
+    if verdict_value not in {"clear", "blocking"}:
+        raise GateError("reviewer verdict block carries no clear/blocking verdict")
+    reviewed_head = _unquote_toml_scalar(fields["head"])
+    if not re.fullmatch(r"[0-9a-f]{40}", reviewed_head):
+        raise GateError("reviewer verdict block head is not a 40-hex object id")
+    findings = _parse_canonical_string_array(fields["findings"])
+    if findings is None:
+        raise GateError("reviewer verdict block findings malformed")
+    bound_inputs: list[str] = []
+    if "bound_inputs" in fields:
+        parsed_bound_inputs = _parse_canonical_string_array(fields["bound_inputs"])
+        if parsed_bound_inputs is None:
+            raise GateError("reviewer verdict block bound_inputs malformed")
+        bound_inputs = parsed_bound_inputs
+    return {
+        "verdict": verdict_value,
+        "head": reviewed_head,
+        "findings": findings,
+        "bound_inputs": bound_inputs,
+    }
+
+
+def _verify_reviewer_rollout_verdict(
+    review_type: str, session_id: str, *, pr: int, head: str,
+    verdict: str | None = None, codex_home: Path | None = None,
+) -> dict:
+    # Bind the published verdict SEMANTICS to the reviewer's own rollout (codex
+    # finding 1): resolve the relay session to codex's OWN rollout record, prove
+    # provider=openai and the canonical reviewer model/effort (verify_relay_verbatim),
+    # require the message to name this PR/head, then parse the reviewer's
+    # authoritative octo-lite-verdict block and require the reviewed head (and, when
+    # a caller verdict is supplied as a cross-check, the verdict) to EXACTLY equal
+    # the published target. Reject blocking-as-clear and a different-target rollout
+    # that merely mentions the requested PR/head. Returns the reviewer's own verdict,
+    # head, and findings plus the verified session id + rollout digest, so the
+    # published comment persists the reviewer's verdict, not a caller re-authoring.
+    role_name = _VERDICT_REVIEWER_ROLE[review_type]
+    expected_model, expected_effort = _canonical_reviewer_identity(role_name)
+    payload = _rollout_final_message(session_id, codex_home)
+    verdict_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    verify_relay_verbatim(
+        session_id, payload, verdict_sha256, expected_model, expected_effort,
+        codex_home=codex_home,
+    )
+    _verify_rollout_message_binds_head(payload, pr=pr, head=head)
+    block = _parse_reviewer_verdict_block(payload, review_type)
+    if block["head"] != head:
+        raise GateError(
+            "reviewer rollout verdict block reviewed head does not match the published head: "
+            "a different-target rollout cannot back this verdict"
+        )
+    if verdict is not None and block["verdict"] != verdict:
+        raise GateError(
+            f"reviewer rollout asserts verdict '{block['verdict']}', not the published "
+            f"verdict '{verdict}': blocking-as-clear (or any verdict substitution) is rejected"
+        )
+    return {
+        "verdict": block["verdict"],
+        "head": block["head"],
+        "findings": block["findings"],
+        "bound_inputs": block["bound_inputs"],
+        "session_id": session_id,
+        "digest": verdict_sha256,
+    }
 
 
 # D4 shaping-verdict journal PRODUCER (role-runtime launch-shaping-authority,
@@ -300,14 +509,14 @@ def command_shaping_verdict_journal_write(args) -> dict:
     }
 
 
-def _rollout_final_message(session_id: str) -> str:
+def _rollout_final_message(session_id: str, codex_home: Path | None = None) -> str:
     # Resolve the verbatim final assistant message from codex's own rollout
     # record. This is the SAME record verify_relay_verbatim proves; reading it
-    # first lets the producer commit to exactly that verbatim payload and its
+    # first lets the caller commit to exactly that verbatim payload and its
     # digest rather than trusting any caller-supplied text.
     from octo_lite.launch import _read_codex_rollout_record  # noqa: E402
 
-    record = _read_codex_rollout_record(session_id)
+    record = _read_codex_rollout_record(session_id, codex_home)
     message = record.get("final_message") or ""
     if not message:
         raise GateError("shaping verdict journal: rollout record has no final assistant message")
@@ -530,22 +739,60 @@ def command_verdict(args) -> dict:
     # gh api, exactly like linear-transition. A filesystem path is never a valid
     # gh slug, so the two are separate arguments and a local path can no longer
     # leak into gh calls.
+    # GH-65 item 3b: a code or qa verdict must carry a reviewer rollout reference.
+    # Check it BEFORE any gh call so a missing reference fails fast fail-closed.
+    review_session = (getattr(args, "reviewer_session_id", None) or "").strip()
+    if args.review_type in _VERDICT_REVIEWER_ROLE and not review_session:
+        raise GateError(
+            f"{args.review_type} verdict-publish requires --reviewer-session-id "
+            "(the reviewer relay rollout that ISSUED this verdict at the reviewed head)"
+        )
     slug = _canonical_slug(args.repo_slug)
     current = run_json(
         ["gh", "pr", "view", str(args.pr), "--repo", slug, "--json", "headRefOid"]
     )["headRefOid"]
     if current != args.head:
         raise GateError("PR HEAD mismatch")
-    body = verdict_body(
-        args.review_type,
-        args.verdict,
-        args.head,
-        args.bound_input,
-        args.finding,
-        args.receipt,
-        args.conversation_log_reference,
-        args.conversation_cutoff,
-    )
+    # A code/qa verdict binds to a genuine reviewer relay rollout at THIS exact head;
+    # the published verdict, head, and findings are the reviewer's OWN (parsed from
+    # its authoritative octo-lite-verdict block), and the persisted receipt is the
+    # VERIFIED session id + rollout digest, never a caller --receipt (codex findings
+    # 1+2). A verdict substitution, a different-target rollout, or no resolvable
+    # reviewer artifact fails closed.
+    if args.review_type in _VERDICT_REVIEWER_ROLE:
+        reviewer = _verify_reviewer_rollout_verdict(
+            args.review_type, review_session, pr=args.pr, head=args.head, verdict=args.verdict,
+        )
+        published_verdict = reviewer["verdict"]
+        published_head = reviewer["head"]
+        # GH-65 RE-review finding A: the reviewer's OWN findings are part of the
+        # authoritative published verdict, so the host loop binds the whole
+        # advancement decision (verdict + head + fix findings) to this one verified
+        # source, never a separate LLM binder that could disagree on the same head.
+        published_findings = reviewer["findings"]
+        receipt = f"reviewer-session:{reviewer['session_id']} rollout-sha256:{reviewer['digest']}"
+        body = verdict_body(
+            args.review_type,
+            published_verdict,
+            published_head,
+            reviewer["bound_inputs"],
+            published_findings,
+            receipt,
+        )
+    else:
+        published_verdict = args.verdict
+        published_head = args.head
+        published_findings = args.finding
+        body = verdict_body(
+            args.review_type,
+            args.verdict,
+            args.head,
+            args.bound_input,
+            args.finding,
+            args.receipt,
+            args.conversation_log_reference,
+            args.conversation_cutoff,
+        )
     marker = f"<!-- octo-lite-verdict:{args.review_type} -->"
     comments = run_json(
         ["gh", "api", f"repos/{slug}/issues/{args.pr}/comments", "--paginate"]
@@ -572,7 +819,12 @@ def command_verdict(args) -> dict:
     )
     if readback.get("body") != body:
         raise GateError("verdict comment readback mismatch")
-    return {"url": readback["html_url"], "head": args.head, "verdict": args.verdict}
+    return {
+        "url": readback["html_url"],
+        "head": published_head,
+        "verdict": published_verdict,
+        "findings": published_findings,
+    }
 
 
 def command_owner(args) -> dict:
@@ -1180,11 +1432,22 @@ def parser() -> argparse.ArgumentParser:
     verdict = sub.add_parser("verdict-publish")
     verdict.add_argument("--repo", required=True, help="local repo path")
     verdict.add_argument("--repo-slug", required=True, help="canonical owner/repo slug for gh api / gh pr view")
-    verdict.add_argument("--pr", type=int, required=True)
-    verdict.add_argument("--review-type", choices=["shaping", "code"], required=True)
-    verdict.add_argument("--verdict", choices=["clear", "blocking"], required=True)
+    verdict.add_argument("--pr", required=True, help="PR number (owner/repo gh identity)")
+    verdict.add_argument("--review-type", choices=["shaping", "code", "qa"], required=True)
+    # GH-65 codex finding 1: for a code/qa verdict the published verdict is DERIVED
+    # from the reviewer's authoritative rollout block; --verdict is then an optional
+    # caller cross-check (a mismatch is rejected), and the host loop omits it so it
+    # publishes exactly the reviewer's own verdict. A shaping verdict still supplies it.
+    verdict.add_argument("--verdict", choices=["clear", "blocking"])
     verdict.add_argument("--head", required=True)
-    verdict.add_argument("--receipt", required=True)
+    # GH-65 codex finding 2: a code/qa verdict persists the VERIFIED reviewer session
+    # id + rollout digest as its receipt, never a caller --receipt; --receipt stays
+    # optional and is used only by the shaping path.
+    verdict.add_argument("--receipt")
+    verdict.add_argument(
+        "--reviewer-session-id",
+        help="reviewer relay rollout session id proving a code/qa verdict was issued at the reviewed head",
+    )
     verdict.add_argument("--bound-input", action="append", default=[])
     verdict.add_argument("--finding", action="append", default=[])
     verdict.add_argument("--conversation-log-reference", action="append", default=[])
