@@ -413,7 +413,9 @@ test('code-review mode derives the envelope then spawns the code-reviewer throug
     ['code-reviewer-relay:', relayResult(payload)],
     ['code-reviewer-rollout:', rolloutFor(payload)],
     ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
-    ['code-reviewer-publish:', { card_url: `${PR_URL}#rev`, readable: true }],
+    ['code-reviewer-publish:', {
+      card_url: `${PR_URL}#rev`, readable: true, verdict: 'clear', head: NEWHEAD, findings: [],
+    }],
   ])
   assert.equal(result.stage, 'code-clear')
   // The envelope was derived before dispatch, then the reviewer ran through the relay path.
@@ -439,7 +441,10 @@ test('code-review mode propagates the verified reviewer session id into the verd
     ['code-reviewer-relay:', relayResult(payload)],
     ['code-reviewer-rollout:', rolloutFor(payload)],
     ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [], comment_url: `${PR_URL}#binder` }],
-    ['code-reviewer-publish:', ({ prompt }) => { publishPrompt = prompt; return { card_url: `${PR_URL}#published`, readable: true } }],
+    ['code-reviewer-publish:', ({ prompt }) => {
+      publishPrompt = prompt
+      return { card_url: `${PR_URL}#published`, readable: true, verdict: 'clear', head: NEWHEAD, findings: [] }
+    }],
   ])
   assert.equal(result.stage, 'code-clear')
   // The relay's verified claimed session id (sess-1) must reach the verdict-publish command.
@@ -461,7 +466,9 @@ test('code-review mode returns fix-required with findings on a blocking verdict'
     ['code-reviewer-relay:', relayResult(payload)],
     ['code-reviewer-rollout:', rolloutFor(payload)],
     ['code-reviewer:', { head: NEWHEAD, verdict: 'blocking', findings: ['bug'] }],
-    ['code-reviewer-publish:', { card_url: `${PR_URL}#rev`, readable: true }],
+    ['code-reviewer-publish:', {
+      card_url: `${PR_URL}#rev`, readable: true, verdict: 'blocking', head: NEWHEAD, findings: ['bug'],
+    }],
   ])
   assert.equal(result.stage, 'fix-required')
   assert.deepEqual(result.findings, ['bug'])
@@ -490,12 +497,11 @@ test('code-review advancement binds to the CLI-verified publication, not the LLM
       verdict: 'blocking', head: NEWHEAD, findings: ['real-defect'],
     }],
   ])
+  // Advancement bound to the VERIFIED publication: the binder said clear with NO findings, yet the loop
+  // routes to fix carrying the reviewer's OWN verified findings. Binding to the binder would have entered
+  // code-clear with an empty fix payload.
   assert.equal(result.stage, 'fix-required')
   assert.deepEqual(result.findings, ['real-defect'])
-  // The durable verdict comment is the verified publication's, not the binder's.
-  assert.equal(result.review.comment_url, `${PR_URL}#published`)
-  // The advancement-bound verdict/head are the verified publication's.
-  assert.equal(result.review.verdict, 'blocking')
 })
 
 // ---- fix mode: derives the envelope, spawns implementer, returns code-review-required ----

@@ -676,18 +676,24 @@ def command_verdict(args) -> dict:
         )
         published_verdict = reviewer["verdict"]
         published_head = reviewer["head"]
+        # GH-65 RE-review finding A: the reviewer's OWN findings are part of the
+        # authoritative published verdict, so the host loop binds the whole
+        # advancement decision (verdict + head + fix findings) to this one verified
+        # source, never a separate LLM binder that could disagree on the same head.
+        published_findings = reviewer["findings"]
         receipt = f"reviewer-session:{reviewer['session_id']} rollout-sha256:{reviewer['digest']}"
         body = verdict_body(
             args.review_type,
             published_verdict,
             published_head,
             reviewer["bound_inputs"],
-            reviewer["findings"],
+            published_findings,
             receipt,
         )
     else:
         published_verdict = args.verdict
         published_head = args.head
+        published_findings = args.finding
         body = verdict_body(
             args.review_type,
             args.verdict,
@@ -724,7 +730,12 @@ def command_verdict(args) -> dict:
     )
     if readback.get("body") != body:
         raise GateError("verdict comment readback mismatch")
-    return {"url": readback["html_url"], "head": published_head, "verdict": published_verdict}
+    return {
+        "url": readback["html_url"],
+        "head": published_head,
+        "verdict": published_verdict,
+        "findings": published_findings,
+    }
 
 
 def command_owner(args) -> dict:

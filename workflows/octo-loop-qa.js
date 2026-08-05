@@ -752,6 +752,23 @@ const PUBLISH_SCHEMA = {
   },
 }
 
+// GH-65 RE-review finding A: the reviewer verdict publisher returns, in ADDITION to the published
+// comment url, the exact verdict + head + findings octo-control verdict-publish DERIVED from the
+// reviewer's OWN authoritative rollout block. The host loop binds acceptCodeReview to THESE verified
+// values, never the separate LLM binder, so a binder that disagrees at the same head cannot advance an
+// unverified verdict past the durably published one.
+const REVIEWER_PUBLISH_SCHEMA = {
+  type: 'object',
+  required: ['card_url', 'readable', 'verdict', 'head', 'findings'],
+  properties: {
+    card_url: { type: 'string' },
+    readable: { type: 'boolean' },
+    verdict: { type: 'string' },
+    head: { type: 'string' },
+    findings: { type: 'array', items: { type: 'string' } },
+  },
+}
+
 const SEND_SCHEMA = {
   type: 'object',
   required: ['sent'],
@@ -1006,12 +1023,21 @@ async function publishReviewerVerdict(role, phaseTitle, bound, accepted, verdict
     'the reviewer relay rollout (verify_relay_verbatim) and persists the verified session id and rollout',
     'digest; never re-author, soften, or restate the verdict here:',
     command,
-    'Return card_url (the published verdict comment html_url) and readable true only on a clean publish.',
-  ].join('\n'), { label: `${role}-publish:${bound.issue}`, phase: phaseTitle, schema: PUBLISH_SCHEMA, effort: 'low' })
+    'The command prints a JSON object with url, head, verdict, and findings it DERIVED from the reviewer\'s',
+    'own rollout block. Return card_url as its url (the published verdict comment html_url), readable true',
+    'only on a clean publish, and verdict, head, and findings COPIED VERBATIM from that command output.',
+  ].join('\n'), { label: `${role}-publish:${bound.issue}`, phase: phaseTitle, schema: REVIEWER_PUBLISH_SCHEMA, effort: 'low' })
   if (published === null || published.readable !== true) {
     throw new Error(`${role} verdict not published through verdict-publish`)
   }
-  return requiredNonEmptyString(published.card_url, `${role} verdict comment URL`)
+  // GH-65 RE-review finding A: return the CLI-VERIFIED verdict + head + findings (the authoritative
+  // published decision) alongside the comment url, so the loop advances on them, never the LLM binder.
+  return {
+    comment_url: requiredNonEmptyString(published.card_url, `${role} verdict comment URL`),
+    verdict: requiredNonEmptyString(published.verdict, `${role} verified verdict`),
+    head: requiredNonEmptyString(published.head, `${role} verified verdict head`),
+    findings: Array.isArray(published.findings) ? published.findings : [],
+  }
 }
 
 async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { admission, accept, publish, emitVerdictBlock } = {}) {
@@ -1114,7 +1140,15 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
   if (publish) {
     // The host loop (never the reviewer subagent) publishes the durable verdict comment through verdict-
     // publish, routing the verified session id; the published comment IS the reviewer's own gated verdict.
-    verdict.comment_url = await publish(role, phaseTitle, bound, accepted, verdict)
+    // GH-65 RE-review finding A: the ADVANCEMENT decision binds to the CLI-VERIFIED verdict + head +
+    // findings verdict-publish DERIVED from the reviewer's own rollout block, NOT the LLM binder above.
+    // The binder may still mis-author (say clear when the reviewer said blocking); the verified
+    // publication is authoritative, so it OVERRIDES the binder's verdict/head/findings for acceptCodeReview.
+    const published = await publish(role, phaseTitle, bound, accepted, verdict)
+    verdict.comment_url = published.comment_url
+    verdict.verdict = published.verdict
+    verdict.head = published.head
+    verdict.findings = published.findings
   }
   return verdict
 }
