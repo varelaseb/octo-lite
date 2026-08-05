@@ -423,6 +423,34 @@ test('code-review mode derives the envelope then spawns the code-reviewer throug
   assert.ok(labels.some((l) => l.startsWith('code-reviewer-rollout:')), 'independent rollout read required')
 })
 
+test('code-review mode propagates the verified reviewer session id into the verdict-publish call', async () => {
+  // GH-65 codex finding 2: the loop, which independently read+verified the reviewer rollout, holds the
+  // verified session id (acceptRelayVerdict returns it). The host loop (not the reviewer subagent)
+  // publishes the verdict through octo-control verdict-publish, routing that verified session id as
+  // --reviewer-session-id, and surfaces it on the review result so item-3b's required arg never breaks
+  // the running loop.
+  const env = downstreamEntry('code-review', { cycle: 1 })
+  const payload = JSON.stringify({ verdict: 'clear', findings: [] })
+  let publishPrompt = ''
+  const { result } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
+    ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+    ['code-reviewer-relay:', relayResult(payload)],
+    ['code-reviewer-rollout:', rolloutFor(payload)],
+    ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [], comment_url: `${PR_URL}#binder` }],
+    ['code-reviewer-publish:', ({ prompt }) => { publishPrompt = prompt; return { card_url: `${PR_URL}#published`, readable: true } }],
+  ])
+  assert.equal(result.stage, 'code-clear')
+  // The relay's verified claimed session id (sess-1) must reach the verdict-publish command.
+  assert.match(publishPrompt, /octo-control verdict-publish/)
+  assert.match(publishPrompt, /--reviewer-session-id/)
+  assert.match(publishPrompt, /sess-1/)
+  // The verified session id is surfaced on the review result for the journal/downstream publication.
+  assert.equal(result.review.reviewer_session_id, 'sess-1')
+  // The durable verdict comment is the one verdict-publish wrote, not the reviewer subagent's post.
+  assert.equal(result.review.comment_url, `${PR_URL}#published`)
+})
+
 test('code-review mode returns fix-required with findings on a blocking verdict', async () => {
   const env = downstreamEntry('code-review', { cycle: 1 })
   const payload = JSON.stringify({ verdict: 'blocking', findings: ['bug'], comment_url: `${PR_URL}#rev` })
