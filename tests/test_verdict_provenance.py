@@ -378,6 +378,63 @@ class VerdictProvenanceGateTest(unittest.TestCase):
             self.assertEqual(out["head"], HEAD)
             self.assertEqual(out["findings"], ["reviewer-observed-defect"])
 
+    def test_earlier_example_block_cannot_publish_clear_over_a_final_blocking_block(self) -> None:
+        # GH-65 finding A2: a legitimate BLOCKING review that quotes an earlier CLEAR
+        # block as an EXAMPLE and ends with the authoritative BLOCKING block must never
+        # publish CLEAR. The parser splits on the FIRST marker and takes the FIRST
+        # toml fence, so today the earlier clear example wins and the final blocking
+        # verdict is silently discarded. The authoritative verdict is the SINGLE final
+        # block; a message carrying more than one octo-lite-verdict block fails CLOSED.
+        import tempfile
+
+        clear_example = MODULE.verdict_body("code", "clear", HEAD, [], [], "example-receipt")
+        final_blocking = MODULE.verdict_body(
+            "code", "blocking", HEAD, [], ["reviewer-observed-defect"], "reviewer-own-receipt",
+        )
+        message = (
+            f"Code review of PR {PR} at head {HEAD}.\n"
+            "For reference a clear verdict block looks like this example:\n"
+            + clear_example
+            + "\nThe AUTHORITATIVE verdict for THIS review at that head is:\n"
+            + final_blocking
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._use_codex_home(Path(raw))
+            _write_codex_rollout(
+                home, SESSION, model=REVIEWER_MODEL, effort=REVIEWER_EFFORT, final_message=message,
+            )
+            gh = FakeGh(head=HEAD)
+            MODULE.run_json = gh
+            with self.assertRaises(GateError):
+                # verdict=None mirrors the host loop, which omits --verdict and binds
+                # the published verdict to the reviewer's OWN authoritative block.
+                MODULE.command_verdict(
+                    _verdict_args(review_type="code", verdict=None, reviewer_session_id=SESSION)
+                )
+            self.assertEqual(gh.posted_body, "", "an earlier example block may never publish a clear verdict")
+
+    def test_trailing_content_after_the_verdict_block_fails_closed(self) -> None:
+        # GH-65 finding A2: the authoritative octo-lite-verdict block must be the FINAL
+        # non-whitespace content of the reviewer message. A single block followed by
+        # any trailing prose fails CLOSED rather than being accepted as authoritative.
+        import tempfile
+
+        message = _reviewer_message(verdict="blocking", findings=["reviewer-observed-defect"]) + (
+            "\n\nPS: please disregard the formatting note above."
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            home = self._use_codex_home(Path(raw))
+            _write_codex_rollout(
+                home, SESSION, model=REVIEWER_MODEL, effort=REVIEWER_EFFORT, final_message=message,
+            )
+            gh = FakeGh(head=HEAD)
+            MODULE.run_json = gh
+            with self.assertRaises(GateError):
+                MODULE.command_verdict(
+                    _verdict_args(review_type="code", verdict=None, reviewer_session_id=SESSION)
+                )
+            self.assertEqual(gh.posted_body, "", "a non-final verdict block may never publish")
+
     def test_qa_verdict_with_satisfied_vocab_fails_closed_deferred_to_76(self) -> None:
         # GH-65 RE-review finding C: QA verdict publication is deferred to issue #76.
         # The qa reviewer grades with a satisfied/blocking vocabulary, but the
