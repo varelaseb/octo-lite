@@ -1022,10 +1022,37 @@ async function spawnWorker(role, phaseTitle, startingHead, schema) {
 // --reviewer-session-id), host advancement and durable publication agree by construction.
 const REVIEW_TYPE_BY_ROLE = { 'code-reviewer': 'code', 'qa-reviewer': 'qa' }
 
+// GH-65 finding A (parser equivalence): the ONE strict canonical verdict-block grammar,
+// enforced byte-for-byte identically here and in scripts/octo-control
+// _parse_reviewer_verdict_block. The fenced toml body is a FLAT sequence of `key = value`
+// lines drawn ONLY from this canonical key set (exactly what octo_lite.runtime.verdict_body
+// emits). A toml TABLE header, an array-of-tables, a duplicate key, an unknown key, or a
+// non key=value line fails CLOSED. Because both parsers run this same algorithm they accept
+// and reject exactly the same blocks, so host advancement can never derive a different
+// verdict than durable publication from the same verified payload.
+const CANONICAL_VERDICT_KEYS = new Set([
+  'schema_version', 'review_type', 'verdict', 'head', 'bound_inputs',
+  'findings', 'reviewer_receipt', 'conversation_log_references', 'conversation_cutoff',
+])
+
 function unquoteTomlScalar(value) {
   if (value.length >= 2 && value.charAt(0) === '"' && value.charAt(value.length - 1) === '"') {
     return value.slice(1, -1)
   }
+  return value
+}
+
+// A canonical string array is a JSON array whose every element is a string; anything else
+// (non-array, non-string element, unparseable) is noncanonical. Mirrors the Python
+// _parse_canonical_string_array so findings and bound_inputs validate identically.
+function parseCanonicalStringArray(raw) {
+  let value
+  try {
+    value = JSON.parse(raw)
+  } catch (error) {
+    return null
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) return null
   return value
 }
 
@@ -1052,29 +1079,55 @@ function parseVerifiedReviewerVerdict(payload, reviewType) {
   if (after.slice(close + '\n```'.length).trim() !== '') {
     throw new Error('verified reviewer verdict rejected: trailing content after the authoritative verdict block')
   }
+  // Strict flat-line canonical grammar (see CANONICAL_VERDICT_KEYS): reject a table
+  // header, an array-of-tables, a duplicate key, an unknown key, or a non key=value line
+  // so a block that hides a `[metadata]` table flipping the verdict can never be silently
+  // reduced to a single top-level assignment (the codex reproducer).
   const fields = {}
   for (const rawLine of after.slice(bodyStart, close).split('\n')) {
-    const eq = rawLine.indexOf('=')
-    if (eq === -1) continue
-    fields[rawLine.slice(0, eq).trim()] = rawLine.slice(eq + 1).trim()
+    const line = rawLine.trim()
+    if (line === '') continue
+    if (/^\[.*\]$/.test(line)) {
+      throw new Error('verified reviewer verdict rejected: verdict block carries a toml table header; the canonical body is a flat key = value sequence')
+    }
+    const eq = line.indexOf('=')
+    if (eq === -1) {
+      throw new Error('verified reviewer verdict rejected: verdict block carries a non key = value line')
+    }
+    const key = line.slice(0, eq).trim()
+    if (Object.prototype.hasOwnProperty.call(fields, key)) {
+      throw new Error('verified reviewer verdict rejected: verdict block carries a duplicate key')
+    }
+    if (!CANONICAL_VERDICT_KEYS.has(key)) {
+      throw new Error('verified reviewer verdict rejected: verdict block carries an unknown key')
+    }
+    fields[key] = line.slice(eq + 1).trim()
   }
-  if (unquoteTomlScalar(fields.review_type ?? '') !== reviewType) {
+  for (const requiredKey of ['review_type', 'verdict', 'head', 'findings']) {
+    if (!Object.prototype.hasOwnProperty.call(fields, requiredKey)) {
+      throw new Error('verified reviewer verdict rejected: verdict block is missing a required canonical key')
+    }
+  }
+  if (unquoteTomlScalar(fields.review_type) !== reviewType) {
     throw new Error('verified reviewer verdict rejected: verdict block review type mismatch')
   }
-  const verdict = unquoteTomlScalar(fields.verdict ?? '')
+  const verdict = unquoteTomlScalar(fields.verdict)
   if (verdict !== 'clear' && verdict !== 'blocking') {
     throw new Error('verified reviewer verdict rejected: verdict is not clear or blocking')
   }
-  const head = unquoteTomlScalar(fields.head ?? '')
-  if (head === '') throw new Error('verified reviewer verdict rejected: verdict block carries no reviewed head')
-  let findings
-  try {
-    findings = JSON.parse(fields.findings ?? '[]')
-  } catch (error) {
+  const head = unquoteTomlScalar(fields.head)
+  if (!/^[0-9a-f]{40}$/.test(head)) {
+    throw new Error('verified reviewer verdict rejected: verdict block head is not a 40-hex object id')
+  }
+  const findings = parseCanonicalStringArray(fields.findings)
+  if (findings === null) {
     throw new Error('verified reviewer verdict rejected: verdict block findings malformed')
   }
-  if (!Array.isArray(findings) || findings.some((item) => typeof item !== 'string')) {
-    throw new Error('verified reviewer verdict rejected: verdict block findings malformed')
+  if (
+    Object.prototype.hasOwnProperty.call(fields, 'bound_inputs') &&
+    parseCanonicalStringArray(fields.bound_inputs) === null
+  ) {
+    throw new Error('verified reviewer verdict rejected: verdict block bound_inputs malformed')
   }
   return { verdict, head, findings }
 }

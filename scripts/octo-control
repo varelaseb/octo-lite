@@ -254,6 +254,38 @@ def _verify_rollout_message_binds_head(payload: str, *, pr: int, head: str) -> N
         )
 
 
+# GH-65 finding A (parser equivalence): the ONE strict canonical verdict-block
+# grammar, enforced byte-for-byte identically here and in the loop parser
+# workflows/octo-loop-qa.js parseVerifiedReviewerVerdict. The fenced toml body is a
+# FLAT sequence of `key = value` lines drawn ONLY from this canonical key set (exactly
+# what verdict_body emits). Both parsers run the same algorithm, so they accept and
+# reject exactly the same blocks: host advancement can never derive a different verdict
+# than durable publication from the same verified payload.
+_CANONICAL_VERDICT_KEYS = {
+    "schema_version", "review_type", "verdict", "head", "bound_inputs",
+    "findings", "reviewer_receipt", "conversation_log_references", "conversation_cutoff",
+}
+
+
+def _unquote_toml_scalar(value: str) -> str:
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return value
+
+
+def _parse_canonical_string_array(raw: str):
+    # A canonical string array is a JSON array whose every element is a string;
+    # anything else is noncanonical. Mirrors the JS parseCanonicalStringArray so
+    # findings and bound_inputs validate identically across both parsers.
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return None
+    return value
+
+
 def _parse_reviewer_verdict_block(payload: str, review_type: str) -> dict:
     # GH-65 codex finding 1: the reviewer's OWN structured verdict, the same
     # canonical octo-lite-verdict marker/TOML octo_lite.runtime.verdict_body emits,
@@ -288,25 +320,52 @@ def _parse_reviewer_verdict_block(payload: str, review_type: str) -> dict:
             "reviewer verdict block must be the final content of the reviewer message: "
             "trailing content after the authoritative verdict block is rejected"
         )
-    try:
-        block = tomllib.loads(match.group(1))
-    except tomllib.TOMLDecodeError as error:
-        raise GateError("reviewer verdict block is not valid toml") from error
-    if block.get("review_type") != review_type:
+    # Strict flat-line canonical grammar (see _CANONICAL_VERDICT_KEYS): reject a table
+    # header, an array-of-tables, a duplicate key, an unknown key, or a non key=value line
+    # so a block that hides a `[metadata]` table flipping the verdict can never be parsed
+    # as a top-level assignment separate from that table (the codex reproducer, which the
+    # old tomllib parse kept as top-level blocking while the JS parser overwrote to clear).
+    fields: dict[str, str] = {}
+    for raw_line in match.group(1).split("\n"):
+        line = raw_line.strip()
+        if line == "":
+            continue
+        if re.fullmatch(r"\[.*\]", line):
+            raise GateError(
+                "reviewer verdict block carries a toml table header; the canonical "
+                "body is a flat key = value sequence"
+            )
+        eq = line.find("=")
+        if eq == -1:
+            raise GateError("reviewer verdict block carries a non key = value line")
+        key = line[:eq].strip()
+        if key in fields:
+            raise GateError("reviewer verdict block carries a duplicate key")
+        if key not in _CANONICAL_VERDICT_KEYS:
+            raise GateError("reviewer verdict block carries an unknown key")
+        fields[key] = line[eq + 1:].strip()
+    for required_key in ("review_type", "verdict", "head", "findings"):
+        if required_key not in fields:
+            raise GateError("reviewer verdict block is missing a required canonical key")
+    if _unquote_toml_scalar(fields["review_type"]) != review_type:
         raise GateError("reviewer verdict block review type does not match the published review type")
-    if block.get("verdict") not in {"clear", "blocking"}:
+    verdict_value = _unquote_toml_scalar(fields["verdict"])
+    if verdict_value not in {"clear", "blocking"}:
         raise GateError("reviewer verdict block carries no clear/blocking verdict")
-    reviewed_head = block.get("head")
-    if not isinstance(reviewed_head, str) or not reviewed_head.strip():
-        raise GateError("reviewer verdict block carries no reviewed head")
-    findings = block.get("findings", [])
-    if not isinstance(findings, list) or any(not isinstance(item, str) for item in findings):
+    reviewed_head = _unquote_toml_scalar(fields["head"])
+    if not re.fullmatch(r"[0-9a-f]{40}", reviewed_head):
+        raise GateError("reviewer verdict block head is not a 40-hex object id")
+    findings = _parse_canonical_string_array(fields["findings"])
+    if findings is None:
         raise GateError("reviewer verdict block findings malformed")
-    bound_inputs = block.get("bound_inputs", [])
-    if not isinstance(bound_inputs, list) or any(not isinstance(item, str) for item in bound_inputs):
-        raise GateError("reviewer verdict block bound_inputs malformed")
+    bound_inputs: list[str] = []
+    if "bound_inputs" in fields:
+        parsed_bound_inputs = _parse_canonical_string_array(fields["bound_inputs"])
+        if parsed_bound_inputs is None:
+            raise GateError("reviewer verdict block bound_inputs malformed")
+        bound_inputs = parsed_bound_inputs
     return {
-        "verdict": block["verdict"],
+        "verdict": verdict_value,
         "head": reviewed_head,
         "findings": findings,
         "bound_inputs": bound_inputs,
