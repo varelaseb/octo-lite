@@ -130,5 +130,69 @@
     "review_type": "code",
     "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\nverdict = \"clear\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n```",
     "expect": "reject"
+  },
+  {
+    "name": "trailing-bom-after-fence",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\nverdict = \"clear\"\nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n```﻿",
+    "expect": "reject"
+  },
+  {
+    "name": "trailing-nel-after-fence",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\nverdict = \"clear\"\nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n```",
+    "expect": "reject"
+  },
+  {
+    "name": "trailing-line-separator-after-fence",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\nverdict = \"clear\"\nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n``` ",
+    "expect": "reject"
+  },
+  {
+    "name": "trailing-paragraph-separator-after-fence",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\nverdict = \"clear\"\nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n``` ",
+    "expect": "reject"
+  },
+  {
+    "name": "trailing-nbsp-after-fence",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\nverdict = \"clear\"\nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n``` ",
+    "expect": "reject"
+  },
+  {
+    "name": "nbsp-trailing-verdict-value",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\nverdict = \"clear\" \nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n```",
+    "expect": "reject"
+  },
+  {
+    "name": "nbsp-leading-verdict-key",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\n verdict = \"clear\"\nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n```",
+    "expect": "reject"
+  },
+  {
+    "name": "crlf-body-accepts",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\r\nreview_type = \"code\"\r\nverdict = \"clear\"\r\nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\r\nbound_inputs = []\r\nfindings = []\r\nreviewer_receipt = \"r\"\r\nconversation_log_references = []\r\nconversation_cutoff = \"\"\n```",
+    "expect": "accept",
+    "parsed": {
+      "verdict": "clear",
+      "head": "dddddddddddddddddddddddddddddddddddddddd",
+      "findings": []
+    }
+  },
+  {
+    "name": "tab-padded-line-accepts",
+    "review_type": "code",
+    "payload": "Code review of PR 65 at head dddddddddddddddddddddddddddddddddddddddd.\n<!-- octo-lite-verdict:code -->\n```toml\nschema_version = 1\nreview_type = \"code\"\n\tverdict = \"clear\"\t\nhead = \"dddddddddddddddddddddddddddddddddddddddd\"\nbound_inputs = []\nfindings = []\nreviewer_receipt = \"r\"\nconversation_log_references = []\nconversation_cutoff = \"\"\n```",
+    "expect": "accept",
+    "parsed": {
+      "verdict": "clear",
+      "head": "dddddddddddddddddddddddddddddddddddddddd",
+      "findings": []
+    }
   }
 ]

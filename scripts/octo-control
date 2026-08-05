@@ -267,6 +267,20 @@ _CANONICAL_VERDICT_KEYS = {
 }
 
 
+# GH-65 Part 2: the ONE byte-level whitespace rule both verdict-block parsers share, mirroring the JS
+# loop's asciiTrim (workflows/octo-loop-qa.js). The canonical grammar trims/blank-checks with exactly the
+# ASCII whitespace set {0x09 tab, 0x0A LF, 0x0B VT, 0x0C FF, 0x0D CR, 0x20 space}, NEVER str.strip(),
+# which disagrees with JS trim() on Unicode (str.strip strips U+0085/U+00A0 but not U+FEFF; JS trim
+# strips U+FEFF/U+2028/U+2029/U+00A0 but not U+0085). Any surrounding NON-ASCII-whitespace character is
+# therefore CONTENT and is rejected identically by both implementations, so the two accept and reject
+# byte-for-byte the same blocks (proved forever by the cross-language differential test).
+_ASCII_WHITESPACE = "\t\n\x0b\x0c\r "
+
+
+def _ascii_trim(value: str) -> str:
+    return value.strip(_ASCII_WHITESPACE)
+
+
 def _unquote_toml_scalar(value: str) -> str:
     if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
         return value[1:-1]
@@ -315,7 +329,7 @@ def _parse_reviewer_verdict_block(payload: str, review_type: str) -> dict:
     match = re.search(r"```toml\n(.*?)\n```", after, re.DOTALL)
     if match is None:
         raise GateError("reviewer verdict block is not a fenced toml document")
-    if after[match.end():].strip() != "":
+    if _ascii_trim(after[match.end():]) != "":
         raise GateError(
             "reviewer verdict block must be the final content of the reviewer message: "
             "trailing content after the authoritative verdict block is rejected"
@@ -327,7 +341,7 @@ def _parse_reviewer_verdict_block(payload: str, review_type: str) -> dict:
     # old tomllib parse kept as top-level blocking while the JS parser overwrote to clear).
     fields: dict[str, str] = {}
     for raw_line in match.group(1).split("\n"):
-        line = raw_line.strip()
+        line = _ascii_trim(raw_line)
         if line == "":
             continue
         if re.fullmatch(r"\[.*\]", line):
@@ -338,12 +352,12 @@ def _parse_reviewer_verdict_block(payload: str, review_type: str) -> dict:
         eq = line.find("=")
         if eq == -1:
             raise GateError("reviewer verdict block carries a non key = value line")
-        key = line[:eq].strip()
+        key = _ascii_trim(line[:eq])
         if key in fields:
             raise GateError("reviewer verdict block carries a duplicate key")
         if key not in _CANONICAL_VERDICT_KEYS:
             raise GateError("reviewer verdict block carries an unknown key")
-        fields[key] = line[eq + 1:].strip()
+        fields[key] = _ascii_trim(line[eq + 1:])
     for required_key in ("review_type", "verdict", "head", "findings"):
         if required_key not in fields:
             raise GateError("reviewer verdict block is missing a required canonical key")

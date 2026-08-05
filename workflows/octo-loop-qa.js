@@ -1056,6 +1056,22 @@ function parseCanonicalStringArray(raw) {
   return value
 }
 
+// GH-65 Part 2: the ONE byte-level whitespace rule both verdict-block parsers share. The canonical
+// grammar trims/blank-checks with exactly the ASCII whitespace set {0x09 tab, 0x0A LF, 0x0B VT, 0x0C FF,
+// 0x0D CR, 0x20 space}, NEVER JS trim()/Python str.strip(), which disagree on Unicode (JS trim strips
+// U+FEFF/U+2028/U+2029/U+00A0 but not U+0085; Python strip strips U+0085/U+00A0 but not U+FEFF). Any
+// surrounding NON-ASCII-whitespace character is therefore CONTENT and is rejected identically by both
+// implementations, so the two accept and reject byte-for-byte the same blocks (proved forever by the
+// cross-language differential fixture/test). The Python mirror is scripts/octo-control _ascii_trim.
+const ASCII_WHITESPACE = new Set([0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20])
+function asciiTrim(value) {
+  let start = 0
+  let end = value.length
+  while (start < end && ASCII_WHITESPACE.has(value.charCodeAt(start))) start += 1
+  while (end > start && ASCII_WHITESPACE.has(value.charCodeAt(end - 1))) end -= 1
+  return value.slice(start, end)
+}
+
 function parseVerifiedReviewerVerdict(payload, reviewType) {
   const text = typeof payload === 'string' ? payload : ''
   const marker = `<!-- octo-lite-verdict:${reviewType} -->`
@@ -1076,7 +1092,7 @@ function parseVerifiedReviewerVerdict(payload, reviewType) {
   const bodyStart = open + '```toml\n'.length
   const close = after.indexOf('\n```', bodyStart)
   if (close === -1) throw new Error('verified reviewer verdict rejected: verdict block fence is not closed')
-  if (after.slice(close + '\n```'.length).trim() !== '') {
+  if (asciiTrim(after.slice(close + '\n```'.length)) !== '') {
     throw new Error('verified reviewer verdict rejected: trailing content after the authoritative verdict block')
   }
   // Strict flat-line canonical grammar (see CANONICAL_VERDICT_KEYS): reject a table
@@ -1085,7 +1101,7 @@ function parseVerifiedReviewerVerdict(payload, reviewType) {
   // reduced to a single top-level assignment (the codex reproducer).
   const fields = {}
   for (const rawLine of after.slice(bodyStart, close).split('\n')) {
-    const line = rawLine.trim()
+    const line = asciiTrim(rawLine)
     if (line === '') continue
     if (/^\[.*\]$/.test(line)) {
       throw new Error('verified reviewer verdict rejected: verdict block carries a toml table header; the canonical body is a flat key = value sequence')
@@ -1094,14 +1110,14 @@ function parseVerifiedReviewerVerdict(payload, reviewType) {
     if (eq === -1) {
       throw new Error('verified reviewer verdict rejected: verdict block carries a non key = value line')
     }
-    const key = line.slice(0, eq).trim()
+    const key = asciiTrim(line.slice(0, eq))
     if (Object.prototype.hasOwnProperty.call(fields, key)) {
       throw new Error('verified reviewer verdict rejected: verdict block carries a duplicate key')
     }
     if (!CANONICAL_VERDICT_KEYS.has(key)) {
       throw new Error('verified reviewer verdict rejected: verdict block carries an unknown key')
     }
-    fields[key] = line.slice(eq + 1).trim()
+    fields[key] = asciiTrim(line.slice(eq + 1))
   }
   for (const requiredKey of ['review_type', 'verdict', 'head', 'findings']) {
     if (!Object.prototype.hasOwnProperty.call(fields, requiredKey)) {
@@ -1161,6 +1177,29 @@ async function publishReviewerVerdict(role, phaseTitle, bound, accepted, verdict
     verdict: requiredNonEmptyString(published.verdict, `${role} verified verdict`),
     head: requiredNonEmptyString(published.head, `${role} verified verdict head`),
     findings: Array.isArray(published.findings) ? published.findings : [],
+  }
+}
+
+// GH-65 Part 1, the security close (role-runtime role-openai-fail-closed; delivery-lifecycle
+// review-comment-advancement-fails-closed; GH-75 trust-boundary-fails-closed): advance-to-code-clear
+// FAILS CLOSED on ANY publish uncertainty. The deterministic host parse already bound the advancement
+// verdict from host-verified data; a CLEAR advancement additionally REQUIRES the durable publication to
+// return an unambiguous success whose OWN derived verdict is exactly clear at the SAME reviewed head the
+// host parse bound. Anything short of that -- a publisher verdict that is not exactly 'clear' (the
+// durable publication came back blocking, ambiguous, or missing) or a publisher head that does not equal
+// the host-parsed reviewed head -- can NEVER reach code-clear: it throws here, so a false CLEAR is
+// impossible while a false BLOCK is a tolerated safe annoyance. A BLOCKING host parse already routes to
+// a fix pass and can never false-clear, so binding stays on that host-verified blocking verdict with no
+// publisher cross-check on the safe side. (A publish failure/throw and a missing/ambiguous publisher
+// success are already rejected inside the publisher before this runs; this closes the remaining gap
+// where a publisher success CLAIM disagrees with the host-verified clear.)
+function assertPublishedClearAgrees(hostParsed, published) {
+  if (hostParsed.verdict !== 'clear') return
+  if (published.verdict !== 'clear') {
+    throw new Error('advance-to-code-clear rejected: durable publication did not confirm a clear verdict')
+  }
+  if (published.head !== hostParsed.head) {
+    throw new Error('advance-to-code-clear rejected: durable publication head does not match the host-parsed reviewed head')
   }
 }
 
@@ -1279,6 +1318,14 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
     // the verified payload; octo-control parses the SAME verbatim message under the SAME rule, so the
     // durable publication agrees). Only the display comment url, gated by the publisher readback, is used.
     const published = await publish(role, phaseTitle, bound, accepted, verdict)
+    // GH-65 Part 1, the security close: advance-to-code-clear fails CLOSED unless the durable
+    // publication's OWN derived verdict/head agree with the host parse. verdict.{verdict,head} were just
+    // bound from the deterministic host parse of the host-verified payload (emitVerdictBlock branch
+    // above); the publisher already threw on any publish failure / missing verdict|head. This rejects the
+    // remaining fail-open where a publisher success CLAIM (readable:true + a PR-shaped card_url) whose
+    // returned verdict is not clear, or whose head does not equal the reviewed head, would otherwise reach
+    // code-clear. A false BLOCK is a tolerated safe annoyance; a false CLEAR is made impossible.
+    assertPublishedClearAgrees(verdict, published)
     verdict.comment_url = published.comment_url
   }
   return verdict

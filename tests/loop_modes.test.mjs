@@ -599,6 +599,100 @@ test('code-review host parse rejects a verified payload whose block hides a [met
   )
 })
 
+// ---- GH-65 PART 1 (the security close): advance-to-code-clear FAILS CLOSED on ANY parse OR
+// publish uncertainty (role-runtime role-openai-fail-closed; delivery-lifecycle
+// review-comment-advancement-fails-closed). The loop runs in a process-free VM, so a publisher-agent
+// success claim (readable:true + a PR-shaped card_url) can NEVER by itself drive code-clear: a CLEAR
+// advancement requires BOTH the deterministic host parse to yield clear AND the durable publication to
+// return an unambiguous success whose OWN derived verdict is clear at the SAME reviewed head. Anything
+// short of that -- a publish failure/throw, a publisher verdict that is not clear, or a publisher head
+// that does not match the host parse -- resolves to a NON-clear outcome, never code-clear. A false BLOCK
+// is a tolerated safe annoyance; a false CLEAR is the security hole and is made impossible here. ----
+test('PART 1: a publish failure on a would-be clear never reaches code-clear (fails closed)', async () => {
+  // Test 1: the host parse says clear, but the durable publication FAILS (publisher returns
+  // readable:false). The loop must NOT reach code-clear; it fails closed (throws) rather than
+  // advancing on an unconfirmed publication.
+  const env = downstreamEntry('code-review', { cycle: 1 })
+  const payload = verdictPayload('clear', [])
+  await assert.rejects(
+    runMode(env, [
+      ['delivery-entry-derive:', derivedInProgress()],
+      ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+      ['code-reviewer-relay:', relayResult(payload)],
+      ['code-reviewer-rollout:', rolloutFor(payload)],
+      ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
+      // The publication is not an unambiguous success: readable is false. verdict-publish reported
+      // no clean durable publish, so nothing may advance.
+      ['code-reviewer-publish:', { card_url: `${PR_URL}#x`, readable: false, verdict: 'clear', head: NEWHEAD, findings: [] }],
+    ]),
+    /not published/,
+  )
+})
+
+test('PART 1: a publisher clear claim with a MISMATCHED head never reaches code-clear (fails closed)', async () => {
+  // Test 2: the publisher returns readable:true and even claims verdict clear, but at a DIFFERENT
+  // head than the host parse (reviewed) head. An agent-only/inconsistent success claim can never
+  // advance: the durable publication head must equal the host-parsed reviewed head.
+  const env = downstreamEntry('code-review', { cycle: 1 })
+  const payload = verdictPayload('clear', [])
+  await assert.rejects(
+    runMode(env, [
+      ['delivery-entry-derive:', derivedInProgress()],
+      ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+      ['code-reviewer-relay:', relayResult(payload)],
+      ['code-reviewer-rollout:', rolloutFor(payload)],
+      ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
+      ['code-reviewer-publish:', {
+        card_url: `${PR_URL}#published`, readable: true,
+        verdict: 'clear', head: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', findings: [],
+      }],
+    ]),
+    /advance-to-code-clear rejected: durable publication head does not match/,
+  )
+})
+
+test('PART 1: a host-parse clear whose durable publication comes back BLOCKING fails closed (never code-clear)', async () => {
+  // Test 4: the host parse yields clear, but the durable publication's OWN derived verdict comes back
+  // blocking (the two disagree). Advancement must not proceed on the unverified clear side: it fails
+  // closed rather than entering code-clear over a durable blocking publication.
+  const env = downstreamEntry('code-review', { cycle: 1 })
+  const payload = verdictPayload('clear', [])
+  await assert.rejects(
+    runMode(env, [
+      ['delivery-entry-derive:', derivedInProgress()],
+      ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+      ['code-reviewer-relay:', relayResult(payload)],
+      ['code-reviewer-rollout:', rolloutFor(payload)],
+      ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
+      ['code-reviewer-publish:', {
+        card_url: `${PR_URL}#published`, readable: true,
+        verdict: 'blocking', head: NEWHEAD, findings: ['durable-blocking'],
+      }],
+    ]),
+    /advance-to-code-clear rejected: durable publication did not confirm a clear verdict/,
+  )
+})
+
+test('PART 1 regression: host parse clear + a consistent verified clear publication still reaches code-clear', async () => {
+  // Test 3 (happy path): host parse clear AND the durable publication returns an unambiguous success
+  // whose own verdict is clear at the SAME reviewed head. This is the ONLY shape that advances, and it
+  // still does.
+  const env = downstreamEntry('code-review', { cycle: 1 })
+  const payload = verdictPayload('clear', [])
+  const { result } = await runMode(env, [
+    ['delivery-entry-derive:', derivedInProgress()],
+    ['code-reviewer-runtime:', RESOLVED_REVIEWER_RUNTIME],
+    ['code-reviewer-relay:', relayResult(payload)],
+    ['code-reviewer-rollout:', rolloutFor(payload)],
+    ['code-reviewer:', { head: NEWHEAD, verdict: 'clear', findings: [] }],
+    ['code-reviewer-publish:', {
+      card_url: `${PR_URL}#published`, readable: true, verdict: 'clear', head: NEWHEAD, findings: [],
+    }],
+  ])
+  assert.equal(result.stage, 'code-clear')
+  assert.equal(result.review.comment_url, `${PR_URL}#published`)
+})
+
 // ---- fix mode: derives the envelope, spawns implementer, returns code-review-required ----
 test('fix mode derives the envelope, spawns the implementer, and returns code-review-required at the next cycle', async () => {
   const env = downstreamEntry('fix', { cycle: 1, findings: ['bug'] })
