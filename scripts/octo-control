@@ -263,15 +263,31 @@ def _parse_reviewer_verdict_block(payload: str, review_type: str) -> dict:
     # published comment IS the reviewer's own verdict.
     text = payload if isinstance(payload, str) else ""
     marker = f"<!-- octo-lite-verdict:{review_type} -->"
-    if marker not in text:
+    marker_count = text.count(marker)
+    if marker_count == 0:
         raise GateError(
             "reviewer rollout message carries no octo-lite-verdict block: the published "
             "verdict must be the reviewer's own structured verdict, not a caller re-authoring"
+        )
+    # GH-65 finding A2: the authoritative verdict is the SINGLE octo-lite-verdict block
+    # that is the FINAL non-whitespace content of the reviewer message. Splitting on the
+    # first marker and taking the first fence let a BLOCKING review that quotes an earlier
+    # CLEAR example block publish as clear. Require exactly one marker AND that its fenced
+    # toml block end the message, else fail closed (an earlier or trailing block never wins).
+    if marker_count != 1:
+        raise GateError(
+            "reviewer rollout message carries more than one octo-lite-verdict block: the "
+            "authoritative verdict must be the single final block, not an earlier example"
         )
     after = text.split(marker, 1)[1]
     match = re.search(r"```toml\n(.*?)\n```", after, re.DOTALL)
     if match is None:
         raise GateError("reviewer verdict block is not a fenced toml document")
+    if after[match.end():].strip() != "":
+        raise GateError(
+            "reviewer verdict block must be the final content of the reviewer message: "
+            "trailing content after the authoritative verdict block is rejected"
+        )
     try:
         block = tomllib.loads(match.group(1))
     except tomllib.TOMLDecodeError as error:
