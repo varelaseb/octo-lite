@@ -414,7 +414,7 @@
           }
         },
         {
-          "name": "claude-opus-4-8[1m] xhigh",
+          "name": "claude-opus-5 medium",
           "x": 600,
           "y": 290,
           "symbolSize": [
@@ -485,15 +485,24 @@
         },
         {
           "source": "orchestrator",
-          "target": "claude-opus-4-8[1m] high",
+          "target": "claude-fable-5 xhigh",
           "value": "exact",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
+          "source": "orchestrator",
+          "target": "claude-opus-4-8[1m] high",
+          "value": "alt",
+          "lineStyle": {
+            "curveness": 0.2,
+            "type": "dashed"
+          }
+        },
+        {
           "source": "implementer",
-          "target": "claude-opus-4-8[1m] xhigh",
+          "target": "claude-opus-5 medium",
           "value": "fresh",
           "lineStyle": {
             "curveness": 0
@@ -1169,8 +1178,8 @@
 <p data-anchor="role-shaping-produces-contract" id="role-shaping-produces-contract">Shaping produces and commits the durable contract, the high-level issue, canonical specs, ADRs, and user stories, and publishes it to the evidence or spec page before any implementer pass, and a fresh implementer works only off that committed spec while the reviewer checks code against it, so an implementer never authors the spec.</p>
 <p data-anchor="role-fix-reuse" id="role-fix-reuse">Every fix uses a fresh implementer instance and every re-review uses a fresh code-reviewer instance rather than separate role contracts.</p>
 <p data-anchor="role-nested-reuse" id="role-nested-reuse">Every nested stream owner uses the same orchestrator contract.</p>
-<p data-anchor="role-issue-cardinality" id="role-issue-cardinality">Every issue has one and only one dedicated Opus issue orchestrator.</p>
-<p data-anchor="role-epic-layer" id="role-epic-layer">A multi-issue epic adds a separate Opus epic orchestrator above its issue orchestrators, producing two Opus layers below Fable.</p>
+<p data-anchor="role-issue-cardinality" id="role-issue-cardinality">Every issue has one and only one dedicated issue orchestrator.</p>
+<p data-anchor="role-epic-layer" id="role-epic-layer">A multi-issue epic adds a separate epic orchestrator above its issue orchestrators, producing two orchestrator layers below the meta-operator.</p>
 <p data-anchor="role-reporting-chain" id="role-reporting-chain">Fresh workers report to their issue orchestrator; issue orchestrators report to the epic orchestrator; the epic orchestrator reports upward to Fable or its declared parent.</p>
 <p data-anchor="role-nested-rules" id="role-nested-rules">A parent flattens relevant effective rules into the child brief; the child acknowledges them only at spawn or after a material brief revision.</p>
 <p data-anchor="role-helper-boundary" id="role-helper-boundary">Acceptance recording, merge, evidence publication, Linear transition, preproduction promotion, and live traffic shift are deterministic operator-authorized helpers rather than LLM roles.</p>
