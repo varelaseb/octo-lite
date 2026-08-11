@@ -76,9 +76,9 @@ class RoleResolverTest(unittest.TestCase):
         self.assertEqual(set(registry.roles), ROLES)
         expected = {
             "meta-operator": ("anthropic", "claude-fable-5", "xhigh", "auto", "persistent", "default"),
-            "orchestrator": ("anthropic", "claude-opus-4-8[1m]", "high", "auto", "persistent", "default"),
+            "orchestrator": ("anthropic", "claude-fable-5", "xhigh", "auto", "persistent", "default"),
             "shaping-reviewer": ("openai", "gpt-5.6-sol", "xhigh", "never", "fresh", "fast"),
-            "implementer": ("anthropic", "claude-opus-4-8[1m]", "xhigh", "auto", "fresh", "default"),
+            "implementer": ("anthropic", "claude-opus-5", "medium", "auto", "fresh", "default"),
             "code-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "default"),
             "qa-capture": ("anthropic", "claude-sonnet-5", "high", "auto", "fresh", "default"),
             "qa-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "fast"),
@@ -265,8 +265,8 @@ class RoleResolverTest(unittest.TestCase):
             acknowledgment = self.resolver.dry_run_child(resolved, receipt)
             parsed = tomllib.loads(self.resolver.render_receipt(receipt))
         self.assertEqual(parsed["role"]["name"], "implementer")
-        self.assertEqual(parsed["runtime"]["model"], "claude-opus-4-8[1m]")
-        self.assertEqual(parsed["runtime"]["effort"], "xhigh")
+        self.assertEqual(parsed["runtime"]["model"], "claude-opus-5")
+        self.assertEqual(parsed["runtime"]["effort"], "medium")
         self.assertEqual(parsed["runtime"]["mode"], "auto")
         self.assertEqual(parsed["skills"]["resolved"], ["tdd", "octo-lite-github", "python"])
         self.assertEqual(
@@ -288,7 +288,7 @@ class RoleResolverTest(unittest.TestCase):
         self.assertEqual(acknowledgment["role"], "implementer")
         self.assertEqual(acknowledgment["contract_blob"], parsed["role"]["contract_blob"])
         self.assertEqual(acknowledgment["mapping_revision"], parsed["role"]["mapping_revision"])
-        self.assertEqual(acknowledgment["model"], "claude-opus-4-8[1m]")
+        self.assertEqual(acknowledgment["model"], "claude-opus-5")
         self.assertEqual(acknowledgment["mode"], "auto")
         self.assertEqual(acknowledgment["skills"], parsed["skills"]["resolved"])
         self.assertEqual(acknowledgment["skill_blobs"], parsed["skills"]["blobs"])
@@ -333,12 +333,12 @@ class RoleResolverTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.resolver.build_launch_receipt(ROOT, resolved, issue="  ", **common)
 
-    def test_orchestrator_fable_alt_runtime_resolves_and_gates(self) -> None:
-        # Operator choice at spawn: an orchestrator may run on the sanctioned Fable
-        # runtime; the default stays opus and an unsanctioned runtime fails closed.
+    def test_orchestrator_opus_alt_runtime_resolves_and_gates(self) -> None:
+        # Operator choice at spawn: the orchestrator default is the Fable runtime, and
+        # an operator may select the sanctioned opus alt; an unsanctioned runtime fails closed.
         registry = self.resolver.load_registry(ROOT)
         orch = registry.roles["orchestrator"]
-        self.assertIn(("claude-fable-5", "xhigh"), orch.alt_runtimes)
+        self.assertIn(("claude-opus-4-8[1m]", "high"), orch.alt_runtimes)
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             subprocess.run(["git", "init", "-q", str(target)], check=True)
@@ -353,20 +353,20 @@ class RoleResolverTest(unittest.TestCase):
                 execution_location="remote", operator_loopback=False,
                 review_delivery="reachable_url_required",
             )
-            fable = self.resolver.build_launch_receipt(
-                ROOT, resolved, model="claude-fable-5", effort="xhigh", **common
+            alt = self.resolver.build_launch_receipt(
+                ROOT, resolved, model="claude-opus-4-8[1m]", effort="high", **common
             )
-            self.assertEqual(fable["runtime"]["model"], "claude-fable-5")
-            self.assertEqual(fable["runtime"]["effort"], "xhigh")
+            self.assertEqual(alt["runtime"]["model"], "claude-opus-4-8[1m]")
+            self.assertEqual(alt["runtime"]["effort"], "high")
             default = self.resolver.build_launch_receipt(ROOT, resolved, **common)
-            self.assertEqual(default["runtime"]["model"], "claude-opus-4-8[1m]")
-            self.assertEqual(default["runtime"]["effort"], "high")
+            self.assertEqual(default["runtime"]["model"], "claude-fable-5")
+            self.assertEqual(default["runtime"]["effort"], "xhigh")
             with self.assertRaises(ValueError):
                 self.resolver.build_launch_receipt(
                     ROOT, resolved, model="claude-sonnet-5", effort="high", **common
                 )
             with self.assertRaises(ValueError):
-                self.resolver.build_launch_receipt(ROOT, resolved, model="claude-fable-5", **common)
+                self.resolver.build_launch_receipt(ROOT, resolved, model="claude-opus-4-8[1m]", **common)
 
     def test_resolve_cli_binds_issue_identifier(self) -> None:
         from octo_lite.runtime import launch_revision as launch_rev

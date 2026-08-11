@@ -527,6 +527,25 @@ class RuntimeContractTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, "does not carry conversation log references"):
             verdict_body("code", "clear", "abc", ["linear:123"], [], "r", ["session.jsonl:1-10"])
 
+    def test_verdict_accepts_qa_review_type_mirroring_code(self):
+        # GH-65 loop-binding-fix item 3a: verdict_body accepts a qa review type,
+        # mirroring code's per-type invariants (no conversation log references and
+        # no conversation cutoff), so a QA-review verdict is a first-class published
+        # verdict alongside shaping and code.
+        body = verdict_body("qa", "clear", "abc", ["linear:123"], ["ok"], "session:qa-reviewer")
+        self.assertIn("<!-- octo-lite-verdict:qa -->", body)
+        self.assertIn('review_type = "qa"', body)
+        self.assertIn('conversation_log_references = []', body)
+        self.assertIn('conversation_cutoff = ""', body)
+        # qa mirrors code: it must NOT carry conversation log references or a cutoff.
+        with self.assertRaisesRegex(GateError, "does not carry conversation log references"):
+            verdict_body("qa", "clear", "abc", [], [], "r", ["session.jsonl:1-10"])
+        with self.assertRaisesRegex(GateError, "does not carry a conversation cutoff"):
+            verdict_body("qa", "clear", "abc", [], [], "r", conversation_cutoff="session.jsonl:10")
+        # an unknown review type is still rejected fail-closed.
+        with self.assertRaisesRegex(GateError, "invalid review type"):
+            verdict_body("evidence", "clear", "abc", [], [], "r")
+
     def test_verdict_requires_conversation_cutoff_for_shaping_but_not_code(self):
         with self.assertRaisesRegex(GateError, "conversation cutoff"):
             verdict_body(
