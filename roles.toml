@@ -32,16 +32,16 @@ when = "operator-launch"
 contract = "roles/orchestrator.md"
 provider = "anthropic"
 model = "claude-fable-5"
-effort = "xhigh"
+effort = "high"
 mode = "auto"
 session = "persistent"
 execution = "persistent"
 service_tier = "default"
 tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
 required_skills = ["herdr-comms"]
-# Operator ruling 2026-08-03: Fable xhigh is the default orchestrator runtime;
-# the prior opus runtime stays sanctioned as the overload/pivot alternative.
-alt_runtimes = [{ model = "claude-opus-4-8[1m]", effort = "high" }]
+# Operator ruling 2026-08-11: Fable high is the default orchestrator runtime;
+# Opus 5 high stays sanctioned as the overload/pivot alternative.
+alt_runtimes = [{ model = "claude-opus-5", effort = "high" }]
 
 [[roles.orchestrator.conditional_skills]]
 skill = "octo-lite-issue-shaper"
@@ -154,6 +154,7 @@ tools = ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"]
 required_skills = ["qa-evidence-capture"]
 conditional_skills = []
 
+
 [roles.qa-reviewer]
 contract = "roles/qa-reviewer.md"
 provider = "openai"
@@ -182,4 +183,3 @@ service_tier = "default"
 tools = ["Read"]
 required_skills = []
 conditional_skills = []
-

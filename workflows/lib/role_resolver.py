@@ -380,8 +380,8 @@ def build_launch_receipt(
     root = Path(root).resolve()
     repo = Path(repo).resolve()
     # Operator runtime choice at spawn: model+effort default to the role's pinned
-    # runtime, or may select one of the role's sanctioned alt_runtimes (e.g. a Fable
-    # orchestrator). An override that is neither the default nor a declared alternate
+    # runtime, or may select one of the role's sanctioned alt_runtimes (for example,
+    # the Opus fallback). An override that is neither the default nor a declared alternate
     # fails closed.
     if model is not None or effort is not None:
         if model is None or effort is None:
@@ -608,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
     # Shaped-transition gate that requires receipt[issue][identifier] admits it.
     # Absent for meta-operator and epic-orchestrator receipts, which bind no issue.
     resolve.add_argument("--issue")
-    # Operator runtime choice at spawn (e.g. a Fable orchestrator): must be the
+    # Operator runtime choice at spawn: must be the
     # role's default runtime or one of its sanctioned alt_runtimes.
     resolve.add_argument("--model")
     resolve.add_argument("--effort")

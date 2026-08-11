@@ -1351,7 +1351,7 @@ exec {real_mv} "$@"
             str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(worktree),
             "--role", "orchestrator", "--label", "443/6 · operating model",
             "--receipt", str(receipt),
-            "--", "claude", "--model", "claude-opus-4-8[1m]", "--effort", "high",
+            "--", "claude", "--model", "claude-opus-5", "--effort", "high",
             "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
         ]
 
@@ -1380,9 +1380,8 @@ exec {real_mv} "$@"
             self.assertIn(f"--cwd {repo}", tab_call)
             self.assertNotIn("--env OCTO_", tab_call)
 
-    def test_spawn_accepts_a_fable_orchestrator_runtime(self):
-        # Operator choice at spawn: a Fable orchestrator (claude-fable-5/xhigh) is a
-        # sanctioned orchestrator runtime and spawns like the default opus one.
+    def test_spawn_accepts_the_fable_orchestrator_runtime(self):
+        # The default Fable orchestrator runs at high effort.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -1392,13 +1391,13 @@ exec {real_mv} "$@"
             subprocess.run(["git", "-C", str(repo), "add", "AGENTS.md"], check=True)
             subprocess.run(["git", "-C", str(repo), "commit", "-qm", "target"], check=True)
             receipt_path = Path(td) / "launch.toml"
-            receipt = build_orchestrator_receipt(repo, receipt_path, model="claude-fable-5", effort="xhigh")
+            receipt = build_orchestrator_receipt(repo, receipt_path, model="claude-fable-5", effort="high")
             env, log = self.spawn_environment(td)
             cmd = [
                 str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(repo),
                 "--role", "orchestrator", "--label", "443/6 · operating model",
                 "--receipt", str(receipt_path), "--",
-                "claude", "--model", "claude-fable-5", "--effort", "xhigh",
+                "claude", "--model", "claude-fable-5", "--effort", "high",
                 "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
             ]
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)
@@ -1407,7 +1406,7 @@ exec {real_mv} "$@"
             self.assertIn(f"provider_session_id={receipt['spawn_id']}", result.stdout)
 
     def test_spawn_rejects_an_unsanctioned_orchestrator_runtime(self):
-        # A runtime that is neither the default opus nor the sanctioned Fable fails
+        # A runtime that is neither the default Fable nor the sanctioned Opus fails
         # closed at the role gate, before any bootstrap or pane.
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
@@ -1796,7 +1795,7 @@ exec {real_mv} "$@"
         if rc:
             claude.append("--rc")
         claude += [
-            "--model", "claude-opus-4-8[1m]", "--effort", "high",
+            "--model", "claude-opus-5", "--effort", "high",
             "--permission-mode", "auto", "--agent", "orchestrator", "prompt",
         ]
         worktree = cwd or ROOT
