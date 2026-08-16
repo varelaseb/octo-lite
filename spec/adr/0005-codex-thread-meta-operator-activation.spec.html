@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0005: Codex thread meta-operator activation</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header" id="header">
+<h1>ADR 0005: Codex thread meta-operator activation</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/operator-control.spec.html">operator control</a> / ADR 0005</nav>
+<p>Thread-local authority for an explicitly activated Codex app session without replacing the dedicated Fable operator path.</p>
+</header>
+
+<section data-anchor="status" id="status">
+<h2>Status</h2>
+<p data-anchor="status-value" id="status-value">Accepted by shaping for TUR-641, pending delivery and operator acceptance.</p>
+</section>
+
+<section data-anchor="context" id="context">
+<h2>Context</h2>
+<p data-anchor="context-dedicated" id="context-dedicated">octo-lite currently gives meta-operator authority to one dedicated persistent Fable session launched through the role resolver, Herdr, and the canonical owner record.</p>
+<p data-anchor="context-current-thread" id="context-current-thread">A user already working in a Codex app thread may want that exact thread to supervise existing Herdr streams and spawn canonical issue orchestrators without opening a second operator session.</p>
+<p data-anchor="context-identity" id="context-identity">Codex app turns expose the exact current session as <code>CODEX_THREAD_ID</code>, and reopening the same thread preserves that identifier while a distinct thread receives a different identifier.</p>
+<p data-anchor="context-tradeoff" id="context-tradeoff">A foreground app thread cannot honestly inherit the dedicated Fable session's unattended Herdr route and heartbeat without adding a bridge, daemon, polling service, or background resume that would contradict pause and resume semantics.</p>
+</section>
+
+<section data-anchor="decision" id="decision">
+<h2>Decision</h2>
+<p data-anchor="decision-explicit" id="decision-explicit">Only an explicit user request in the current Codex app thread starts activation.</p>
+<p data-anchor="decision-existing-role" id="decision-existing-role">Activation loads and follows the existing canonical meta-operator contract and existing Herdr, role resolver, stream-control, and handoff surfaces; it creates no parallel role, role prose, control tree, or worker path.</p>
+<p data-anchor="decision-owner-binding" id="decision-owner-binding">The existing <code>operator-owner.toml</code> is the sole authority record and binds Codex-thread ownership to the exact host-provided <code>CODEX_THREAD_ID</code>; a caller-supplied substitute is never accepted.</p>
+<p data-anchor="decision-workspace-routing" id="decision-workspace-routing">Because the Codex app thread is outside a Herdr pane, activation requires one read-verified Herdr workspace ID and stores it as mode-specific routing in the existing owner record; the workspace is not a second authority claim and cannot be changed by resume or successor activation.</p>
+<p data-anchor="decision-exclusive" id="decision-exclusive">Initial activation may create ownership only when no owner exists, same-thread activation is an idempotent resume, and a different current owner requires the existing successor-readiness and atomic owner-transfer path or the existing manual-takeover law.</p>
+<p data-anchor="decision-foreground" id="decision-foreground">Codex-thread mode is foreground and pull-reconciled: closing the thread pauses meta-operator supervision, child orchestrators may continue, and reopening the same thread first revalidates ownership and reconciles durable stream state before any mutation.</p>
+<p data-anchor="decision-no-background" id="decision-no-background">Codex-thread activation installs no timer, daemon, polling service, app-server dependency, background thread resume, surrogate operator agent, or duplicate inbox.</p>
+<p data-anchor="decision-distinct-thread" id="decision-distinct-thread">A distinct Codex thread inherits no authority from conversation history or a compact handoff brief and remains ordinary until its own explicit activation and the lawful owner transition both succeed.</p>
+<p data-anchor="decision-failure-atomic" id="decision-failure-atomic">Missing or invalid thread identity, stale or conflicting ownership, incomplete handoff, or any write failure leaves the current session ordinary and leaves existing authority unchanged with no partial control state.</p>
+<p data-anchor="decision-dedicated-preserved" id="decision-dedicated-preserved">The dedicated persistent Fable initial launch, heartbeat, Herdr route, live handoff, and exact model path remain available and behaviorally unchanged as the unattended operator option.</p>
+<p data-anchor="decision-no-new-auth" id="decision-no-new-auth">This decision adds no new authentication claim: it relies on the host-provided current thread identifier plus the pre-existing owner compare, successor readiness, owner-transfer caller check, and manual-takeover boundary.</p>
+</section>
+
+<section data-anchor="consequences" id="consequences">
+<h2>Consequences</h2>
+<p data-anchor="consequence-current-surface" id="consequence-current-surface">A user may keep operator work in the Codex app thread they explicitly selected while reusing the established octo-lite orchestration model.</p>
+<p data-anchor="consequence-pause" id="consequence-pause">Current-thread convenience trades away unattended meta-operator liveness while the thread is closed; users who need continuous supervision retain the dedicated Fable path.</p>
+<p data-anchor="consequence-handoff" id="consequence-handoff">Moving authority to another Codex thread or back to Fable is a real handoff through the existing owner transition, never an implicit consequence of opening or copying a conversation.</p>
+<p data-anchor="consequence-role-map" id="consequence-role-map">The exact role and model map remains the dedicated launch map; current-thread activation is an explicit host-session authority binding, not a second generated adapter or an alternative worker runtime.</p>
+</section>
+
+<section data-anchor="links" id="links">
+<h2>Links</h2>
+<p data-anchor="link-issue" id="link-issue">Origin: <a href="https://linear.app/martellventures/issue/TUR-641">TUR-641</a>.</p>
+<p data-anchor="link-spec" id="link-spec">Canonical behavior: <a href="../domains/operator-control.spec.html#codex-thread-activation">operator control</a> and <a href="../domains/role-runtime.spec.html#launch-codex-thread-activation">role activation boundary</a>.</p>
+<p data-anchor="link-prior-boundary" id="link-prior-boundary">Existing ownership and no-invented-auth law remains in <a href="./0001-operating-model-boundaries.spec.html">ADR 0001</a>.</p>
+<p data-anchor="link-implementation" id="link-implementation">Expected delivery surfaces: <code>skills/launch-meta-operator/SKILL.md</code>, one bundled current-thread activation script, <code>octo_lite/runtime.py</code>, <code>scripts/octo-control</code>, installed profile guidance, README usage, and focused activation plus dedicated-path regression tests.</p>
+</section>
+</article>
+</body>
+</html>
