@@ -842,6 +842,19 @@ def command_owner(args) -> dict:
     handoff = Path(args.handoff)
     if not handoff.is_file():
         raise GateError("immutable handoff missing")
+
+    def reconcile(owner) -> dict:
+        # The same derived durable-source reader the successor's activation used,
+        # so the readiness record's references are recomputed against live sources
+        # inside the owner-locked act (operator-control activation-binding-command).
+        return _codex_live_context(
+            repo=Path(getattr(args, "repo", ".") or "."),
+            owner_path=Path(args.owner_file),
+            control=Path(str(owner.get("control_dir") or args.control_dir)),
+            workspace=args.new_workspace,
+            pending_owner=owner,
+        )
+
     return transfer_owner(
         Path(args.owner_file),
         args.expected_owner,
@@ -859,6 +872,7 @@ def command_owner(args) -> dict:
         # The live transfer-time routing boundary the owner-locked act crosses
         # (operator-control activation-binding-transfer).
         workspace_lookup=_herdr_workspace,
+        reconcile=reconcile,
     )
 
 
@@ -894,6 +908,17 @@ def _rollout_session_id(rollout: Path) -> str:
     return str(payload.get("id") or payload.get("session_id") or "")
 
 
+# The derived proof records the transfer act itself writes. They digest the
+# durable sources, so they are never inside the digest domain they bind: the
+# domain stays nonrecursive by ordered construction, and a readiness record still
+# recomputes at transfer time (operator-control activation-binding-order).
+_DERIVED_PROOF_SUFFIXES = (".ready.toml", ".binding.toml")
+
+
+def _is_derived_proof(item: Path) -> bool:
+    return item.name.endswith(_DERIVED_PROOF_SUFFIXES)
+
+
 def _tree_digest(root: Path) -> str:
     # Fail closed: an absent or unreadable source is not evidence, so it can never
     # become a nonempty context reference (operator-control takeover-context-capture).
@@ -904,7 +929,7 @@ def _tree_digest(root: Path) -> str:
     entries = {
         str(item.relative_to(root)): hashlib.sha256(item.read_bytes()).hexdigest()
         for item in sorted(root.rglob("*"))
-        if item.is_file()
+        if item.is_file() and not _is_derived_proof(item)
     }
     return exact_fingerprint(entries)
 
@@ -922,7 +947,7 @@ def _transfer_history_digest(control: Path) -> str:
             {
                 str(item.relative_to(directory)): hashlib.sha256(item.read_bytes()).hexdigest()
                 for item in sorted(directory.rglob("*"))
-                if item.is_file()
+                if item.is_file() and not _is_derived_proof(item)
             }
             if directory.is_dir()
             else None
@@ -1988,6 +2013,9 @@ def parser() -> argparse.ArgumentParser:
     # exact verified workspace.
     owner.add_argument("--new-owner-mode", default="")
     owner.add_argument("--new-workspace", default="")
+    # The source-tracked work the in-hold live reconciliation reads for a Codex
+    # successor; the dedicated Fable successor path reconciles nothing.
+    owner.add_argument("--repo", default=".")
     owner.set_defaults(run=command_owner)
 
     # Current Codex thread activation and the exceptional forced takeover. The

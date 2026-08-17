@@ -443,15 +443,17 @@ def _swap_owner(
     control_dir: str,
     new_owner_mode: str | None = None,
     new_workspace: str = "",
-    commit_extra: Callable[[Mapping[str, object]], Mapping[str, object]] | None = None,
+    commit_extra: Callable[[Mapping[str, object], Mapping[str, object]], Mapping[str, object]] | None = None,
 ) -> dict:
     """One locked compare-and-rename authority commit.
 
     `commit_extra` runs INSIDE the same lock, after the compare and before the
-    rename. It is handed the record about to be committed and returns the extra
-    fields that record must carry, so any artifact the committed record binds is
-    created under this one lock and any proof it still owes is taken against the
-    exact pending record (operator-control takeover-receipt, takeover-atomic).
+    rename. It is handed the record about to be committed and the record still in
+    force, and returns the extra fields the committed record must carry, so any
+    artifact the committed record binds is created under this one lock and any
+    proof it still owes is taken against the exact records this hold read
+    (operator-control takeover-receipt, takeover-atomic,
+    activation-binding-command).
     """
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -491,7 +493,7 @@ def _swap_owner(
             raise GateError(f"unknown successor owner mode: {new_owner_mode}")
         updated["handoff_revision"] = handoff_revision
         updated["control_dir"] = control_dir
-        updated.update(commit_extra(dict(updated)) if commit_extra else {})
+        updated.update(commit_extra(dict(updated), dict(current)) if commit_extra else {})
         _atomic_write(path, _toml_document(updated))
         return updated
 
@@ -512,6 +514,7 @@ def transfer_owner(
     new_owner_mode: str | None = None,
     new_workspace: str = "",
     workspace_lookup: Callable[[str], Mapping[str, object]] | None = None,
+    reconcile: Callable[[Mapping[str, object]], Mapping[str, str]] | None = None,
 ) -> dict:
     if caller != expected_owner_session_id:
         raise GateError("caller is not current expected owner")
@@ -571,6 +574,7 @@ def transfer_owner(
             _is_digest_reference(str(reference).strip()) for reference in references
         ):
             raise GateError("codex successor readiness is not activation-reconciled")
+        readiness_references = [str(reference).strip() for reference in references]
     return _swap_owner(
         path,
         expected_owner_session_id=expected_owner_session_id,
@@ -589,9 +593,11 @@ def transfer_owner(
                 successor_session=new_owner_session_id,
                 workspace=new_workspace.strip(),
                 readiness_text=readiness_text,
+                readiness_references=readiness_references,
                 handoff=handoff,
                 caller=caller,
                 workspace_lookup=workspace_lookup,
+                reconcile=reconcile,
             )
             if declared_mode == CODEX_OWNER_MODE
             else None
@@ -614,10 +620,12 @@ def _binding_author(
     successor_session: str,
     workspace: str,
     readiness_text: str,
+    readiness_references: list[str],
     handoff: Path,
     caller: str,
     workspace_lookup: Callable[[str], Mapping[str, object]] | None = None,
-) -> Callable[[Mapping[str, object]], Mapping[str, object]]:
+    reconcile: Callable[[Mapping[str, object]], Mapping[str, str]] | None = None,
+) -> Callable[[Mapping[str, object], Mapping[str, object]], Mapping[str, object]]:
     """The owner-authored transfer provenance, created INSIDE the one owner-lock
     hold that commits the rename (operator-control activation-owner-binding,
     activation-binding-transfer, activation-binding-command; ADR 0005
@@ -646,15 +654,35 @@ def _binding_author(
     A failed lookup and a lookup answering any other workspace each refuse the
     whole transfer before the exclusive create, so the prior owner record stays
     byte-identical and no binding is written (activation-binding-transfer).
+
+    Every binding field is validated against LIVE state in this same hold, so the
+    readiness record's durable context references are RE-RECONCILED here: each
+    reference must recompute from the actual current bytes of the source it names,
+    over exactly the derived Codex source set. A hand-written readiness that merely
+    repeats the owner-named successor identity carries fabricated or replayed
+    references that do not recompute, and a record whose source moved since the
+    activation is a past read, not live evidence: both refuse before the exclusive
+    create (activation-binding-command, activation-authoritative-context). The
+    residual the human ruling accepts is a forger who reproduces every real current
+    source digest AND is explicitly named by the owner; the owner stays the trust
+    anchor for the successor identity.
     """
     binding_path = _codex_binding_path(control_dir, revision)
 
-    def author(pending: Mapping[str, object]) -> dict:
+    def author(pending: Mapping[str, object], prior: Mapping[str, object]) -> dict:
         if workspace_lookup is None:
             raise GateError("codex successor transfer requires a live workspace lookup")
         record = workspace_lookup(workspace)
         if not isinstance(record, Mapping) or str(record.get("id") or "") != workspace:
             raise GateError(f"transfer-time herdr workspace not verified: {workspace}")
+        if reconcile is None:
+            raise GateError("codex successor transfer requires live context reconciliation")
+        # Reconciled against the owner record still IN FORCE, the exact record the
+        # activation reconciled against, so a genuine readiness record recomputes
+        # while an unreadable source refuses like every other live-state failure.
+        live = _reconciled_context(reconcile, prior)
+        if [live[source] for source in CODEX_CONTEXT_SOURCES] != list(readiness_references):
+            raise GateError("codex successor readiness references do not recompute live")
         document = _toml_document(
             {
                 "schema_version": 1,
@@ -955,7 +983,7 @@ def force_takeover_codex_thread(
     final: dict[str, str] = {}
     written: list[Path] = []
 
-    def write_receipt(pending: Mapping[str, object]) -> dict:
+    def write_receipt(pending: Mapping[str, object], prior_record: Mapping[str, object]) -> dict:
         receipt = {
             "schema_version": 1,
             "prior_owner_session_id": str(prior["owner_session_id"]),
