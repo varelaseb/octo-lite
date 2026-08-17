@@ -333,6 +333,16 @@ def declare_successor_ready(
 
 CODEX_OWNER_MODE = "codex-thread"
 
+# The dedicated persistent Fable owner record carries no owner mode; the closed
+# set of owner modes octo-lite recognizes is exactly these two.
+FABLE_OWNER_MODE = ""
+KNOWN_OWNER_MODES = (FABLE_OWNER_MODE, CODEX_OWNER_MODE)
+
+# The canonical live Herdr agent_status values (operator-control
+# message-eligibility-gate). A resident session reports one of these; stopped,
+# unknown, absent, and every unrecognized value are not a live session.
+LIVE_AGENT_STATUSES = ("working", "idle", "blocked", "done")
+
 # The authoritative durable operating context an activated or takeover-committed
 # Codex owner re-reads before its first owner mutation (operator-control
 # activation-authoritative-context). Prose and raw conversation are never in it.
@@ -451,7 +461,7 @@ def transfer_owner(
         raise GateError("successor readiness owner mode mismatch")
     if declared_mode == CODEX_OWNER_MODE and str(readiness.get("herdr_workspace") or "") != new_workspace.strip():
         raise GateError("successor readiness workspace mismatch")
-    if not handoff.is_file() or handoff.name != f"{handoff_revision:04d}.md":
+    if not _is_owner_handoff(handoff, control_dir, handoff_revision):
         raise GateError("immutable handoff revision missing")
     return _swap_owner(
         path,
@@ -465,6 +475,27 @@ def transfer_owner(
         new_owner_mode=new_owner_mode,
         new_workspace=new_workspace,
     )
+
+
+def _is_owner_handoff(handoff: Path, control_dir: str, revision: int) -> bool:
+    """The one immutable handoff artifact a revision can have:
+    <control_dir>/handoffs/<zero-padded-revision>.md (operator-control
+    handoff-artifact).
+
+    The location is DERIVED from the owner record in force, never accepted from
+    the caller, so a file that merely carries the revision name somewhere else
+    is not the outgoing owner's artifact and creates neither readiness nor a
+    transfer. When the owner's handoffs directory is not on disk there is
+    nothing to compare the parent against, so the derived shape alone stands;
+    every case is a strictly narrower admission than a bare basename match.
+    """
+    if not handoff.is_file() or handoff.name != f"{revision:04d}.md":
+        return False
+    parent = handoff.resolve().parent
+    if parent.name != "handoffs":
+        return False
+    expected = Path(control_dir.strip() or handoff.parent.parent) / "handoffs"
+    return parent == expected.resolve() or not expected.is_dir()
 
 
 def _is_digest_reference(value: str) -> bool:
@@ -541,7 +572,7 @@ def activate_codex_thread(
                 # not that artifact grants nothing, and neither writes anything.
                 revision = int(current.get("handoff_revision", 0)) + 1
                 artifact = Path(handoff.strip()) if handoff.strip() else None
-                if artifact and artifact.is_file() and artifact.name == f"{revision:04d}.md":
+                if artifact and _is_owner_handoff(artifact, str(current.get("control_dir") or ""), revision):
                     # The successor reconciles the brief against live sources and
                     # then records its own readiness, binding the exact thread,
                     # revision, mode, and verified workspace the later atomic
@@ -594,11 +625,22 @@ def activate_codex_thread(
             "handoff_revision": 0,
             "control_dir": control_dir,
         }
+        # The owner record is itself one of the authoritative sources, so it
+        # cannot be reconciled before it exists. It is therefore written first
+        # and REMOVED again unless this same pass reads it back and reconciles
+        # every live source: an unreconciled activation leaves no owner record
+        # and the session ordinary (operator-control
+        # activation-failure-ordinary; role-runtime launch-codex-activation-failure).
         _atomic_write(path, _toml_document(owner))
-        readback = _read_toml(path)
-        if readback != owner:
-            raise GateError("codex owner readback mismatch")
-        return _codex_result("activated", readback, _reconciled_context(reconcile, readback))
+        try:
+            readback = _read_toml(path)
+            if readback != owner:
+                raise GateError("codex owner readback mismatch")
+            context = _reconciled_context(reconcile, readback)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        return _codex_result("activated", readback, context)
 
 
 def force_takeover_codex_thread(
@@ -634,7 +676,14 @@ def force_takeover_codex_thread(
     prior = _read_toml(path)
     if not prior:
         raise GateError("forced takeover requires an existing dedicated Fable owner record")
-    if prior.get("owner_mode") == CODEX_OWNER_MODE:
+    # Admission is a CLOSED set: the dedicated Fable owner record carries no
+    # owner mode at all. Another Codex owner is ineligible, and an unrecognized
+    # mode is not a dedicated Fable either, so it fails closed instead of being
+    # read as one (operator-control takeover-live-fable-only).
+    prior_mode = str(prior.get("owner_mode") or "").strip()
+    if prior_mode not in KNOWN_OWNER_MODES:
+        raise GateError(f"forced takeover admits only a known owner mode: {prior_mode}")
+    if prior_mode == CODEX_OWNER_MODE:
         raise GateError("forced takeover admits only a dedicated Fable owner")
     for key in ("owner_session_id", "owner_route", "control_dir"):
         if not str(prior.get(key) or "").strip():
@@ -656,6 +705,12 @@ def force_takeover_codex_thread(
         raise GateError(f"forced takeover context incomplete: {', '.join(missing)}")
     captured = {source: str(context[source]).strip() for source in CODEX_CONTEXT_SOURCES}
     context_digest = exact_fingerprint(captured)
+
+    # Live reconciliation runs BEFORE any fence, receipt, or owner commit: an
+    # unreadable live source leaves the Fable owner byte-identical, its session
+    # untouched, and this thread ordinary (operator-control
+    # activation-failure-ordinary, takeover-failure).
+    _reconciled_context(reconcile, prior)
 
     # Phase 3: fencing. The exact Fable session and its heartbeat timer are
     # retired and verified before any owner write.

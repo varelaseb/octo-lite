@@ -88,6 +88,20 @@ Operator utility skills are not role-bound. Invoke `launch-meta-operator`
 explicitly when a separate Claude or Codex session should inventory and take
 responsibility for active Herdr workstreams.
 
+To make the current Codex app thread the meta-operator, on an explicit request
+in that thread:
+
+```bash
+skills/launch-meta-operator/scripts/activate-codex-thread-operator.sh --workspace WORKSPACE_ID
+```
+
+It binds authority to the host `CODEX_THREAD_ID`, stores the verified workspace
+in the existing owner record, and treats reopening the same thread as resume. An
+active Fable owner blocks it; the normal live handoff stays preferred. On a
+direct human instruction naming the reason, add
+`--force-takeover --reason "TEXT"` to retire that verified live Fable, write a
+durable takeover receipt, and swap sole ownership atomically.
+
 ## Workflow
 
 Issue shaping is the most important step.

@@ -30,7 +30,7 @@ operator-gate, judgment-in-roles): session-durable timer runs operator-sweep
 (--repo unused; no target spec binding, cannot crash on target shape). Carries no judgment;
 hands a fresh snapshot (snapshot.json + gate lines) each wake. Operator reads it and
 applies judgment: poke stale orchestrator to investigate (one layer down); relaunch dead.
-Remain sole writer. Handoff only on operator request.
+Remain sole writer. Handoff only on operator request. Current Codex thread ownership (operator-control codex-thread-activation): activate only on explicit request in that thread; same thread reopened is pause/resume; a distinct thread inherits nothing; forced takeover of a live Fable owner runs only on direct human instruction naming the reason in that exact thread, never self-authorized, inferred, or widened.
 
 ## Never
 

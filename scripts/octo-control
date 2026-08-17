@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflows" / "lib"
 from role_resolver import load_registry  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
     CODEX_CONTEXT_SOURCES,
+    LIVE_AGENT_STATUSES,
     GateError,
     activate_codex_thread,
     admit_workspace,
@@ -1090,8 +1091,11 @@ def command_codex_activate(args) -> dict:
         agent = _herdr_agent(route)
         if str(agent.get("name") or agent.get("agent_name") or "") != route:
             return False
-        status = str(agent.get("agent_status") or "")
-        if not status or status == "stopped":
+        # Admission is a CLOSED set of canonical live statuses: stopped,
+        # unknown, absent, and every unrecognized or differently cased value is
+        # not a live resident session (operator-control
+        # takeover-live-fable-only).
+        if str(agent.get("agent_status") or "") not in LIVE_AGENT_STATUSES:
             return False
         receipt = load_toml_if_present(Path(str(owner["control_dir"])) / "receipt.toml")
         bound = receipt.get("bootstrap", {}).get("provider_session_id")
