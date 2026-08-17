@@ -534,7 +534,8 @@ class SuccessorWorkspaceBindingTest(unittest.TestCase):
     def test_transfer_refuses_a_readiness_record_that_declares_no_codex_routing(self) -> None:
         readiness = self.base / "bare-ready.toml"
         runtime.declare_successor_ready(
-            readiness, caller=THREAD, session_id=THREAD, handoff_revision=1
+            readiness, caller=THREAD, session_id=THREAD, handoff_revision=1,
+            handoff=self.handoff,
         )
         before = self.owner.read_bytes()
         with self.assertRaises(runtime.GateError):
@@ -665,6 +666,7 @@ class OwnerModeRoutingTest(unittest.TestCase):
             handoff_revision=1,
             owner_mode=kwargs.get("new_owner_mode", ""),
             herdr_workspace=kwargs.get("new_workspace", ""),
+            handoff=self.handoff,
         )
         return runtime.transfer_owner(
             self.owner,

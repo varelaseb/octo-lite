@@ -797,19 +797,21 @@ class OperatorControlTests(unittest.TestCase):
     def test_owner_transfer_requires_durable_successor_readiness_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
+            control = base.resolve() / "control"
+            (control / "handoffs").mkdir(parents=True)
             owner = base / "operator-owner.toml"
             owner.write_text(
                 'schema_version = 1\nowner_session_id = "old-session"\nowner_route = "old-route"\n'
-                'handoff_revision = 1\ncontrol_dir = "/control"\n'
+                f'handoff_revision = 1\ncontrol_dir = "{control}"\n'
             )
-            handoff = base / "handoffs" / "0002.md"
-            handoff.parent.mkdir()
+            handoff = control / "handoffs" / "0002.md"
             handoff.write_text("ready\n")
 
             wrong_ready = subprocess.run(
                 [
                     str(CONTROL), "successor-ready", "--path", str(base / "ready.toml"),
                     "--caller", "someone-else", "--session-id", "new-session", "--handoff-revision", "2",
+                    "--handoff", str(handoff),
                 ],
                 capture_output=True, text=True,
             )
@@ -819,6 +821,7 @@ class OperatorControlTests(unittest.TestCase):
                 [
                     str(CONTROL), "successor-ready", "--path", str(base / "ready.toml"),
                     "--caller", "new-session", "--session-id", "new-session", "--handoff-revision", "2",
+                    "--handoff", str(handoff),
                 ],
                 check=True, capture_output=True, text=True,
             )
@@ -829,7 +832,7 @@ class OperatorControlTests(unittest.TestCase):
                     str(CONTROL), "owner-transfer", "--owner-file", str(owner),
                     "--expected-owner", "old-session", "--expected-route", "old-route", "--expected-revision", "1",
                     "--caller", "old-session", "--new-owner", "new-session", "--new-route", "new-route",
-                    "--revision", "2", "--control-dir", "/control", "--handoff", str(handoff),
+                    "--revision", "2", "--control-dir", str(control), "--handoff", str(handoff),
                     "--successor-readiness", str(base / "ready.toml"),
                 ],
                 check=True, capture_output=True, text=True,
@@ -866,18 +869,20 @@ class OperatorControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             owner = base / "operator-owner.toml"
+            control = base.resolve() / "control"
+            (control / "handoffs").mkdir(parents=True)
             original = (
                 'schema_version = 1\nowner_session_id = "dead-session"\nowner_route = "dead-route"\n'
-                'handoff_revision = 1\ncontrol_dir = "/control"\n'
+                f'handoff_revision = 1\ncontrol_dir = "{control}"\n'
             )
             owner.write_text(original)
-            handoff = base / "handoffs" / "0002.md"
-            handoff.parent.mkdir()
+            handoff = control / "handoffs" / "0002.md"
             handoff.write_text("ready\n")
             subprocess.run(
                 [
                     str(CONTROL), "successor-ready", "--path", str(base / "ready.toml"),
                     "--caller", "successor", "--session-id", "successor", "--handoff-revision", "2",
+                    "--handoff", str(handoff),
                 ],
                 check=True, capture_output=True, text=True,
             )
@@ -886,7 +891,7 @@ class OperatorControlTests(unittest.TestCase):
                     str(CONTROL), "owner-transfer", "--owner-file", str(owner),
                     "--expected-owner", "dead-session", "--expected-route", "dead-route", "--expected-revision", "1",
                     "--caller", "successor", "--new-owner", "successor", "--new-route", "new-route",
-                    "--revision", "2", "--control-dir", "/control", "--handoff", str(handoff),
+                    "--revision", "2", "--control-dir", str(control), "--handoff", str(handoff),
                     "--successor-readiness", str(base / "ready.toml"),
                 ],
                 capture_output=True, text=True,

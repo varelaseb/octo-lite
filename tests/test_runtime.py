@@ -55,16 +55,20 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_owner_transfer_is_compare_and_swap(self):
         with tempfile.TemporaryDirectory() as td:
+            control = Path(td) / "control"
+            (control / "handoffs").mkdir(parents=True)
             owner = Path(td) / "operator-owner.toml"
             owner.write_text(
                 'schema_version = 1\nowner_session_id = "old-session"\nowner_route = "old-route"\n'
-                'handoff_revision = 1\ncontrol_dir = "/control"\n'
+                f'handoff_revision = 1\ncontrol_dir = "{control}"\n'
             )
-            handoff = Path(td) / "handoffs" / "0002.md"
-            handoff.parent.mkdir()
+            handoff = control / "handoffs" / "0002.md"
             handoff.write_text("ready\n")
             readiness = Path(td) / "ready.toml"
-            declare_successor_ready(readiness, caller="new-session", session_id="new-session", handoff_revision=2)
+            declare_successor_ready(
+                readiness, caller="new-session", session_id="new-session",
+                handoff_revision=2, handoff=handoff,
+            )
             transfer_owner(
                 owner,
                 "old-session",
@@ -73,7 +77,7 @@ class RuntimeContractTests(unittest.TestCase):
                 "new-session",
                 "new-route",
                 2,
-                "/control",
+                str(control),
                 caller="old-session",
                 handoff=handoff,
                 successor_readiness_path=readiness,
@@ -91,7 +95,7 @@ class RuntimeContractTests(unittest.TestCase):
                     "session-3",
                     "route-3",
                     3,
-                    "/control",
+                    str(control),
                     caller="old-session",
                     handoff=handoff,
                     successor_readiness_path=readiness,
@@ -100,29 +104,33 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_owner_transfer_requires_exact_prior_route_and_revision(self):
         with tempfile.TemporaryDirectory() as td:
+            control = Path(td) / "control"
+            (control / "handoffs").mkdir(parents=True)
             owner = Path(td) / "operator-owner.toml"
             owner.write_text(
                 'schema_version = 1\nowner_session_id = "old-session"\nowner_route = "old-route"\n'
-                'handoff_revision = 5\ncontrol_dir = "/control"\n'
+                f'handoff_revision = 5\ncontrol_dir = "{control}"\n'
             )
-            handoff = Path(td) / "handoffs" / "0006.md"
-            handoff.parent.mkdir()
+            handoff = control / "handoffs" / "0006.md"
             handoff.write_text("ready\n")
             readiness = Path(td) / "ready.toml"
-            declare_successor_ready(readiness, caller="new-session", session_id="new-session", handoff_revision=6)
+            declare_successor_ready(
+                readiness, caller="new-session", session_id="new-session",
+                handoff_revision=6, handoff=handoff,
+            )
 
             with self.assertRaises(GateError):
                 transfer_owner(
-                    owner, "old-session", "old-route", 4, "new-session", "new-route", 6, "/control",
+                    owner, "old-session", "old-route", 4, "new-session", "new-route", 6, str(control),
                     caller="old-session", handoff=handoff, successor_readiness_path=readiness,
                 )
             with self.assertRaises(GateError):
                 transfer_owner(
-                    owner, "old-session", "wrong-route", 5, "new-session", "new-route", 6, "/control",
+                    owner, "old-session", "wrong-route", 5, "new-session", "new-route", 6, str(control),
                     caller="old-session", handoff=handoff, successor_readiness_path=readiness,
                 )
             transfer_owner(
-                owner, "old-session", "old-route", 5, "new-session", "new-route", 6, "/control",
+                owner, "old-session", "old-route", 5, "new-session", "new-route", 6, str(control),
                 caller="old-session", handoff=handoff, successor_readiness_path=readiness,
             )
             current = owner.read_text()
@@ -131,31 +139,41 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_owner_transfer_rejects_mismatched_or_third_party_readiness(self):
         with tempfile.TemporaryDirectory() as td:
+            control = Path(td) / "control"
+            (control / "handoffs").mkdir(parents=True)
             owner = Path(td) / "operator-owner.toml"
             owner.write_text(
                 'schema_version = 1\nowner_session_id = "old-session"\nowner_route = "old-route"\n'
-                'handoff_revision = 1\ncontrol_dir = "/control"\n'
+                f'handoff_revision = 1\ncontrol_dir = "{control}"\n'
             )
-            handoff = Path(td) / "handoffs" / "0002.md"
-            handoff.parent.mkdir()
+            handoff = control / "handoffs" / "0002.md"
             handoff.write_text("ready\n")
 
             with self.assertRaises(GateError):
-                declare_successor_ready(Path(td) / "bad.toml", caller="someone-else", session_id="new-session", handoff_revision=2)
+                declare_successor_ready(
+                    Path(td) / "bad.toml", caller="someone-else", session_id="new-session",
+                    handoff_revision=2, handoff=handoff,
+                )
 
             wrong_revision = Path(td) / "wrong-rev.toml"
-            declare_successor_ready(wrong_revision, caller="new-session", session_id="new-session", handoff_revision=99)
+            declare_successor_ready(
+                wrong_revision, caller="new-session", session_id="new-session",
+                handoff_revision=99, handoff=handoff,
+            )
             with self.assertRaises(GateError):
                 transfer_owner(
-                    owner, "old-session", "old-route", 1, "new-session", "new-route", 2, "/control",
+                    owner, "old-session", "old-route", 1, "new-session", "new-route", 2, str(control),
                     caller="old-session", handoff=handoff, successor_readiness_path=wrong_revision,
                 )
 
             wrong_session = Path(td) / "wrong-session.toml"
-            declare_successor_ready(wrong_session, caller="impostor", session_id="impostor", handoff_revision=2)
+            declare_successor_ready(
+                wrong_session, caller="impostor", session_id="impostor",
+                handoff_revision=2, handoff=handoff,
+            )
             with self.assertRaises(GateError):
                 transfer_owner(
-                    owner, "old-session", "old-route", 1, "new-session", "new-route", 2, "/control",
+                    owner, "old-session", "old-route", 1, "new-session", "new-route", 2, str(control),
                     caller="old-session", handoff=handoff, successor_readiness_path=wrong_session,
                 )
 

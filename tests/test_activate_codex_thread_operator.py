@@ -325,6 +325,7 @@ class TransferRoutingTest(unittest.TestCase):
                 handoff_revision=1,
                 owner_mode=CODEX_MODE,
                 herdr_workspace=WORKSPACE,
+                handoff=handoff,
             )
             updated = runtime.transfer_owner(
                 owner_path,
