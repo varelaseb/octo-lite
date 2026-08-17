@@ -1113,9 +1113,27 @@ def command_codex_activate(args) -> dict:
         # takeover-live-fable-only).
         if str(agent.get("agent_status") or "") not in LIVE_AGENT_STATUSES:
             return False
+        # The owner record must resolve to one STRUCTURED VERIFIED dedicated
+        # Fable, so the whole persistent launch receipt is the proof, not a bare
+        # session string: the exact meta-operator role and its contract blob, a
+        # verified bootstrap bound to this owner session, the runtime that role
+        # resolved to, and the receipt's own launch revision recomputed so a
+        # post-bootstrap edit fails closed (operator-control
+        # takeover-live-fable-only).
         receipt = load_toml_if_present(Path(str(owner["control_dir"])) / "receipt.toml")
-        bound = receipt.get("bootstrap", {}).get("provider_session_id")
-        return str(bound or "") == str(owner["owner_session_id"])
+        role = receipt.get("role", {})
+        bootstrap = receipt.get("bootstrap", {})
+        runtime_table = receipt.get("runtime", {})
+        if role.get("name") != "meta-operator" or not str(role.get("contract_blob") or "").strip():
+            return False
+        if bootstrap.get("verified") is not True:
+            return False
+        if str(bootstrap.get("provider_session_id") or "") != str(owner["owner_session_id"]):
+            return False
+        if not str(runtime_table.get("provider") or "").strip() or not str(runtime_table.get("model") or "").strip():
+            return False
+        revision = receipt.get("launch_revision")
+        return isinstance(revision, str) and revision == launch_revision(receipt)
 
     def verify_active_fable(owner):
         return {"session_running": active_fable(owner), "route": owner["owner_route"]}

@@ -422,8 +422,16 @@ def _swap_owner(
     control_dir: str,
     new_owner_mode: str | None = None,
     new_workspace: str = "",
-    extra: Mapping[str, object] | None = None,
+    commit_extra: Callable[[], Mapping[str, object]] | None = None,
 ) -> dict:
+    """One locked compare-and-rename authority commit.
+
+    `commit_extra` runs INSIDE the same lock, after the compare and before the
+    rename, and returns the extra fields the new record must carry. Any artifact
+    the committed record binds is therefore created under this one lock, so a
+    concurrent authorized attempt cannot slip between creating that artifact and
+    naming it (operator-control takeover-receipt, takeover-atomic).
+    """
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock:
@@ -462,7 +470,7 @@ def _swap_owner(
             raise GateError(f"unknown successor owner mode: {new_owner_mode}")
         updated["handoff_revision"] = handoff_revision
         updated["control_dir"] = control_dir
-        updated.update(extra or {})
+        updated.update(commit_extra() if commit_extra else {})
         _atomic_write(path, _toml_document(updated))
         return updated
 
@@ -781,36 +789,49 @@ def force_takeover_codex_thread(
     if fence.get("session_running") is not False or fence.get("timer_present") is not False:
         raise GateError("forced takeover requires verified Fable session and timer retirement")
 
-    # Phase 4: immutable receipt, written before the sole authority commit so a
-    # later transfer failure surfaces as a blocked existing owner.
+    # Phases 4 and 5 are ONE locked step. The immutable receipt is created
+    # EXCLUSIVELY inside the owner lock that commits the swap, so a concurrent
+    # authorized attempt either loses the exclusive create and aborts with the
+    # other receipt's bytes intact, or holds the lock and this attempt never
+    # reaches its own create (operator-control takeover-receipt, takeover-atomic,
+    # takeover-failure).
     prior_revision = int(prior.get("handoff_revision", 0))
     revision = prior_revision + 1
     control = Path(str(prior["control_dir"]))
     receipt_path = control / "takeovers" / f"{revision:04d}.toml"
-    if receipt_path.exists():
-        raise GateError(f"takeover receipt already exists: {receipt_path}")
-    receipt = {
-        "schema_version": 1,
-        "prior_owner_session_id": str(prior["owner_session_id"]),
-        "prior_owner_route": str(prior["owner_route"]),
-        "new_owner_session_id": thread_id,
-        "new_owner_mode": CODEX_OWNER_MODE,
-        "herdr_workspace": workspace,
-        "reason": reason.strip(),
-        "requested_at": now(),
-        "context_digest": context_digest,
-        "context_sources": list(CODEX_CONTEXT_SOURCES),
-        "context_references": [captured[source] for source in CODEX_CONTEXT_SOURCES],
-        "fence_session_running": False,
-        "fence_timer_present": False,
-        "verification_outcome": "verified",
-    }
-    _atomic_write(receipt_path, _toml_document(receipt))
-    receipt_digest = exact_fingerprint(receipt_path.read_text())
 
-    # Phase 5: the sole authority commit. One locked exact compare of the prior
-    # Fable identity, route, control directory, and revision, then one atomic
-    # rename naming the exact Codex thread and its receipt.
+    def write_receipt() -> dict:
+        receipt = {
+            "schema_version": 1,
+            "prior_owner_session_id": str(prior["owner_session_id"]),
+            "prior_owner_route": str(prior["owner_route"]),
+            "new_owner_session_id": thread_id,
+            "new_owner_mode": CODEX_OWNER_MODE,
+            "herdr_workspace": workspace,
+            "reason": reason.strip(),
+            "requested_at": now(),
+            "context_digest": context_digest,
+            "context_sources": list(CODEX_CONTEXT_SOURCES),
+            "context_references": [captured[source] for source in CODEX_CONTEXT_SOURCES],
+            "fence_session_running": False,
+            "fence_timer_present": False,
+            "verification_outcome": "verified",
+        }
+        document = _toml_document(receipt)
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError as error:
+            raise GateError(f"takeover receipt already exists: {receipt_path}") from error
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(document)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return {
+            "takeover_receipt": str(receipt_path),
+            "takeover_receipt_digest": exact_fingerprint(document),
+        }
+
     owner = _swap_owner(
         path,
         expected_owner_session_id=str(prior["owner_session_id"]),
@@ -822,10 +843,7 @@ def force_takeover_codex_thread(
         control_dir=str(prior["control_dir"]),
         new_owner_mode=CODEX_OWNER_MODE,
         new_workspace=workspace,
-        extra={
-            "takeover_receipt": str(receipt_path),
-            "takeover_receipt_digest": receipt_digest,
-        },
+        commit_extra=write_receipt,
     )
 
     # Phase 6: continue. The committed record is read back from disk and the
