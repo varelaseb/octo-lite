@@ -99,6 +99,8 @@ class ReadinessTransferHarness(unittest.TestCase):
             new_workspace=WORKSPACE,
             # The live transfer-time routing boundary the owner-locked act crosses.
             workspace_lookup=lambda workspace: {"id": workspace},
+            # The in-hold live re-reconciliation of the readiness references.
+            reconcile=lambda owner: digest_context(),
         )
 
 
@@ -283,6 +285,7 @@ class OwnerSuppliedSuccessorIdentityTest(ReadinessTransferHarness):
             new_owner_mode=CODEX_MODE,
             new_workspace=WORKSPACE,
             workspace_lookup=swap,
+            reconcile=lambda owner: digest_context(),
         )
         self.assertEqual(committed["owner_session_id"], THREAD)
         binding = tomllib.loads(self.binding_path().read_text())

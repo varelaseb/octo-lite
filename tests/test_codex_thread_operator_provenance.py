@@ -161,6 +161,8 @@ class ReadinessProvenanceTest(unittest.TestCase):
             new_workspace=WORKSPACE,
             # The live transfer-time routing boundary the owner-locked act crosses.
             workspace_lookup=lambda workspace: {"id": workspace},
+            # The in-hold live re-reconciliation of the readiness references.
+            reconcile=lambda owner: digest_context(),
         )
 
     def test_transfer_refuses_a_forged_successor_readiness_record(self) -> None:

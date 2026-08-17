@@ -101,6 +101,8 @@ class OwnerAuthoredBindingTest(unittest.TestCase):
             new_workspace=WORKSPACE,
             # The live transfer-time routing boundary the owner-locked act crosses.
             workspace_lookup=lambda workspace: {"id": workspace},
+            # The in-hold live re-reconciliation of the readiness references.
+            reconcile=lambda owner: digest_context(),
         )
 
     def test_the_committed_transfer_carries_an_owner_authored_binding(self) -> None:
@@ -212,6 +214,8 @@ class OwnerAuthoredBindingTest(unittest.TestCase):
             new_workspace=WORKSPACE,
             # The live transfer-time routing boundary the owner-locked act crosses.
             workspace_lookup=lambda workspace: {"id": workspace},
+            # The in-hold live re-reconciliation of the readiness references.
+            reconcile=lambda owner: digest_context(),
         )
         binding = tomllib.loads(self.binding_path().read_text())
         self.assertEqual(binding["successor_session"], OTHER_THREAD)

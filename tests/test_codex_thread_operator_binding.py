@@ -609,6 +609,8 @@ class SuccessorWorkspaceBindingTest(unittest.TestCase):
             new_workspace=new_workspace,
             # The live transfer-time routing boundary the owner-locked act crosses.
             workspace_lookup=lambda workspace: {"id": workspace},
+            # The in-hold live re-reconciliation of the readiness references.
+            reconcile=lambda owner: digest_context(),
         )
 
     def test_pending_successor_readiness_binds_the_verified_workspace(self) -> None:
@@ -798,6 +800,8 @@ class OwnerModeRoutingTest(unittest.TestCase):
             **kwargs,
             # The live transfer-time routing boundary the owner-locked act crosses.
             workspace_lookup=lambda workspace: {"id": workspace},
+            # The in-hold live re-reconciliation of the readiness references.
+            reconcile=lambda owner: digest_context(),
         )
 
     def test_fable_successor_inherits_no_codex_routing(self) -> None:

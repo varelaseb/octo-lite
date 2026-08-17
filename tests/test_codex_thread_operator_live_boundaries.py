@@ -104,10 +104,16 @@ class TransferWorkspaceLookupTest(unittest.TestCase):
             successor_readiness=str(self.readiness),
             new_owner_mode=CODEX_MODE,
             new_workspace=WORKSPACE,
+            repo=str(self.base),
         )
         env = dict(self.env)
         env.update(env_extra)
-        with unittest.mock.patch.dict(os.environ, env):
+        # This seam is the live workspace lookup, so the durable-source reader is
+        # the same test double the activation above reconciled with; the real
+        # reader is exercised in test_codex_thread_operator_reference_reconciliation.
+        with unittest.mock.patch.dict(os.environ, env), unittest.mock.patch.object(
+            OCTO_CONTROL, "_codex_live_context", lambda **kwargs: digest_context()
+        ):
             return OCTO_CONTROL.command_owner(args)
 
     def calls(self) -> str:
