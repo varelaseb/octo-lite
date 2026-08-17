@@ -607,6 +607,8 @@ class SuccessorWorkspaceBindingTest(unittest.TestCase):
             successor_readiness_path=Path(readiness),
             new_owner_mode=CODEX_MODE,
             new_workspace=new_workspace,
+            # The live transfer-time routing boundary the owner-locked act crosses.
+            workspace_lookup=lambda workspace: {"id": workspace},
         )
 
     def test_pending_successor_readiness_binds_the_verified_workspace(self) -> None:
@@ -794,6 +796,8 @@ class OwnerModeRoutingTest(unittest.TestCase):
             handoff=self.handoff,
             successor_readiness_path=self.readiness,
             **kwargs,
+            # The live transfer-time routing boundary the owner-locked act crosses.
+            workspace_lookup=lambda workspace: {"id": workspace},
         )
 
     def test_fable_successor_inherits_no_codex_routing(self) -> None:

@@ -99,6 +99,8 @@ class OwnerAuthoredBindingTest(unittest.TestCase):
             successor_readiness_path=readiness,
             new_owner_mode=CODEX_MODE,
             new_workspace=WORKSPACE,
+            # The live transfer-time routing boundary the owner-locked act crosses.
+            workspace_lookup=lambda workspace: {"id": workspace},
         )
 
     def test_the_committed_transfer_carries_an_owner_authored_binding(self) -> None:
@@ -208,6 +210,8 @@ class OwnerAuthoredBindingTest(unittest.TestCase):
             successor_readiness_path=readiness,
             new_owner_mode=CODEX_MODE,
             new_workspace=WORKSPACE,
+            # The live transfer-time routing boundary the owner-locked act crosses.
+            workspace_lookup=lambda workspace: {"id": workspace},
         )
         binding = tomllib.loads(self.binding_path().read_text())
         self.assertEqual(binding["successor_session"], OTHER_THREAD)

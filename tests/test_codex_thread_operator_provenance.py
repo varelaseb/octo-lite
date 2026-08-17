@@ -159,6 +159,8 @@ class ReadinessProvenanceTest(unittest.TestCase):
             successor_readiness_path=readiness,
             new_owner_mode=CODEX_MODE,
             new_workspace=WORKSPACE,
+            # The live transfer-time routing boundary the owner-locked act crosses.
+            workspace_lookup=lambda workspace: {"id": workspace},
         )
 
     def test_transfer_refuses_a_forged_successor_readiness_record(self) -> None:
