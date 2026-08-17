@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -301,6 +302,7 @@ def declare_successor_ready(
     caller: str,
     session_id: str,
     handoff_revision: int,
+    handoff: Path | str,
     owner_mode: str = "",
     herdr_workspace: str = "",
 ) -> dict:
@@ -310,11 +312,20 @@ def declare_successor_ready(
     A Codex successor declares the exact workspace it read-verified here, so the
     later atomic transfer compares against read evidence instead of trusting a
     fresh caller argument; a dedicated Fable successor declares neither.
+
+    Readiness is meaningless without the brief it reconciled, so the record
+    BINDS the exact handoff artifact bytes the successor read (operator-control
+    handoff-reconcile, activation-handoff-brief). The atomic transfer admits
+    only a readiness record carrying that binding, so a readiness file no
+    verified activation wrote transfers nothing.
     """
     if caller != session_id:
         raise GateError("only the successor may declare its own readiness")
     if handoff_revision < 1:
         raise GateError("handoff revision must be positive")
+    artifact = Path(handoff)
+    if not artifact.is_file():
+        raise GateError("successor readiness requires the handoff artifact it reconciled")
     mode = owner_mode.strip()
     workspace = herdr_workspace.strip()
     if mode and mode != CODEX_OWNER_MODE:
@@ -323,7 +334,13 @@ def declare_successor_ready(
         raise GateError("codex successor readiness requires one verified herdr workspace")
     if workspace and not mode:
         raise GateError("workspace routing requires a declared successor owner mode")
-    state = {"schema_version": 1, "session_id": session_id, "handoff_revision": handoff_revision}
+    state = {
+        "schema_version": 1,
+        "session_id": session_id,
+        "handoff_revision": handoff_revision,
+        "handoff_artifact": str(artifact.resolve()),
+        "handoff_digest": exact_fingerprint(artifact.read_text()),
+    }
     if mode:
         state["owner_mode"] = mode
         state["herdr_workspace"] = workspace
@@ -449,9 +466,20 @@ def transfer_owner(
 ) -> dict:
     if caller != expected_owner_session_id:
         raise GateError("caller is not current expected owner")
+    # The derived immutable handoff artifact is the transfer's provenance root:
+    # it is checked FIRST, and the readiness record is then admitted only if it
+    # binds those exact artifact bytes (operator-control handoff-artifact,
+    # handoff-reconcile). A readiness file no verified activation wrote carries
+    # no binding and transfers nothing.
+    if not _is_owner_handoff(handoff, control_dir, handoff_revision):
+        raise GateError("immutable handoff revision missing")
     readiness = _read_toml(successor_readiness_path)
     if readiness.get("session_id") != new_owner_session_id or readiness.get("handoff_revision") != handoff_revision:
         raise GateError("successor readiness receipt mismatch")
+    if str(readiness.get("handoff_artifact") or "") != str(handoff.resolve()) or str(
+        readiness.get("handoff_digest") or ""
+    ) != exact_fingerprint(handoff.read_text()):
+        raise GateError("successor readiness is not bound to this handoff artifact")
     # The successor's own readiness record carries its verified routing, so the
     # workspace committed here is the one the successor read, never a
     # substitute supplied at transfer time (operator-control
@@ -461,8 +489,6 @@ def transfer_owner(
         raise GateError("successor readiness owner mode mismatch")
     if declared_mode == CODEX_OWNER_MODE and str(readiness.get("herdr_workspace") or "") != new_workspace.strip():
         raise GateError("successor readiness workspace mismatch")
-    if not _is_owner_handoff(handoff, control_dir, handoff_revision):
-        raise GateError("immutable handoff revision missing")
     return _swap_owner(
         path,
         expected_owner_session_id=expected_owner_session_id,
@@ -485,17 +511,16 @@ def _is_owner_handoff(handoff: Path, control_dir: str, revision: int) -> bool:
     The location is DERIVED from the owner record in force, never accepted from
     the caller, so a file that merely carries the revision name somewhere else
     is not the outgoing owner's artifact and creates neither readiness nor a
-    transfer. When the owner's handoffs directory is not on disk there is
-    nothing to compare the parent against, so the derived shape alone stands;
-    every case is a strictly narrower admission than a bare basename match.
+    transfer. There is no fallback: with no recorded control directory, or with
+    the artifact anywhere but that directory's own handoffs tree, the answer is
+    no.
     """
+    control = control_dir.strip()
+    if not control:
+        return False
     if not handoff.is_file() or handoff.name != f"{revision:04d}.md":
         return False
-    parent = handoff.resolve().parent
-    if parent.name != "handoffs":
-        return False
-    expected = Path(control_dir.strip() or handoff.parent.parent) / "handoffs"
-    return parent == expected.resolve() or not expected.is_dir()
+    return handoff.resolve().parent == (Path(control) / "handoffs").resolve()
 
 
 def _is_digest_reference(value: str) -> bool:
@@ -587,6 +612,7 @@ def activate_codex_thread(
                         caller=thread_id,
                         session_id=thread_id,
                         handoff_revision=revision,
+                        handoff=artifact,
                         owner_mode=CODEX_OWNER_MODE,
                         herdr_workspace=workspace,
                     )
@@ -609,13 +635,17 @@ def activate_codex_thread(
                 raise GateError("codex owner control directory unreadable; session stays ordinary")
             return _codex_result("resumed", current, _reconciled_context(reconcile, current))
 
-        # The control directory is created and read back BEFORE the authority
-        # record, so a control-directory failure can never leave a committed
-        # Codex owner behind (role-runtime launch-codex-activation-failure).
+        # Reconciliation runs BEFORE the owner record exists, so no live reader
+        # can ever observe an authority record this pass has not earned, and a
+        # failed activation leaves no owner record and no control state at all
+        # (operator-control activation-failure-ordinary; role-runtime
+        # launch-codex-activation-failure). The record reconciled is the exact
+        # pending record committed a moment later: the control directory is
+        # materialized first because the live control tree is one authoritative
+        # source, and a directory this pass created is removed again on any
+        # failure.
         control = Path(control_dir)
-        control.mkdir(parents=True, exist_ok=True)
-        if not control.is_dir():
-            raise GateError("codex control directory readback mismatch")
+        created = not control.exists()
         owner = {
             "schema_version": 1,
             "owner_session_id": thread_id,
@@ -625,20 +655,22 @@ def activate_codex_thread(
             "handoff_revision": 0,
             "control_dir": control_dir,
         }
-        # The owner record is itself one of the authoritative sources, so it
-        # cannot be reconciled before it exists. It is therefore written first
-        # and REMOVED again unless this same pass reads it back and reconciles
-        # every live source: an unreconciled activation leaves no owner record
-        # and the session ordinary (operator-control
-        # activation-failure-ordinary; role-runtime launch-codex-activation-failure).
-        _atomic_write(path, _toml_document(owner))
         try:
+            control.mkdir(parents=True, exist_ok=True)
+            if not control.is_dir():
+                raise GateError("codex control directory readback mismatch")
+            context = _reconciled_context(reconcile, owner)
+            _atomic_write(path, _toml_document(owner))
             readback = _read_toml(path)
             if readback != owner:
                 raise GateError("codex owner readback mismatch")
-            context = _reconciled_context(reconcile, readback)
         except BaseException:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if created:
+                shutil.rmtree(control, ignore_errors=True)
             raise
         return _codex_result("activated", readback, context)
 

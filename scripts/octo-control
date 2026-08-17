@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1020,7 +1021,10 @@ def _github_pull_state(repo: Path) -> tuple[str, str]:
     return slug, exact_fingerprint(pulls)
 
 
-def _codex_live_context(*, repo: Path, owner_path: Path, control: Path, workspace: str) -> dict:
+def _codex_live_context(
+    *, repo: Path, owner_path: Path, control: Path, workspace: str,
+    pending_owner: Mapping[str, object] | None = None,
+) -> dict:
     """Read every authoritative durable operating source live and bind each one
     to the exact bytes it names (operator-control
     activation-authoritative-context, takeover-context-capture).
@@ -1029,6 +1033,10 @@ def _codex_live_context(*, repo: Path, owner_path: Path, control: Path, workspac
     so the helper is the only reader. Durable records come from the CONTROL tree
     of the owner record in force, never from a candidate path that does not exist
     yet.
+
+    A first activation reconciles BEFORE any owner record exists, so there the
+    owner reference binds the exact pending record about to be committed. With
+    neither a record on disk nor a pending one, the source is unreadable.
     """
     repo = repo.resolve()
     head = subprocess.run(
@@ -1042,8 +1050,14 @@ def _codex_live_context(*, repo: Path, owner_path: Path, control: Path, workspac
         "workspace": _herdr_workspace(workspace),
         "state_root": str(owner_path.parent),
     }
+    if owner_path.exists():
+        owner_digest = _tree_digest(owner_path)
+    elif pending_owner:
+        owner_digest = exact_fingerprint(dict(pending_owner))
+    else:
+        raise GateError(f"context source unreadable: {owner_path}")
     return {
-        "owner_record": f"{owner_path}#{_tree_digest(owner_path)}",
+        "owner_record": f"{owner_path}#{owner_digest}",
         "control_records": f"{control}#{_tree_digest(control)}",
         "transfer_artifact": f"{control}#{_transfer_history_digest(control)}",
         "source_tracked_work": f"{repo}#{exact_fingerprint(head.stdout.strip())}",
@@ -1063,12 +1077,14 @@ def command_codex_activate(args) -> dict:
     control = Path(args.control_dir)
 
     def reconcile(owner) -> dict:
-        # Reconciliation reads the control tree of the owner record in force.
+        # Reconciliation reads the control tree of the owner record in force,
+        # and on a first activation binds the pending record it is handed.
         return _codex_live_context(
             repo=Path(args.repo),
             owner_path=owner_path,
             control=Path(str(owner.get("control_dir") or control)),
             workspace=args.workspace,
+            pending_owner=owner,
         )
 
     if not args.force_takeover:
@@ -1166,6 +1182,7 @@ def command_successor_ready(args) -> dict:
         caller=args.caller,
         session_id=args.session_id,
         handoff_revision=args.handoff_revision,
+        handoff=Path(args.handoff),
         owner_mode=args.owner_mode or "",
         herdr_workspace=args.workspace or "",
     )
@@ -1810,6 +1827,9 @@ def parser() -> argparse.ArgumentParser:
     successor_ready.add_argument("--caller", required=True)
     successor_ready.add_argument("--session-id", required=True)
     successor_ready.add_argument("--handoff-revision", type=int, required=True)
+    # Readiness binds the exact handoff artifact the successor reconciled; the
+    # atomic owner transfer admits no readiness record without that binding.
+    successor_ready.add_argument("--handoff", required=True)
     # The successor declares its own mode-specific routing here, and the atomic
     # transfer compares against it.
     successor_ready.add_argument("--owner-mode", default="")

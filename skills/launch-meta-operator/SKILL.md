@@ -49,9 +49,11 @@ view, not every raw log.
 
 An operator handoff occurs only on explicit request. The outgoing owner writes
 `handoffs/<revision>.md`. The fresh Fable reconciles sources, then declares its
-own readiness with `octo-control successor-ready`. `octo-control owner-transfer`
-verifies that durable receipt and the exact successor session, then performs
-one locked compare and atomic TOML replace. The prior owner becomes read-only.
+own readiness with `octo-control successor-ready`, which binds the exact
+handoff artifact it reconciled. `octo-control owner-transfer` verifies that
+derived artifact, the readiness record bound to it, and the exact successor
+session, then performs one locked compare and atomic TOML replace. The prior
+owner becomes read-only.
 No timeout or automatic failover transfers authority.
 
 Use `operator-say` for all messages to Fable. It resolves the current owner on
