@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -50,12 +51,9 @@ SUCCESSOR_SESSION = "fable-session-2"
 SUCCESSOR_ROUTE = "operator-fable-2"
 
 
-class ActivationBoundReadinessTest(unittest.TestCase):
-    """Seam: Codex successor readiness is the activation's own record at the one
-    derived location, so a hand-written readiness file transfers nothing and no
-    second candidate can displace the record a verified activation wrote
-    (operator-control activation-handoff-brief, activation-distinct-thread,
-    handoff-artifact)."""
+class ReadinessTransferHarness(unittest.TestCase):
+    """One dedicated Fable owner, one immutable handoff artifact, and the Codex
+    activation and transfer calls both readiness seams below exercise."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -102,6 +100,14 @@ class ActivationBoundReadinessTest(unittest.TestCase):
             # The live transfer-time routing boundary the owner-locked act crosses.
             workspace_lookup=lambda workspace: {"id": workspace},
         )
+
+
+class ActivationBoundReadinessTest(ReadinessTransferHarness):
+    """Seam: Codex successor readiness is the activation's own record at the one
+    derived location, so a hand-written readiness file transfers nothing and no
+    second candidate can displace the record a verified activation wrote
+    (operator-control activation-handoff-brief, activation-distinct-thread,
+    handoff-artifact)."""
 
     def forge(self, path: Path, *, thread_id: str = THREAD) -> Path:
         # Every field the transfer validates, fully shaped: the exact thread, the
@@ -175,6 +181,121 @@ class ActivationBoundReadinessTest(unittest.TestCase):
         self.assertEqual(first, second)
         committed = self.transfer(second)
         self.assertEqual(committed["owner_session_id"], THREAD)
+
+
+class OwnerSuppliedSuccessorIdentityTest(ReadinessTransferHarness):
+    """Seam: the owner is the trust anchor for the exact activated successor.
+
+    The successor session, workspace, and revision the transfer commits are the
+    OWNER-SUPPLIED arguments of the owner's own invocation; the readiness record
+    is never an identity source, only evidence that must MATCH those values and
+    the recomputed handoff digest. The owner-authored binding therefore digests
+    exactly the readiness bytes the owner validated, so bytes appearing at the
+    derived slot after validation influence nothing (operator-control
+    activation-owner-binding, activation-binding-command,
+    activation-binding-transfer, activation-no-new-auth).
+    """
+
+    def binding_path(self) -> Path:
+        return self.control / "handoffs" / "0001.binding.toml"
+
+    def forge_at_derived_slot(
+        self, *, thread_id: str = OTHER_THREAD, workspace: str = WORKSPACE
+    ) -> Path:
+        """A fully shaped readiness record at the exact DERIVED slot, written by
+        no activation at all: every field the transfer checks, for a thread that
+        never ran the activation path."""
+        path = self.derived_readiness()
+        context = digest_context()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            runtime._toml_document(
+                {
+                    "schema_version": 1,
+                    "session_id": thread_id,
+                    "handoff_revision": 1,
+                    "handoff_artifact": str(self.handoff.resolve()),
+                    "handoff_digest": runtime.exact_fingerprint(self.handoff.read_text()),
+                    "owner_mode": CODEX_MODE,
+                    "herdr_workspace": workspace,
+                    "context_sources": list(runtime.CODEX_CONTEXT_SOURCES),
+                    "context_references": [
+                        context[source] for source in runtime.CODEX_CONTEXT_SOURCES
+                    ],
+                }
+            )
+        )
+        return path
+
+    def test_a_derived_slot_forgery_the_owner_never_named_refuses(self) -> None:
+        # The owner names only the successor it verified activated. A hand-written
+        # record at the derived slot naming a never-activated thread is refused
+        # before any write, and no ownership reaches that thread.
+        forged = self.forge_at_derived_slot(thread_id=OTHER_THREAD)
+        before = self.owner.read_bytes()
+        with self.assertRaises(runtime.GateError):
+            self.transfer(forged, thread_id=THREAD)
+        self.assertEqual(self.owner.read_bytes(), before)
+        self.assertFalse(self.binding_path().exists())
+
+    def test_a_readiness_workspace_the_owner_never_named_refuses(self) -> None:
+        forged = self.forge_at_derived_slot(thread_id=THREAD, workspace="w-other")
+        before = self.owner.read_bytes()
+        with self.assertRaises(runtime.GateError):
+            self.transfer(forged, thread_id=THREAD)
+        self.assertEqual(self.owner.read_bytes(), before)
+        self.assertFalse(self.binding_path().exists())
+
+    def test_readiness_matching_the_owner_supplied_identity_commits(self) -> None:
+        readiness = Path(self.activate()["successor_readiness"])
+        committed = self.transfer(readiness, thread_id=THREAD)
+        self.assertEqual(committed["owner_session_id"], THREAD)
+        binding = tomllib.loads(self.binding_path().read_text())
+        self.assertEqual(binding["successor_session"], THREAD)
+        self.assertEqual(
+            binding["readiness_digest"], runtime.exact_fingerprint(readiness.read_text())
+        )
+
+    def test_the_binding_digests_the_validated_readiness_bytes(self) -> None:
+        # The readiness bytes are read and validated ONCE. Bytes swapped into the
+        # derived slot after that validation, inside the owner-locked act, are
+        # never read again: the committed binding digests exactly what the owner
+        # validated, so untrusted bytes never enter the owner-authored provenance.
+        readiness = Path(self.activate()["successor_readiness"])
+        validated = readiness.read_text()
+
+        def swap(workspace: str):
+            self.forge_at_derived_slot(thread_id=OTHER_THREAD)
+            return {"id": workspace}
+
+        committed = runtime.transfer_owner(
+            self.owner,
+            FABLE_SESSION,
+            FABLE_ROUTE,
+            0,
+            THREAD,
+            THREAD,
+            1,
+            str(self.control),
+            caller=FABLE_SESSION,
+            handoff=self.handoff,
+            successor_readiness_path=readiness,
+            new_owner_mode=CODEX_MODE,
+            new_workspace=WORKSPACE,
+            workspace_lookup=swap,
+        )
+        self.assertEqual(committed["owner_session_id"], THREAD)
+        binding = tomllib.loads(self.binding_path().read_text())
+        self.assertEqual(binding["successor_session"], THREAD)
+        self.assertEqual(
+            binding["readiness_digest"],
+            runtime.exact_fingerprint(validated),
+            "the binding digests the validated readiness bytes, never a later swap",
+        )
+        self.assertNotEqual(
+            binding["readiness_digest"],
+            runtime.exact_fingerprint(readiness.read_text()),
+        )
 
 
 class CurrentOwnerReceiptLocationTest(TakeoverCliHarness):
