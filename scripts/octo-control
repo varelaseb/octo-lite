@@ -21,12 +21,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflows" / "lib"
 
 from role_resolver import load_registry  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
+    CODEX_CONTEXT_SOURCES,
     GateError,
+    activate_codex_thread,
     admit_workspace,
     append_trace,
     bind_pass_result,
     declare_successor_ready,
     exact_fingerprint,
+    force_takeover_codex_thread,
     herdr_label,
     launch_revision,
     normalize_launch_access,
@@ -846,6 +849,117 @@ def command_owner(args) -> dict:
     )
 
 
+def _codex_thread_id() -> str:
+    # The helper DERIVES the exact current thread from the host, never from the
+    # caller (role-runtime launch-codex-activation-takeover-no-substitute).
+    thread_id = (os.environ.get("CODEX_THREAD_ID") or "").strip()
+    if not thread_id:
+        raise GateError("host CODEX_THREAD_ID required")
+    home = Path(os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"))
+    sessions = home / "sessions"
+    if not sessions.is_dir() or not any(sessions.rglob(f"rollout-*-{thread_id}.jsonl")):
+        raise GateError(f"no local Codex session for {thread_id}")
+    return thread_id
+
+
+def _tree_digest(root: Path) -> str:
+    if not root.exists():
+        return "absent"
+    if root.is_file():
+        return exact_fingerprint(root.read_text(errors="replace"))
+    entries = {
+        str(item.relative_to(root)): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in sorted(root.rglob("*"))
+        if item.is_file()
+    }
+    return exact_fingerprint(entries)
+
+
+def _herdr_agent(route: str) -> dict:
+    herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
+    if not herdr:
+        raise GateError("herdr not available")
+    result = subprocess.run([herdr, "agent", "get", route], capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    payload = json.loads(result.stdout)
+    agent = payload.get("result", {}).get("agent") if isinstance(payload, dict) else None
+    return agent if isinstance(agent, dict) else {}
+
+
+def _codex_context(args, owner_path: Path, control: Path, refs: dict) -> dict:
+    repo = Path(args.repo).resolve()
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+    )
+    derived = {
+        "owner_record": f"{owner_path}#{_tree_digest(owner_path)}",
+        "control_records": f"{control}#{_tree_digest(control)}",
+        "transfer_artifact": f"{control / 'takeovers'}#{_tree_digest(control / 'takeovers')}",
+        "source_tracked_work": f"{repo}#{head.stdout.strip() or 'unreadable'}",
+        "canonical_specs_and_adrs": f"{repo / 'spec'}#{_tree_digest(repo / 'spec')}",
+        "workspace_and_runtime_configuration": f"workspace={args.workspace} state={owner_path.parent}",
+    }
+    derived.update(refs)
+    return derived
+
+
+def command_codex_activate(args) -> dict:
+    thread_id = _codex_thread_id()
+    owner_path = Path(args.owner_file)
+    control = Path(args.control_dir)
+    if not args.force_takeover:
+        return activate_codex_thread(
+            owner_path,
+            thread_id=thread_id,
+            workspace=args.workspace,
+            control_dir=str(control),
+            handoff=args.handoff or "",
+        )
+
+    refs = {}
+    for pair in args.context_ref:
+        key, _, value = pair.partition("=")
+        if key not in CODEX_CONTEXT_SOURCES:
+            raise GateError(f"unknown context source: {key}")
+        refs[key] = value
+
+    def verify_active_fable(owner):
+        agent = _herdr_agent(str(owner["owner_route"]))
+        running = bool(agent) and str(agent.get("status") or "running") != "stopped"
+        return {"session_running": running, "route": owner["owner_route"]}
+
+    def retire_fable(owner):
+        route = str(owner["owner_route"])
+        prior_control = Path(str(owner["control_dir"]))
+        herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
+        if herdr:
+            subprocess.run([herdr, "agent", "stop", route], capture_output=True, text=True)
+        timer = Path(__file__).resolve().parent / "operator-timer"
+        subprocess.run(
+            [str(timer), "remove", "--name", route, "--control-dir", str(prior_control)],
+            capture_output=True, text=True,
+        )
+        timer_active = subprocess.run(
+            [str(timer), "check", "--name", route], capture_output=True, text=True,
+        ).returncode == 0
+        return {
+            "session_running": bool(_herdr_agent(route)),
+            "timer_present": timer_active or (prior_control / "timer.toml").exists(),
+        }
+
+    return force_takeover_codex_thread(
+        owner_path,
+        thread_id=thread_id,
+        workspace=args.workspace,
+        reason=args.reason or "",
+        context=_codex_context(args, owner_path, control, refs),
+        verify_active_fable=verify_active_fable,
+        retire_fable=retire_fable,
+        now=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+
+
 def command_successor_ready(args) -> dict:
     return declare_successor_ready(
         Path(args.path), caller=args.caller, session_id=args.session_id, handoff_revision=args.handoff_revision,
@@ -1467,6 +1581,20 @@ def parser() -> argparse.ArgumentParser:
     owner.add_argument("--handoff", required=True)
     owner.add_argument("--successor-readiness", required=True)
     owner.set_defaults(run=command_owner)
+
+    # Current Codex thread activation and the exceptional forced takeover. The
+    # exact thread identity is derived from the host, never accepted as an
+    # argument, so this parser exposes no thread-ID option.
+    codex = sub.add_parser("codex-activate")
+    codex.add_argument("--owner-file", required=True)
+    codex.add_argument("--workspace", required=True)
+    codex.add_argument("--control-dir", required=True)
+    codex.add_argument("--repo", default=".")
+    codex.add_argument("--handoff", default="")
+    codex.add_argument("--force-takeover", action="store_true")
+    codex.add_argument("--reason", default="")
+    codex.add_argument("--context-ref", action="append", default=[])
+    codex.set_defaults(run=command_codex_activate)
 
     successor_ready = sub.add_parser("successor-ready")
     successor_ready.add_argument("--path", required=True)

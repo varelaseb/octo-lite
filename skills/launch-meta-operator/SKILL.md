@@ -22,6 +22,10 @@ Decision tree. Pick one path; the launchers are distinct scripts.
   `skills/launch-meta-operator/scripts/handoff-meta-operator.sh`. Requires the
   existing owner record; refuses if none (that is the initial case). See
   operator-control `handoff-launcher-initial` / `handoff-launcher-live`.
+- Explicit user request in the CURRENT Codex app thread: CURRENT-THREAD
+  activation. Run
+  `skills/launch-meta-operator/scripts/activate-codex-thread-operator.sh`. See
+  operator-control `codex-thread-activation`.
 
 ## INITIAL launch
 
@@ -98,3 +102,34 @@ neither strengthens nor weakens it and invents NO new authentication. It only
 pre-fills the exact current owner identity the gate already checks; a caller who
 is not the current owner is rejected by that same pre-existing gate. Any future
 session-authentication hardening is a separate operator-initiated change.
+
+## CURRENT-THREAD activation (Codex app)
+
+Run `skills/launch-meta-operator/scripts/activate-codex-thread-operator.sh --workspace ID [--cwd PATH] [--handoff PATH]`
+only on an explicit user request in the current Codex app thread. It:
+
+- takes NO thread-ID argument; it derives the exact thread from host
+  `CODEX_THREAD_ID` and proves it against Codex's own local session record
+- read-verifies one existing Herdr workspace before any authority write and
+  stores it as mode-specific routing in the existing `operator-owner.toml`
+- creates the owner record only when absent (`owner_mode = "codex-thread"`);
+  the same thread reopening is an idempotent resume that writes nothing
+- refuses without writes when any other session owns the record; a compact
+  handoff brief is context only and grants no authority
+- installs NO timer, daemon, polling service, background resume, surrogate, or
+  duplicate inbox; supervision pauses when the thread closes and reconciles
+  from durable sources when it reopens
+- spawns canonical orchestrators through the existing role resolver and
+  `herdr-spawn --workspace`, never a Codex-only worker path
+
+### Exceptional forced takeover
+
+Add `--force-takeover --reason TEXT` only on a direct human instruction naming
+that action. It admits ONLY a verified active dedicated Fable owner, captures
+every authoritative durable context source (supply the non-local ones with
+`--context-ref KEY=VALUE`), retires and verifies the exact Fable session and
+its heartbeat timer, writes an immutable `takeovers/<revision>.toml` receipt,
+then performs one locked compare and atomic owner rename. Any unproven phase
+leaves this thread ordinary and the prior owner record byte-identical. Normal
+live handoff stays the preferred path. See operator-control
+`codex-forced-takeover`.
