@@ -522,7 +522,17 @@ def transfer_owner(
     # no binding and transfers nothing.
     if not _is_owner_handoff(handoff, control_dir, handoff_revision):
         raise GateError("immutable handoff revision missing")
-    readiness = _read_toml(successor_readiness_path)
+    # The successor identity committed here is the OWNER-SUPPLIED one: the owner
+    # names only a successor it verified activated, and the readiness record is
+    # evidence that must MATCH those exact arguments, never an identity source
+    # (operator-control activation-binding-command, activation-no-new-auth).
+    # Its bytes are read exactly ONCE, and only those validated bytes are ever
+    # digested, so bytes appearing at the derived slot after this read influence
+    # nothing (activation-binding-transfer).
+    readiness_text = (
+        successor_readiness_path.read_text() if successor_readiness_path.is_file() else ""
+    )
+    readiness = tomllib.loads(readiness_text) if readiness_text else {}
     if readiness.get("session_id") != new_owner_session_id or readiness.get("handoff_revision") != handoff_revision:
         raise GateError("successor readiness receipt mismatch")
     if str(readiness.get("handoff_artifact") or "") != str(handoff.resolve()) or str(
@@ -578,7 +588,7 @@ def transfer_owner(
                 revision=handoff_revision,
                 successor_session=new_owner_session_id,
                 workspace=new_workspace.strip(),
-                readiness=successor_readiness_path,
+                readiness_text=readiness_text,
                 handoff=handoff,
                 caller=caller,
                 workspace_lookup=workspace_lookup,
@@ -603,7 +613,7 @@ def _binding_author(
     revision: int,
     successor_session: str,
     workspace: str,
-    readiness: Path,
+    readiness_text: str,
     handoff: Path,
     caller: str,
     workspace_lookup: Callable[[str], Mapping[str, object]] | None = None,
@@ -620,6 +630,11 @@ def _binding_author(
     the single durable commit point, and only the binding this same hold created
     is referenced by the committed owner record: any other file there is void
     residue with no authority (activation-binding-transfer).
+
+    The record carries the OWNER-SUPPLIED successor session, workspace, and
+    revision plus the exact readiness bytes the owner already validated against
+    them: it never re-reads the readiness slot, so bytes swapped in after
+    validation enter no owner-authored provenance (activation-binding-command).
 
     The digest domain stays nonrecursive by construction: the record digests the
     readiness record and the handoff artifact, and nothing ever digests it
@@ -646,7 +661,7 @@ def _binding_author(
                 "revision": revision,
                 "successor_session": successor_session,
                 "herdr_workspace": workspace,
-                "readiness_digest": exact_fingerprint(readiness.read_text()),
+                "readiness_digest": exact_fingerprint(readiness_text),
                 "handoff_digest": exact_fingerprint(handoff.read_text()),
                 "authored_by_session": caller,
                 "authored_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
