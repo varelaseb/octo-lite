@@ -8,6 +8,7 @@ and the host identity and workspace proofs.
 
 from __future__ import annotations
 
+import fcntl
 import importlib.machinery
 import importlib.util
 import json
@@ -212,10 +213,61 @@ class TakeoverCliHarness(unittest.TestCase):
             "WORKSPACE_JSON": json.dumps({"result": {"workspace": {"id": WORKSPACE}}}),
         }
 
-    def receipt(self, session_id: str) -> None:
-        (self.prior_control / "receipt.toml").write_text(
-            f'schema_version = 1\n\n[bootstrap]\nprovider_session_id = "{session_id}"\n'
+    def receipt(
+        self,
+        session_id: str,
+        *,
+        minimal: bool = False,
+        role_name: str = "meta-operator",
+        verified: bool = True,
+        contract_blob: str = "5aae5b88cbeb8e666e4285e12ee846d26486d731",
+        provider: str = "anthropic",
+        model: str = "claude-fable-5",
+        stale_revision: bool = False,
+    ) -> None:
+        """The prior owner's persistent launch receipt.
+
+        The full shape is what a real dedicated Fable launch writes: the
+        resolver-built persistent meta-operator receipt, self-bound by its own
+        launch revision and bootstrap-verified to the exact provider session.
+        """
+        path = self.prior_control / "receipt.toml"
+        if minimal:
+            path.write_text(
+                f'schema_version = 1\n\n[bootstrap]\nprovider_session_id = "{session_id}"\n'
+            )
+            return
+        values = {
+            "schema_version": 1,
+            "spawn_id": "11111111-1111-1111-1111-111111111111",
+            "parent": "operator",
+            "reply_route": "operator",
+            "ready": True,
+            "role": {
+                "name": role_name,
+                "root": str(ROOT),
+                "contract_path": f"roles/{role_name}.md",
+                "contract_blob": contract_blob,
+                "mapping_revision": "1e2dddae1d5303afaa7ba2f8035279bc4df61904",
+            },
+            "runtime": {
+                "provider": provider,
+                "model": model,
+                "effort": "xhigh",
+                "mode": "auto",
+                "session": "persistent",
+            },
+            "workspace": {
+                "repo": str(self.base / "repo"),
+                "worktree": str(self.base / "repo"),
+                "starting_head": "0" * 40,
+            },
+        }
+        values["launch_revision"] = (
+            "0" * 64 if stale_revision else runtime.launch_revision(values)
         )
+        values["bootstrap"] = {"verified": verified, "provider_session_id": session_id}
+        path.write_text(runtime._render_full_receipt(values))
 
     def calls(self) -> str:
         return self.call_log.read_text() if self.call_log.exists() else ""
@@ -849,6 +901,140 @@ class HostIdentityProofTest(unittest.TestCase):
         empty = self.run_activate("--workspace", WORKSPACE, "--cwd", str(self.cwd), workspace_json="{}")
         self.assertNotEqual(empty.returncode, 0)
         self.assertFalse(self.owner_path.exists())
+
+
+class TakeoverReceiptShapeTest(TakeoverCliHarness):
+    """Seam: octo-control codex-activate --force-takeover candidate admission
+    (operator-control takeover-live-fable-only). The active-Fable proof must
+    resolve the prior owner to one STRUCTURED VERIFIED dedicated Fable, so it
+    validates the prior owner's full persistent receipt shape, not route,
+    status, and a bare session string. A minimal, role-substituted, unverified,
+    self-inconsistent, or unbound receipt proves no dedicated Fable and refuses
+    before anything is stopped."""
+
+    def assert_refused(self) -> None:
+        before = self.owner_path.read_bytes()
+        with self.assertRaises(runtime.GateError):
+            self.takeover()
+        self.assertNotIn("agent stop", self.calls())
+        self.assertEqual(self.owner_path.read_bytes(), before)
+        self.assertFalse((self.prior_control / "takeovers").exists())
+
+    def test_minimal_receipt_is_not_a_verified_dedicated_fable(self) -> None:
+        # Route plus live status plus a bootstrap session id is the whole of the
+        # old proof; a receipt carrying nothing else names no role, no contract,
+        # and no runtime, so it never proves a dedicated Fable.
+        self.receipt(FABLE_SESSION, minimal=True)
+        self.assert_refused()
+
+    def test_role_substituted_receipt_refuses(self) -> None:
+        self.receipt(FABLE_SESSION, role_name="orchestrator")
+        self.assert_refused()
+
+    def test_unverified_bootstrap_refuses(self) -> None:
+        self.receipt(FABLE_SESSION, verified=False)
+        self.assert_refused()
+
+    def test_receipt_not_bound_by_its_own_launch_revision_refuses(self) -> None:
+        self.receipt(FABLE_SESSION, stale_revision=True)
+        self.assert_refused()
+
+    def test_receipt_without_contract_or_runtime_binding_refuses(self) -> None:
+        for kwargs in ({"contract_blob": ""}, {"provider": ""}, {"model": ""}):
+            with self.subTest(**kwargs):
+                self.receipt(FABLE_SESSION, **kwargs)
+                self.assert_refused()
+
+    def test_full_verified_meta_operator_receipt_admits_the_takeover(self) -> None:
+        self.receipt(FABLE_SESSION)
+        result = self.takeover()
+        self.assertEqual(result["outcome"], "takeover")
+        self.assertIn("agent stop", self.calls())
+
+
+class TakeoverReceiptExclusivityTest(unittest.TestCase):
+    """Seam: force_takeover_codex_thread receipt creation
+    (operator-control takeover-receipt, takeover-atomic, takeover-failure).
+    The immutable receipt is created EXCLUSIVELY and INSIDE the same owner lock
+    that commits the swap, so two authorized attempts can never overwrite a
+    receipt or commit an owner whose receipt digest or new-owner binding
+    disagrees with the receipt on disk."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.control = self.base / "control"
+        self.control.mkdir()
+        self.owner = self.base / "operator-owner.toml"
+        fable_owner(self.owner, self.control)
+        self.receipt_path = self.control / "takeovers" / "0001.toml"
+
+    def takeover(self, *, thread: str = THREAD, now=lambda: "2026-08-17T01:00:00Z"):
+        return runtime.force_takeover_codex_thread(
+            self.owner,
+            thread_id=thread,
+            workspace=WORKSPACE,
+            reason="operator directed",
+            context=digest_context(),
+            verify_active_fable=lambda owner: {"session_running": True},
+            retire_fable=lambda owner: {"session_running": False, "timer_present": False},
+            now=now,
+            reconcile=lambda owner: digest_context(),
+        )
+
+    def owner_lock_held(self) -> bool:
+        # The owner lock is the sole authority-commit lock for this record. A
+        # separate descriptor can take it only while nobody else holds it.
+        lock_path = self.owner.with_suffix(self.owner.suffix + ".lock")
+        if not lock_path.exists():
+            return False
+        with lock_path.open("a+", encoding="utf-8") as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(probe, fcntl.LOCK_UN)
+        return False
+
+    def test_receipt_is_written_inside_the_owner_commit_lock(self) -> None:
+        held: list[bool] = []
+
+        def now() -> str:
+            held.append(self.owner_lock_held())
+            return "2026-08-17T01:00:00Z"
+
+        self.assertEqual(self.takeover(now=now)["outcome"], "takeover")
+        self.assertEqual(held, [True])
+
+    def test_a_concurrent_receipt_is_never_overwritten_and_commits_no_owner(self) -> None:
+        # A second authorized attempt lands its receipt for the same revision
+        # between this attempt's checks and its own write. Exclusive creation is
+        # the only thing that can tell those two apart, so this attempt must
+        # abort with the other receipt's bytes and the prior owner intact.
+        rival = 'schema_version = 1\nnew_owner_session_id = "rival-thread"\n'
+
+        def now() -> str:
+            self.receipt_path.parent.mkdir(parents=True, exist_ok=True)
+            self.receipt_path.write_text(rival)
+            return "2026-08-17T01:00:00Z"
+
+        before = self.owner.read_bytes()
+        with self.assertRaises(runtime.GateError):
+            self.takeover(now=now)
+        self.assertEqual(self.receipt_path.read_text(), rival)
+        self.assertEqual(self.owner.read_bytes(), before)
+
+    def test_a_committed_owner_always_names_the_receipt_bytes_on_disk(self) -> None:
+        result = self.takeover()
+        owner = result["owner"]
+        self.assertEqual(owner["takeover_receipt"], str(self.receipt_path))
+        receipt = tomllib.loads(self.receipt_path.read_text())
+        self.assertEqual(receipt["new_owner_session_id"], THREAD)
+        self.assertEqual(
+            owner["takeover_receipt_digest"],
+            runtime.exact_fingerprint(self.receipt_path.read_text()),
+        )
 
 
 if __name__ == "__main__":
