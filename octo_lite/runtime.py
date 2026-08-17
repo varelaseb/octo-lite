@@ -295,12 +295,38 @@ def verdict_body(
     )
 
 
-def declare_successor_ready(path: Path, *, caller: str, session_id: str, handoff_revision: int) -> dict:
+def declare_successor_ready(
+    path: Path,
+    *,
+    caller: str,
+    session_id: str,
+    handoff_revision: int,
+    owner_mode: str = "",
+    herdr_workspace: str = "",
+) -> dict:
+    """The successor's own readiness record, and the ONLY place its
+    mode-specific routing is declared (operator-control activation-workspace).
+
+    A Codex successor declares the exact workspace it read-verified here, so the
+    later atomic transfer compares against read evidence instead of trusting a
+    fresh caller argument; a dedicated Fable successor declares neither.
+    """
     if caller != session_id:
         raise GateError("only the successor may declare its own readiness")
     if handoff_revision < 1:
         raise GateError("handoff revision must be positive")
+    mode = owner_mode.strip()
+    workspace = herdr_workspace.strip()
+    if mode and mode != CODEX_OWNER_MODE:
+        raise GateError(f"unknown successor owner mode: {mode}")
+    if mode == CODEX_OWNER_MODE and not workspace:
+        raise GateError("codex successor readiness requires one verified herdr workspace")
+    if workspace and not mode:
+        raise GateError("workspace routing requires a declared successor owner mode")
     state = {"schema_version": 1, "session_id": session_id, "handoff_revision": handoff_revision}
+    if mode:
+        state["owner_mode"] = mode
+        state["herdr_workspace"] = workspace
     _atomic_write(path, _toml_document(state))
     return state
 
@@ -416,6 +442,15 @@ def transfer_owner(
     readiness = _read_toml(successor_readiness_path)
     if readiness.get("session_id") != new_owner_session_id or readiness.get("handoff_revision") != handoff_revision:
         raise GateError("successor readiness receipt mismatch")
+    # The successor's own readiness record carries its verified routing, so the
+    # workspace committed here is the one the successor read, never a
+    # substitute supplied at transfer time (operator-control
+    # activation-workspace, ADR 0005 decision-workspace-routing).
+    declared_mode = str(readiness.get("owner_mode") or "")
+    if declared_mode != (new_owner_mode or ""):
+        raise GateError("successor readiness owner mode mismatch")
+    if declared_mode == CODEX_OWNER_MODE and str(readiness.get("herdr_workspace") or "") != new_workspace.strip():
+        raise GateError("successor readiness workspace mismatch")
     if not handoff.is_file() or handoff.name != f"{handoff_revision:04d}.md":
         raise GateError("immutable handoff revision missing")
     return _swap_owner(
@@ -439,11 +474,30 @@ def _is_digest_reference(value: str) -> bool:
     )
 
 
-def _codex_result(outcome: str, owner: Mapping[str, object]) -> dict:
+def _reconciled_context(reconcile: Callable[[Mapping[str, object]], Mapping[str, str]], owner: Mapping[str, object]) -> dict:
+    """One live read of every authoritative durable source, bound to exact
+    digests (operator-control activation-authoritative-context,
+    activation-same-thread-resume; role-runtime launch-codex-activation-complete).
+
+    Reporting a static source list is not reconciliation: authority is reported
+    only with the exact references this pass actually read.
+    """
+    captured = dict(reconcile(owner) or {})
+    missing = [
+        source for source in CODEX_CONTEXT_SOURCES
+        if not _is_digest_reference(str(captured.get(source) or "").strip())
+    ]
+    if missing:
+        raise GateError(f"durable context reconciliation incomplete: {', '.join(missing)}")
+    return {source: str(captured[source]).strip() for source in CODEX_CONTEXT_SOURCES}
+
+
+def _codex_result(outcome: str, owner: Mapping[str, object], context: Mapping[str, str]) -> dict:
     return {
         "outcome": outcome,
         "owner": dict(owner),
         "context_sources": list(CODEX_CONTEXT_SOURCES),
+        "context_references": [context[source] for source in CODEX_CONTEXT_SOURCES],
         "capabilities": list(CODEX_META_OPERATOR_CAPABILITIES),
     }
 
@@ -454,6 +508,7 @@ def activate_codex_thread(
     thread_id: str,
     workspace: str,
     control_dir: str,
+    reconcile: Callable[[Mapping[str, object]], Mapping[str, str]],
     handoff: str = "",
 ) -> dict:
     """Bind meta-operator authority to the exact current Codex app thread
@@ -487,9 +542,27 @@ def activate_codex_thread(
                 revision = int(current.get("handoff_revision", 0)) + 1
                 artifact = Path(handoff.strip()) if handoff.strip() else None
                 if artifact and artifact.is_file() and artifact.name == f"{revision:04d}.md":
-                    pending = _codex_result("pending", current)
+                    # The successor reconciles the brief against live sources and
+                    # then records its own readiness, binding the exact thread,
+                    # revision, mode, and verified workspace the later atomic
+                    # transfer must match (operator-control
+                    # activation-handoff-brief, activation-workspace).
+                    context = _reconciled_context(reconcile, current)
+                    candidate = Path(control_dir)
+                    candidate.mkdir(parents=True, exist_ok=True)
+                    readiness_path = candidate / "successor-ready.toml"
+                    declare_successor_ready(
+                        readiness_path,
+                        caller=thread_id,
+                        session_id=thread_id,
+                        handoff_revision=revision,
+                        owner_mode=CODEX_OWNER_MODE,
+                        herdr_workspace=workspace,
+                    )
+                    pending = _codex_result("pending", current, context)
                     pending["handoff_revision"] = revision
                     pending["successor_session_id"] = thread_id
+                    pending["successor_readiness"] = str(readiness_path)
                     return pending
                 raise GateError(
                     "another session owns operator authority; use the existing handoff, "
@@ -503,7 +576,7 @@ def activate_codex_thread(
             # the session stays ordinary instead of resuming authority.
             if not Path(str(current.get("control_dir") or "")).is_dir():
                 raise GateError("codex owner control directory unreadable; session stays ordinary")
-            return _codex_result("resumed", current)
+            return _codex_result("resumed", current, _reconciled_context(reconcile, current))
 
         # The control directory is created and read back BEFORE the authority
         # record, so a control-directory failure can never leave a committed
@@ -525,7 +598,7 @@ def activate_codex_thread(
         readback = _read_toml(path)
         if readback != owner:
             raise GateError("codex owner readback mismatch")
-        return _codex_result("activated", readback)
+        return _codex_result("activated", readback, _reconciled_context(reconcile, readback))
 
 
 def force_takeover_codex_thread(
@@ -538,6 +611,7 @@ def force_takeover_codex_thread(
     verify_active_fable: Callable[[Mapping[str, object]], Mapping[str, object]],
     retire_fable: Callable[[Mapping[str, object]], Mapping[str, object]],
     now: Callable[[], str],
+    reconcile: Callable[[Mapping[str, object]], Mapping[str, str]],
 ) -> dict:
     """One direct-human forced takeover from a verified active dedicated Fable
     owner into the exact current Codex thread (operator-control
@@ -635,7 +709,14 @@ def force_takeover_codex_thread(
             "takeover_receipt_digest": receipt_digest,
         },
     )
-    return _codex_result("takeover", owner)
+
+    # Phase 6: continue. The committed record is read back from disk and the
+    # complete durable context is reconciled again before the new owner may act
+    # (operator-control takeover-success).
+    committed = _read_toml(path)
+    if committed != owner:
+        raise GateError("codex owner readback mismatch after takeover commit")
+    return _codex_result("takeover", committed, _reconciled_context(reconcile, committed))
 
 
 def transition_linear(

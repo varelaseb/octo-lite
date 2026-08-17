@@ -136,11 +136,10 @@ only on an explicit user request in the current Codex app thread. It:
 Add `--force-takeover --reason TEXT` only on a direct human instruction naming
 that action. It admits ONLY an active dedicated Fable owner proven by its own
 route, canonical `agent_status`, and launch receipt session binding. It captures
-every authoritative durable context source from the PRIOR owner's control tree
-and refuses when one cannot be read; supply the three non-local sources
-(`linear_issue_state`, `github_pull_request_state`, `child_stream_status`) as
-`--context-ref KEY=<identity>#<sha256>`, which can never override derived
-evidence. It then retires and verifies the exact Fable session and
+every authoritative durable context source itself, reading the PRIOR owner's
+control tree plus live Linear, GitHub, Herdr, child stream, and repository
+state, and refuses when one cannot be read; there is no caller-supplied context
+reference. It then retires and verifies the exact Fable session and
 its heartbeat timer, writes an immutable `takeovers/<revision>.toml` receipt,
 then performs one locked compare and atomic owner rename. Any unproven phase
 leaves this thread ordinary and the prior owner record byte-identical. Normal

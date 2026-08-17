@@ -923,58 +923,153 @@ def _transfer_history_digest(control: Path) -> str:
     return exact_fingerprint(history)
 
 
-def _herdr_agent(route: str) -> dict:
+def _herdr_cli() -> str:
     herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
     if not herdr:
         raise GateError("herdr not available")
-    result = subprocess.run([herdr, "agent", "get", route], capture_output=True, text=True)
-    if result.returncode != 0 or not result.stdout.strip():
+    return herdr
+
+
+def _herdr_agent(route: str) -> dict:
+    # A lookup that fails is NOT an answer: it proves nothing about the session,
+    # so it can never read as an absent or retired agent (operator-control
+    # takeover-live-fable-only, takeover-fence). An empty structured answer is a
+    # real answer: Herdr resolves no such agent.
+    result = subprocess.run([_herdr_cli(), "agent", "get", route], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise GateError(f"herdr agent lookup unreadable: {route}")
+    if not result.stdout.strip():
         return {}
-    payload = json.loads(result.stdout)
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError as error:
+        raise GateError(f"herdr agent lookup unreadable: {route}") from error
     agent = payload.get("result", {}).get("agent") if isinstance(payload, dict) else None
     return agent if isinstance(agent, dict) else {}
 
 
-# The context sources the helper reads itself. They are evidence, so a caller
-# reference may never stand in for them or override them; the remaining sources
-# (Linear, GitHub, child stream status) are supplied as digest-bound references.
-CODEX_DERIVED_CONTEXT_SOURCES = (
-    "owner_record",
-    "control_records",
-    "transfer_artifact",
-    "source_tracked_work",
-    "canonical_specs_and_adrs",
-    "workspace_and_runtime_configuration",
-)
+def _herdr_workspace(workspace: str) -> dict:
+    # The live routing configuration the owner record binds. Exit status alone is
+    # not verification: the lookup must return the exact requested workspace
+    # (role-runtime launch-codex-activation-workspace).
+    result = subprocess.run(
+        [_herdr_cli(), "workspace", "get", workspace], capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise GateError(f"context source unreadable: herdr workspace {workspace}")
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except ValueError as error:
+        raise GateError(f"context source unreadable: herdr workspace {workspace}") from error
+    record = payload.get("result", {}).get("workspace") if isinstance(payload, dict) else None
+    if not isinstance(record, dict) or str(record.get("id") or "") != workspace:
+        raise GateError(f"herdr workspace not verified: {workspace}")
+    return record
 
 
-def _codex_context(args, owner_path: Path, prior_control: Path, refs: dict) -> dict:
-    # Context is captured from the PRIOR owner's control tree, the record this
-    # takeover replaces, never from the candidate Codex control path that does
-    # not exist yet (operator-control takeover-context-capture).
-    repo = Path(args.repo).resolve()
+def _child_stream_digest(control: Path) -> str:
+    # Child-owned durable status, the only upward truth an activated Codex thread
+    # pulls (operator-control activation-herdr-boundary).
+    streams = control / "streams"
+    if not streams.is_dir():
+        return exact_fingerprint(None)
+    statuses = {
+        str(item.relative_to(streams)): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in sorted(streams.rglob("*"))
+        if item.is_file()
+    }
+    return exact_fingerprint(statuses)
+
+
+def _stream_issues(control: Path) -> list[str]:
+    streams = control / "streams"
+    if not streams.is_dir():
+        return []
+    issues = {
+        str(load_toml_if_present(manifest).get("issue") or "").strip()
+        for manifest in sorted(streams.glob("*/stream.toml"))
+    }
+    return sorted(issue for issue in issues if issue)
+
+
+def _linear_state_digest(issues: list[str]) -> str:
+    states = {}
+    for issue in issues:
+        try:
+            states[issue] = linear_read(issue)["fingerprint"]
+        except (subprocess.CalledProcessError, ValueError, OSError, AttributeError) as error:
+            raise GateError(f"context source unreadable: linear {issue}") from error
+    return exact_fingerprint(states)
+
+
+def _github_pull_state(repo: Path) -> tuple[str, str]:
+    remote = subprocess.run(
+        ["git", "-C", str(repo), "remote", "get-url", "origin"], capture_output=True, text=True,
+    )
+    if remote.returncode != 0 or not remote.stdout.strip():
+        raise GateError(f"context source unreadable: {repo} origin remote")
+    slug = _canonical_slug(remote.stdout.strip())
+    try:
+        pulls = run_json(
+            ["gh", "pr", "list", "--repo", slug, "--state", "all", "--limit", "100",
+             "--json", "number,state,headRefOid"],
+        )
+    except (subprocess.CalledProcessError, ValueError, OSError) as error:
+        raise GateError(f"context source unreadable: github {slug}") from error
+    return slug, exact_fingerprint(pulls)
+
+
+def _codex_live_context(*, repo: Path, owner_path: Path, control: Path, workspace: str) -> dict:
+    """Read every authoritative durable operating source live and bind each one
+    to the exact bytes it names (operator-control
+    activation-authoritative-context, takeover-context-capture).
+
+    There is no caller-supplied reference: a digest-shaped string proves nothing,
+    so the helper is the only reader. Durable records come from the CONTROL tree
+    of the owner record in force, never from a candidate path that does not exist
+    yet.
+    """
+    repo = repo.resolve()
     head = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
     )
     if head.returncode != 0 or not head.stdout.strip():
         raise GateError(f"context source unreadable: {repo} HEAD")
-    configuration = {"workspace": args.workspace, "state_root": str(owner_path.parent)}
-    derived = {
-        "owner_record": f"{owner_path}#{_tree_digest(owner_path)}",
-        "control_records": f"{prior_control}#{_tree_digest(prior_control)}",
-        "transfer_artifact": f"{prior_control}#{_transfer_history_digest(prior_control)}",
-        "source_tracked_work": f"{repo}#{exact_fingerprint(head.stdout.strip())}",
-        "canonical_specs_and_adrs": f"{repo / 'spec'}#{_tree_digest(repo / 'spec')}",
-        "workspace_and_runtime_configuration":
-            f"workspace={args.workspace} state={owner_path.parent}#{exact_fingerprint(configuration)}",
+    slug, pulls = _github_pull_state(repo)
+    issues = _stream_issues(control)
+    configuration = {
+        "workspace": _herdr_workspace(workspace),
+        "state_root": str(owner_path.parent),
     }
-    return {**derived, **refs}
+    return {
+        "owner_record": f"{owner_path}#{_tree_digest(owner_path)}",
+        "control_records": f"{control}#{_tree_digest(control)}",
+        "transfer_artifact": f"{control}#{_transfer_history_digest(control)}",
+        "source_tracked_work": f"{repo}#{exact_fingerprint(head.stdout.strip())}",
+        "linear_issue_state":
+            f"linear:{','.join(issues) or 'none'}#{_linear_state_digest(issues)}",
+        "github_pull_request_state": f"github:{slug}#{pulls}",
+        "canonical_specs_and_adrs": f"{repo / 'spec'}#{_tree_digest(repo / 'spec')}",
+        "child_stream_status": f"{control / 'streams'}#{_child_stream_digest(control)}",
+        "workspace_and_runtime_configuration":
+            f"workspace={workspace} state={owner_path.parent}#{exact_fingerprint(configuration)}",
+    }
 
 
 def command_codex_activate(args) -> dict:
     thread_id = _codex_thread_id()
     owner_path = Path(args.owner_file)
     control = Path(args.control_dir)
+
+    def reconcile(owner) -> dict:
+        # Reconciliation reads the control tree of the owner record in force.
+        return _codex_live_context(
+            repo=Path(args.repo),
+            owner_path=owner_path,
+            control=Path(str(owner.get("control_dir") or control)),
+            workspace=args.workspace,
+        )
+
     if not args.force_takeover:
         return activate_codex_thread(
             owner_path,
@@ -982,16 +1077,8 @@ def command_codex_activate(args) -> dict:
             workspace=args.workspace,
             control_dir=str(control),
             handoff=args.handoff or "",
+            reconcile=reconcile,
         )
-
-    refs = {}
-    for pair in args.context_ref:
-        key, _, value = pair.partition("=")
-        if key not in CODEX_CONTEXT_SOURCES:
-            raise GateError(f"unknown context source: {key}")
-        if key in CODEX_DERIVED_CONTEXT_SOURCES:
-            raise GateError(f"derived context source cannot be overridden: {key}")
-        refs[key] = value
 
     def active_fable(owner) -> bool:
         # The exact active-Fable proof: the resolved agent is the prior owner's
@@ -1014,22 +1101,36 @@ def command_codex_activate(args) -> dict:
         return {"session_running": active_fable(owner), "route": owner["owner_route"]}
 
     def retire_fable(owner):
+        # Every retirement step must SUCCEED and then be answered for: an ignored
+        # stop or removal result, an unreadable lookup, and an unanswerable timer
+        # check are all unproven, and unproven is never retired
+        # (operator-control takeover-fence).
         route = str(owner["owner_route"])
         prior_control = Path(str(owner["control_dir"]))
-        herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
-        if herdr:
-            subprocess.run([herdr, "agent", "stop", route], capture_output=True, text=True)
+        stop = subprocess.run(
+            [_herdr_cli(), "agent", "stop", route], capture_output=True, text=True,
+        )
+        if stop.returncode != 0:
+            raise GateError(f"fable session stop failed: {route}")
+        agent = _herdr_agent(route)
+        running = bool(agent) and str(agent.get("agent_status") or "") != "stopped"
+
         timer = Path(__file__).resolve().parent / "operator-timer"
-        subprocess.run(
+        removal = subprocess.run(
             [str(timer), "remove", "--name", route, "--control-dir", str(prior_control)],
             capture_output=True, text=True,
         )
-        timer_active = subprocess.run(
+        if removal.returncode != 0:
+            raise GateError(f"fable heartbeat timer removal failed: {route}")
+        # Tri-state: 0 present, 1 absent, anything else unverifiable.
+        checked = subprocess.run(
             [str(timer), "check", "--name", route], capture_output=True, text=True,
-        ).returncode == 0
+        ).returncode
+        if checked not in (0, 1):
+            raise GateError(f"fable heartbeat timer state unverifiable: {route}")
         return {
-            "session_running": active_fable(owner),
-            "timer_present": timer_active or (prior_control / "timer.toml").exists(),
+            "session_running": running,
+            "timer_present": checked == 0 or (prior_control / "timer.toml").exists(),
         }
 
     prior = load_toml_if_present(owner_path)
@@ -1042,16 +1143,27 @@ def command_codex_activate(args) -> dict:
         thread_id=thread_id,
         workspace=args.workspace,
         reason=args.reason or "",
-        context=_codex_context(args, owner_path, prior_control, refs),
+        context=_codex_live_context(
+            repo=Path(args.repo),
+            owner_path=owner_path,
+            control=prior_control,
+            workspace=args.workspace,
+        ),
         verify_active_fable=verify_active_fable,
         retire_fable=retire_fable,
         now=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        reconcile=reconcile,
     )
 
 
 def command_successor_ready(args) -> dict:
     return declare_successor_ready(
-        Path(args.path), caller=args.caller, session_id=args.session_id, handoff_revision=args.handoff_revision,
+        Path(args.path),
+        caller=args.caller,
+        session_id=args.session_id,
+        handoff_revision=args.handoff_revision,
+        owner_mode=args.owner_mode or "",
+        herdr_workspace=args.workspace or "",
     )
 
 
@@ -1687,7 +1799,6 @@ def parser() -> argparse.ArgumentParser:
     codex.add_argument("--handoff", default="")
     codex.add_argument("--force-takeover", action="store_true")
     codex.add_argument("--reason", default="")
-    codex.add_argument("--context-ref", action="append", default=[])
     codex.set_defaults(run=command_codex_activate)
 
     successor_ready = sub.add_parser("successor-ready")
@@ -1695,6 +1806,10 @@ def parser() -> argparse.ArgumentParser:
     successor_ready.add_argument("--caller", required=True)
     successor_ready.add_argument("--session-id", required=True)
     successor_ready.add_argument("--handoff-revision", type=int, required=True)
+    # The successor declares its own mode-specific routing here, and the atomic
+    # transfer compares against it.
+    successor_ready.add_argument("--owner-mode", default="")
+    successor_ready.add_argument("--workspace", default="")
     successor_ready.set_defaults(run=command_successor_ready)
 
     accept = sub.add_parser("accept")

@@ -12,7 +12,7 @@ set -euo pipefail
 # host CODEX_THREAD_ID and is proven against Codex's own local session record.
 
 usage() {
-  echo "usage: activate-codex-thread-operator.sh --workspace ID [--cwd PATH] [--handoff PATH] [--force-takeover --reason TEXT] [--context-ref KEY=VALUE]..."
+  echo "usage: activate-codex-thread-operator.sh --workspace ID [--cwd PATH] [--handoff PATH] [--force-takeover --reason TEXT]"
 }
 
 workspace=""
@@ -20,7 +20,6 @@ cwd="$PWD"
 handoff=""
 reason=""
 force=false
-context_refs=()
 state_root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite"
 
 while (($#)); do
@@ -30,7 +29,6 @@ while (($#)); do
     --handoff) handoff="${2:?}"; shift 2 ;;
     --force-takeover) force=true; shift ;;
     --reason) reason="${2:?}"; shift 2 ;;
-    --context-ref) context_refs+=(--context-ref "${2:?}"); shift 2 ;;
     -h|--help) usage; exit 0 ;;
     # Every other option, including any thread-ID override, is rejected.
     *) usage >&2; exit 64 ;;
@@ -88,7 +86,6 @@ args=(codex-activate --owner-file "$owner" --workspace "$workspace" --control-di
 [[ -n "$handoff" ]] && args+=(--handoff "$handoff")
 if [[ "$force" == true ]]; then
   args+=(--force-takeover --reason "$reason")
-  args+=("${context_refs[@]+"${context_refs[@]}"}")
 fi
 
 "$control_cli" "${args[@]}"
