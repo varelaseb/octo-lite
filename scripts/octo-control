@@ -1285,8 +1285,17 @@ def command_codex_activate(args) -> dict:
         # Fable, so the WHOLE persistent launch receipt and the exact canonical
         # Fable runtime are the proof, never a bare session string or a partial
         # receipt (operator-control takeover-live-fable-only).
-        receipt = load_toml_if_present(Path(str(owner["control_dir"])) / "receipt.toml")
-        return _canonical_fable_receipt(receipt, str(owner["owner_session_id"]))
+        # The receipt read must be the CURRENT owner's own. A lawful Fable handoff
+        # keeps the control directory invariant and stores the successor's receipt
+        # under the state root's operators/<route> directory, so the live owner
+        # route resolves the location first and the control directory answers only
+        # for an owner whose route never moved. Whichever resolves, the receipt
+        # must still name the live owner session (operator-control
+        # takeover-live-fable-only, handoff-launcher-pre-derive).
+        session = str(owner["owner_session_id"])
+        handed_off = owner_path.parent / "operators" / route / "receipt.toml"
+        resolved = handed_off if handed_off.is_file() else Path(str(owner["control_dir"])) / "receipt.toml"
+        return _canonical_fable_receipt(load_toml_if_present(resolved), session)
 
     def verify_active_fable(owner):
         return {"session_running": active_fable(owner), "route": owner["owner_route"]}

@@ -125,8 +125,10 @@ only on an explicit user request in the current Codex app thread. It:
   next-revision immutable handoff artifact reports the PENDING successor path,
   which still requires successor reconciliation and the current owner's atomic
   `owner-transfer`; activation itself writes the Codex readiness record with the
-  verified workspace and the durable context it reconciled, and the transfer
-  admits no Codex successor without that proof, so `successor-ready` declares
+  verified workspace and the durable context it reconciled, at the one derived
+  location `<control_dir>/handoffs/<revision>.ready.toml` the transfer also
+  derives, and the transfer admits no Codex successor readiness from any other
+  location, so `successor-ready` declares
   dedicated Fable readiness only; a compact brief grants no authority
 - leaves `operator-say` unusable for a Codex owner by design: an app thread has
   no Herdr route, so it pulls durable state instead

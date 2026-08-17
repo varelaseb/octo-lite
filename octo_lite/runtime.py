@@ -355,9 +355,17 @@ def _declare_codex_successor_ready(
     admits a Codex successor only with that proof, so a record minted without
     activating commits no ownership (operator-control activation-workspace,
     activation-authoritative-context, activation-no-new-auth).
+
+    The record's LOCATION is the proof of provenance: it is derived from the owner
+    record in force, this write happens under the owner lock, and the revision
+    slot stays with the thread that activated, so a distinct candidate can never
+    displace it (operator-control activation-distinct-thread, handoff-artifact).
     """
     if not workspace.strip():
         raise GateError("codex successor readiness requires one verified herdr workspace")
+    declared = _read_toml(path)
+    if declared and str(declared.get("session_id") or "") != thread_id:
+        raise GateError("another candidate already declared readiness for this revision")
     state = _readiness_state(thread_id, handoff_revision, handoff)
     state["owner_mode"] = CODEX_OWNER_MODE
     state["herdr_workspace"] = workspace.strip()
@@ -527,6 +535,16 @@ def transfer_owner(
     if declared_mode != (new_owner_mode or ""):
         raise GateError("successor readiness owner mode mismatch")
     if declared_mode == CODEX_OWNER_MODE:
+        # A Codex successor's readiness is admitted only where the activation
+        # writes it: the location DERIVED from the owner record in force. Field
+        # equality and digest shape are checkable by anyone, so a hand-written
+        # record elsewhere is not read at all and transfers no authority
+        # (operator-control activation-handoff-brief, activation-distinct-thread,
+        # handoff-artifact).
+        if successor_readiness_path.resolve() != _codex_readiness_path(
+            control_dir, handoff_revision
+        ).resolve():
+            raise GateError("codex successor readiness is not the activation's own record")
         if str(readiness.get("herdr_workspace") or "") != new_workspace.strip():
             raise GateError("successor readiness workspace mismatch")
         # A Codex successor is admitted only with its activation's own proof:
@@ -573,6 +591,19 @@ def _is_owner_handoff(handoff: Path, control_dir: str, revision: int) -> bool:
     if not handoff.is_file() or handoff.name != f"{revision:04d}.md":
         return False
     return handoff.resolve().parent == (Path(control) / "handoffs").resolve()
+
+
+def _codex_readiness_path(control_dir: str, revision: int) -> Path:
+    """The one location a Codex successor's readiness record can have:
+    <control_dir>/handoffs/<zero-padded-revision>.ready.toml, derived exactly like
+    the immutable handoff artifact it answers (operator-control handoff-artifact,
+    activation-handoff-brief).
+
+    Derivation is the provenance: the activation writes this record under the
+    owner lock, and the transfer reads only what it derives, so a readiness file
+    the caller wrote elsewhere is never read and transfers nothing.
+    """
+    return Path(control_dir) / "handoffs" / f"{revision:04d}.ready.toml"
 
 
 def _is_digest_reference(value: str) -> bool:
@@ -656,9 +687,9 @@ def activate_codex_thread(
                     # transfer must match (operator-control
                     # activation-handoff-brief, activation-workspace).
                     context = _reconciled_context(reconcile, current)
-                    candidate = Path(control_dir)
-                    candidate.mkdir(parents=True, exist_ok=True)
-                    readiness_path = candidate / "successor-ready.toml"
+                    readiness_path = _codex_readiness_path(
+                        str(current.get("control_dir") or ""), revision
+                    )
                     _declare_codex_successor_ready(
                         readiness_path,
                         thread_id=thread_id,
