@@ -20,7 +20,7 @@ from octo_lite.launch import provision_lane_worktree, verify_relay_verbatim  # n
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflows" / "lib"))
 
-from role_resolver import load_registry, resolve_role  # noqa: E402
+from role_resolver import _git_blob, _skill_blob, load_registry, resolve_role  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
     _toml_document as owner_document,
     CODEX_CONTEXT_SOURCES,
@@ -1134,13 +1134,24 @@ def _canonical_fable_receipt(receipt: Mapping[str, object], session_id: str) -> 
     A bare session string, a partial receipt, or a receipt declaring some other
     runtime is not a dedicated Fable: the complete resolver-built shape must be
     present, its runtime must be the exact canonical meta-operator runtime (or one
-    of that role's sanctioned alternates), its skills must be the ones the
-    canonical mapping grants that role, and the receipt must still recompute its
+    of that role's sanctioned alternates), and the receipt must still recompute its
     own launch revision so a post-bootstrap edit fails closed.
+
+    Every blob the receipt carries is recomputed from the canonical resolver
+    mapping itself, never merely shape-checked: the contract blob from roles/, the
+    mapping revision from roles.toml, the skill blobs from the resolved skill
+    files, and the instructions blob from the receipt's own workspace AGENTS.md.
+    The resolver-granted skill and capability set is required whole, so a receipt
+    with fabricated or omitted entries is not a dedicated Fable (role-runtime
+    role-receipt).
     """
     try:
         registry = load_registry(OCTO_ROOT)
         canonical = registry.roles["meta-operator"]
+        resolved = resolve_role(
+            registry, "meta-operator", {item.when for item in canonical.conditional_skills}
+        )
+        canonical_skill_blobs = [_skill_blob(OCTO_ROOT, skill) for skill in resolved.skills]
     except (ValueError, KeyError, OSError) as error:
         raise GateError("canonical role mapping unreadable") from error
 
@@ -1152,7 +1163,9 @@ def _canonical_fable_receipt(receipt: Mapping[str, object], session_id: str) -> 
     role = receipt.get("role") or {}
     if role.get("name") != canonical.name or role.get("contract_path") != canonical.contract:
         return False
-    if not _is_git_blob(role.get("contract_blob")) or not _is_git_blob(role.get("mapping_revision")):
+    if role.get("contract_blob") != resolved.contract_blob:
+        return False
+    if role.get("mapping_revision") != registry.mapping_revision:
         return False
 
     runtime_table = receipt.get("runtime") or {}
@@ -1165,23 +1178,25 @@ def _canonical_fable_receipt(receipt: Mapping[str, object], session_id: str) -> 
     if list(runtime_table.get("tools") or []) != list(canonical.tools):
         return False
 
-    granted = set(canonical.required_skills) | {item.skill for item in canonical.conditional_skills}
     skills = receipt.get("skills") or {}
-    resolved_skills = [str(skill) for skill in (skills.get("resolved") or [])]
-    if not set(canonical.required_skills) <= set(resolved_skills) or not set(resolved_skills) <= granted:
+    if list(skills.get("resolved") or []) != list(resolved.skills):
         return False
-    if list(skills.get("paths") or []) != [f"skills/{skill}/SKILL.md" for skill in resolved_skills]:
+    if list(skills.get("matched_capabilities") or []) != list(resolved.capabilities):
         return False
-    blobs = list(skills.get("blobs") or [])
-    if len(blobs) != len(resolved_skills) or not all(_is_git_blob(blob) for blob in blobs):
+    if list(skills.get("paths") or []) != [f"skills/{skill}/SKILL.md" for skill in resolved.skills]:
+        return False
+    if list(skills.get("blobs") or []) != canonical_skill_blobs:
         return False
 
     workspace = receipt.get("workspace") or {}
     if not all(str(workspace.get(key) or "").strip() for key in ("repo", "worktree")):
         return False
-    if workspace.get("instructions_path") != "AGENTS.md" or not _is_git_blob(
-        workspace.get("instructions_blob")
-    ):
+    if workspace.get("instructions_path") != "AGENTS.md":
+        return False
+    instructions = Path(str(workspace.get("worktree"))) / "AGENTS.md"
+    if not instructions.is_file():
+        return False
+    if workspace.get("instructions_blob") != _git_blob(instructions):
         return False
     if len(str(workspace.get("starting_head") or "")) != 40:
         return False
@@ -1200,11 +1215,6 @@ def _canonical_fable_receipt(receipt: Mapping[str, object], session_id: str) -> 
 
     revision = receipt.get("launch_revision")
     return isinstance(revision, str) and revision == launch_revision(receipt)
-
-
-def _is_git_blob(value: object) -> bool:
-    text = str(value or "")
-    return len(text) == 40 and all(character in "0123456789abcdef" for character in text)
 
 
 def command_codex_activate(args) -> dict:
