@@ -659,15 +659,28 @@ class OwnerModeRoutingTest(unittest.TestCase):
         self.readiness = self.base / "successor-ready.toml"
 
     def transfer(self, new_owner, new_route, **kwargs):
-        runtime.declare_successor_ready(
-            self.readiness,
-            caller=new_owner,
-            session_id=new_owner,
-            handoff_revision=1,
-            owner_mode=kwargs.get("new_owner_mode", ""),
-            herdr_workspace=kwargs.get("new_workspace", ""),
-            handoff=self.handoff,
-        )
+        # A Codex successor becomes ready only by activating: activation is the
+        # only path that read-verifies the workspace and reconciles durable
+        # context. A dedicated Fable successor declares its own readiness.
+        if kwargs.get("new_owner_mode") == CODEX_MODE:
+            self.readiness = Path(
+                runtime.activate_codex_thread(
+                    self.owner,
+                    thread_id=new_owner,
+                    workspace=kwargs.get("new_workspace", ""),
+                    control_dir=str(self.base / f"succ-{new_owner}"),
+                    handoff=str(self.handoff),
+                    reconcile=lambda owner: digest_context(),
+                )["successor_readiness"]
+            )
+        else:
+            runtime.declare_successor_ready(
+                self.readiness,
+                caller=new_owner,
+                session_id=new_owner,
+                handoff_revision=1,
+                handoff=self.handoff,
+            )
         return runtime.transfer_owner(
             self.owner,
             THREAD,

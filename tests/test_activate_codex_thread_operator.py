@@ -317,15 +317,17 @@ class TransferRoutingTest(unittest.TestCase):
             codex_owner(owner_path, control_dir=str(control))
             handoff = control / "handoffs" / "0001.md"
             handoff.write_text("handoff\n")
-            readiness = base / "successor-ready.toml"
-            runtime.declare_successor_ready(
-                readiness,
-                caller=OTHER_THREAD,
-                session_id=OTHER_THREAD,
-                handoff_revision=1,
-                owner_mode=CODEX_MODE,
-                herdr_workspace=WORKSPACE,
-                handoff=handoff,
+            # The successor thread activates against the outgoing owner: that is
+            # the only path that mints Codex successor readiness.
+            readiness = Path(
+                runtime.activate_codex_thread(
+                    owner_path,
+                    thread_id=OTHER_THREAD,
+                    workspace=WORKSPACE,
+                    control_dir=str(base / "successor-control"),
+                    handoff=str(handoff),
+                    reconcile=lambda owner: full_context(),
+                )["successor_readiness"]
             )
             updated = runtime.transfer_owner(
                 owner_path,

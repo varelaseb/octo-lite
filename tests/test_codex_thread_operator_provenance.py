@@ -188,6 +188,40 @@ class ReadinessProvenanceTest(unittest.TestCase):
         self.assertEqual(committed["owner_session_id"], THREAD)
         self.assertEqual(committed["herdr_workspace"], WORKSPACE)
 
+    def test_transfer_refuses_readiness_no_activation_reconciled(self) -> None:
+        # Cycle-5 finding P1: the public readiness path mints every field the
+        # transfer validates, including the exact artifact binding, while
+        # skipping activation entirely, so it never read-verifies the workspace
+        # and never reconciles durable context. Only explicit activation makes a
+        # Codex successor ready (operator-control activation-handoff-brief,
+        # activation-workspace, activation-no-new-auth).
+        unactivated = self.base / "unactivated-ready.toml"
+        unactivated.write_text(
+            runtime._toml_document(
+                {
+                    "schema_version": 1,
+                    "session_id": THREAD,
+                    "handoff_revision": 1,
+                    "handoff_artifact": str(self.handoff.resolve()),
+                    "handoff_digest": runtime.exact_fingerprint(self.handoff.read_text()),
+                    "owner_mode": CODEX_MODE,
+                    "herdr_workspace": WORKSPACE,
+                }
+            )
+        )
+        before = self.owner.read_bytes()
+        with self.assertRaises(runtime.GateError):
+            self.transfer(unactivated)
+        self.assertEqual(
+            self.owner.read_bytes(),
+            before,
+            "readiness no activation reconciled commits no Codex ownership",
+        )
+
+        committed = self.transfer(self.genuine_readiness())
+        self.assertEqual(committed["owner_session_id"], THREAD)
+        self.assertEqual(committed["herdr_workspace"], WORKSPACE)
+
     def test_transfer_refuses_readiness_bound_to_other_handoff_bytes(self) -> None:
         genuine = self.genuine_readiness()
         # The brief the successor reconciled is not the brief presented at
