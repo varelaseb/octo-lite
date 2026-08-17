@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -82,7 +83,12 @@ def codex_owner(path: Path, *, thread=THREAD, workspace=WORKSPACE, control_dir="
 
 
 def full_context() -> dict:
-    return {source: f"{source}:reference" for source in runtime.CODEX_CONTEXT_SOURCES}
+    # Every authoritative reference binds one exact digest
+    # (operator-control takeover-context-capture).
+    return {
+        source: f"{source}:reference#{runtime.exact_fingerprint(source)}"
+        for source in runtime.CODEX_CONTEXT_SOURCES
+    }
 
 
 class ActivationScriptTest(unittest.TestCase):
@@ -103,7 +109,10 @@ class ActivationScriptTest(unittest.TestCase):
         self.codex_home = self.base / "codex"
         sessions = self.codex_home / "sessions" / "2026" / "08" / "17"
         sessions.mkdir(parents=True)
-        (sessions / f"rollout-2026-08-17T00-00-00-{THREAD}.jsonl").write_text("")
+        # Codex's own session_meta record, the authoritative identity source.
+        (sessions / f"rollout-2026-08-17T00-00-00-{THREAD}.jsonl").write_text(
+            json.dumps({"type": "session_meta", "payload": {"id": THREAD, "session_id": THREAD}}) + "\n"
+        )
         self.cwd = self.base / "repo"
         self.cwd.mkdir()
 
@@ -265,10 +274,11 @@ class ActivationLawTest(unittest.TestCase):
 
 
 class TransferRoutingTest(unittest.TestCase):
-    """Seam: the existing atomic owner transfer must carry mode-specific routing
-    (operator-control activation-workspace, ADR 0005 decision-workspace-routing)."""
+    """Seam: the existing atomic owner transfer binds the successor's own
+    mode-specific routing (operator-control activation-workspace, handoff-owner,
+    ADR 0005 decision-workspace-routing)."""
 
-    def test_atomic_transfer_preserves_mode_specific_routing(self) -> None:
+    def test_atomic_transfer_binds_a_declared_codex_successor_routing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             control = base / "control"
@@ -293,6 +303,8 @@ class TransferRoutingTest(unittest.TestCase):
                 caller=THREAD,
                 handoff=handoff,
                 successor_readiness_path=readiness,
+                new_owner_mode=CODEX_MODE,
+                new_workspace=WORKSPACE,
             )
             stored = tomllib.loads(owner_path.read_text())
             self.assertEqual(stored["owner_session_id"], OTHER_THREAD)
