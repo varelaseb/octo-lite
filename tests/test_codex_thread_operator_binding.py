@@ -237,6 +237,7 @@ class TakeoverCliHarness(unittest.TestCase):
         provider: str = FABLE_ROLE.provider,
         model: str = FABLE_ROLE.model,
         stale_revision: bool = False,
+        **sections: object,
     ) -> None:
         """The prior owner's persistent launch receipt.
 
@@ -245,6 +246,10 @@ class TakeoverCliHarness(unittest.TestCase):
         canonical role, runtime, skills, workspace, and access tables,
         self-bound by its own launch revision and bootstrap-verified to the
         exact provider session.
+
+        Keyword sections override or, with a None value, drop one canonical
+        field, and the revision is recomputed afterwards so every case is judged
+        on the receipt shape it declares, never on a stale self-digest.
         """
         path = self.prior_control / "receipt.toml"
         if minimal:
@@ -293,6 +298,16 @@ class TakeoverCliHarness(unittest.TestCase):
                 "review_delivery": "loopback_allowed",
             },
         }
+        for section, overrides in sections.items():
+            if isinstance(values.get(section), dict) and isinstance(overrides, dict):
+                values[section] = {**values[section], **overrides}
+                for key, item in list(overrides.items()):
+                    if item is None:
+                        values[section].pop(key, None)
+            elif overrides is None:
+                values.pop(section, None)
+            else:
+                values[section] = overrides
         values["launch_revision"] = (
             "0" * 64 if stale_revision else runtime.launch_revision(values)
         )
@@ -983,6 +998,70 @@ class TakeoverReceiptShapeTest(TakeoverCliHarness):
         result = self.takeover()
         self.assertEqual(result["outcome"], "takeover")
         self.assertIn("agent stop", self.calls())
+
+
+class CanonicalReceiptFieldCompletenessTest(TakeoverCliHarness):
+    """Seam: octo-control codex-activate --force-takeover candidate admission
+    (operator-control takeover-live-fable-only; role-runtime role-receipt).
+
+    The dedicated-Fable proof must validate EVERY canonical resolver-built
+    receipt field, so the two fields a shape check silently skips are the ones
+    that matter: `access.operator_loopback`, which the resolver always records,
+    and `role.root`, the canonical roles source the resolver mapping derives
+    from. A receipt that omits either, or names some other root as its mapping
+    source, is not the dedicated Fable a forced takeover may retire, so it
+    refuses before anything is stopped and leaves the prior owner bytes intact.
+    """
+
+    def reset_owner(self) -> None:
+        # Each case starts from the untouched prior Fable owner, so one case can
+        # never read as another case's evidence.
+        self.prior = fable_owner(self.owner_path, self.prior_control)
+        for receipt in (self.prior_control / "takeovers").glob("*.toml"):
+            receipt.unlink()
+        if self.call_log.exists():
+            self.call_log.unlink()
+        if self.stopped.exists():
+            self.stopped.unlink()
+
+    def assert_refused(self, **sections) -> None:
+        self.reset_owner()
+        self.receipt(FABLE_SESSION, **sections)
+        before = self.owner_path.read_bytes()
+        with self.assertRaises(runtime.GateError):
+            self.takeover()
+        self.assertNotIn("agent stop", self.calls())
+        self.assertEqual(self.owner_path.read_bytes(), before)
+        self.assertFalse((self.prior_control / "takeovers").exists())
+
+    def test_a_forged_role_root_is_not_a_dedicated_fable(self) -> None:
+        # The recorded root is what every canonical blob in the receipt was
+        # derived from; a root pointing anywhere else describes a mapping this
+        # host never resolved.
+        for forged in (str(self.base), str(ROOT / "roles"), "roles", ""):
+            with self.subTest(forged=forged):
+                self.assert_refused(role={"root": forged})
+
+    def test_an_omitted_canonical_receipt_field_is_not_a_dedicated_fable(self) -> None:
+        for section, field in (("role", "root"), ("access", "operator_loopback")):
+            with self.subTest(section=section, field=field):
+                self.assert_refused(**{section: {field: None}})
+
+    def test_a_non_boolean_operator_loopback_is_not_a_dedicated_fable(self) -> None:
+        # The resolver records one boolean; a string or number is a hand-authored
+        # value, not a launch-recorded access fact.
+        for value in ("true", 1, ""):
+            with self.subTest(value=value):
+                self.assert_refused(access={"operator_loopback": value})
+
+    def test_the_complete_canonical_receipt_still_admits_the_takeover(self) -> None:
+        # Both boolean access outcomes are lawful launch facts; only absence and
+        # a forged root refuse.
+        for loopback in (True, False):
+            with self.subTest(loopback=loopback):
+                self.reset_owner()
+                self.receipt(FABLE_SESSION, access={"operator_loopback": loopback})
+                self.assertEqual(self.takeover()["outcome"], "takeover")
 
 
 class TakeoverReceiptExclusivityTest(unittest.TestCase):
