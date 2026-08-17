@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "workflows" / "lib"))
 
 from octo_lite import runtime  # noqa: E402
-from role_resolver import load_registry, resolve_role  # noqa: E402
+from role_resolver import _git_blob, _skill_blob, load_registry, resolve_role  # noqa: E402
 from tests.test_codex_thread_operator_binding import (  # noqa: E402
     FABLE_ROUTE,
     FABLE_SESSION,
@@ -88,14 +88,14 @@ def canonical_fable_receipt(path: Path, session_id: str, repo: Path, **sections)
             "resolved": list(FABLE_RESOLVED.skills),
             "matched_capabilities": list(FABLE_RESOLVED.capabilities),
             "paths": [f"skills/{skill}/SKILL.md" for skill in FABLE_RESOLVED.skills],
-            "blobs": ["0" * 40 for _ in FABLE_RESOLVED.skills],
+            "blobs": [_skill_blob(ROOT, skill) for skill in FABLE_RESOLVED.skills],
         },
         "workspace": {
             "repo": str(repo),
             "worktree": str(repo),
             "starting_head": "0" * 40,
             "instructions_path": "AGENTS.md",
-            "instructions_blob": "0" * 40,
+            "instructions_blob": _git_blob(repo / "AGENTS.md"),
         },
         "access": {
             "execution_location": "local",

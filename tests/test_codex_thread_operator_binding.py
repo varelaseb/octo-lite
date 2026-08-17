@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "workflows" / "lib"))
 
 from octo_lite import runtime  # noqa: E402
-from role_resolver import load_registry, resolve_role  # noqa: E402
+from role_resolver import _git_blob, _skill_blob, load_registry, resolve_role  # noqa: E402
 
 REGISTRY = load_registry(ROOT)
 FABLE_ROLE = REGISTRY.roles["meta-operator"]
@@ -185,7 +185,6 @@ class TakeoverCliHarness(unittest.TestCase):
         )
         (self.prior_control / "streams" / "tur-641" / "status.md").write_text("child status\n")
         (self.prior_control / "status.md").write_text("prior owner status\n")
-        self.receipt(FABLE_SESSION)
 
         self.candidate_control = self.base / "codex-control"
         self.owner_path = self.base / "operator-owner.toml"
@@ -210,6 +209,10 @@ class TakeoverCliHarness(unittest.TestCase):
              "commit", "-qm", "seed"],
             check=True,
         )
+        # The prior owner's receipt binds the canonical workspace instructions
+        # blob, so it is written once the target worktree exists (role-runtime
+        # role-receipt).
+        self.receipt(FABLE_SESSION)
 
         self.agent = {"name": FABLE_ROUTE, "agent_status": "idle"}
         self.env = {
@@ -275,14 +278,14 @@ class TakeoverCliHarness(unittest.TestCase):
                 "resolved": list(FABLE_RESOLVED.skills),
                 "matched_capabilities": list(FABLE_RESOLVED.capabilities),
                 "paths": [f"skills/{skill}/SKILL.md" for skill in FABLE_RESOLVED.skills],
-                "blobs": ["0" * 40 for _ in FABLE_RESOLVED.skills],
+                "blobs": [_skill_blob(ROOT, skill) for skill in FABLE_RESOLVED.skills],
             },
             "workspace": {
                 "repo": str(self.base / "repo"),
                 "worktree": str(self.base / "repo"),
                 "starting_head": "0" * 40,
                 "instructions_path": "AGENTS.md",
-                "instructions_blob": "0" * 40,
+                "instructions_blob": _git_blob(self.base / "repo" / "AGENTS.md"),
             },
             "access": {
                 "execution_location": "local",
