@@ -303,47 +303,66 @@ def declare_successor_ready(
     session_id: str,
     handoff_revision: int,
     handoff: Path | str,
-    owner_mode: str = "",
-    herdr_workspace: str = "",
 ) -> dict:
-    """The successor's own readiness record, and the ONLY place its
-    mode-specific routing is declared (operator-control activation-workspace).
-
-    A Codex successor declares the exact workspace it read-verified here, so the
-    later atomic transfer compares against read evidence instead of trusting a
-    fresh caller argument; a dedicated Fable successor declares neither.
+    """The dedicated Fable successor's own readiness record.
 
     Readiness is meaningless without the brief it reconciled, so the record
     BINDS the exact handoff artifact bytes the successor read (operator-control
     handoff-reconcile, activation-handoff-brief). The atomic transfer admits
     only a readiness record carrying that binding, so a readiness file no
     verified activation wrote transfers nothing.
+
+    Codex-thread routing is NOT declarable here: a Codex successor becomes ready
+    only by explicitly activating, the sole path that read-verifies the
+    workspace and reconciles durable context (operator-control
+    activation-handoff-brief, activation-workspace, activation-no-new-auth).
     """
     if caller != session_id:
         raise GateError("only the successor may declare its own readiness")
+    state = _readiness_state(session_id, handoff_revision, handoff)
+    _atomic_write(path, _toml_document(state))
+    return state
+
+
+def _readiness_state(session_id: str, handoff_revision: int, handoff: Path | str) -> dict:
     if handoff_revision < 1:
         raise GateError("handoff revision must be positive")
     artifact = Path(handoff)
     if not artifact.is_file():
         raise GateError("successor readiness requires the handoff artifact it reconciled")
-    mode = owner_mode.strip()
-    workspace = herdr_workspace.strip()
-    if mode and mode != CODEX_OWNER_MODE:
-        raise GateError(f"unknown successor owner mode: {mode}")
-    if mode == CODEX_OWNER_MODE and not workspace:
-        raise GateError("codex successor readiness requires one verified herdr workspace")
-    if workspace and not mode:
-        raise GateError("workspace routing requires a declared successor owner mode")
-    state = {
+    return {
         "schema_version": 1,
         "session_id": session_id,
         "handoff_revision": handoff_revision,
         "handoff_artifact": str(artifact.resolve()),
         "handoff_digest": exact_fingerprint(artifact.read_text()),
     }
-    if mode:
-        state["owner_mode"] = mode
-        state["herdr_workspace"] = workspace
+
+
+def _declare_codex_successor_ready(
+    path: Path,
+    *,
+    thread_id: str,
+    handoff_revision: int,
+    handoff: Path | str,
+    workspace: str,
+    context: Mapping[str, str],
+) -> dict:
+    """The Codex successor readiness activation itself writes.
+
+    It carries the activation's own proof: the verified workspace and the exact
+    digest-bound durable context this activation reconciled. The atomic transfer
+    admits a Codex successor only with that proof, so a record minted without
+    activating commits no ownership (operator-control activation-workspace,
+    activation-authoritative-context, activation-no-new-auth).
+    """
+    if not workspace.strip():
+        raise GateError("codex successor readiness requires one verified herdr workspace")
+    state = _readiness_state(thread_id, handoff_revision, handoff)
+    state["owner_mode"] = CODEX_OWNER_MODE
+    state["herdr_workspace"] = workspace.strip()
+    state["context_sources"] = list(CODEX_CONTEXT_SOURCES)
+    state["context_references"] = [context[source] for source in CODEX_CONTEXT_SOURCES]
     _atomic_write(path, _toml_document(state))
     return state
 
@@ -487,8 +506,21 @@ def transfer_owner(
     declared_mode = str(readiness.get("owner_mode") or "")
     if declared_mode != (new_owner_mode or ""):
         raise GateError("successor readiness owner mode mismatch")
-    if declared_mode == CODEX_OWNER_MODE and str(readiness.get("herdr_workspace") or "") != new_workspace.strip():
-        raise GateError("successor readiness workspace mismatch")
+    if declared_mode == CODEX_OWNER_MODE:
+        if str(readiness.get("herdr_workspace") or "") != new_workspace.strip():
+            raise GateError("successor readiness workspace mismatch")
+        # A Codex successor is admitted only with its activation's own proof:
+        # the complete durable context that activation reconciled, each entry
+        # binding exact bytes. A readiness record minted without activating
+        # carries none, so it transfers nothing (operator-control
+        # activation-handoff-brief, activation-authoritative-context).
+        references = readiness.get("context_references")
+        if list(readiness.get("context_sources") or []) != list(CODEX_CONTEXT_SOURCES) or not isinstance(
+            references, list
+        ) or len(references) != len(CODEX_CONTEXT_SOURCES) or not all(
+            _is_digest_reference(str(reference).strip()) for reference in references
+        ):
+            raise GateError("codex successor readiness is not activation-reconciled")
     return _swap_owner(
         path,
         expected_owner_session_id=expected_owner_session_id,
@@ -607,14 +639,13 @@ def activate_codex_thread(
                     candidate = Path(control_dir)
                     candidate.mkdir(parents=True, exist_ok=True)
                     readiness_path = candidate / "successor-ready.toml"
-                    declare_successor_ready(
+                    _declare_codex_successor_ready(
                         readiness_path,
-                        caller=thread_id,
-                        session_id=thread_id,
+                        thread_id=thread_id,
                         handoff_revision=revision,
                         handoff=artifact,
-                        owner_mode=CODEX_OWNER_MODE,
-                        herdr_workspace=workspace,
+                        workspace=workspace,
+                        context=context,
                     )
                     pending = _codex_result("pending", current, context)
                     pending["handoff_revision"] = revision

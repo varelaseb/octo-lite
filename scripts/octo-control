@@ -1183,8 +1183,6 @@ def command_successor_ready(args) -> dict:
         session_id=args.session_id,
         handoff_revision=args.handoff_revision,
         handoff=Path(args.handoff),
-        owner_mode=args.owner_mode or "",
-        herdr_workspace=args.workspace or "",
     )
 
 
@@ -1830,10 +1828,9 @@ def parser() -> argparse.ArgumentParser:
     # Readiness binds the exact handoff artifact the successor reconciled; the
     # atomic owner transfer admits no readiness record without that binding.
     successor_ready.add_argument("--handoff", required=True)
-    # The successor declares its own mode-specific routing here, and the atomic
-    # transfer compares against it.
-    successor_ready.add_argument("--owner-mode", default="")
-    successor_ready.add_argument("--workspace", default="")
+    # Codex-thread routing is not declarable here: a Codex successor becomes
+    # ready only by explicitly activating (codex-activate), the sole path that
+    # read-verifies the workspace and reconciles durable context.
     successor_ready.set_defaults(run=command_successor_ready)
 
     accept = sub.add_parser("accept")

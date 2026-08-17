@@ -123,8 +123,11 @@ only on an explicit user request in the current Codex app thread. It:
   resume that writes nothing and fails closed on unreadable durable state
 - under another owner: refuses without writes, except that the exact
   next-revision immutable handoff artifact reports the PENDING successor path,
-  which still requires successor reconciliation, `successor-ready`, and the
-  current owner's atomic `owner-transfer`; a compact brief grants no authority
+  which still requires successor reconciliation and the current owner's atomic
+  `owner-transfer`; activation itself writes the Codex readiness record with the
+  verified workspace and the durable context it reconciled, and the transfer
+  admits no Codex successor without that proof, so `successor-ready` declares
+  dedicated Fable readiness only; a compact brief grants no authority
 - leaves `operator-say` unusable for a Codex owner by design: an app thread has
   no Herdr route, so it pulls durable state instead
 - installs NO timer, daemon, polling service, background resume, surrogate, or
