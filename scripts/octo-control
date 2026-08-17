@@ -1163,6 +1163,12 @@ def _canonical_fable_receipt(receipt: Mapping[str, object], session_id: str) -> 
     role = receipt.get("role") or {}
     if role.get("name") != canonical.name or role.get("contract_path") != canonical.contract:
         return False
+    # The recorded root is the canonical roles source every blob in this receipt
+    # was derived from, so it must be THIS host's canonical source; any other
+    # root describes a mapping this host never resolved (role-runtime
+    # role-receipt).
+    if str(role.get("root") or "") != str(OCTO_ROOT):
+        return False
     if role.get("contract_blob") != resolved.contract_blob:
         return False
     if role.get("mapping_revision") != registry.mapping_revision:
@@ -1203,6 +1209,12 @@ def _canonical_fable_receipt(receipt: Mapping[str, object], session_id: str) -> 
 
     access = receipt.get("access") or {}
     if access.get("execution_location") not in {"local", "remote"}:
+        return False
+    # Every canonical access field is required whole; the resolver records
+    # operator_loopback as one boolean, so an absent, string, or numeric value is
+    # hand-authored, not a launch-recorded access fact (role-runtime
+    # role-receipt).
+    if not isinstance(access.get("operator_loopback"), bool):
         return False
     if not str(access.get("review_delivery") or "").strip():
         return False
