@@ -127,10 +127,16 @@ class ActivationScriptTest(unittest.TestCase):
         (sessions / f"rollout-2026-08-17T00-00-00-{THREAD}.jsonl").write_text(
             json.dumps({"type": "session_meta", "payload": {"id": THREAD, "session_id": THREAD}}) + "\n"
         )
-        # The source-tracked work and canonical spec set activation reconciles.
+        # The INSTALLED profile guidance the activation loads from its installed
+        # source before authority can act (role-runtime
+        # launch-codex-activation-contract).
+        (self.codex_home / "AGENTS.md").write_text("installed profile\n")
+        # The source-tracked work, target instructions, and canonical spec set
+        # activation reconciles.
         self.cwd = self.base / "repo"
         (self.cwd / "spec").mkdir(parents=True)
         (self.cwd / "spec" / "index.spec.html").write_text("<html></html>\n")
+        (self.cwd / "AGENTS.md").write_text("target instructions\n")
         subprocess.run(["git", "-C", str(self.cwd), "init", "-q"], check=True)
         subprocess.run(
             ["git", "-C", str(self.cwd), "remote", "add", "origin",

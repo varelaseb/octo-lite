@@ -25,8 +25,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "workflows" / "lib"))
 
 from octo_lite import runtime  # noqa: E402
+from role_resolver import load_registry, resolve_role  # noqa: E402
+
+REGISTRY = load_registry(ROOT)
+FABLE_ROLE = REGISTRY.roles["meta-operator"]
+FABLE_RESOLVED = resolve_role(REGISTRY, "meta-operator", {"operator-launch"})
 
 ACTIVATE = ROOT / "skills/launch-meta-operator/scripts/activate-codex-thread-operator.sh"
 OPERATOR_SAY = ROOT / "skills/herdr-comms/assets/operator-say"
@@ -188,6 +194,10 @@ class TakeoverCliHarness(unittest.TestCase):
         self.repo = self.base / "repo"
         (self.repo / "spec").mkdir(parents=True)
         (self.repo / "spec" / "index.spec.html").write_text("<html></html>\n")
+        # The target's own canonical instructions, one of the sources an
+        # activation loads before authority can act (role-runtime
+        # launch-codex-activation-contract).
+        (self.repo / "AGENTS.md").write_text("target instructions\n")
         subprocess.run(["git", "-C", str(self.repo), "init", "-q"], check=True)
         subprocess.run(
             ["git", "-C", str(self.repo), "remote", "add", "origin",
@@ -220,16 +230,18 @@ class TakeoverCliHarness(unittest.TestCase):
         minimal: bool = False,
         role_name: str = "meta-operator",
         verified: bool = True,
-        contract_blob: str = "5aae5b88cbeb8e666e4285e12ee846d26486d731",
-        provider: str = "anthropic",
-        model: str = "claude-fable-5",
+        contract_blob: str = FABLE_RESOLVED.contract_blob,
+        provider: str = FABLE_ROLE.provider,
+        model: str = FABLE_ROLE.model,
         stale_revision: bool = False,
     ) -> None:
         """The prior owner's persistent launch receipt.
 
         The full shape is what a real dedicated Fable launch writes: the
-        resolver-built persistent meta-operator receipt, self-bound by its own
-        launch revision and bootstrap-verified to the exact provider session.
+        resolver-built persistent meta-operator receipt carrying the exact
+        canonical role, runtime, skills, workspace, and access tables,
+        self-bound by its own launch revision and bootstrap-verified to the
+        exact provider session.
         """
         path = self.prior_control / "receipt.toml"
         if minimal:
@@ -248,19 +260,34 @@ class TakeoverCliHarness(unittest.TestCase):
                 "root": str(ROOT),
                 "contract_path": f"roles/{role_name}.md",
                 "contract_blob": contract_blob,
-                "mapping_revision": "1e2dddae1d5303afaa7ba2f8035279bc4df61904",
+                "mapping_revision": REGISTRY.mapping_revision,
             },
             "runtime": {
                 "provider": provider,
                 "model": model,
-                "effort": "xhigh",
-                "mode": "auto",
-                "session": "persistent",
+                "effort": FABLE_ROLE.effort,
+                "mode": FABLE_ROLE.mode,
+                "session": FABLE_ROLE.session,
+                "service_tier": FABLE_ROLE.service_tier,
+                "tools": list(FABLE_ROLE.tools),
+            },
+            "skills": {
+                "resolved": list(FABLE_RESOLVED.skills),
+                "matched_capabilities": list(FABLE_RESOLVED.capabilities),
+                "paths": [f"skills/{skill}/SKILL.md" for skill in FABLE_RESOLVED.skills],
+                "blobs": ["0" * 40 for _ in FABLE_RESOLVED.skills],
             },
             "workspace": {
                 "repo": str(self.base / "repo"),
                 "worktree": str(self.base / "repo"),
                 "starting_head": "0" * 40,
+                "instructions_path": "AGENTS.md",
+                "instructions_blob": "0" * 40,
+            },
+            "access": {
+                "execution_location": "local",
+                "operator_loopback": True,
+                "review_delivery": "loopback_allowed",
             },
         }
         values["launch_revision"] = (
@@ -308,6 +335,9 @@ class TakeoverCliHarness(unittest.TestCase):
             (sessions / f"rollout-2026-08-17T00-00-00-{THREAD}.jsonl").write_text(
                 json.dumps({"type": "session_meta", "payload": {"id": THREAD, "session_id": THREAD}}) + "\n"
             )
+            # The INSTALLED profile guidance the activation loads before
+            # authority can act (role-runtime launch-codex-activation-contract).
+            (home / "AGENTS.md").write_text("installed profile\n")
         return home
 
 class TakeoverCliSeamTest(TakeoverCliHarness):
