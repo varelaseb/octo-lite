@@ -394,6 +394,18 @@ CODEX_CONTEXT_SOURCES = (
     "workspace_and_runtime_configuration",
 )
 
+# The canonical meta-operator contract an activated thread loads from its
+# INSTALLED sources before authority can act (role-runtime
+# launch-codex-activation-contract). These are prose sources, not durable
+# operating state, so they are bound as their own set and only as
+# <identity>#<sha256> references: no copy of the prose is ever recorded.
+CODEX_CONTRACT_SOURCES = (
+    "installed_profile",
+    "target_instructions",
+    "meta_operator_contract",
+    "meta_operator_skills",
+)
+
 # The complete existing meta-operator capability set (operator-control
 # activation-complete-capability). Initial activation and either lawful transfer
 # bind the same set; takeover creates no reduced Codex-only runtime.
@@ -422,15 +434,15 @@ def _swap_owner(
     control_dir: str,
     new_owner_mode: str | None = None,
     new_workspace: str = "",
-    commit_extra: Callable[[], Mapping[str, object]] | None = None,
+    commit_extra: Callable[[Mapping[str, object]], Mapping[str, object]] | None = None,
 ) -> dict:
     """One locked compare-and-rename authority commit.
 
     `commit_extra` runs INSIDE the same lock, after the compare and before the
-    rename, and returns the extra fields the new record must carry. Any artifact
-    the committed record binds is therefore created under this one lock, so a
-    concurrent authorized attempt cannot slip between creating that artifact and
-    naming it (operator-control takeover-receipt, takeover-atomic).
+    rename. It is handed the record about to be committed and returns the extra
+    fields that record must carry, so any artifact the committed record binds is
+    created under this one lock and any proof it still owes is taken against the
+    exact pending record (operator-control takeover-receipt, takeover-atomic).
     """
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -470,7 +482,7 @@ def _swap_owner(
             raise GateError(f"unknown successor owner mode: {new_owner_mode}")
         updated["handoff_revision"] = handoff_revision
         updated["control_dir"] = control_dir
-        updated.update(commit_extra() if commit_extra else {})
+        updated.update(commit_extra(dict(updated)) if commit_extra else {})
         _atomic_write(path, _toml_document(updated))
         return updated
 
@@ -800,7 +812,9 @@ def force_takeover_codex_thread(
     control = Path(str(prior["control_dir"]))
     receipt_path = control / "takeovers" / f"{revision:04d}.toml"
 
-    def write_receipt() -> dict:
+    final: dict[str, str] = {}
+
+    def write_receipt(pending: Mapping[str, object]) -> dict:
         receipt = {
             "schema_version": 1,
             "prior_owner_session_id": str(prior["owner_session_id"]),
@@ -818,6 +832,18 @@ def force_takeover_codex_thread(
             "verification_outcome": "verified",
         }
         document = _toml_document(receipt)
+        bound = {
+            "takeover_receipt": str(receipt_path),
+            "takeover_receipt_digest": exact_fingerprint(document),
+        }
+        # The FINAL durable reconciliation the new owner must hold before it may
+        # act runs here, inside the one owner lock, against the exact record about
+        # to be committed and BEFORE the receipt exists or the rename commits
+        # authority. An unreadable live source is therefore a pre-commit failure
+        # like every other phase: no receipt, no owner write, and the prior Fable
+        # record byte-identical (operator-control takeover-failure,
+        # takeover-atomic, takeover-success).
+        final.update(_reconciled_context(reconcile, {**pending, **bound}))
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             descriptor = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -827,10 +853,7 @@ def force_takeover_codex_thread(
             handle.write(document)
             handle.flush()
             os.fsync(handle.fileno())
-        return {
-            "takeover_receipt": str(receipt_path),
-            "takeover_receipt_digest": exact_fingerprint(document),
-        }
+        return bound
 
     owner = _swap_owner(
         path,
@@ -846,13 +869,13 @@ def force_takeover_codex_thread(
         commit_extra=write_receipt,
     )
 
-    # Phase 6: continue. The committed record is read back from disk and the
-    # complete durable context is reconciled again before the new owner may act
+    # Phase 6: continue. The committed record is read back from disk and reported
+    # with the complete durable context the in-lock final reconciliation read
     # (operator-control takeover-success).
     committed = _read_toml(path)
     if committed != owner:
         raise GateError("codex owner readback mismatch after takeover commit")
-    return _codex_result("takeover", committed, _reconciled_context(reconcile, committed))
+    return _codex_result("takeover", committed, final)
 
 
 def transition_linear(

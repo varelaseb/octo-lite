@@ -82,6 +82,12 @@ resolved_workspace="$(jq -r '.result.workspace.id // empty' <<<"$workspace_json"
 owner="$state_root/operator-owner.toml"
 control="$state_root/operators/codex-$thread_id"
 
+# The canonical contract load runs inside octo-control codex-activate, the one
+# authority entry point every activation and forced takeover passes through: it
+# reads the installed profile, this target's AGENTS.md, roles/meta-operator.md,
+# and the resolver-mapped meta-operator skills, binds each to exact bytes, and
+# refuses before any owner write when one is unreadable
+# (role-runtime launch-codex-activation-contract).
 args=(codex-activate --owner-file "$owner" --workspace "$workspace" --control-dir "$control" --repo "$cwd")
 [[ -n "$handoff" ]] && args+=(--handoff "$handoff")
 if [[ "$force" == true ]]; then

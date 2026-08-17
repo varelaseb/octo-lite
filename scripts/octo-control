@@ -20,9 +20,11 @@ from octo_lite.launch import provision_lane_worktree, verify_relay_verbatim  # n
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflows" / "lib"))
 
-from role_resolver import load_registry  # noqa: E402
+from role_resolver import load_registry, resolve_role  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
+    _toml_document as owner_document,
     CODEX_CONTEXT_SOURCES,
+    CODEX_CONTRACT_SOURCES,
     LIVE_AGENT_STATUSES,
     GateError,
     activate_codex_thread,
@@ -1050,10 +1052,16 @@ def _codex_live_context(
         "workspace": _herdr_workspace(workspace),
         "state_root": str(owner_path.parent),
     }
-    if owner_path.exists():
+    if pending_owner:
+        # The record the caller is reconciling: on a resume it is the record on
+        # disk, on a first activation and on the in-lock final takeover read it is
+        # the exact record about to be committed. Digesting its rendered document
+        # binds the same bytes the owner file carries, so the reference names the
+        # committed record either way (operator-control
+        # activation-authoritative-context, takeover-success).
+        owner_digest = exact_fingerprint(owner_document(dict(pending_owner)))
+    elif owner_path.exists():
         owner_digest = _tree_digest(owner_path)
-    elif pending_owner:
-        owner_digest = exact_fingerprint(dict(pending_owner))
     else:
         raise GateError(f"context source unreadable: {owner_path}")
     return {
@@ -1071,10 +1079,148 @@ def _codex_live_context(
     }
 
 
+OCTO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _installed_digest(path: Path) -> str:
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise GateError(f"canonical contract source unreadable: {path}") from error
+    return f"{path}#{hashlib.sha256(payload).hexdigest()}"
+
+
+def _codex_contract_sources(repo: Path) -> dict:
+    """Load the canonical meta-operator contract from its INSTALLED sources
+    before authority can act (role-runtime launch-codex-activation-contract,
+    launch-codex-activation-complete).
+
+    The installed profile, the target's own instructions, roles/meta-operator.md,
+    and every skill the role resolver maps to the meta-operator are read here and
+    bound to the exact bytes read. An unreadable source refuses, so activation and
+    forced takeover alike bind the same complete canonical surface. Only
+    <identity>#<sha256> references leave this function: no prose copy is written
+    to the control directory.
+    """
+    profile = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "AGENTS.md"
+    try:
+        registry = load_registry(OCTO_ROOT)
+        resolved = resolve_role(registry, "meta-operator", {"operator-launch"})
+    except (ValueError, OSError) as error:
+        raise GateError(f"canonical contract source unreadable: {OCTO_ROOT}") from error
+    skills = {}
+    for skill in resolved.skills:
+        for base in ("agents/skills", "skills"):
+            candidate = OCTO_ROOT / base / skill / "SKILL.md"
+            if candidate.is_file():
+                skills[skill] = _installed_digest(candidate)
+                break
+        else:
+            raise GateError(f"canonical contract source unreadable: skill {skill}")
+    if not skills:
+        raise GateError("canonical contract source unreadable: meta-operator skills")
+    return {
+        "installed_profile": _installed_digest(profile),
+        "target_instructions": _installed_digest(repo / "AGENTS.md"),
+        "meta_operator_contract": _installed_digest(OCTO_ROOT / resolved.role.contract),
+        "meta_operator_skills": f"{','.join(sorted(skills))}#{exact_fingerprint(skills)}",
+    }
+
+
+def _canonical_fable_receipt(receipt: Mapping[str, object], session_id: str) -> bool:
+    """The whole persistent dedicated-Fable launch receipt is the proof
+    (operator-control takeover-live-fable-only).
+
+    A bare session string, a partial receipt, or a receipt declaring some other
+    runtime is not a dedicated Fable: the complete resolver-built shape must be
+    present, its runtime must be the exact canonical meta-operator runtime (or one
+    of that role's sanctioned alternates), its skills must be the ones the
+    canonical mapping grants that role, and the receipt must still recompute its
+    own launch revision so a post-bootstrap edit fails closed.
+    """
+    try:
+        registry = load_registry(OCTO_ROOT)
+        canonical = registry.roles["meta-operator"]
+    except (ValueError, KeyError, OSError) as error:
+        raise GateError("canonical role mapping unreadable") from error
+
+    if receipt.get("schema_version") != 1 or receipt.get("ready") is not True:
+        return False
+    if not all(str(receipt.get(key) or "").strip() for key in ("spawn_id", "parent", "reply_route")):
+        return False
+
+    role = receipt.get("role") or {}
+    if role.get("name") != canonical.name or role.get("contract_path") != canonical.contract:
+        return False
+    if not _is_git_blob(role.get("contract_blob")) or not _is_git_blob(role.get("mapping_revision")):
+        return False
+
+    runtime_table = receipt.get("runtime") or {}
+    sanctioned = {(canonical.model, canonical.effort), *canonical.alt_runtimes}
+    if (runtime_table.get("model"), runtime_table.get("effort")) not in sanctioned:
+        return False
+    if any(runtime_table.get(field) != getattr(canonical, field) for field in
+           ("provider", "mode", "session", "service_tier")):
+        return False
+    if list(runtime_table.get("tools") or []) != list(canonical.tools):
+        return False
+
+    granted = set(canonical.required_skills) | {item.skill for item in canonical.conditional_skills}
+    skills = receipt.get("skills") or {}
+    resolved_skills = [str(skill) for skill in (skills.get("resolved") or [])]
+    if not set(canonical.required_skills) <= set(resolved_skills) or not set(resolved_skills) <= granted:
+        return False
+    if list(skills.get("paths") or []) != [f"skills/{skill}/SKILL.md" for skill in resolved_skills]:
+        return False
+    blobs = list(skills.get("blobs") or [])
+    if len(blobs) != len(resolved_skills) or not all(_is_git_blob(blob) for blob in blobs):
+        return False
+
+    workspace = receipt.get("workspace") or {}
+    if not all(str(workspace.get(key) or "").strip() for key in ("repo", "worktree")):
+        return False
+    if workspace.get("instructions_path") != "AGENTS.md" or not _is_git_blob(
+        workspace.get("instructions_blob")
+    ):
+        return False
+    if len(str(workspace.get("starting_head") or "")) != 40:
+        return False
+
+    access = receipt.get("access") or {}
+    if access.get("execution_location") not in {"local", "remote"}:
+        return False
+    if not str(access.get("review_delivery") or "").strip():
+        return False
+
+    bootstrap = receipt.get("bootstrap") or {}
+    if bootstrap.get("verified") is not True:
+        return False
+    if str(bootstrap.get("provider_session_id") or "") != session_id:
+        return False
+
+    revision = receipt.get("launch_revision")
+    return isinstance(revision, str) and revision == launch_revision(receipt)
+
+
+def _is_git_blob(value: object) -> bool:
+    text = str(value or "")
+    return len(text) == 40 and all(character in "0123456789abcdef" for character in text)
+
+
 def command_codex_activate(args) -> dict:
     thread_id = _codex_thread_id()
     owner_path = Path(args.owner_file)
     control = Path(args.control_dir)
+    # Before authority can act, this exact thread loads the canonical contract
+    # from its installed sources; an unreadable source leaves the session
+    # ordinary with no owner record at all (role-runtime
+    # launch-codex-activation-contract, launch-codex-activation-failure).
+    contract = _codex_contract_sources(Path(args.repo))
+
+    def bind_contract(result: dict) -> dict:
+        result["contract_sources"] = list(CODEX_CONTRACT_SOURCES)
+        result["contract_references"] = [contract[source] for source in CODEX_CONTRACT_SOURCES]
+        return result
 
     def reconcile(owner) -> dict:
         # Reconciliation reads the control tree of the owner record in force,
@@ -1088,14 +1234,14 @@ def command_codex_activate(args) -> dict:
         )
 
     if not args.force_takeover:
-        return activate_codex_thread(
+        return bind_contract(activate_codex_thread(
             owner_path,
             thread_id=thread_id,
             workspace=args.workspace,
             control_dir=str(control),
             handoff=args.handoff or "",
             reconcile=reconcile,
-        )
+        ))
 
     def active_fable(owner) -> bool:
         # The exact active-Fable proof: the resolved agent is the prior owner's
@@ -1114,26 +1260,11 @@ def command_codex_activate(args) -> dict:
         if str(agent.get("agent_status") or "") not in LIVE_AGENT_STATUSES:
             return False
         # The owner record must resolve to one STRUCTURED VERIFIED dedicated
-        # Fable, so the whole persistent launch receipt is the proof, not a bare
-        # session string: the exact meta-operator role and its contract blob, a
-        # verified bootstrap bound to this owner session, the runtime that role
-        # resolved to, and the receipt's own launch revision recomputed so a
-        # post-bootstrap edit fails closed (operator-control
-        # takeover-live-fable-only).
+        # Fable, so the WHOLE persistent launch receipt and the exact canonical
+        # Fable runtime are the proof, never a bare session string or a partial
+        # receipt (operator-control takeover-live-fable-only).
         receipt = load_toml_if_present(Path(str(owner["control_dir"])) / "receipt.toml")
-        role = receipt.get("role", {})
-        bootstrap = receipt.get("bootstrap", {})
-        runtime_table = receipt.get("runtime", {})
-        if role.get("name") != "meta-operator" or not str(role.get("contract_blob") or "").strip():
-            return False
-        if bootstrap.get("verified") is not True:
-            return False
-        if str(bootstrap.get("provider_session_id") or "") != str(owner["owner_session_id"]):
-            return False
-        if not str(runtime_table.get("provider") or "").strip() or not str(runtime_table.get("model") or "").strip():
-            return False
-        revision = receipt.get("launch_revision")
-        return isinstance(revision, str) and revision == launch_revision(receipt)
+        return _canonical_fable_receipt(receipt, str(owner["owner_session_id"]))
 
     def verify_active_fable(owner):
         return {"session_running": active_fable(owner), "route": owner["owner_route"]}
@@ -1176,7 +1307,7 @@ def command_codex_activate(args) -> dict:
     if not str(prior.get("owner_session_id") or "").strip() or not str(prior_control):
         raise GateError("forced takeover requires an unambiguous prior owner record")
 
-    return force_takeover_codex_thread(
+    return bind_contract(force_takeover_codex_thread(
         owner_path,
         thread_id=thread_id,
         workspace=args.workspace,
@@ -1191,7 +1322,7 @@ def command_codex_activate(args) -> dict:
         retire_fable=retire_fable,
         now=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         reconcile=reconcile,
-    )
+    ))
 
 
 def command_successor_ready(args) -> dict:
