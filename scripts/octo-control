@@ -856,6 +856,9 @@ def command_owner(args) -> dict:
         successor_readiness_path=Path(args.successor_readiness),
         new_owner_mode=args.new_owner_mode or None,
         new_workspace=args.new_workspace,
+        # The live transfer-time routing boundary the owner-locked act crosses
+        # (operator-control activation-binding-transfer).
+        workspace_lookup=_herdr_workspace,
     )
 
 

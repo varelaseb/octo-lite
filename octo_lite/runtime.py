@@ -511,6 +511,7 @@ def transfer_owner(
     successor_readiness_path: Path,
     new_owner_mode: str | None = None,
     new_workspace: str = "",
+    workspace_lookup: Callable[[str], Mapping[str, object]] | None = None,
 ) -> dict:
     if caller != expected_owner_session_id:
         raise GateError("caller is not current expected owner")
@@ -580,6 +581,7 @@ def transfer_owner(
                 readiness=successor_readiness_path,
                 handoff=handoff,
                 caller=caller,
+                workspace_lookup=workspace_lookup,
             )
             if declared_mode == CODEX_OWNER_MODE
             else None
@@ -604,6 +606,7 @@ def _binding_author(
     readiness: Path,
     handoff: Path,
     caller: str,
+    workspace_lookup: Callable[[str], Mapping[str, object]] | None = None,
 ) -> Callable[[Mapping[str, object]], Mapping[str, object]]:
     """The owner-authored transfer provenance, created INSIDE the one owner-lock
     hold that commits the rename (operator-control activation-owner-binding,
@@ -621,10 +624,22 @@ def _binding_author(
     The digest domain stays nonrecursive by construction: the record digests the
     readiness record and the handoff artifact, and nothing ever digests it
     (activation-binding-order).
+
+    Positive activated-transfer proof also requires a LIVE transfer-time Herdr
+    workspace lookup inside this same hold: a stored readiness field is a past
+    read, so it proves nothing about the routing the successor is about to own.
+    A failed lookup and a lookup answering any other workspace each refuse the
+    whole transfer before the exclusive create, so the prior owner record stays
+    byte-identical and no binding is written (activation-binding-transfer).
     """
     binding_path = _codex_binding_path(control_dir, revision)
 
     def author(pending: Mapping[str, object]) -> dict:
+        if workspace_lookup is None:
+            raise GateError("codex successor transfer requires a live workspace lookup")
+        record = workspace_lookup(workspace)
+        if not isinstance(record, Mapping) or str(record.get("id") or "") != workspace:
+            raise GateError(f"transfer-time herdr workspace not verified: {workspace}")
         document = _toml_document(
             {
                 "schema_version": 1,
@@ -923,6 +938,7 @@ def force_takeover_codex_thread(
     receipt_path = control / "takeovers" / f"{revision:04d}.toml"
 
     final: dict[str, str] = {}
+    written: list[Path] = []
 
     def write_receipt(pending: Mapping[str, object]) -> dict:
         receipt = {
@@ -963,21 +979,37 @@ def force_takeover_codex_thread(
             handle.write(document)
             handle.flush()
             os.fsync(handle.fileno())
+        written.append(receipt_path)
         return bound
 
-    owner = _swap_owner(
-        path,
-        expected_owner_session_id=str(prior["owner_session_id"]),
-        expected_owner_route=str(prior["owner_route"]),
-        expected_prior_revision=prior_revision,
-        new_owner_session_id=thread_id,
-        new_owner_route=thread_id,
-        handoff_revision=revision,
-        control_dir=str(prior["control_dir"]),
-        new_owner_mode=CODEX_OWNER_MODE,
-        new_workspace=workspace,
-        commit_extra=write_receipt,
-    )
+    try:
+        owner = _swap_owner(
+            path,
+            expected_owner_session_id=str(prior["owner_session_id"]),
+            expected_owner_route=str(prior["owner_route"]),
+            expected_prior_revision=prior_revision,
+            new_owner_session_id=thread_id,
+            new_owner_route=thread_id,
+            handoff_revision=revision,
+            control_dir=str(prior["control_dir"]),
+            new_owner_mode=CODEX_OWNER_MODE,
+            new_workspace=workspace,
+            commit_extra=write_receipt,
+        )
+    except BaseException as error:
+        # A failure once this attempt's receipt exists is the post-fence blocked
+        # state: the Fable session is retired, no owner is committed, and the
+        # receipt no owner record references is void residue. The surface names
+        # it and stops there; no agent path retries, reads, or reclaims it, so a
+        # human resolves it out of band under the manual-takeover law
+        # (operator-control takeover-receipt-residue, takeover-failure).
+        if written:
+            raise GateError(
+                "forced takeover blocked after fencing: the prior Fable session is retired, "
+                f"no owner is committed, and the unreferenced takeover receipt {written[0]} "
+                "is void residue for out-of-band human resolution"
+            ) from error
+        raise
 
     # Phase 6: continue. The committed record is read back from disk and reported
     # with the complete durable context the in-lock final reconciliation read
