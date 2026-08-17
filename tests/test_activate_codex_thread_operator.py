@@ -44,6 +44,18 @@ printf '%s %s\n' "$(basename "$0")" "$*" >>"$CALL_LOG"
 exit 1
 """
 
+# The live Linear and GitHub reads activation reconciliation performs before it
+# reports authority (operator-control activation-authoritative-context).
+FAKE_LINEAR = r"""#!/usr/bin/env bash
+printf 'linear %s\n' "$*" >>"$CALL_LOG"
+printf '{"identifier":"%s","state":{"name":"In Progress"}}\n' "$3"
+"""
+
+FAKE_GH = r"""#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >>"$CALL_LOG"
+printf '[{"number":83,"state":"OPEN"}]\n'
+"""
+
 
 def write_executable(path: Path, body: str) -> None:
     path.write_text(body)
@@ -103,6 +115,8 @@ class ActivationScriptTest(unittest.TestCase):
         self.bin.mkdir()
         self.call_log = self.base / "calls.log"
         write_executable(self.bin / "herdr", FAKE_HERDR)
+        write_executable(self.bin / "linear", FAKE_LINEAR)
+        write_executable(self.bin / "gh", FAKE_GH)
         for name in ("systemd-run", "systemctl", "operator-timer"):
             write_executable(self.bin / name, FAKE_BACKGROUND)
         self.state = self.base / "state"
@@ -113,8 +127,22 @@ class ActivationScriptTest(unittest.TestCase):
         (sessions / f"rollout-2026-08-17T00-00-00-{THREAD}.jsonl").write_text(
             json.dumps({"type": "session_meta", "payload": {"id": THREAD, "session_id": THREAD}}) + "\n"
         )
+        # The source-tracked work and canonical spec set activation reconciles.
         self.cwd = self.base / "repo"
-        self.cwd.mkdir()
+        (self.cwd / "spec").mkdir(parents=True)
+        (self.cwd / "spec" / "index.spec.html").write_text("<html></html>\n")
+        subprocess.run(["git", "-C", str(self.cwd), "init", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.cwd), "remote", "add", "origin",
+             "https://github.com/example/repo.git"],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.cwd), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.cwd), "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-qm", "seed"],
+            check=True,
+        )
 
     def run_activate(self, *args, thread=THREAD, env_extra=None):
         env = dict(os.environ)
@@ -198,6 +226,7 @@ class ActivationLawTest(unittest.TestCase):
             thread_id=thread,
             workspace=workspace,
             control_dir=control_dir or self.control,
+            reconcile=lambda owner: full_context(),
         )
 
     def test_initial_owner_binding_is_atomic_and_exact(self) -> None:
@@ -260,6 +289,7 @@ class ActivationLawTest(unittest.TestCase):
                 workspace=WORKSPACE,
                 control_dir=self.control,
                 handoff=str(brief),
+                reconcile=lambda owner: full_context(),
             )
         self.assertEqual(self.owner.read_bytes(), before)
 
@@ -289,7 +319,12 @@ class TransferRoutingTest(unittest.TestCase):
             handoff.write_text("handoff\n")
             readiness = base / "successor-ready.toml"
             runtime.declare_successor_ready(
-                readiness, caller=OTHER_THREAD, session_id=OTHER_THREAD, handoff_revision=1
+                readiness,
+                caller=OTHER_THREAD,
+                session_id=OTHER_THREAD,
+                handoff_revision=1,
+                owner_mode=CODEX_MODE,
+                herdr_workspace=WORKSPACE,
             )
             updated = runtime.transfer_owner(
                 owner_path,
@@ -346,6 +381,7 @@ class ForcedTakeoverTest(unittest.TestCase):
             verify_active_fable=self.verify_active_fable,
             retire_fable=self.retire_fable,
             now=lambda: "2026-08-17T01:00:00Z",
+            reconcile=lambda owner: full_context(),
         )
 
     def test_forced_takeover_requires_reason_and_verified_active_fable(self) -> None:
@@ -404,6 +440,7 @@ class ForcedTakeoverTest(unittest.TestCase):
                 verify_active_fable=self.verify_active_fable,
                 retire_fable=racing_retire,
                 now=lambda: "2026-08-17T01:00:00Z",
+                reconcile=lambda owner: full_context(),
             )
         raced = self.owner.read_bytes()
         self.assertNotEqual(raced, before)
@@ -450,6 +487,7 @@ class ForcedTakeoverTest(unittest.TestCase):
             thread_id=THREAD,
             workspace=WORKSPACE,
             control_dir=str(self.control),
+            reconcile=lambda owner: full_context(),
         )
         self.assertEqual(result["capabilities"], activated["capabilities"])
         self.assertEqual(result["context_sources"], activated["context_sources"])

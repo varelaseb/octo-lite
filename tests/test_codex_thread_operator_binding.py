@@ -39,19 +39,26 @@ FABLE_ROUTE = "operator-fable"
 
 # One fake Herdr CLI for every boundary these seams cross: the read-only
 # workspace lookup, the structured agent record, and the agent stop that must be
-# reached only after the exact active-Fable proof succeeds.
+# reached only after the exact active-Fable proof succeeds. Retirement is proved
+# by a structured POST-STOP answer, never by a failed lookup, so this fake keeps
+# answering after the stop unless a test deliberately breaks the lookup.
 FAKE_HERDR = r"""#!/usr/bin/env bash
 printf 'herdr %s\n' "$*" >>"$CALL_LOG"
 case "$1 $2" in
   "agent get")
-    [[ -f "$STOPPED_MARK" ]] && exit 1
+    if [[ -f "$STOPPED_MARK" ]]; then
+      exit_code="${AGENT_GET_AFTER_STOP_STATUS:-0}"
+      [[ "$exit_code" == 0 ]] || exit "$exit_code"
+      printf '%s\n' "${AGENT_AFTER_STOP_JSON:-}"
+      exit 0
+    fi
     [[ -n "${AGENT_JSON:-}" ]] || exit 1
     printf '%s\n' "$AGENT_JSON"
     exit 0
     ;;
   "agent stop")
     : >"$STOPPED_MARK"
-    exit 0
+    exit "${STOP_STATUS:-0}"
     ;;
   "workspace get")
     printf '%s\n' "${WORKSPACE_JSON:-}"
@@ -61,8 +68,27 @@ esac
 exit 64
 """
 
+# systemctl answers `is-active` with a state word; a broken or absent systemctl
+# answers nothing at all. Retirement must tell those two apart.
 FAKE_SYSTEMCTL = r"""#!/usr/bin/env bash
-exit 1
+[[ -n "${SYSTEMCTL_BROKEN:-}" ]] && exit 127
+state="${SYSTEMCTL_STATE:-inactive}"
+printf '%s\n' "$state"
+[[ "$state" == active ]] && exit 0
+exit 3
+"""
+
+# The live Linear and GitHub reads the reconciliation must actually perform.
+FAKE_LINEAR = r"""#!/usr/bin/env bash
+printf 'linear %s\n' "$*" >>"$CALL_LOG"
+[[ "${LINEAR_STATUS:-0}" == 0 ]] || exit "${LINEAR_STATUS}"
+printf '{"identifier":"%s","state":{"name":"In Progress"}}\n' "$3"
+"""
+
+FAKE_GH = r"""#!/usr/bin/env bash
+printf 'gh %s\n' "$*" >>"$CALL_LOG"
+[[ "${GH_STATUS:-0}" == 0 ]] || exit "${GH_STATUS}"
+printf '[{"number":83,"state":"OPEN","headRefOid":"%s"}]\n' "${GH_HEAD:-0000000000000000000000000000000000000000}"
 """
 
 FAKE_HERDR_SAY = r"""#!/usr/bin/env bash
@@ -126,10 +152,10 @@ def digest_context() -> dict:
     }
 
 
-class TakeoverCliSeamTest(unittest.TestCase):
-    """Seam: octo-control codex-activate --force-takeover, the only caller of the
-    forced-takeover law (operator-control takeover-live-fable-only,
-    takeover-context-capture, takeover-fence)."""
+class TakeoverCliHarness(unittest.TestCase):
+    """Shared harness for the octo-control codex-activate --force-takeover seam:
+    a fake Herdr CLI, systemctl, Linear CLI, GitHub CLI, prior Fable control
+    tree, and local Codex session record. It declares no test of its own."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -142,9 +168,15 @@ class TakeoverCliSeamTest(unittest.TestCase):
         self.stopped = self.base / "stopped.mark"
         write_executable(self.bin / "herdr", FAKE_HERDR)
         write_executable(self.bin / "systemctl", FAKE_SYSTEMCTL)
+        write_executable(self.bin / "linear", FAKE_LINEAR)
+        write_executable(self.bin / "gh", FAKE_GH)
 
         self.prior_control = self.base / "prior-control"
-        (self.prior_control / "streams").mkdir(parents=True)
+        (self.prior_control / "streams" / "tur-641").mkdir(parents=True)
+        (self.prior_control / "streams" / "tur-641" / "stream.toml").write_text(
+            'schema_version = 1\nstream_id = "tur-641"\nissue = "TUR-641"\n'
+        )
+        (self.prior_control / "streams" / "tur-641" / "status.md").write_text("child status\n")
         (self.prior_control / "status.md").write_text("prior owner status\n")
         self.receipt(FABLE_SESSION)
 
@@ -156,6 +188,11 @@ class TakeoverCliSeamTest(unittest.TestCase):
         (self.repo / "spec").mkdir(parents=True)
         (self.repo / "spec" / "index.spec.html").write_text("<html></html>\n")
         subprocess.run(["git", "-C", str(self.repo), "init", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "remote", "add", "origin",
+             "https://github.com/example/repo.git"],
+            check=True,
+        )
         subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
         subprocess.run(
             ["git", "-C", str(self.repo), "-c", "user.email=t@t", "-c", "user.name=t",
@@ -169,6 +206,10 @@ class TakeoverCliSeamTest(unittest.TestCase):
             "OCTO_HERDR": str(self.bin / "herdr"),
             "CALL_LOG": str(self.call_log),
             "STOPPED_MARK": str(self.stopped),
+            "AGENT_AFTER_STOP_JSON": json.dumps(
+                {"result": {"agent": {"name": FABLE_ROUTE, "agent_status": "stopped"}}}
+            ),
+            "WORKSPACE_JSON": json.dumps({"result": {"workspace": {"id": WORKSPACE}}}),
         }
 
     def receipt(self, session_id: str) -> None:
@@ -179,13 +220,10 @@ class TakeoverCliSeamTest(unittest.TestCase):
     def calls(self) -> str:
         return self.call_log.read_text() if self.call_log.exists() else ""
 
-    def takeover(self, *, context_refs=None, repo=None, workspace=WORKSPACE):
-        # The three sources the helper cannot derive locally are supplied by the
-        # operator as digest-bound references; everything else is derived.
-        refs = [
-            f"{source}=https://example.invalid/{source}#{runtime.exact_fingerprint(source)}"
-            for source in ("linear_issue_state", "github_pull_request_state", "child_stream_status")
-        ]
+    def takeover(self, *, repo=None, workspace=WORKSPACE, env_extra=None):
+        # Every authoritative source is read live by the helper itself; the caller
+        # supplies no context reference at all (operator-control
+        # takeover-context-capture, activation-authoritative-context).
         args = Namespace(
             owner_file=str(self.owner_path),
             workspace=workspace,
@@ -194,9 +232,16 @@ class TakeoverCliSeamTest(unittest.TestCase):
             handoff="",
             force_takeover=True,
             reason="operator directed control transfer",
-            context_ref=refs + list(context_refs or []),
+            # Legacy caller-supplied references, kept only so these seams still
+            # exercise the pre-fix helper; the fixed helper reads every source
+            # itself and never consults them.
+            context_ref=[
+                f"{source}=https://example.invalid/{source}#{runtime.exact_fingerprint(source)}"
+                for source in ("linear_issue_state", "github_pull_request_state", "child_stream_status")
+            ],
         )
         env = dict(self.env)
+        env.update(env_extra or {})
         env["AGENT_JSON"] = json.dumps({"result": {"agent": self.agent}})
         env["CODEX_THREAD_ID"] = THREAD
         env["CODEX_HOME"] = str(self.codex_home())
@@ -212,6 +257,11 @@ class TakeoverCliSeamTest(unittest.TestCase):
                 json.dumps({"type": "session_meta", "payload": {"id": THREAD, "session_id": THREAD}}) + "\n"
             )
         return home
+
+class TakeoverCliSeamTest(TakeoverCliHarness):
+    """Seam: octo-control codex-activate --force-takeover, the only caller of the
+    forced-takeover law (operator-control takeover-live-fable-only,
+    takeover-context-capture, takeover-fence)."""
 
     def test_active_fable_proof_binds_route_status_and_launch_receipt(self) -> None:
         # An agent record that does not resolve to the exact prior owner route,
@@ -270,12 +320,226 @@ class TakeoverCliSeamTest(unittest.TestCase):
         self.assertNotIn("agent stop", self.calls())
         self.assertEqual(self.owner_path.read_bytes(), before)
 
-    def test_context_ref_cannot_override_derived_evidence(self) -> None:
+    def test_no_caller_supplied_context_reference_exists(self) -> None:
+        # A caller-supplied reference could only ever be syntax-checked, so the
+        # entry point exposes none: every source is read evidence.
+        with self.assertRaises(SystemExit):
+            OCTO_CONTROL.parser().parse_args([
+                "codex-activate",
+                "--owner-file", str(self.owner_path),
+                "--workspace", WORKSPACE,
+                "--control-dir", str(self.candidate_control),
+                "--force-takeover", "--reason", "operator directed",
+                "--context-ref", f"owner_record=fabricated#{'0' * 64}",
+            ])
+
+
+class FableRetirementProofTest(TakeoverCliHarness):
+    """Seam: the fence phase of octo-control codex-activate --force-takeover
+    (operator-control takeover-fence, takeover-failure). Retirement is proved by
+    a successful stop plus a structured non-running and timer-absent answer; an
+    ignored result, a failed lookup, or an unanswerable timer check is never
+    retirement evidence."""
+
+    def assert_refused(self, **kwargs) -> None:
         before = self.owner_path.read_bytes()
         with self.assertRaises(runtime.GateError):
-            self.takeover(context_refs=[f"owner_record=fabricated#{'0' * 64}"])
-        self.assertNotIn("agent stop", self.calls())
+            self.takeover(**kwargs)
         self.assertEqual(self.owner_path.read_bytes(), before)
+        self.assertFalse((self.prior_control / "takeovers").exists())
+
+    def test_failed_fable_stop_is_not_retirement(self) -> None:
+        self.assert_refused(env_extra={"STOP_STATUS": "1"})
+
+    def test_unreadable_post_stop_lookup_is_not_retirement(self) -> None:
+        # A Herdr lookup that errors proves nothing about the session; it must
+        # never read as a retired Fable.
+        self.assert_refused(env_extra={"AGENT_GET_AFTER_STOP_STATUS": "1"})
+
+    def test_still_running_fable_after_stop_is_not_retirement(self) -> None:
+        self.assert_refused(env_extra={
+            "AGENT_AFTER_STOP_JSON": json.dumps(
+                {"result": {"agent": {"name": FABLE_ROUTE, "agent_status": "idle"}}}
+            )
+        })
+
+    def test_unanswerable_timer_check_is_not_timer_absence(self) -> None:
+        self.assert_refused(env_extra={"SYSTEMCTL_BROKEN": "1"})
+
+    def test_still_active_timer_blocks_the_owner_commit(self) -> None:
+        self.assert_refused(env_extra={"SYSTEMCTL_STATE": "active"})
+
+    def test_verified_retirement_commits_the_owner_swap(self) -> None:
+        result = self.takeover()
+        self.assertEqual(result["outcome"], "takeover")
+        self.assertIn("agent stop", self.calls())
+        receipt = tomllib.loads(Path(result["owner"]["takeover_receipt"]).read_text())
+        self.assertIs(receipt["fence_session_running"], False)
+        self.assertIs(receipt["fence_timer_present"], False)
+
+
+class LiveReconciliationTest(TakeoverCliHarness):
+    """Seam: the authoritative durable context an activated or takeover-committed
+    Codex owner reads (operator-control activation-authoritative-context,
+    activation-same-thread-resume, takeover-context-capture, takeover-success;
+    role-runtime launch-codex-activation-complete). The helper reads every source
+    live and reports the exact references it read, never static source names."""
+
+    def activate(self, **kwargs):
+        args = Namespace(
+            owner_file=str(self.owner_path),
+            workspace=WORKSPACE,
+            control_dir=str(self.candidate_control),
+            repo=str(self.repo),
+            handoff="",
+            force_takeover=False,
+            reason="",
+            context_ref=[],
+        )
+        for key, value in kwargs.items():
+            setattr(args, key, value)
+        env = dict(self.env)
+        env["AGENT_JSON"] = json.dumps({"result": {"agent": self.agent}})
+        env["CODEX_THREAD_ID"] = THREAD
+        env["CODEX_HOME"] = str(self.codex_home())
+        with unittest.mock.patch.dict(os.environ, env):
+            return OCTO_CONTROL.command_codex_activate(args)
+
+    def assert_reconciled(self, result) -> None:
+        self.assertEqual(result["context_sources"], list(runtime.CODEX_CONTEXT_SOURCES))
+        references = dict(zip(result["context_sources"], result.get("context_references", [])))
+        for source in runtime.CODEX_CONTEXT_SOURCES:
+            with self.subTest(source=source):
+                self.assertTrue(
+                    runtime._is_digest_reference(references.get(source, "")),
+                    f"{source} must bind an exact digest: {references.get(source)!r}",
+                )
+
+    def test_takeover_reads_every_authoritative_source_live(self) -> None:
+        result = self.takeover()
+        calls = self.calls()
+        self.assertIn("linear issue view TUR-641", calls)
+        self.assertIn("gh pr list", calls)
+        self.assertIn(f"herdr workspace get {WORKSPACE}", calls)
+        self.assert_reconciled(result)
+
+    def test_takeover_reconciles_again_after_the_owner_commit(self) -> None:
+        result = self.takeover()
+        owner = tomllib.loads(self.owner_path.read_text())
+        self.assertEqual(result["owner"], owner, "the committed owner must be read back")
+        references = dict(zip(result["context_sources"], result.get("context_references", [])))
+        self.assertIn(str(self.owner_path), references.get("owner_record", ""))
+        self.assertEqual(
+            references["owner_record"].rpartition("#")[2],
+            runtime.exact_fingerprint(self.owner_path.read_text()),
+            "post-commit reconciliation must bind the committed owner record",
+        )
+
+    def test_unreadable_live_source_refuses_before_fencing(self) -> None:
+        before = self.owner_path.read_bytes()
+        for broken in ({"LINEAR_STATUS": "1"}, {"GH_STATUS": "1"}, {"WORKSPACE_STATUS": "1"}):
+            with self.subTest(broken=broken):
+                with self.assertRaises(runtime.GateError):
+                    self.takeover(env_extra=broken)
+                self.assertNotIn("agent stop", self.calls())
+                self.assertEqual(self.owner_path.read_bytes(), before)
+
+    def test_activation_and_resume_reconcile_the_same_live_sources(self) -> None:
+        # A Codex owner with one child stream: its issue is live Linear state the
+        # thread must re-read on every wake, not a remembered fact.
+        (self.candidate_control / "streams" / "tur-641").mkdir(parents=True)
+        (self.candidate_control / "streams" / "tur-641" / "stream.toml").write_text(
+            'schema_version = 1\nstream_id = "tur-641"\nissue = "TUR-641"\n'
+        )
+        self.owner_path.unlink()
+        activated = self.activate()
+        self.assertEqual(activated["outcome"], "activated")
+        self.assert_reconciled(activated)
+
+        self.call_log.unlink()
+        resumed = self.activate()
+        self.assertEqual(resumed["outcome"], "resumed")
+        self.assert_reconciled(resumed)
+        self.assertIn("linear issue view", self.calls())
+        self.assertIn("gh pr list", self.calls())
+
+
+class SuccessorWorkspaceBindingTest(unittest.TestCase):
+    """Seam: the Codex successor readiness record that binds the verified
+    workspace to the atomic owner transfer (operator-control
+    activation-workspace, activation-different-owner, activation-handoff-brief;
+    ADR 0005 decision-workspace-routing)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.control = self.base / "control"
+        (self.control / "handoffs").mkdir(parents=True)
+        self.candidate_control = self.base / "codex-control"
+        self.owner = self.base / "operator-owner.toml"
+        self.prior = fable_owner(self.owner, self.control)
+        self.handoff = self.control / "handoffs" / "0001.md"
+        self.handoff.write_text("compact brief\n")
+
+    def pending(self, workspace=WORKSPACE):
+        return runtime.activate_codex_thread(
+            self.owner,
+            thread_id=THREAD,
+            workspace=workspace,
+            control_dir=str(self.candidate_control),
+            handoff=str(self.handoff),
+            reconcile=lambda owner: digest_context(),
+        )
+
+    def transfer(self, readiness, new_workspace):
+        return runtime.transfer_owner(
+            self.owner,
+            FABLE_SESSION,
+            FABLE_ROUTE,
+            0,
+            THREAD,
+            THREAD,
+            1,
+            str(self.control),
+            caller=FABLE_SESSION,
+            handoff=self.handoff,
+            successor_readiness_path=Path(readiness),
+            new_owner_mode=CODEX_MODE,
+            new_workspace=new_workspace,
+        )
+
+    def test_pending_successor_readiness_binds_the_verified_workspace(self) -> None:
+        before = self.owner.read_bytes()
+        result = self.pending()
+        self.assertEqual(result["outcome"], "pending")
+        self.assertEqual(self.owner.read_bytes(), before)
+        readiness = tomllib.loads(Path(result["successor_readiness"]).read_text())
+        self.assertEqual(readiness["session_id"], THREAD)
+        self.assertEqual(readiness["handoff_revision"], 1)
+        self.assertEqual(readiness["owner_mode"], CODEX_MODE)
+        self.assertEqual(readiness["herdr_workspace"], WORKSPACE)
+
+    def test_transfer_refuses_a_substituted_workspace(self) -> None:
+        readiness = self.pending()["successor_readiness"]
+        before = self.owner.read_bytes()
+        with self.assertRaises(runtime.GateError):
+            self.transfer(readiness, "w-substituted")
+        self.assertEqual(self.owner.read_bytes(), before)
+
+        updated = self.transfer(readiness, WORKSPACE)
+        self.assertEqual(updated["owner_session_id"], THREAD)
+        self.assertEqual(updated["herdr_workspace"], WORKSPACE)
+
+    def test_transfer_refuses_a_readiness_record_that_declares_no_codex_routing(self) -> None:
+        readiness = self.base / "bare-ready.toml"
+        runtime.declare_successor_ready(
+            readiness, caller=THREAD, session_id=THREAD, handoff_revision=1
+        )
+        before = self.owner.read_bytes()
+        with self.assertRaises(runtime.GateError):
+            self.transfer(readiness, WORKSPACE)
+        self.assertEqual(self.owner.read_bytes(), before)
 
 
 class ContextDigestTest(unittest.TestCase):
@@ -301,6 +565,7 @@ class ContextDigestTest(unittest.TestCase):
             verify_active_fable=lambda owner: {"session_running": True},
             retire_fable=lambda owner: {"session_running": False, "timer_present": False},
             now=lambda: "2026-08-17T01:00:00Z",
+            reconcile=lambda owner: digest_context(),
         )
 
     def test_every_context_reference_must_bind_an_exact_digest(self) -> None:
@@ -340,6 +605,7 @@ class HandoffSuccessorTest(unittest.TestCase):
             workspace=WORKSPACE,
             control_dir=str(self.control),
             handoff=str(handoff),
+            reconcile=lambda owner: digest_context(),
         )
         self.assertEqual(result["outcome"], "pending")
         self.assertEqual(result["handoff_revision"], 4)
@@ -356,6 +622,7 @@ class HandoffSuccessorTest(unittest.TestCase):
                 workspace=WORKSPACE,
                 control_dir=str(self.control),
                 handoff=str(stale),
+                reconcile=lambda owner: digest_context(),
             )
         self.assertEqual(self.owner.read_bytes(), before)
 
@@ -369,6 +636,7 @@ class HandoffSuccessorTest(unittest.TestCase):
                 thread_id=THREAD,
                 workspace=WORKSPACE,
                 control_dir=str(gone),
+                reconcile=lambda owner: digest_context(),
             )
         self.assertEqual(self.owner.read_bytes(), before)
 
@@ -391,7 +659,12 @@ class OwnerModeRoutingTest(unittest.TestCase):
 
     def transfer(self, new_owner, new_route, **kwargs):
         runtime.declare_successor_ready(
-            self.readiness, caller=new_owner, session_id=new_owner, handoff_revision=1
+            self.readiness,
+            caller=new_owner,
+            session_id=new_owner,
+            handoff_revision=1,
+            owner_mode=kwargs.get("new_owner_mode", ""),
+            herdr_workspace=kwargs.get("new_workspace", ""),
         )
         return runtime.transfer_owner(
             self.owner,
@@ -486,6 +759,7 @@ class ControlDirectoryReadbackTest(unittest.TestCase):
                     thread_id=THREAD,
                     workspace=WORKSPACE,
                     control_dir=str(blocker / "control"),
+                    reconcile=lambda owner: digest_context(),
                 )
             self.assertFalse(owner.exists(), "no Codex owner record may survive a failed activation")
 
