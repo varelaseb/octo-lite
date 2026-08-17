@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -570,7 +571,85 @@ def transfer_owner(
         control_dir=control_dir,
         new_owner_mode=new_owner_mode,
         new_workspace=new_workspace,
+        commit_extra=(
+            _binding_author(
+                control_dir,
+                revision=handoff_revision,
+                successor_session=new_owner_session_id,
+                workspace=new_workspace.strip(),
+                readiness=successor_readiness_path,
+                handoff=handoff,
+                caller=caller,
+            )
+            if declared_mode == CODEX_OWNER_MODE
+            else None
+        ),
     )
+
+
+def _codex_binding_path(control_dir: str, revision: int) -> Path:
+    """The one location the owner-authored binding record can have:
+    <control_dir>/handoffs/<zero-padded-revision>.binding.toml, derived exactly
+    like the handoff artifact and the readiness record it cross-binds
+    (operator-control activation-owner-binding)."""
+    return Path(control_dir) / "handoffs" / f"{revision:04d}.binding.toml"
+
+
+def _binding_author(
+    control_dir: str,
+    *,
+    revision: int,
+    successor_session: str,
+    workspace: str,
+    readiness: Path,
+    handoff: Path,
+    caller: str,
+) -> Callable[[Mapping[str, object]], Mapping[str, object]]:
+    """The owner-authored transfer provenance, created INSIDE the one owner-lock
+    hold that commits the rename (operator-control activation-owner-binding,
+    activation-binding-transfer, activation-binding-command; ADR 0005
+    decision-transfer-provenance).
+
+    Provenance is the authoring act, never the bytes on disk: the hold reclaims
+    any pre-existing file at the derived path WITHOUT reading it, then creates
+    its own record exclusively, so hand-written bytes never influence a transfer
+    and a crashed or half-cleaned earlier attempt poisons no retry. The rename is
+    the single durable commit point, and only the binding this same hold created
+    is referenced by the committed owner record: any other file there is void
+    residue with no authority (activation-binding-transfer).
+
+    The digest domain stays nonrecursive by construction: the record digests the
+    readiness record and the handoff artifact, and nothing ever digests it
+    (activation-binding-order).
+    """
+    binding_path = _codex_binding_path(control_dir, revision)
+
+    def author(pending: Mapping[str, object]) -> dict:
+        document = _toml_document(
+            {
+                "schema_version": 1,
+                "revision": revision,
+                "successor_session": successor_session,
+                "herdr_workspace": workspace,
+                "readiness_digest": exact_fingerprint(readiness.read_text()),
+                "handoff_digest": exact_fingerprint(handoff.read_text()),
+                "authored_by_session": caller,
+                "authored_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        )
+        binding_path.parent.mkdir(parents=True, exist_ok=True)
+        binding_path.unlink(missing_ok=True)
+        descriptor = os.open(binding_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(document)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return {
+            "successor_binding": str(binding_path),
+            "successor_binding_digest": exact_fingerprint(document),
+        }
+
+    return author
 
 
 def _is_owner_handoff(handoff: Path, control_dir: str, revision: int) -> bool:
