@@ -47,10 +47,19 @@ thread_id="${CODEX_THREAD_ID:-}"
 
 # Prove the corresponding local Codex session exists, using Codex's own rollout
 # record under CODEX_HOME/sessions (the same authoritative source the relay
-# identity proof reads).
+# identity proof reads). A matching FILENAME is not identity: the session's own
+# session_meta record must name the same ID
+# (role-runtime launch-codex-activation-host-identity).
 codex_home="${CODEX_HOME:-$HOME/.codex}"
-session_matches="$(find "$codex_home/sessions" -type f -name "rollout-*-$thread_id.jsonl" -print -quit 2>/dev/null || true)"
-[[ -n "$session_matches" ]] || { echo "activate-codex-thread-operator: no local Codex session for $thread_id" >&2; exit 66; }
+session_proven=false
+while IFS= read -r rollout; do
+  meta_id="$(head -n 1 "$rollout" | jq -r 'select(.type == "session_meta") | .payload.id // .payload.session_id // empty' 2>/dev/null || true)"
+  if [[ "$meta_id" == "$thread_id" ]]; then
+    session_proven=true
+    break
+  fi
+done < <(find "$codex_home/sessions" -type f -name "rollout-*-$thread_id.jsonl" 2>/dev/null || true)
+[[ "$session_proven" == true ]] || { echo "activate-codex-thread-operator: no local Codex session for $thread_id" >&2; exit 66; }
 
 skill_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 root="$(cd "$skill_dir/../.." && pwd -P)"
@@ -59,8 +68,15 @@ control_cli="$root/scripts/octo-control"
 
 # Read-only workspace verification BEFORE any authority write. The Codex app
 # thread is not a Herdr pane, so this verified workspace is the only route
-# canonical orchestrator spawns can use.
-herdr workspace get "$workspace" >/dev/null || {
+# canonical orchestrator spawns can use. Exit status alone is not verification:
+# the lookup must return the exact requested workspace ID
+# (role-runtime launch-codex-activation-workspace).
+workspace_json="$(herdr workspace get "$workspace" 2>/dev/null)" || {
+  echo "activate-codex-thread-operator: herdr workspace $workspace not verified" >&2
+  exit 66
+}
+resolved_workspace="$(jq -r '.result.workspace.id // empty' <<<"$workspace_json" 2>/dev/null || true)"
+[[ "$resolved_workspace" == "$workspace" ]] || {
   echo "activate-codex-thread-operator: herdr workspace $workspace not verified" >&2
   exit 66
 }

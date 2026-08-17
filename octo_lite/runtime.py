@@ -307,12 +307,6 @@ def declare_successor_ready(path: Path, *, caller: str, session_id: str, handoff
 
 CODEX_OWNER_MODE = "codex-thread"
 
-# Mode-specific routing carried across every lawful owner transfer. A Codex-thread
-# owner is not a Herdr pane, so its verified workspace is the only route canonical
-# orchestrator spawns can use, and ADR 0005 decision-workspace-routing forbids a
-# resume or successor from changing it.
-OWNER_ROUTING_KEYS = ("owner_mode", "herdr_workspace")
-
 # The authoritative durable operating context an activated or takeover-committed
 # Codex owner re-reads before its first owner mutation (operator-control
 # activation-authoritative-context). Prose and raw conversation are never in it.
@@ -354,6 +348,8 @@ def _swap_owner(
     new_owner_route: str,
     handoff_revision: int,
     control_dir: str,
+    new_owner_mode: str | None = None,
+    new_workspace: str = "",
     extra: Mapping[str, object] | None = None,
 ) -> dict:
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -376,11 +372,22 @@ def _swap_owner(
             "owner_session_id": new_owner_session_id,
             "owner_route": new_owner_route,
         }
-        # Carry mode-specific routing forward: a lawful successor reuses the exact
-        # verified workspace instead of silently losing it.
-        for key in OWNER_ROUTING_KEYS:
-            if key in current:
-                updated[key] = current[key]
+        # Mode-specific routing belongs to the SUCCESSOR, never to the record it
+        # replaces (operator-control handoff-owner, handoff-routing): a dedicated
+        # Fable successor keeps its routable Herdr owner route and inherits no
+        # Codex mode or workspace, while a declared Codex successor must reuse the
+        # exact verified workspace (ADR 0005 decision-workspace-routing).
+        if new_owner_mode == CODEX_OWNER_MODE:
+            prior_workspace = str(current.get("herdr_workspace") or "")
+            workspace = new_workspace.strip() or prior_workspace
+            if not workspace:
+                raise GateError("codex successor requires one verified herdr workspace")
+            if prior_workspace and workspace != prior_workspace:
+                raise GateError("codex owner workspace is immutable across transfer")
+            updated["owner_mode"] = CODEX_OWNER_MODE
+            updated["herdr_workspace"] = workspace
+        elif new_owner_mode:
+            raise GateError(f"unknown successor owner mode: {new_owner_mode}")
         updated["handoff_revision"] = handoff_revision
         updated["control_dir"] = control_dir
         updated.update(extra or {})
@@ -401,6 +408,8 @@ def transfer_owner(
     caller: str,
     handoff: Path,
     successor_readiness_path: Path,
+    new_owner_mode: str | None = None,
+    new_workspace: str = "",
 ) -> dict:
     if caller != expected_owner_session_id:
         raise GateError("caller is not current expected owner")
@@ -418,6 +427,15 @@ def transfer_owner(
         new_owner_route=new_owner_route,
         handoff_revision=handoff_revision,
         control_dir=control_dir,
+        new_owner_mode=new_owner_mode,
+        new_workspace=new_workspace,
+    )
+
+
+def _is_digest_reference(value: str) -> bool:
+    identity, separator, digest = value.rpartition("#")
+    return bool(identity) and bool(separator) and len(digest) == 64 and all(
+        character in "0123456789abcdef" for character in digest
     )
 
 
@@ -442,9 +460,10 @@ def activate_codex_thread(
     (operator-control codex-thread-activation).
 
     Creates the existing owner record only when absent, treats the same thread as
-    an idempotent resume with no write at all, and refuses every other case
-    without touching the existing record. A handoff brief is context only: it
-    never substitutes for the lawful owner transition.
+    an idempotent resume with no write at all, reports the pending successor path
+    when the exact next-revision handoff artifact exists, and refuses every other
+    case without touching the existing record. A handoff brief is context only:
+    it never substitutes for the lawful owner transition.
     """
     if not thread_id.strip():
         raise GateError("codex thread activation requires the exact host thread identity")
@@ -461,17 +480,38 @@ def activate_codex_thread(
         if current:
             if current.get("owner_mode") != CODEX_OWNER_MODE or current.get("owner_session_id") != thread_id:
                 # A dedicated Fable owner, or any other session, keeps sole
-                # authority. A brief orients this thread and grants nothing; the
-                # lawful paths are the existing live handoff, the existing manual
-                # takeover, or the human-only forced takeover.
+                # authority. The exact next-revision immutable handoff artifact
+                # opens only the successor-reconciliation and readiness path
+                # (operator-control activation-different-owner); a brief that is
+                # not that artifact grants nothing, and neither writes anything.
+                revision = int(current.get("handoff_revision", 0)) + 1
+                artifact = Path(handoff.strip()) if handoff.strip() else None
+                if artifact and artifact.is_file() and artifact.name == f"{revision:04d}.md":
+                    pending = _codex_result("pending", current)
+                    pending["handoff_revision"] = revision
+                    pending["successor_session_id"] = thread_id
+                    return pending
                 raise GateError(
                     "another session owns operator authority; use the existing handoff, "
                     "manual takeover, or a direct human forced takeover"
                 )
             if current.get("herdr_workspace") != workspace:
                 raise GateError("codex owner workspace is immutable across resume")
+            # Reopening revalidates durable state before any owner mutation
+            # (role-runtime launch-codex-activation-revalidate): an owner record
+            # whose recorded control directory no longer reads back is stale, so
+            # the session stays ordinary instead of resuming authority.
+            if not Path(str(current.get("control_dir") or "")).is_dir():
+                raise GateError("codex owner control directory unreadable; session stays ordinary")
             return _codex_result("resumed", current)
 
+        # The control directory is created and read back BEFORE the authority
+        # record, so a control-directory failure can never leave a committed
+        # Codex owner behind (role-runtime launch-codex-activation-failure).
+        control = Path(control_dir)
+        control.mkdir(parents=True, exist_ok=True)
+        if not control.is_dir():
+            raise GateError("codex control directory readback mismatch")
         owner = {
             "schema_version": 1,
             "owner_session_id": thread_id,
@@ -485,7 +525,6 @@ def activate_codex_thread(
         readback = _read_toml(path)
         if readback != owner:
             raise GateError("codex owner readback mismatch")
-        Path(control_dir).mkdir(parents=True, exist_ok=True)
         return _codex_result("activated", readback)
 
 
@@ -531,11 +570,17 @@ def force_takeover_codex_thread(
         raise GateError("forced takeover admits only a verified active Fable session")
 
     # Phase 2: context capture. Every authoritative durable source must be
-    # referenced before fencing; one exact digest binds the captured set.
-    missing = [source for source in CODEX_CONTEXT_SOURCES if not str(context.get(source) or "").strip()]
+    # referenced before fencing, and every reference must bind the exact bytes it
+    # names as <identity>#<sha256> (operator-control takeover-context-capture).
+    # A bare path, a prose summary, and an absent or unreadable placeholder are
+    # all unproven, so they refuse instead of standing in for read evidence.
+    missing = [
+        source for source in CODEX_CONTEXT_SOURCES
+        if not _is_digest_reference(str(context.get(source) or "").strip())
+    ]
     if missing:
         raise GateError(f"forced takeover context incomplete: {', '.join(missing)}")
-    captured = {source: str(context[source]) for source in CODEX_CONTEXT_SOURCES}
+    captured = {source: str(context[source]).strip() for source in CODEX_CONTEXT_SOURCES}
     context_digest = exact_fingerprint(captured)
 
     # Phase 3: fencing. The exact Fable session and its heartbeat timer are
@@ -583,9 +628,9 @@ def force_takeover_codex_thread(
         new_owner_route=thread_id,
         handoff_revision=revision,
         control_dir=str(prior["control_dir"]),
+        new_owner_mode=CODEX_OWNER_MODE,
+        new_workspace=workspace,
         extra={
-            "owner_mode": CODEX_OWNER_MODE,
-            "herdr_workspace": workspace,
             "takeover_receipt": str(receipt_path),
             "takeover_receipt_digest": receipt_digest,
         },

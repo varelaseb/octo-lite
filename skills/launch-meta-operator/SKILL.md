@@ -109,13 +109,22 @@ Run `skills/launch-meta-operator/scripts/activate-codex-thread-operator.sh --wor
 only on an explicit user request in the current Codex app thread. It:
 
 - takes NO thread-ID argument; it derives the exact thread from host
-  `CODEX_THREAD_ID` and proves it against Codex's own local session record
-- read-verifies one existing Herdr workspace before any authority write and
-  stores it as mode-specific routing in the existing `operator-owner.toml`
-- creates the owner record only when absent (`owner_mode = "codex-thread"`);
-  the same thread reopening is an idempotent resume that writes nothing
-- refuses without writes when any other session owns the record; a compact
-  handoff brief is context only and grants no authority
+  `CODEX_THREAD_ID` and proves it against the `session_meta` record of Codex's
+  own local session, never a matching filename alone
+- read-verifies one existing Herdr workspace before any authority write,
+  requires the lookup to return that exact workspace ID, and stores it as
+  mode-specific routing in the existing `operator-owner.toml`; only a successor
+  that declares `--new-owner-mode codex-thread` carries that routing forward,
+  and it must reuse the exact same workspace
+- creates the control directory, then the owner record only when absent
+  (`owner_mode = "codex-thread"`); the same thread reopening is an idempotent
+  resume that writes nothing and fails closed on unreadable durable state
+- under another owner: refuses without writes, except that the exact
+  next-revision immutable handoff artifact reports the PENDING successor path,
+  which still requires successor reconciliation, `successor-ready`, and the
+  current owner's atomic `owner-transfer`; a compact brief grants no authority
+- leaves `operator-say` unusable for a Codex owner by design: an app thread has
+  no Herdr route, so it pulls durable state instead
 - installs NO timer, daemon, polling service, background resume, surrogate, or
   duplicate inbox; supervision pauses when the thread closes and reconciles
   from durable sources when it reopens
@@ -125,9 +134,13 @@ only on an explicit user request in the current Codex app thread. It:
 ### Exceptional forced takeover
 
 Add `--force-takeover --reason TEXT` only on a direct human instruction naming
-that action. It admits ONLY a verified active dedicated Fable owner, captures
-every authoritative durable context source (supply the non-local ones with
-`--context-ref KEY=VALUE`), retires and verifies the exact Fable session and
+that action. It admits ONLY an active dedicated Fable owner proven by its own
+route, canonical `agent_status`, and launch receipt session binding. It captures
+every authoritative durable context source from the PRIOR owner's control tree
+and refuses when one cannot be read; supply the three non-local sources
+(`linear_issue_state`, `github_pull_request_state`, `child_stream_status`) as
+`--context-ref KEY=<identity>#<sha256>`, which can never override derived
+evidence. It then retires and verifies the exact Fable session and
 its heartbeat timer, writes an immutable `takeovers/<revision>.toml` receipt,
 then performs one locked compare and atomic owner rename. Any unproven phase
 leaves this thread ordinary and the prior owner record byte-identical. Normal

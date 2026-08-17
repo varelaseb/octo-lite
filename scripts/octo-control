@@ -49,6 +49,10 @@ def load_toml(path: Path) -> dict:
         return tomllib.load(handle)
 
 
+def load_toml_if_present(path: Path) -> dict:
+    return load_toml(path) if path.is_file() else {}
+
+
 def run_json(argv: list[str]) -> dict:
     result = subprocess.run(argv, check=True, capture_output=True, text=True)
     return json.loads(result.stdout)
@@ -846,6 +850,8 @@ def command_owner(args) -> dict:
         caller=args.caller,
         handoff=handoff,
         successor_readiness_path=Path(args.successor_readiness),
+        new_owner_mode=args.new_owner_mode or None,
+        new_workspace=args.new_workspace,
     )
 
 
@@ -857,14 +863,35 @@ def _codex_thread_id() -> str:
         raise GateError("host CODEX_THREAD_ID required")
     home = Path(os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"))
     sessions = home / "sessions"
-    if not sessions.is_dir() or not any(sessions.rglob(f"rollout-*-{thread_id}.jsonl")):
+    if not sessions.is_dir():
         raise GateError(f"no local Codex session for {thread_id}")
-    return thread_id
+    # A filename is not identity: the session's own session_meta record must name
+    # the same ID (role-runtime launch-codex-activation-host-identity).
+    for rollout in sessions.rglob(f"rollout-*-{thread_id}.jsonl"):
+        if _rollout_session_id(rollout) == thread_id:
+            return thread_id
+    raise GateError(f"no local Codex session for {thread_id}")
+
+
+def _rollout_session_id(rollout: Path) -> str:
+    try:
+        with rollout.open(encoding="utf-8", errors="replace") as handle:
+            meta = json.loads(handle.readline() or "{}")
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(meta, dict) or meta.get("type") != "session_meta":
+        return ""
+    payload = meta.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("id") or payload.get("session_id") or "")
 
 
 def _tree_digest(root: Path) -> str:
+    # Fail closed: an absent or unreadable source is not evidence, so it can never
+    # become a nonempty context reference (operator-control takeover-context-capture).
     if not root.exists():
-        return "absent"
+        raise GateError(f"context source unreadable: {root}")
     if root.is_file():
         return exact_fingerprint(root.read_text(errors="replace"))
     entries = {
@@ -873,6 +900,27 @@ def _tree_digest(root: Path) -> str:
         if item.is_file()
     }
     return exact_fingerprint(entries)
+
+
+def _transfer_history_digest(control: Path) -> str:
+    # The applicable transfer artifact set, read from the prior owner's control
+    # tree. A directory that has never been created records as null and an empty
+    # one as an empty set: both are read evidence, not an unreadable source.
+    if not control.is_dir():
+        raise GateError(f"context source unreadable: {control}")
+    history = {}
+    for name in ("handoffs", "takeovers"):
+        directory = control / name
+        history[name] = (
+            {
+                str(item.relative_to(directory)): hashlib.sha256(item.read_bytes()).hexdigest()
+                for item in sorted(directory.rglob("*"))
+                if item.is_file()
+            }
+            if directory.is_dir()
+            else None
+        )
+    return exact_fingerprint(history)
 
 
 def _herdr_agent(route: str) -> dict:
@@ -887,21 +935,40 @@ def _herdr_agent(route: str) -> dict:
     return agent if isinstance(agent, dict) else {}
 
 
-def _codex_context(args, owner_path: Path, control: Path, refs: dict) -> dict:
+# The context sources the helper reads itself. They are evidence, so a caller
+# reference may never stand in for them or override them; the remaining sources
+# (Linear, GitHub, child stream status) are supplied as digest-bound references.
+CODEX_DERIVED_CONTEXT_SOURCES = (
+    "owner_record",
+    "control_records",
+    "transfer_artifact",
+    "source_tracked_work",
+    "canonical_specs_and_adrs",
+    "workspace_and_runtime_configuration",
+)
+
+
+def _codex_context(args, owner_path: Path, prior_control: Path, refs: dict) -> dict:
+    # Context is captured from the PRIOR owner's control tree, the record this
+    # takeover replaces, never from the candidate Codex control path that does
+    # not exist yet (operator-control takeover-context-capture).
     repo = Path(args.repo).resolve()
     head = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
     )
+    if head.returncode != 0 or not head.stdout.strip():
+        raise GateError(f"context source unreadable: {repo} HEAD")
+    configuration = {"workspace": args.workspace, "state_root": str(owner_path.parent)}
     derived = {
         "owner_record": f"{owner_path}#{_tree_digest(owner_path)}",
-        "control_records": f"{control}#{_tree_digest(control)}",
-        "transfer_artifact": f"{control / 'takeovers'}#{_tree_digest(control / 'takeovers')}",
-        "source_tracked_work": f"{repo}#{head.stdout.strip() or 'unreadable'}",
+        "control_records": f"{prior_control}#{_tree_digest(prior_control)}",
+        "transfer_artifact": f"{prior_control}#{_transfer_history_digest(prior_control)}",
+        "source_tracked_work": f"{repo}#{exact_fingerprint(head.stdout.strip())}",
         "canonical_specs_and_adrs": f"{repo / 'spec'}#{_tree_digest(repo / 'spec')}",
-        "workspace_and_runtime_configuration": f"workspace={args.workspace} state={owner_path.parent}",
+        "workspace_and_runtime_configuration":
+            f"workspace={args.workspace} state={owner_path.parent}#{exact_fingerprint(configuration)}",
     }
-    derived.update(refs)
-    return derived
+    return {**derived, **refs}
 
 
 def command_codex_activate(args) -> dict:
@@ -922,12 +989,29 @@ def command_codex_activate(args) -> dict:
         key, _, value = pair.partition("=")
         if key not in CODEX_CONTEXT_SOURCES:
             raise GateError(f"unknown context source: {key}")
+        if key in CODEX_DERIVED_CONTEXT_SOURCES:
+            raise GateError(f"derived context source cannot be overridden: {key}")
         refs[key] = value
 
+    def active_fable(owner) -> bool:
+        # The exact active-Fable proof: the resolved agent is the prior owner's
+        # own route, reports the canonical live agent_status, and its launch
+        # receipt binds the exact prior owner session. A stale, stopped, rebound,
+        # or wrong-route agent is not proof (operator-control
+        # takeover-live-fable-only).
+        route = str(owner["owner_route"])
+        agent = _herdr_agent(route)
+        if str(agent.get("name") or agent.get("agent_name") or "") != route:
+            return False
+        status = str(agent.get("agent_status") or "")
+        if not status or status == "stopped":
+            return False
+        receipt = load_toml_if_present(Path(str(owner["control_dir"])) / "receipt.toml")
+        bound = receipt.get("bootstrap", {}).get("provider_session_id")
+        return str(bound or "") == str(owner["owner_session_id"])
+
     def verify_active_fable(owner):
-        agent = _herdr_agent(str(owner["owner_route"]))
-        running = bool(agent) and str(agent.get("status") or "running") != "stopped"
-        return {"session_running": running, "route": owner["owner_route"]}
+        return {"session_running": active_fable(owner), "route": owner["owner_route"]}
 
     def retire_fable(owner):
         route = str(owner["owner_route"])
@@ -944,16 +1028,21 @@ def command_codex_activate(args) -> dict:
             [str(timer), "check", "--name", route], capture_output=True, text=True,
         ).returncode == 0
         return {
-            "session_running": bool(_herdr_agent(route)),
+            "session_running": active_fable(owner),
             "timer_present": timer_active or (prior_control / "timer.toml").exists(),
         }
+
+    prior = load_toml_if_present(owner_path)
+    prior_control = Path(str(prior.get("control_dir") or ""))
+    if not str(prior.get("owner_session_id") or "").strip() or not str(prior_control):
+        raise GateError("forced takeover requires an unambiguous prior owner record")
 
     return force_takeover_codex_thread(
         owner_path,
         thread_id=thread_id,
         workspace=args.workspace,
         reason=args.reason or "",
-        context=_codex_context(args, owner_path, control, refs),
+        context=_codex_context(args, owner_path, prior_control, refs),
         verify_active_fable=verify_active_fable,
         retire_fable=retire_fable,
         now=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1580,6 +1669,11 @@ def parser() -> argparse.ArgumentParser:
     owner.add_argument("--control-dir", required=True)
     owner.add_argument("--handoff", required=True)
     owner.add_argument("--successor-readiness", required=True)
+    # Mode-specific routing belongs to the successor: a dedicated Fable successor
+    # declares nothing, a Codex-thread successor declares its mode and reuses the
+    # exact verified workspace.
+    owner.add_argument("--new-owner-mode", default="")
+    owner.add_argument("--new-workspace", default="")
     owner.set_defaults(run=command_owner)
 
     # Current Codex thread activation and the exceptional forced takeover. The
