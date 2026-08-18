@@ -64,3 +64,10 @@ source or fix link.
 - Target instructions remain versioned inside each target worktree.
 - Unless launch context explicitly confirms operator loopback access, never
   present localhost as usable operator access.
+- The current Codex thread becomes meta-operator only on an explicit request in
+  that thread, through `launch-meta-operator` current-thread activation with one
+  verified Herdr workspace. Reopening the same thread is pause and resume; a
+  distinct thread inherits no authority.
+- An active Fable owner keeps sole authority; the one exception is a
+  forced takeover, run only on direct human instruction with a reason in that
+  exact thread, after verified Fable retirement and a durable receipt.

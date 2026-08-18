@@ -141,7 +141,7 @@ succ_sid="$(grep -oE 'provider_session_id=[^ ]+' <<<"$spawn_output" | cut -d= -f
 # successor-ready command after reconciling; the CURRENT owner runs the
 # owner-transfer command after the successor is ready. The launcher writes no
 # owner record; owner-transfer is the sole authority commit.
-echo "octo-control successor-ready --path \"$succ_ready\" --caller \"$succ_sid\" --session-id \"$succ_sid\" --handoff-revision \"$new_revision\""
+echo "octo-control successor-ready --path \"$succ_ready\" --caller \"$succ_sid\" --session-id \"$succ_sid\" --handoff-revision \"$new_revision\" --handoff \"$handoff_abs\""
 echo "octo-control owner-transfer --owner-file \"$owner\" --expected-owner \"$cur_owner_sid\" --expected-route \"$cur_route\" --expected-revision \"$cur_revision\" --caller \"$cur_owner_sid\" --new-owner \"$succ_sid\" --new-route \"$name\" --revision \"$new_revision\" --control-dir \"$control_dir\" --handoff \"$handoff_abs\" --successor-readiness \"$succ_ready\""
 # ruling-76 term A boundary notice (one line): the printed owner-transfer is the
 # normal owner-run handoff-atomic step, run ONLY as the live current owner.

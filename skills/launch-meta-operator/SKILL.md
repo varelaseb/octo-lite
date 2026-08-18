@@ -22,6 +22,10 @@ Decision tree. Pick one path; the launchers are distinct scripts.
   `skills/launch-meta-operator/scripts/handoff-meta-operator.sh`. Requires the
   existing owner record; refuses if none (that is the initial case). See
   operator-control `handoff-launcher-initial` / `handoff-launcher-live`.
+- Explicit user request in the CURRENT Codex app thread: CURRENT-THREAD
+  activation. Run
+  `skills/launch-meta-operator/scripts/activate-codex-thread-operator.sh`. See
+  operator-control `codex-thread-activation`.
 
 ## INITIAL launch
 
@@ -45,9 +49,11 @@ view, not every raw log.
 
 An operator handoff occurs only on explicit request. The outgoing owner writes
 `handoffs/<revision>.md`. The fresh Fable reconciles sources, then declares its
-own readiness with `octo-control successor-ready`. `octo-control owner-transfer`
-verifies that durable receipt and the exact successor session, then performs
-one locked compare and atomic TOML replace. The prior owner becomes read-only.
+own readiness with `octo-control successor-ready`, which binds the exact
+handoff artifact it reconciled. `octo-control owner-transfer` verifies that
+derived artifact, the readiness record bound to it, and the exact successor
+session, then performs one locked compare and atomic TOML replace. The prior
+owner becomes read-only.
 No timeout or automatic failover transfers authority.
 
 Use `operator-say` for all messages to Fable. It resolves the current owner on
@@ -98,3 +104,51 @@ neither strengthens nor weakens it and invents NO new authentication. It only
 pre-fills the exact current owner identity the gate already checks; a caller who
 is not the current owner is rejected by that same pre-existing gate. Any future
 session-authentication hardening is a separate operator-initiated change.
+
+## CURRENT-THREAD activation (Codex app)
+
+Run `skills/launch-meta-operator/scripts/activate-codex-thread-operator.sh --workspace ID [--cwd PATH] [--handoff PATH]`
+only on an explicit user request in the current Codex app thread. It:
+
+- takes NO thread-ID argument; it derives the exact thread from host
+  `CODEX_THREAD_ID` and proves it against the `session_meta` record of Codex's
+  own local session, never a matching filename alone
+- read-verifies one existing Herdr workspace before any authority write,
+  requires the lookup to return that exact workspace ID, and stores it as
+  mode-specific routing in the existing `operator-owner.toml`; only a successor
+  that declares `--new-owner-mode codex-thread` carries that routing forward,
+  and it must reuse the exact same workspace
+- creates the control directory, then the owner record only when absent
+  (`owner_mode = "codex-thread"`); the same thread reopening is an idempotent
+  resume that writes nothing and fails closed on unreadable durable state
+- under another owner: refuses without writes, except that the exact
+  next-revision immutable handoff artifact reports the PENDING successor path,
+  which still requires successor reconciliation and the current owner's atomic
+  `owner-transfer`; activation itself writes the Codex readiness record with the
+  verified workspace and the durable context it reconciled, at the one derived
+  location `<control_dir>/handoffs/<revision>.ready.toml` the transfer also
+  derives, and the transfer admits no Codex successor readiness from any other
+  location, so `successor-ready` declares
+  dedicated Fable readiness only; a compact brief grants no authority
+- leaves `operator-say` unusable for a Codex owner by design: an app thread has
+  no Herdr route, so it pulls durable state instead
+- installs NO timer, daemon, polling service, background resume, surrogate, or
+  duplicate inbox; supervision pauses when the thread closes and reconciles
+  from durable sources when it reopens
+- spawns canonical orchestrators through the existing role resolver and
+  `herdr-spawn --workspace`, never a Codex-only worker path
+
+### Exceptional forced takeover
+
+Add `--force-takeover --reason TEXT` only on a direct human instruction naming
+that action. It admits ONLY an active dedicated Fable owner proven by its own
+route, canonical `agent_status`, and launch receipt session binding. It captures
+every authoritative durable context source itself, reading the PRIOR owner's
+control tree plus live Linear, GitHub, Herdr, child stream, and repository
+state, and refuses when one cannot be read; there is no caller-supplied context
+reference. It then retires and verifies the exact Fable session and
+its heartbeat timer, writes an immutable `takeovers/<revision>.toml` receipt,
+then performs one locked compare and atomic owner rename. Any unproven phase
+leaves this thread ordinary and the prior owner record byte-identical. Normal
+live handoff stays the preferred path. See operator-control
+`codex-forced-takeover`.

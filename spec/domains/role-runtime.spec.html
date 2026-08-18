@@ -20,7 +20,7 @@
 {
   "aria": {
     "enabled": true,
-    "description": "Fable owns the whole operation. A multi-issue epic adds one Opus epic orchestrator. Every issue has one Opus issue orchestrator, which launches fresh bounded worker passes."
+    "description": "The active meta-operator owns the whole operation. The dedicated path uses Fable, while explicit current-thread activation may bind the existing Codex app session. A multi-issue epic adds one Opus epic orchestrator. Every issue has one Opus issue orchestrator, which launches fresh bounded worker passes."
   },
   "tooltip": {
     "trigger": "item"
@@ -71,7 +71,7 @@
       },
       "data": [
         {
-          "name": "Fable meta-operator",
+          "name": "Active meta-operator",
           "x": 520,
           "y": 60,
           "symbolSize": [
@@ -169,7 +169,7 @@
       ],
       "links": [
         {
-          "source": "Fable meta-operator",
+          "source": "Active meta-operator",
           "target": "Epic Opus",
           "value": "one parent",
           "lineStyle": {
@@ -1192,7 +1192,7 @@
 <p data-anchor="role-nested-reuse" id="role-nested-reuse">Every nested stream owner uses the same orchestrator contract.</p>
 <p data-anchor="role-issue-cardinality" id="role-issue-cardinality">Every issue has one and only one dedicated issue orchestrator.</p>
 <p data-anchor="role-epic-layer" id="role-epic-layer">A multi-issue epic adds a separate epic orchestrator above its issue orchestrators, producing two orchestrator layers below the meta-operator.</p>
-<p data-anchor="role-reporting-chain" id="role-reporting-chain">Fresh workers report to their issue orchestrator; issue orchestrators report to the epic orchestrator; the epic orchestrator reports upward to Fable or its declared parent.</p>
+<p data-anchor="role-reporting-chain" id="role-reporting-chain">Fresh workers report to their issue orchestrator; issue orchestrators report to the epic orchestrator; the epic orchestrator reports upward to the active meta-operator or its declared parent.</p>
 <p data-anchor="role-nested-rules" id="role-nested-rules">A parent flattens relevant effective rules into the child brief; the child acknowledges them only at spawn or after a material brief revision.</p>
 <p data-anchor="role-helper-boundary" id="role-helper-boundary">Acceptance recording, merge, evidence publication, Linear transition, preproduction promotion, and live traffic shift are deterministic operator-authorized helpers rather than LLM roles.</p>
 <p data-anchor="role-control-view" id="role-control-view">The dashboard displays deterministic gates and helpers separately from LLM roles.</p>
@@ -1231,7 +1231,7 @@
 <p data-anchor="role-reconciler-snapshot-post-persist-atomicity" id="role-reconciler-snapshot-post-persist-atomicity">Every caught pre-spawn failure, including a journal persistence failure that happens after snapshot persistence, leaves no final sweep snapshot, journal entry, or sweep directory and no pending digest-verification input behind.</p>
 <p data-anchor="role-reconciler-bootstrap-snapshot-proof" id="role-reconciler-bootstrap-snapshot-proof">The reconciler subagent acknowledgment opens the exact file at the journal-bound snapshot path, hashes its bytes, and refuses the echo when that file is missing or its digest does not match the journal-bound snapshot digest.</p>
 <p data-anchor="role-reconciler-authority" id="role-reconciler-authority">Sonnet cannot mutate sources, override deterministic mismatches, investigate open-endedly, or silently resolve ambiguity.</p>
-<p data-anchor="role-reconciler-escalation" id="role-reconciler-escalation">Missing or unparseable input and semantic ambiguity return <code>needs_fable</code>; Fable judges the case.</p>
+<p data-anchor="role-reconciler-escalation" id="role-reconciler-escalation">Missing or unparseable input and semantic ambiguity return the existing <code>needs_fable</code> result; the active meta-operator judges the case.</p>
 <p data-anchor="role-claude-native" id="role-claude-native">Orchestrated Claude Workflows are the primary loop runtime rather than an adapter target, and every worker role runs as a subagent of the owning session's workflow.</p>
 <p data-anchor="role-worker-migration" id="role-worker-migration">Every worker role migrates to a Claude Workflow subagent, including implementer, qa-capture, and reconciler; reconciler and the review roles run under a Read-restricted subagent type, OpenAI review roles run through the codex relay subagent, and only the meta-operator and the epic and issue orchestrators remain persistent host sessions.</p>
 <p data-anchor="role-implementer-host-gated-push" id="role-implementer-host-gated-push">The implementer worker commits the red and green on an isolated branch and never pushes, and the host pushes the verified branch directly, with red and green genuineness and the unweakened bound test confirmed by the fresh adversarial code-reviewer rather than an independent observer.</p>
@@ -1594,6 +1594,21 @@
 <p data-anchor="launch-linear-state-gate" id="launch-linear-state-gate">Launch admits a shaping-review purpose only for Linear state <code>Ideas</code>, <code>Todo</code>, <code>Shaped</code>, or <code>In Progress</code>, and admits a delivery purpose only for Linear state <code>Shaped</code>, <code>Todo</code>, or <code>In Progress</code>; every other state, including <code>Awaiting Accept</code> and terminal states, is rejected for both purposes.</p>
 <p data-anchor="launch-linear-state-in-progress" id="launch-linear-state-in-progress">Admitting <code>In Progress</code> for both purposes lets shaping re-review run after material reconciliation and lets implementation, code review, re-review, and QA review workers launch while the stream orchestrator holds <code>In Progress</code>, without weakening the exact shaping-verdict checks a delivery purpose still requires.</p>
 <p data-anchor="launch-loop-fire-first-act" id="launch-loop-fire-first-act">Loop fire acts on Linear state <code>Shaped</code> and its first act is the mechanical <code>Shaped -&gt; Todo</code> transition; shaped-not-started work therefore rests at <code>Shaped</code> until fire and enters <code>Todo</code> as the first delivery step before any delivery-purpose worker launches against it, and launch never treats <code>Shaped</code> as a direct <code>In Progress</code> predecessor.</p>
+
+<section data-anchor="launch-codex-thread-activation" id="launch-codex-thread-activation">
+<h3>Current Codex thread activation</h3>
+<p data-anchor="launch-codex-activation-not-launch" id="launch-codex-activation-not-launch">Explicit activation of the already-running current Codex app thread is a host-session authority binding, not a provider launch, generated adapter, worker pass, or alternative role runtime, so it creates no launch receipt and does not alter the exact dedicated meta-operator role and model map.</p>
+<p data-anchor="launch-codex-activation-host-identity" id="launch-codex-activation-host-identity">The activation path derives <code>CODEX_THREAD_ID</code> from the host environment, verifies the corresponding local session metadata names the same ID, and refuses every caller-supplied or missing substitute before any authority write.</p>
+<p data-anchor="launch-codex-activation-workspace" id="launch-codex-activation-workspace">The activation entry point requires one explicit Herdr workspace ID, verifies it through a read-only workspace lookup, and persists it only as mode-specific routing in the existing owner record so <code>herdr-spawn --workspace</code> can launch the normal persistent orchestrators from outside a Herdr pane.</p>
+<p data-anchor="launch-codex-activation-contract" id="launch-codex-activation-contract">Before authority can act, the same thread loads the canonical profile, target instructions, <code>roles/meta-operator.md</code>, and required meta-operator skills from their installed sources, then records no copy of that prose in the control directory.</p>
+<p data-anchor="launch-codex-activation-downstream" id="launch-codex-activation-downstream">An activated Codex thread launches downstream persistent issue orchestrators only through the existing role resolver and <code>herdr-spawn</code>, and those orchestrators launch every fresh worker pass through the existing workflow; current-thread collaboration subagents never substitute for canonical octo-lite roles.</p>
+<p data-anchor="launch-codex-activation-complete" id="launch-codex-activation-complete">Initial activation and either ownership-transfer path bind the same complete meta-operator surface: canonical skills, role and workflow contracts, Herdr workspace, owner and stream controls, lifecycle helpers, and live durable source reconciliation; takeover does not create a reduced Codex-only runtime.</p>
+<p data-anchor="launch-codex-activation-takeover-gate" id="launch-codex-activation-takeover-gate">When a verified active dedicated Fable owner exists, ordinary activation stays ordinary and the normal live handoff remains preferred. Only a direct human forced-takeover instruction permits the exact validated current thread to run the context-capture, Fable-retirement, receipt, and atomic-owner sequence in the operator-control spec.</p>
+<p data-anchor="launch-codex-activation-takeover-no-substitute" id="launch-codex-activation-takeover-no-substitute">A forced-takeover flag, reason string, copied instruction, or self-asserted authorization never replaces the role-level requirement for a direct human instruction in the exact current host thread, and the helper derives that thread identity rather than accepting it from the caller.</p>
+<p data-anchor="launch-codex-activation-revalidate" id="launch-codex-activation-revalidate">Every new or reopened turn revalidates that the live host thread ID still equals the existing owner record before any operator-owned mutation, and a transferred-away, stale, unreadable, or mismatched owner makes the session ordinary and read-only.</p>
+<p data-anchor="launch-codex-activation-model-boundary" id="launch-codex-activation-model-boundary">Thread-local authority follows the explicitly activated thread across its ordinary Codex app resume lifecycle and is not redefined as a second <code>roles.toml</code> model mapping; the dedicated Fable launcher remains the only role-resolved meta-operator runtime and the required continuous-supervision path.</p>
+<p data-anchor="launch-codex-activation-failure" id="launch-codex-activation-failure">Activation must finish its exact identity, canonical-source, owner, and control-directory readbacks before reporting success, and any failure leaves no launch receipt, worker, Codex timer, or partial owner mutation; a forced attempt follows the separate immutable takeover-receipt and prior-owner-preservation contract.</p>
+</section>
 </section>
 
 <section data-anchor="diagram-workspace-retry" id="diagram-workspace-retry">
@@ -1895,7 +1910,7 @@
 <p data-anchor="related-overview" id="related-overview">Overview: <a href="./operating-model.spec.html">operating-model.spec.html</a>.</p>
 <p data-anchor="related-delivery-lifecycle" id="related-delivery-lifecycle">Sibling: <a href="./delivery-lifecycle.spec.html">delivery-lifecycle.spec.html</a> for shaping, delivery, Linear, and QA behavior.</p>
 <p data-anchor="related-operator-control" id="related-operator-control">Sibling: <a href="./operator-control.spec.html">operator-control.spec.html</a> for messaging, status, and operator handoff.</p>
-<p data-anchor="related-adr" id="related-adr">Boundary: <a href="../adr/0001-operating-model-boundaries.spec.html">ADR 0001 operating-model boundaries</a>.</p>
+<p data-anchor="related-adr" id="related-adr">Boundaries: <a href="../adr/0001-operating-model-boundaries.spec.html">ADR 0001 operating-model boundaries</a> and <a href="../adr/0005-codex-thread-meta-operator-activation.spec.html">ADR 0005 Codex thread meta-operator activation</a>.</p>
 </section>
 
 </article>

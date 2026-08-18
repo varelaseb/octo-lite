@@ -4,9 +4,11 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import tomllib
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -295,14 +297,138 @@ def verdict_body(
     )
 
 
-def declare_successor_ready(path: Path, *, caller: str, session_id: str, handoff_revision: int) -> dict:
+def declare_successor_ready(
+    path: Path,
+    *,
+    caller: str,
+    session_id: str,
+    handoff_revision: int,
+    handoff: Path | str,
+) -> dict:
+    """The dedicated Fable successor's own readiness record.
+
+    Readiness is meaningless without the brief it reconciled, so the record
+    BINDS the exact handoff artifact bytes the successor read (operator-control
+    handoff-reconcile, activation-handoff-brief). The atomic transfer admits
+    only a readiness record carrying that binding, so a readiness file no
+    verified activation wrote transfers nothing.
+
+    Codex-thread routing is NOT declarable here: a Codex successor becomes ready
+    only by explicitly activating, the sole path that read-verifies the
+    workspace and reconciles durable context (operator-control
+    activation-handoff-brief, activation-workspace, activation-no-new-auth).
+    """
     if caller != session_id:
         raise GateError("only the successor may declare its own readiness")
-    if handoff_revision < 1:
-        raise GateError("handoff revision must be positive")
-    state = {"schema_version": 1, "session_id": session_id, "handoff_revision": handoff_revision}
+    state = _readiness_state(session_id, handoff_revision, handoff)
     _atomic_write(path, _toml_document(state))
     return state
+
+
+def _readiness_state(session_id: str, handoff_revision: int, handoff: Path | str) -> dict:
+    if handoff_revision < 1:
+        raise GateError("handoff revision must be positive")
+    artifact = Path(handoff)
+    if not artifact.is_file():
+        raise GateError("successor readiness requires the handoff artifact it reconciled")
+    return {
+        "schema_version": 1,
+        "session_id": session_id,
+        "handoff_revision": handoff_revision,
+        "handoff_artifact": str(artifact.resolve()),
+        "handoff_digest": exact_fingerprint(artifact.read_text()),
+    }
+
+
+def _declare_codex_successor_ready(
+    path: Path,
+    *,
+    thread_id: str,
+    handoff_revision: int,
+    handoff: Path | str,
+    workspace: str,
+    context: Mapping[str, str],
+) -> dict:
+    """The Codex successor readiness activation itself writes.
+
+    It carries the activation's own proof: the verified workspace and the exact
+    digest-bound durable context this activation reconciled. The atomic transfer
+    admits a Codex successor only with that proof, so a record minted without
+    activating commits no ownership (operator-control activation-workspace,
+    activation-authoritative-context, activation-no-new-auth).
+
+    The record's LOCATION is the proof of provenance: it is derived from the owner
+    record in force, this write happens under the owner lock, and the revision
+    slot stays with the thread that activated, so a distinct candidate can never
+    displace it (operator-control activation-distinct-thread, handoff-artifact).
+    """
+    if not workspace.strip():
+        raise GateError("codex successor readiness requires one verified herdr workspace")
+    declared = _read_toml(path)
+    if declared and str(declared.get("session_id") or "") != thread_id:
+        raise GateError("another candidate already declared readiness for this revision")
+    state = _readiness_state(thread_id, handoff_revision, handoff)
+    state["owner_mode"] = CODEX_OWNER_MODE
+    state["herdr_workspace"] = workspace.strip()
+    state["context_sources"] = list(CODEX_CONTEXT_SOURCES)
+    state["context_references"] = [context[source] for source in CODEX_CONTEXT_SOURCES]
+    _atomic_write(path, _toml_document(state))
+    return state
+
+
+CODEX_OWNER_MODE = "codex-thread"
+
+# The dedicated persistent Fable owner record carries no owner mode; the closed
+# set of owner modes octo-lite recognizes is exactly these two.
+FABLE_OWNER_MODE = ""
+KNOWN_OWNER_MODES = (FABLE_OWNER_MODE, CODEX_OWNER_MODE)
+
+# The canonical live Herdr agent_status values (operator-control
+# message-eligibility-gate). A resident session reports one of these; stopped,
+# unknown, absent, and every unrecognized value are not a live session.
+LIVE_AGENT_STATUSES = ("working", "idle", "blocked", "done")
+
+# The authoritative durable operating context an activated or takeover-committed
+# Codex owner re-reads before its first owner mutation (operator-control
+# activation-authoritative-context). Prose and raw conversation are never in it.
+CODEX_CONTEXT_SOURCES = (
+    "owner_record",
+    "control_records",
+    "transfer_artifact",
+    "source_tracked_work",
+    "linear_issue_state",
+    "github_pull_request_state",
+    "canonical_specs_and_adrs",
+    "child_stream_status",
+    "workspace_and_runtime_configuration",
+)
+
+# The canonical meta-operator contract an activated thread loads from its
+# INSTALLED sources before authority can act (role-runtime
+# launch-codex-activation-contract). These are prose sources, not durable
+# operating state, so they are bound as their own set and only as
+# <identity>#<sha256> references: no copy of the prose is ever recorded.
+CODEX_CONTRACT_SOURCES = (
+    "installed_profile",
+    "target_instructions",
+    "meta_operator_contract",
+    "meta_operator_skills",
+)
+
+# The complete existing meta-operator capability set (operator-control
+# activation-complete-capability). Initial activation and either lawful transfer
+# bind the same set; takeover creates no reduced Codex-only runtime.
+CODEX_META_OPERATOR_CAPABILITIES = (
+    "herdr_messaging_and_acknowledgment",
+    "issue_and_epic_orchestration",
+    "resolver_bound_role_spawning",
+    "stream_and_owner_controls",
+    "lifecycle_helpers",
+    "durable_source_reconciliation",
+    "human_gated_acceptance",
+    "human_gated_preproduction",
+    "human_gated_traffic_shift",
+)
 
 
 def _swap_owner(
@@ -315,7 +441,20 @@ def _swap_owner(
     new_owner_route: str,
     handoff_revision: int,
     control_dir: str,
+    new_owner_mode: str | None = None,
+    new_workspace: str = "",
+    commit_extra: Callable[[Mapping[str, object], Mapping[str, object]], Mapping[str, object]] | None = None,
 ) -> dict:
+    """One locked compare-and-rename authority commit.
+
+    `commit_extra` runs INSIDE the same lock, after the compare and before the
+    rename. It is handed the record about to be committed and the record still in
+    force, and returns the extra fields the committed record must carry, so any
+    artifact the committed record binds is created under this one lock and any
+    proof it still owes is taken against the exact records this hold read
+    (operator-control takeover-receipt, takeover-atomic,
+    activation-binding-command).
+    """
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+", encoding="utf-8") as lock:
@@ -335,9 +474,26 @@ def _swap_owner(
             "schema_version": 1,
             "owner_session_id": new_owner_session_id,
             "owner_route": new_owner_route,
-            "handoff_revision": handoff_revision,
-            "control_dir": control_dir,
         }
+        # Mode-specific routing belongs to the SUCCESSOR, never to the record it
+        # replaces (operator-control handoff-owner, handoff-routing): a dedicated
+        # Fable successor keeps its routable Herdr owner route and inherits no
+        # Codex mode or workspace, while a declared Codex successor must reuse the
+        # exact verified workspace (ADR 0005 decision-workspace-routing).
+        if new_owner_mode == CODEX_OWNER_MODE:
+            prior_workspace = str(current.get("herdr_workspace") or "")
+            workspace = new_workspace.strip() or prior_workspace
+            if not workspace:
+                raise GateError("codex successor requires one verified herdr workspace")
+            if prior_workspace and workspace != prior_workspace:
+                raise GateError("codex owner workspace is immutable across transfer")
+            updated["owner_mode"] = CODEX_OWNER_MODE
+            updated["herdr_workspace"] = workspace
+        elif new_owner_mode:
+            raise GateError(f"unknown successor owner mode: {new_owner_mode}")
+        updated["handoff_revision"] = handoff_revision
+        updated["control_dir"] = control_dir
+        updated.update(commit_extra(dict(updated), dict(current)) if commit_extra else {})
         _atomic_write(path, _toml_document(updated))
         return updated
 
@@ -355,14 +511,70 @@ def transfer_owner(
     caller: str,
     handoff: Path,
     successor_readiness_path: Path,
+    new_owner_mode: str | None = None,
+    new_workspace: str = "",
+    workspace_lookup: Callable[[str], Mapping[str, object]] | None = None,
+    reconcile: Callable[[Mapping[str, object]], Mapping[str, str]] | None = None,
 ) -> dict:
     if caller != expected_owner_session_id:
         raise GateError("caller is not current expected owner")
-    readiness = _read_toml(successor_readiness_path)
+    # The derived immutable handoff artifact is the transfer's provenance root:
+    # it is checked FIRST, and the readiness record is then admitted only if it
+    # binds those exact artifact bytes (operator-control handoff-artifact,
+    # handoff-reconcile). A readiness file no verified activation wrote carries
+    # no binding and transfers nothing.
+    if not _is_owner_handoff(handoff, control_dir, handoff_revision):
+        raise GateError("immutable handoff revision missing")
+    # The successor identity committed here is the OWNER-SUPPLIED one: the owner
+    # names only a successor it verified activated, and the readiness record is
+    # evidence that must MATCH those exact arguments, never an identity source
+    # (operator-control activation-binding-command, activation-no-new-auth).
+    # Its bytes are read exactly ONCE, and only those validated bytes are ever
+    # digested, so bytes appearing at the derived slot after this read influence
+    # nothing (activation-binding-transfer).
+    readiness_text = (
+        successor_readiness_path.read_text() if successor_readiness_path.is_file() else ""
+    )
+    readiness = tomllib.loads(readiness_text) if readiness_text else {}
     if readiness.get("session_id") != new_owner_session_id or readiness.get("handoff_revision") != handoff_revision:
         raise GateError("successor readiness receipt mismatch")
-    if not handoff.is_file() or handoff.name != f"{handoff_revision:04d}.md":
-        raise GateError("immutable handoff revision missing")
+    if str(readiness.get("handoff_artifact") or "") != str(handoff.resolve()) or str(
+        readiness.get("handoff_digest") or ""
+    ) != exact_fingerprint(handoff.read_text()):
+        raise GateError("successor readiness is not bound to this handoff artifact")
+    # The successor's own readiness record carries its verified routing, so the
+    # workspace committed here is the one the successor read, never a
+    # substitute supplied at transfer time (operator-control
+    # activation-workspace, ADR 0005 decision-workspace-routing).
+    declared_mode = str(readiness.get("owner_mode") or "")
+    if declared_mode != (new_owner_mode or ""):
+        raise GateError("successor readiness owner mode mismatch")
+    if declared_mode == CODEX_OWNER_MODE:
+        # A Codex successor's readiness is admitted only where the activation
+        # writes it: the location DERIVED from the owner record in force. Field
+        # equality and digest shape are checkable by anyone, so a hand-written
+        # record elsewhere is not read at all and transfers no authority
+        # (operator-control activation-handoff-brief, activation-distinct-thread,
+        # handoff-artifact).
+        if successor_readiness_path.resolve() != _codex_readiness_path(
+            control_dir, handoff_revision
+        ).resolve():
+            raise GateError("codex successor readiness is not the activation's own record")
+        if str(readiness.get("herdr_workspace") or "") != new_workspace.strip():
+            raise GateError("successor readiness workspace mismatch")
+        # A Codex successor is admitted only with its activation's own proof:
+        # the complete durable context that activation reconciled, each entry
+        # binding exact bytes. A readiness record minted without activating
+        # carries none, so it transfers nothing (operator-control
+        # activation-handoff-brief, activation-authoritative-context).
+        references = readiness.get("context_references")
+        if list(readiness.get("context_sources") or []) != list(CODEX_CONTEXT_SOURCES) or not isinstance(
+            references, list
+        ) or len(references) != len(CODEX_CONTEXT_SOURCES) or not all(
+            _is_digest_reference(str(reference).strip()) for reference in references
+        ):
+            raise GateError("codex successor readiness is not activation-reconciled")
+        readiness_references = [str(reference).strip() for reference in references]
     return _swap_owner(
         path,
         expected_owner_session_id=expected_owner_session_id,
@@ -372,7 +584,483 @@ def transfer_owner(
         new_owner_route=new_owner_route,
         handoff_revision=handoff_revision,
         control_dir=control_dir,
+        new_owner_mode=new_owner_mode,
+        new_workspace=new_workspace,
+        commit_extra=(
+            _binding_author(
+                control_dir,
+                revision=handoff_revision,
+                successor_session=new_owner_session_id,
+                workspace=new_workspace.strip(),
+                readiness_text=readiness_text,
+                readiness_references=readiness_references,
+                handoff=handoff,
+                caller=caller,
+                workspace_lookup=workspace_lookup,
+                reconcile=reconcile,
+            )
+            if declared_mode == CODEX_OWNER_MODE
+            else None
+        ),
     )
+
+
+def _codex_binding_path(control_dir: str, revision: int) -> Path:
+    """The one location the owner-authored binding record can have:
+    <control_dir>/handoffs/<zero-padded-revision>.binding.toml, derived exactly
+    like the handoff artifact and the readiness record it cross-binds
+    (operator-control activation-owner-binding)."""
+    return Path(control_dir) / "handoffs" / f"{revision:04d}.binding.toml"
+
+
+def _binding_author(
+    control_dir: str,
+    *,
+    revision: int,
+    successor_session: str,
+    workspace: str,
+    readiness_text: str,
+    readiness_references: list[str],
+    handoff: Path,
+    caller: str,
+    workspace_lookup: Callable[[str], Mapping[str, object]] | None = None,
+    reconcile: Callable[[Mapping[str, object]], Mapping[str, str]] | None = None,
+) -> Callable[[Mapping[str, object], Mapping[str, object]], Mapping[str, object]]:
+    """The owner-authored transfer provenance, created INSIDE the one owner-lock
+    hold that commits the rename (operator-control activation-owner-binding,
+    activation-binding-transfer, activation-binding-command; ADR 0005
+    decision-transfer-provenance).
+
+    Provenance is the authoring act, never the bytes on disk: the hold reclaims
+    any pre-existing file at the derived path WITHOUT reading it, then creates
+    its own record exclusively, so hand-written bytes never influence a transfer
+    and a crashed or half-cleaned earlier attempt poisons no retry. The rename is
+    the single durable commit point, and only the binding this same hold created
+    is referenced by the committed owner record: any other file there is void
+    residue with no authority (activation-binding-transfer).
+
+    The record carries the OWNER-SUPPLIED successor session, workspace, and
+    revision plus the exact readiness bytes the owner already validated against
+    them: it never re-reads the readiness slot, so bytes swapped in after
+    validation enter no owner-authored provenance (activation-binding-command).
+
+    The digest domain stays nonrecursive by construction: the record digests the
+    readiness record and the handoff artifact, and nothing ever digests it
+    (activation-binding-order).
+
+    Positive activated-transfer proof also requires a LIVE transfer-time Herdr
+    workspace lookup inside this same hold: a stored readiness field is a past
+    read, so it proves nothing about the routing the successor is about to own.
+    A failed lookup and a lookup answering any other workspace each refuse the
+    whole transfer before the exclusive create, so the prior owner record stays
+    byte-identical and no binding is written (activation-binding-transfer).
+
+    Every binding field is validated against LIVE state in this same hold, so the
+    readiness record's durable context references are RE-RECONCILED here: each
+    reference must recompute from the actual current bytes of the source it names,
+    over exactly the derived Codex source set. A hand-written readiness that merely
+    repeats the owner-named successor identity carries fabricated or replayed
+    references that do not recompute, and a record whose source moved since the
+    activation is a past read, not live evidence: both refuse before the exclusive
+    create (activation-binding-command, activation-authoritative-context). The
+    residual the human ruling accepts is a forger who reproduces every real current
+    source digest AND is explicitly named by the owner; the owner stays the trust
+    anchor for the successor identity.
+    """
+    binding_path = _codex_binding_path(control_dir, revision)
+
+    def author(pending: Mapping[str, object], prior: Mapping[str, object]) -> dict:
+        if workspace_lookup is None:
+            raise GateError("codex successor transfer requires a live workspace lookup")
+        record = workspace_lookup(workspace)
+        if not isinstance(record, Mapping) or str(record.get("id") or "") != workspace:
+            raise GateError(f"transfer-time herdr workspace not verified: {workspace}")
+        if reconcile is None:
+            raise GateError("codex successor transfer requires live context reconciliation")
+        # Reconciled against the owner record still IN FORCE, the exact record the
+        # activation reconciled against, so a genuine readiness record recomputes
+        # while an unreadable source refuses like every other live-state failure.
+        live = _reconciled_context(reconcile, prior)
+        if [live[source] for source in CODEX_CONTEXT_SOURCES] != list(readiness_references):
+            raise GateError("codex successor readiness references do not recompute live")
+        document = _toml_document(
+            {
+                "schema_version": 1,
+                "revision": revision,
+                "successor_session": successor_session,
+                "herdr_workspace": workspace,
+                "readiness_digest": exact_fingerprint(readiness_text),
+                "handoff_digest": exact_fingerprint(handoff.read_text()),
+                "authored_by_session": caller,
+                "authored_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        )
+        binding_path.parent.mkdir(parents=True, exist_ok=True)
+        binding_path.unlink(missing_ok=True)
+        descriptor = os.open(binding_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(document)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return {
+            "successor_binding": str(binding_path),
+            "successor_binding_digest": exact_fingerprint(document),
+        }
+
+    return author
+
+
+def _is_owner_handoff(handoff: Path, control_dir: str, revision: int) -> bool:
+    """The one immutable handoff artifact a revision can have:
+    <control_dir>/handoffs/<zero-padded-revision>.md (operator-control
+    handoff-artifact).
+
+    The location is DERIVED from the owner record in force, never accepted from
+    the caller, so a file that merely carries the revision name somewhere else
+    is not the outgoing owner's artifact and creates neither readiness nor a
+    transfer. There is no fallback: with no recorded control directory, or with
+    the artifact anywhere but that directory's own handoffs tree, the answer is
+    no.
+    """
+    control = control_dir.strip()
+    if not control:
+        return False
+    if not handoff.is_file() or handoff.name != f"{revision:04d}.md":
+        return False
+    return handoff.resolve().parent == (Path(control) / "handoffs").resolve()
+
+
+def _codex_readiness_path(control_dir: str, revision: int) -> Path:
+    """The one location a Codex successor's readiness record can have:
+    <control_dir>/handoffs/<zero-padded-revision>.ready.toml, derived exactly like
+    the immutable handoff artifact it answers (operator-control handoff-artifact,
+    activation-handoff-brief).
+
+    Derivation is the provenance: the activation writes this record under the
+    owner lock, and the transfer reads only what it derives, so a readiness file
+    the caller wrote elsewhere is never read and transfers nothing.
+    """
+    return Path(control_dir) / "handoffs" / f"{revision:04d}.ready.toml"
+
+
+def _is_digest_reference(value: str) -> bool:
+    identity, separator, digest = value.rpartition("#")
+    return bool(identity) and bool(separator) and len(digest) == 64 and all(
+        character in "0123456789abcdef" for character in digest
+    )
+
+
+def _reconciled_context(reconcile: Callable[[Mapping[str, object]], Mapping[str, str]], owner: Mapping[str, object]) -> dict:
+    """One live read of every authoritative durable source, bound to exact
+    digests (operator-control activation-authoritative-context,
+    activation-same-thread-resume; role-runtime launch-codex-activation-complete).
+
+    Reporting a static source list is not reconciliation: authority is reported
+    only with the exact references this pass actually read.
+    """
+    captured = dict(reconcile(owner) or {})
+    missing = [
+        source for source in CODEX_CONTEXT_SOURCES
+        if not _is_digest_reference(str(captured.get(source) or "").strip())
+    ]
+    if missing:
+        raise GateError(f"durable context reconciliation incomplete: {', '.join(missing)}")
+    return {source: str(captured[source]).strip() for source in CODEX_CONTEXT_SOURCES}
+
+
+def _codex_result(outcome: str, owner: Mapping[str, object], context: Mapping[str, str]) -> dict:
+    return {
+        "outcome": outcome,
+        "owner": dict(owner),
+        "context_sources": list(CODEX_CONTEXT_SOURCES),
+        "context_references": [context[source] for source in CODEX_CONTEXT_SOURCES],
+        "capabilities": list(CODEX_META_OPERATOR_CAPABILITIES),
+    }
+
+
+def activate_codex_thread(
+    path: Path,
+    *,
+    thread_id: str,
+    workspace: str,
+    control_dir: str,
+    reconcile: Callable[[Mapping[str, object]], Mapping[str, str]],
+    handoff: str = "",
+) -> dict:
+    """Bind meta-operator authority to the exact current Codex app thread
+    (operator-control codex-thread-activation).
+
+    Creates the existing owner record only when absent, treats the same thread as
+    an idempotent resume with no write at all, reports the pending successor path
+    when the exact next-revision handoff artifact exists, and refuses every other
+    case without touching the existing record. A handoff brief is context only:
+    it never substitutes for the lawful owner transition.
+    """
+    if not thread_id.strip():
+        raise GateError("codex thread activation requires the exact host thread identity")
+    if not workspace.strip():
+        raise GateError("codex thread activation requires one verified herdr workspace")
+    if not control_dir.strip():
+        raise GateError("codex thread activation requires a control directory")
+
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = _read_toml(path)
+        if current:
+            if current.get("owner_mode") != CODEX_OWNER_MODE or current.get("owner_session_id") != thread_id:
+                # A dedicated Fable owner, or any other session, keeps sole
+                # authority. The exact next-revision immutable handoff artifact
+                # opens only the successor-reconciliation and readiness path
+                # (operator-control activation-different-owner); a brief that is
+                # not that artifact grants nothing, and neither writes anything.
+                revision = int(current.get("handoff_revision", 0)) + 1
+                artifact = Path(handoff.strip()) if handoff.strip() else None
+                if artifact and _is_owner_handoff(artifact, str(current.get("control_dir") or ""), revision):
+                    # The successor reconciles the brief against live sources and
+                    # then records its own readiness, binding the exact thread,
+                    # revision, mode, and verified workspace the later atomic
+                    # transfer must match (operator-control
+                    # activation-handoff-brief, activation-workspace).
+                    context = _reconciled_context(reconcile, current)
+                    readiness_path = _codex_readiness_path(
+                        str(current.get("control_dir") or ""), revision
+                    )
+                    _declare_codex_successor_ready(
+                        readiness_path,
+                        thread_id=thread_id,
+                        handoff_revision=revision,
+                        handoff=artifact,
+                        workspace=workspace,
+                        context=context,
+                    )
+                    pending = _codex_result("pending", current, context)
+                    pending["handoff_revision"] = revision
+                    pending["successor_session_id"] = thread_id
+                    pending["successor_readiness"] = str(readiness_path)
+                    return pending
+                raise GateError(
+                    "another session owns operator authority; use the existing handoff, "
+                    "manual takeover, or a direct human forced takeover"
+                )
+            if current.get("herdr_workspace") != workspace:
+                raise GateError("codex owner workspace is immutable across resume")
+            # Reopening revalidates durable state before any owner mutation
+            # (role-runtime launch-codex-activation-revalidate): an owner record
+            # whose recorded control directory no longer reads back is stale, so
+            # the session stays ordinary instead of resuming authority.
+            if not Path(str(current.get("control_dir") or "")).is_dir():
+                raise GateError("codex owner control directory unreadable; session stays ordinary")
+            return _codex_result("resumed", current, _reconciled_context(reconcile, current))
+
+        # Reconciliation runs BEFORE the owner record exists, so no live reader
+        # can ever observe an authority record this pass has not earned, and a
+        # failed activation leaves no owner record and no control state at all
+        # (operator-control activation-failure-ordinary; role-runtime
+        # launch-codex-activation-failure). The record reconciled is the exact
+        # pending record committed a moment later: the control directory is
+        # materialized first because the live control tree is one authoritative
+        # source, and a directory this pass created is removed again on any
+        # failure.
+        control = Path(control_dir)
+        created = not control.exists()
+        owner = {
+            "schema_version": 1,
+            "owner_session_id": thread_id,
+            "owner_route": thread_id,
+            "owner_mode": CODEX_OWNER_MODE,
+            "herdr_workspace": workspace,
+            "handoff_revision": 0,
+            "control_dir": control_dir,
+        }
+        try:
+            control.mkdir(parents=True, exist_ok=True)
+            if not control.is_dir():
+                raise GateError("codex control directory readback mismatch")
+            context = _reconciled_context(reconcile, owner)
+            _atomic_write(path, _toml_document(owner))
+            readback = _read_toml(path)
+            if readback != owner:
+                raise GateError("codex owner readback mismatch")
+        except BaseException:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if created:
+                shutil.rmtree(control, ignore_errors=True)
+            raise
+        return _codex_result("activated", readback, context)
+
+
+def force_takeover_codex_thread(
+    path: Path,
+    *,
+    thread_id: str,
+    workspace: str,
+    reason: str,
+    context: Mapping[str, str],
+    verify_active_fable: Callable[[Mapping[str, object]], Mapping[str, object]],
+    retire_fable: Callable[[Mapping[str, object]], Mapping[str, object]],
+    now: Callable[[], str],
+    reconcile: Callable[[Mapping[str, object]], Mapping[str, str]],
+) -> dict:
+    """One direct-human forced takeover from a verified active dedicated Fable
+    owner into the exact current Codex thread (operator-control
+    codex-forced-takeover).
+
+    Ordered phases: candidate validation, context capture, Fable retirement,
+    immutable receipt, atomic owner commit. Any unproven phase leaves the Codex
+    thread ordinary and the prior owner record byte-identical.
+    """
+    if not thread_id.strip():
+        raise GateError("forced takeover requires the exact host thread identity")
+    if not workspace.strip():
+        raise GateError("forced takeover requires one verified herdr workspace")
+    if not reason.strip():
+        raise GateError("forced takeover requires a direct human instruction with a nonempty reason")
+
+    # Phase 1: candidate validation. Only a structured, verified ACTIVE dedicated
+    # Fable owner is eligible; another Codex owner and a missing, dead, stopped,
+    # unreadable, or ambiguous owner keep the existing handoff or manual law.
+    prior = _read_toml(path)
+    if not prior:
+        raise GateError("forced takeover requires an existing dedicated Fable owner record")
+    # Admission is a CLOSED set: the dedicated Fable owner record carries no
+    # owner mode at all. Another Codex owner is ineligible, and an unrecognized
+    # mode is not a dedicated Fable either, so it fails closed instead of being
+    # read as one (operator-control takeover-live-fable-only).
+    prior_mode = str(prior.get("owner_mode") or "").strip()
+    if prior_mode not in KNOWN_OWNER_MODES:
+        raise GateError(f"forced takeover admits only a known owner mode: {prior_mode}")
+    if prior_mode == CODEX_OWNER_MODE:
+        raise GateError("forced takeover admits only a dedicated Fable owner")
+    for key in ("owner_session_id", "owner_route", "control_dir"):
+        if not str(prior.get(key) or "").strip():
+            raise GateError("forced takeover requires an unambiguous prior owner record")
+    liveness = dict(verify_active_fable(prior))
+    if liveness.get("session_running") is not True:
+        raise GateError("forced takeover admits only a verified active Fable session")
+
+    # Phase 2: context capture. Every authoritative durable source must be
+    # referenced before fencing, and every reference must bind the exact bytes it
+    # names as <identity>#<sha256> (operator-control takeover-context-capture).
+    # A bare path, a prose summary, and an absent or unreadable placeholder are
+    # all unproven, so they refuse instead of standing in for read evidence.
+    missing = [
+        source for source in CODEX_CONTEXT_SOURCES
+        if not _is_digest_reference(str(context.get(source) or "").strip())
+    ]
+    if missing:
+        raise GateError(f"forced takeover context incomplete: {', '.join(missing)}")
+    captured = {source: str(context[source]).strip() for source in CODEX_CONTEXT_SOURCES}
+    context_digest = exact_fingerprint(captured)
+
+    # Live reconciliation runs BEFORE any fence, receipt, or owner commit: an
+    # unreadable live source leaves the Fable owner byte-identical, its session
+    # untouched, and this thread ordinary (operator-control
+    # activation-failure-ordinary, takeover-failure).
+    _reconciled_context(reconcile, prior)
+
+    # Phase 3: fencing. The exact Fable session and its heartbeat timer are
+    # retired and verified before any owner write.
+    fence = dict(retire_fable(prior))
+    if fence.get("session_running") is not False or fence.get("timer_present") is not False:
+        raise GateError("forced takeover requires verified Fable session and timer retirement")
+
+    # Phases 4 and 5 are ONE locked step. The immutable receipt is created
+    # EXCLUSIVELY inside the owner lock that commits the swap, so a concurrent
+    # authorized attempt either loses the exclusive create and aborts with the
+    # other receipt's bytes intact, or holds the lock and this attempt never
+    # reaches its own create (operator-control takeover-receipt, takeover-atomic,
+    # takeover-failure).
+    prior_revision = int(prior.get("handoff_revision", 0))
+    revision = prior_revision + 1
+    control = Path(str(prior["control_dir"]))
+    receipt_path = control / "takeovers" / f"{revision:04d}.toml"
+
+    final: dict[str, str] = {}
+    written: list[Path] = []
+
+    def write_receipt(pending: Mapping[str, object], prior_record: Mapping[str, object]) -> dict:
+        receipt = {
+            "schema_version": 1,
+            "prior_owner_session_id": str(prior["owner_session_id"]),
+            "prior_owner_route": str(prior["owner_route"]),
+            "new_owner_session_id": thread_id,
+            "new_owner_mode": CODEX_OWNER_MODE,
+            "herdr_workspace": workspace,
+            "reason": reason.strip(),
+            "requested_at": now(),
+            "context_digest": context_digest,
+            "context_sources": list(CODEX_CONTEXT_SOURCES),
+            "context_references": [captured[source] for source in CODEX_CONTEXT_SOURCES],
+            "fence_session_running": False,
+            "fence_timer_present": False,
+            "verification_outcome": "verified",
+        }
+        document = _toml_document(receipt)
+        bound = {
+            "takeover_receipt": str(receipt_path),
+            "takeover_receipt_digest": exact_fingerprint(document),
+        }
+        # The FINAL durable reconciliation the new owner must hold before it may
+        # act runs here, inside the one owner lock, against the exact record about
+        # to be committed and BEFORE the receipt exists or the rename commits
+        # authority. An unreadable live source is therefore a pre-commit failure
+        # like every other phase: no receipt, no owner write, and the prior Fable
+        # record byte-identical (operator-control takeover-failure,
+        # takeover-atomic, takeover-success).
+        final.update(_reconciled_context(reconcile, {**pending, **bound}))
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError as error:
+            raise GateError(f"takeover receipt already exists: {receipt_path}") from error
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(document)
+            handle.flush()
+            os.fsync(handle.fileno())
+        written.append(receipt_path)
+        return bound
+
+    try:
+        owner = _swap_owner(
+            path,
+            expected_owner_session_id=str(prior["owner_session_id"]),
+            expected_owner_route=str(prior["owner_route"]),
+            expected_prior_revision=prior_revision,
+            new_owner_session_id=thread_id,
+            new_owner_route=thread_id,
+            handoff_revision=revision,
+            control_dir=str(prior["control_dir"]),
+            new_owner_mode=CODEX_OWNER_MODE,
+            new_workspace=workspace,
+            commit_extra=write_receipt,
+        )
+    except BaseException as error:
+        # A failure once this attempt's receipt exists is the post-fence blocked
+        # state: the Fable session is retired, no owner is committed, and the
+        # receipt no owner record references is void residue. The surface names
+        # it and stops there; no agent path retries, reads, or reclaims it, so a
+        # human resolves it out of band under the manual-takeover law
+        # (operator-control takeover-receipt-residue, takeover-failure).
+        if written:
+            raise GateError(
+                "forced takeover blocked after fencing: the prior Fable session is retired, "
+                f"no owner is committed, and the unreferenced takeover receipt {written[0]} "
+                "is void residue for out-of-band human resolution"
+            ) from error
+        raise
+
+    # Phase 6: continue. The committed record is read back from disk and reported
+    # with the complete durable context the in-lock final reconciliation read
+    # (operator-control takeover-success).
+    committed = _read_toml(path)
+    if committed != owner:
+        raise GateError("codex owner readback mismatch after takeover commit")
+    return _codex_result("takeover", committed, final)
 
 
 def transition_linear(

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,14 +20,20 @@ from octo_lite.launch import provision_lane_worktree, verify_relay_verbatim  # n
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workflows" / "lib"))
 
-from role_resolver import load_registry  # noqa: E402
+from role_resolver import _git_blob, _skill_blob, load_registry, resolve_role  # noqa: E402
 from octo_lite.runtime import (  # noqa: E402
+    _toml_document as owner_document,
+    CODEX_CONTEXT_SOURCES,
+    CODEX_CONTRACT_SOURCES,
+    LIVE_AGENT_STATUSES,
     GateError,
+    activate_codex_thread,
     admit_workspace,
     append_trace,
     bind_pass_result,
     declare_successor_ready,
     exact_fingerprint,
+    force_takeover_codex_thread,
     herdr_label,
     launch_revision,
     normalize_launch_access,
@@ -44,6 +51,10 @@ from octo_lite.runtime import (  # noqa: E402
 def load_toml(path: Path) -> dict:
     with path.open("rb") as handle:
         return tomllib.load(handle)
+
+
+def load_toml_if_present(path: Path) -> dict:
+    return load_toml(path) if path.is_file() else {}
 
 
 def run_json(argv: list[str]) -> dict:
@@ -831,6 +842,19 @@ def command_owner(args) -> dict:
     handoff = Path(args.handoff)
     if not handoff.is_file():
         raise GateError("immutable handoff missing")
+
+    def reconcile(owner) -> dict:
+        # The same derived durable-source reader the successor's activation used,
+        # so the readiness record's references are recomputed against live sources
+        # inside the owner-locked act (operator-control activation-binding-command).
+        return _codex_live_context(
+            repo=Path(getattr(args, "repo", ".") or "."),
+            owner_path=Path(args.owner_file),
+            control=Path(str(owner.get("control_dir") or args.control_dir)),
+            workspace=args.new_workspace,
+            pending_owner=owner,
+        )
+
     return transfer_owner(
         Path(args.owner_file),
         args.expected_owner,
@@ -843,12 +867,530 @@ def command_owner(args) -> dict:
         caller=args.caller,
         handoff=handoff,
         successor_readiness_path=Path(args.successor_readiness),
+        new_owner_mode=args.new_owner_mode or None,
+        new_workspace=args.new_workspace,
+        # The live transfer-time routing boundary the owner-locked act crosses
+        # (operator-control activation-binding-transfer).
+        workspace_lookup=_herdr_workspace,
+        reconcile=reconcile,
     )
+
+
+def _codex_thread_id() -> str:
+    # The helper DERIVES the exact current thread from the host, never from the
+    # caller (role-runtime launch-codex-activation-takeover-no-substitute).
+    thread_id = (os.environ.get("CODEX_THREAD_ID") or "").strip()
+    if not thread_id:
+        raise GateError("host CODEX_THREAD_ID required")
+    home = Path(os.environ.get("CODEX_HOME") or str(Path.home() / ".codex"))
+    sessions = home / "sessions"
+    if not sessions.is_dir():
+        raise GateError(f"no local Codex session for {thread_id}")
+    # A filename is not identity: the session's own session_meta record must name
+    # the same ID (role-runtime launch-codex-activation-host-identity).
+    for rollout in sessions.rglob(f"rollout-*-{thread_id}.jsonl"):
+        if _rollout_session_id(rollout) == thread_id:
+            return thread_id
+    raise GateError(f"no local Codex session for {thread_id}")
+
+
+def _rollout_session_id(rollout: Path) -> str:
+    try:
+        with rollout.open(encoding="utf-8", errors="replace") as handle:
+            meta = json.loads(handle.readline() or "{}")
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(meta, dict) or meta.get("type") != "session_meta":
+        return ""
+    payload = meta.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("id") or payload.get("session_id") or "")
+
+
+# The derived proof records the transfer act itself writes. They digest the
+# durable sources, so they are never inside the digest domain they bind: the
+# domain stays nonrecursive by ordered construction, and a readiness record still
+# recomputes at transfer time (operator-control activation-binding-order).
+_DERIVED_PROOF_SUFFIXES = (".ready.toml", ".binding.toml")
+
+
+def _is_derived_proof(item: Path) -> bool:
+    return item.name.endswith(_DERIVED_PROOF_SUFFIXES)
+
+
+def _tree_digest(root: Path) -> str:
+    # Fail closed: an absent or unreadable source is not evidence, so it can never
+    # become a nonempty context reference (operator-control takeover-context-capture).
+    if not root.exists():
+        raise GateError(f"context source unreadable: {root}")
+    if root.is_file():
+        return exact_fingerprint(root.read_text(errors="replace"))
+    entries = {
+        str(item.relative_to(root)): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in sorted(root.rglob("*"))
+        if item.is_file() and not _is_derived_proof(item)
+    }
+    return exact_fingerprint(entries)
+
+
+def _transfer_history_digest(control: Path) -> str:
+    # The applicable transfer artifact set, read from the prior owner's control
+    # tree. A directory that has never been created records as null and an empty
+    # one as an empty set: both are read evidence, not an unreadable source.
+    if not control.is_dir():
+        raise GateError(f"context source unreadable: {control}")
+    history = {}
+    for name in ("handoffs", "takeovers"):
+        directory = control / name
+        history[name] = (
+            {
+                str(item.relative_to(directory)): hashlib.sha256(item.read_bytes()).hexdigest()
+                for item in sorted(directory.rglob("*"))
+                if item.is_file() and not _is_derived_proof(item)
+            }
+            if directory.is_dir()
+            else None
+        )
+    return exact_fingerprint(history)
+
+
+def _herdr_cli() -> str:
+    herdr = os.environ.get("OCTO_HERDR") or shutil.which("herdr")
+    if not herdr:
+        raise GateError("herdr not available")
+    return herdr
+
+
+def _herdr_agent(route: str) -> dict:
+    # A lookup that fails is NOT an answer: it proves nothing about the session,
+    # so it can never read as an absent or retired agent (operator-control
+    # takeover-live-fable-only, takeover-fence). An empty structured answer is a
+    # real answer: Herdr resolves no such agent.
+    result = subprocess.run([_herdr_cli(), "agent", "get", route], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise GateError(f"herdr agent lookup unreadable: {route}")
+    if not result.stdout.strip():
+        return {}
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError as error:
+        raise GateError(f"herdr agent lookup unreadable: {route}") from error
+    agent = payload.get("result", {}).get("agent") if isinstance(payload, dict) else None
+    return agent if isinstance(agent, dict) else {}
+
+
+def _herdr_workspace(workspace: str) -> dict:
+    # The live routing configuration the owner record binds. Exit status alone is
+    # not verification: the lookup must return the exact requested workspace
+    # (role-runtime launch-codex-activation-workspace).
+    result = subprocess.run(
+        [_herdr_cli(), "workspace", "get", workspace], capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise GateError(f"context source unreadable: herdr workspace {workspace}")
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except ValueError as error:
+        raise GateError(f"context source unreadable: herdr workspace {workspace}") from error
+    record = payload.get("result", {}).get("workspace") if isinstance(payload, dict) else None
+    if not isinstance(record, dict) or str(record.get("id") or "") != workspace:
+        raise GateError(f"herdr workspace not verified: {workspace}")
+    return record
+
+
+def _child_stream_digest(control: Path) -> str:
+    # Child-owned durable status, the only upward truth an activated Codex thread
+    # pulls (operator-control activation-herdr-boundary).
+    streams = control / "streams"
+    if not streams.is_dir():
+        return exact_fingerprint(None)
+    statuses = {
+        str(item.relative_to(streams)): hashlib.sha256(item.read_bytes()).hexdigest()
+        for item in sorted(streams.rglob("*"))
+        if item.is_file()
+    }
+    return exact_fingerprint(statuses)
+
+
+def _stream_issues(control: Path) -> list[str]:
+    streams = control / "streams"
+    if not streams.is_dir():
+        return []
+    issues = {
+        str(load_toml_if_present(manifest).get("issue") or "").strip()
+        for manifest in sorted(streams.glob("*/stream.toml"))
+    }
+    return sorted(issue for issue in issues if issue)
+
+
+def _linear_state_digest(issues: list[str]) -> str:
+    states = {}
+    for issue in issues:
+        try:
+            states[issue] = linear_read(issue)["fingerprint"]
+        except (subprocess.CalledProcessError, ValueError, OSError, AttributeError) as error:
+            raise GateError(f"context source unreadable: linear {issue}") from error
+    return exact_fingerprint(states)
+
+
+def _github_pull_state(repo: Path) -> tuple[str, str]:
+    remote = subprocess.run(
+        ["git", "-C", str(repo), "remote", "get-url", "origin"], capture_output=True, text=True,
+    )
+    if remote.returncode != 0 or not remote.stdout.strip():
+        raise GateError(f"context source unreadable: {repo} origin remote")
+    slug = _canonical_slug(remote.stdout.strip())
+    try:
+        pulls = run_json(
+            ["gh", "pr", "list", "--repo", slug, "--state", "all", "--limit", "100",
+             "--json", "number,state,headRefOid"],
+        )
+    except (subprocess.CalledProcessError, ValueError, OSError) as error:
+        raise GateError(f"context source unreadable: github {slug}") from error
+    return slug, exact_fingerprint(pulls)
+
+
+def _codex_live_context(
+    *, repo: Path, owner_path: Path, control: Path, workspace: str,
+    pending_owner: Mapping[str, object] | None = None,
+) -> dict:
+    """Read every authoritative durable operating source live and bind each one
+    to the exact bytes it names (operator-control
+    activation-authoritative-context, takeover-context-capture).
+
+    There is no caller-supplied reference: a digest-shaped string proves nothing,
+    so the helper is the only reader. Durable records come from the CONTROL tree
+    of the owner record in force, never from a candidate path that does not exist
+    yet.
+
+    A first activation reconciles BEFORE any owner record exists, so there the
+    owner reference binds the exact pending record about to be committed. With
+    neither a record on disk nor a pending one, the source is unreadable.
+    """
+    repo = repo.resolve()
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+    )
+    if head.returncode != 0 or not head.stdout.strip():
+        raise GateError(f"context source unreadable: {repo} HEAD")
+    slug, pulls = _github_pull_state(repo)
+    issues = _stream_issues(control)
+    configuration = {
+        "workspace": _herdr_workspace(workspace),
+        "state_root": str(owner_path.parent),
+    }
+    if pending_owner:
+        # The record the caller is reconciling: on a resume it is the record on
+        # disk, on a first activation and on the in-lock final takeover read it is
+        # the exact record about to be committed. Digesting its rendered document
+        # binds the same bytes the owner file carries, so the reference names the
+        # committed record either way (operator-control
+        # activation-authoritative-context, takeover-success).
+        owner_digest = exact_fingerprint(owner_document(dict(pending_owner)))
+    elif owner_path.exists():
+        owner_digest = _tree_digest(owner_path)
+    else:
+        raise GateError(f"context source unreadable: {owner_path}")
+    return {
+        "owner_record": f"{owner_path}#{owner_digest}",
+        "control_records": f"{control}#{_tree_digest(control)}",
+        "transfer_artifact": f"{control}#{_transfer_history_digest(control)}",
+        "source_tracked_work": f"{repo}#{exact_fingerprint(head.stdout.strip())}",
+        "linear_issue_state":
+            f"linear:{','.join(issues) or 'none'}#{_linear_state_digest(issues)}",
+        "github_pull_request_state": f"github:{slug}#{pulls}",
+        "canonical_specs_and_adrs": f"{repo / 'spec'}#{_tree_digest(repo / 'spec')}",
+        "child_stream_status": f"{control / 'streams'}#{_child_stream_digest(control)}",
+        "workspace_and_runtime_configuration":
+            f"workspace={workspace} state={owner_path.parent}#{exact_fingerprint(configuration)}",
+    }
+
+
+OCTO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _installed_digest(path: Path) -> str:
+    try:
+        payload = path.read_bytes()
+    except OSError as error:
+        raise GateError(f"canonical contract source unreadable: {path}") from error
+    return f"{path}#{hashlib.sha256(payload).hexdigest()}"
+
+
+def _codex_contract_sources(repo: Path) -> dict:
+    """Load the canonical meta-operator contract from its INSTALLED sources
+    before authority can act (role-runtime launch-codex-activation-contract,
+    launch-codex-activation-complete).
+
+    The installed profile, the target's own instructions, roles/meta-operator.md,
+    and every skill the role resolver maps to the meta-operator are read here and
+    bound to the exact bytes read. An unreadable source refuses, so activation and
+    forced takeover alike bind the same complete canonical surface. Only
+    <identity>#<sha256> references leave this function: no prose copy is written
+    to the control directory.
+    """
+    profile = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "AGENTS.md"
+    try:
+        registry = load_registry(OCTO_ROOT)
+        resolved = resolve_role(registry, "meta-operator", {"operator-launch"})
+    except (ValueError, OSError) as error:
+        raise GateError(f"canonical contract source unreadable: {OCTO_ROOT}") from error
+    skills = {}
+    for skill in resolved.skills:
+        for base in ("agents/skills", "skills"):
+            candidate = OCTO_ROOT / base / skill / "SKILL.md"
+            if candidate.is_file():
+                skills[skill] = _installed_digest(candidate)
+                break
+        else:
+            raise GateError(f"canonical contract source unreadable: skill {skill}")
+    if not skills:
+        raise GateError("canonical contract source unreadable: meta-operator skills")
+    return {
+        "installed_profile": _installed_digest(profile),
+        "target_instructions": _installed_digest(repo / "AGENTS.md"),
+        "meta_operator_contract": _installed_digest(OCTO_ROOT / resolved.role.contract),
+        "meta_operator_skills": f"{','.join(sorted(skills))}#{exact_fingerprint(skills)}",
+    }
+
+
+def _canonical_fable_receipt(receipt: Mapping[str, object], session_id: str) -> bool:
+    """The whole persistent dedicated-Fable launch receipt is the proof
+    (operator-control takeover-live-fable-only).
+
+    A bare session string, a partial receipt, or a receipt declaring some other
+    runtime is not a dedicated Fable: the complete resolver-built shape must be
+    present, its runtime must be the exact canonical meta-operator runtime (or one
+    of that role's sanctioned alternates), and the receipt must still recompute its
+    own launch revision so a post-bootstrap edit fails closed.
+
+    Every blob the receipt carries is recomputed from the canonical resolver
+    mapping itself, never merely shape-checked: the contract blob from roles/, the
+    mapping revision from roles.toml, the skill blobs from the resolved skill
+    files, and the instructions blob from the receipt's own workspace AGENTS.md.
+    The resolver-granted skill and capability set is required whole, so a receipt
+    with fabricated or omitted entries is not a dedicated Fable (role-runtime
+    role-receipt).
+    """
+    try:
+        registry = load_registry(OCTO_ROOT)
+        canonical = registry.roles["meta-operator"]
+        resolved = resolve_role(
+            registry, "meta-operator", {item.when for item in canonical.conditional_skills}
+        )
+        canonical_skill_blobs = [_skill_blob(OCTO_ROOT, skill) for skill in resolved.skills]
+    except (ValueError, KeyError, OSError) as error:
+        raise GateError("canonical role mapping unreadable") from error
+
+    if receipt.get("schema_version") != 1 or receipt.get("ready") is not True:
+        return False
+    if not all(str(receipt.get(key) or "").strip() for key in ("spawn_id", "parent", "reply_route")):
+        return False
+
+    role = receipt.get("role") or {}
+    if role.get("name") != canonical.name or role.get("contract_path") != canonical.contract:
+        return False
+    # The recorded root is the canonical roles source every blob in this receipt
+    # was derived from, so it must be THIS host's canonical source; any other
+    # root describes a mapping this host never resolved (role-runtime
+    # role-receipt).
+    if str(role.get("root") or "") != str(OCTO_ROOT):
+        return False
+    if role.get("contract_blob") != resolved.contract_blob:
+        return False
+    if role.get("mapping_revision") != registry.mapping_revision:
+        return False
+
+    runtime_table = receipt.get("runtime") or {}
+    sanctioned = {(canonical.model, canonical.effort), *canonical.alt_runtimes}
+    if (runtime_table.get("model"), runtime_table.get("effort")) not in sanctioned:
+        return False
+    if any(runtime_table.get(field) != getattr(canonical, field) for field in
+           ("provider", "mode", "session", "service_tier")):
+        return False
+    if list(runtime_table.get("tools") or []) != list(canonical.tools):
+        return False
+
+    skills = receipt.get("skills") or {}
+    if list(skills.get("resolved") or []) != list(resolved.skills):
+        return False
+    if list(skills.get("matched_capabilities") or []) != list(resolved.capabilities):
+        return False
+    if list(skills.get("paths") or []) != [f"skills/{skill}/SKILL.md" for skill in resolved.skills]:
+        return False
+    if list(skills.get("blobs") or []) != canonical_skill_blobs:
+        return False
+
+    workspace = receipt.get("workspace") or {}
+    if not all(str(workspace.get(key) or "").strip() for key in ("repo", "worktree")):
+        return False
+    if workspace.get("instructions_path") != "AGENTS.md":
+        return False
+    instructions = Path(str(workspace.get("worktree"))) / "AGENTS.md"
+    if not instructions.is_file():
+        return False
+    if workspace.get("instructions_blob") != _git_blob(instructions):
+        return False
+    if len(str(workspace.get("starting_head") or "")) != 40:
+        return False
+
+    access = receipt.get("access") or {}
+    if access.get("execution_location") not in {"local", "remote"}:
+        return False
+    # Every canonical access field is required whole; the resolver records
+    # operator_loopback as one boolean, so an absent, string, or numeric value is
+    # hand-authored, not a launch-recorded access fact (role-runtime
+    # role-receipt).
+    if not isinstance(access.get("operator_loopback"), bool):
+        return False
+    if not str(access.get("review_delivery") or "").strip():
+        return False
+
+    bootstrap = receipt.get("bootstrap") or {}
+    if bootstrap.get("verified") is not True:
+        return False
+    if str(bootstrap.get("provider_session_id") or "") != session_id:
+        return False
+
+    revision = receipt.get("launch_revision")
+    return isinstance(revision, str) and revision == launch_revision(receipt)
+
+
+def command_codex_activate(args) -> dict:
+    thread_id = _codex_thread_id()
+    owner_path = Path(args.owner_file)
+    control = Path(args.control_dir)
+    # Before authority can act, this exact thread loads the canonical contract
+    # from its installed sources; an unreadable source leaves the session
+    # ordinary with no owner record at all (role-runtime
+    # launch-codex-activation-contract, launch-codex-activation-failure).
+    contract = _codex_contract_sources(Path(args.repo))
+
+    def bind_contract(result: dict) -> dict:
+        result["contract_sources"] = list(CODEX_CONTRACT_SOURCES)
+        result["contract_references"] = [contract[source] for source in CODEX_CONTRACT_SOURCES]
+        return result
+
+    def reconcile(owner) -> dict:
+        # Reconciliation reads the control tree of the owner record in force,
+        # and on a first activation binds the pending record it is handed.
+        return _codex_live_context(
+            repo=Path(args.repo),
+            owner_path=owner_path,
+            control=Path(str(owner.get("control_dir") or control)),
+            workspace=args.workspace,
+            pending_owner=owner,
+        )
+
+    if not args.force_takeover:
+        return bind_contract(activate_codex_thread(
+            owner_path,
+            thread_id=thread_id,
+            workspace=args.workspace,
+            control_dir=str(control),
+            handoff=args.handoff or "",
+            reconcile=reconcile,
+        ))
+
+    def active_fable(owner) -> bool:
+        # The exact active-Fable proof: the resolved agent is the prior owner's
+        # own route, reports the canonical live agent_status, and its launch
+        # receipt binds the exact prior owner session. A stale, stopped, rebound,
+        # or wrong-route agent is not proof (operator-control
+        # takeover-live-fable-only).
+        route = str(owner["owner_route"])
+        agent = _herdr_agent(route)
+        if str(agent.get("name") or agent.get("agent_name") or "") != route:
+            return False
+        # Admission is a CLOSED set of canonical live statuses: stopped,
+        # unknown, absent, and every unrecognized or differently cased value is
+        # not a live resident session (operator-control
+        # takeover-live-fable-only).
+        if str(agent.get("agent_status") or "") not in LIVE_AGENT_STATUSES:
+            return False
+        # The owner record must resolve to one STRUCTURED VERIFIED dedicated
+        # Fable, so the WHOLE persistent launch receipt and the exact canonical
+        # Fable runtime are the proof, never a bare session string or a partial
+        # receipt (operator-control takeover-live-fable-only).
+        # The receipt read must be the CURRENT owner's own. A lawful Fable handoff
+        # keeps the control directory invariant and stores the successor's receipt
+        # under the state root's operators/<route> directory, so the live owner
+        # route resolves the location first and the control directory answers only
+        # for an owner whose route never moved. Whichever resolves, the receipt
+        # must still name the live owner session (operator-control
+        # takeover-live-fable-only, handoff-launcher-pre-derive).
+        session = str(owner["owner_session_id"])
+        handed_off = owner_path.parent / "operators" / route / "receipt.toml"
+        resolved = handed_off if handed_off.is_file() else Path(str(owner["control_dir"])) / "receipt.toml"
+        return _canonical_fable_receipt(load_toml_if_present(resolved), session)
+
+    def verify_active_fable(owner):
+        return {"session_running": active_fable(owner), "route": owner["owner_route"]}
+
+    def retire_fable(owner):
+        # Every retirement step must SUCCEED and then be answered for: an ignored
+        # stop or removal result, an unreadable lookup, and an unanswerable timer
+        # check are all unproven, and unproven is never retired
+        # (operator-control takeover-fence).
+        route = str(owner["owner_route"])
+        prior_control = Path(str(owner["control_dir"]))
+        stop = subprocess.run(
+            [_herdr_cli(), "agent", "stop", route], capture_output=True, text=True,
+        )
+        if stop.returncode != 0:
+            raise GateError(f"fable session stop failed: {route}")
+        agent = _herdr_agent(route)
+        running = bool(agent) and str(agent.get("agent_status") or "") != "stopped"
+
+        timer = Path(__file__).resolve().parent / "operator-timer"
+        removal = subprocess.run(
+            [str(timer), "remove", "--name", route, "--control-dir", str(prior_control)],
+            capture_output=True, text=True,
+        )
+        if removal.returncode != 0:
+            raise GateError(f"fable heartbeat timer removal failed: {route}")
+        # Tri-state: 0 present, 1 absent, anything else unverifiable.
+        checked = subprocess.run(
+            [str(timer), "check", "--name", route], capture_output=True, text=True,
+        ).returncode
+        if checked not in (0, 1):
+            raise GateError(f"fable heartbeat timer state unverifiable: {route}")
+        return {
+            "session_running": running,
+            "timer_present": checked == 0 or (prior_control / "timer.toml").exists(),
+        }
+
+    prior = load_toml_if_present(owner_path)
+    prior_control = Path(str(prior.get("control_dir") or ""))
+    if not str(prior.get("owner_session_id") or "").strip() or not str(prior_control):
+        raise GateError("forced takeover requires an unambiguous prior owner record")
+
+    return bind_contract(force_takeover_codex_thread(
+        owner_path,
+        thread_id=thread_id,
+        workspace=args.workspace,
+        reason=args.reason or "",
+        context=_codex_live_context(
+            repo=Path(args.repo),
+            owner_path=owner_path,
+            control=prior_control,
+            workspace=args.workspace,
+        ),
+        verify_active_fable=verify_active_fable,
+        retire_fable=retire_fable,
+        now=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        reconcile=reconcile,
+    ))
 
 
 def command_successor_ready(args) -> dict:
     return declare_successor_ready(
-        Path(args.path), caller=args.caller, session_id=args.session_id, handoff_revision=args.handoff_revision,
+        Path(args.path),
+        caller=args.caller,
+        session_id=args.session_id,
+        handoff_revision=args.handoff_revision,
+        handoff=Path(args.handoff),
     )
 
 
@@ -1466,13 +2008,40 @@ def parser() -> argparse.ArgumentParser:
     owner.add_argument("--control-dir", required=True)
     owner.add_argument("--handoff", required=True)
     owner.add_argument("--successor-readiness", required=True)
+    # Mode-specific routing belongs to the successor: a dedicated Fable successor
+    # declares nothing, a Codex-thread successor declares its mode and reuses the
+    # exact verified workspace.
+    owner.add_argument("--new-owner-mode", default="")
+    owner.add_argument("--new-workspace", default="")
+    # The source-tracked work the in-hold live reconciliation reads for a Codex
+    # successor; the dedicated Fable successor path reconciles nothing.
+    owner.add_argument("--repo", default=".")
     owner.set_defaults(run=command_owner)
+
+    # Current Codex thread activation and the exceptional forced takeover. The
+    # exact thread identity is derived from the host, never accepted as an
+    # argument, so this parser exposes no thread-ID option.
+    codex = sub.add_parser("codex-activate")
+    codex.add_argument("--owner-file", required=True)
+    codex.add_argument("--workspace", required=True)
+    codex.add_argument("--control-dir", required=True)
+    codex.add_argument("--repo", default=".")
+    codex.add_argument("--handoff", default="")
+    codex.add_argument("--force-takeover", action="store_true")
+    codex.add_argument("--reason", default="")
+    codex.set_defaults(run=command_codex_activate)
 
     successor_ready = sub.add_parser("successor-ready")
     successor_ready.add_argument("--path", required=True)
     successor_ready.add_argument("--caller", required=True)
     successor_ready.add_argument("--session-id", required=True)
     successor_ready.add_argument("--handoff-revision", type=int, required=True)
+    # Readiness binds the exact handoff artifact the successor reconciled; the
+    # atomic owner transfer admits no readiness record without that binding.
+    successor_ready.add_argument("--handoff", required=True)
+    # Codex-thread routing is not declarable here: a Codex successor becomes
+    # ready only by explicitly activating (codex-activate), the sole path that
+    # read-verifies the workspace and reconciles durable context.
     successor_ready.set_defaults(run=command_successor_ready)
 
     accept = sub.add_parser("accept")

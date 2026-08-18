@@ -3,12 +3,19 @@ set -euo pipefail
 
 owner_file="${OCTO_OPERATOR_OWNER:-${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/operator-owner.toml}"
 [[ -f "$owner_file" ]] || { echo "operator-say: owner state missing" >&2; exit 66; }
+# A Codex-thread owner is not a Herdr pane and has no routable owner route: it
+# observes commits and child truth by live owner readback and pull reconciliation
+# (operator-control handoff-routing, activation-outbound-only). Refuse rather
+# than fabricate a Herdr delivery to an app thread.
 owner="$(python3 - "$owner_file" <<'PY'
 import sys, tomllib
 with open(sys.argv[1], 'rb') as f:
-    print(tomllib.load(f)['owner_route'])
+    record = tomllib.load(f)
+if record.get('owner_mode') == 'codex-thread':
+    sys.exit(69)
+print(record['owner_route'])
 PY
-)"
+)" || { echo "operator-say: codex-thread owner has no herdr route; the owner pulls durable state" >&2; exit 69; }
 options=()
 while (($#)); do
   case "$1" in

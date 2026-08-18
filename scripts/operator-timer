@@ -23,8 +23,14 @@ unit="octo-lite-sweep-$name"
 state="$control/timer.toml"
 
 if [[ "$action" == check ]]; then
-  systemctl --user is-active --quiet "$unit.timer"
-  exit
+  # Tri-state, so a caller can never read "could not ask" as "absent":
+  # 0 present, 1 absent on a real answer, 70 unverifiable.
+  state="$(systemctl --user is-active "$unit.timer" 2>/dev/null || true)"
+  case "$state" in
+    active|activating|reloading|deactivating) exit 0 ;;
+    inactive|failed|unknown|dead) exit 1 ;;
+    *) exit 70 ;;
+  esac
 fi
 if [[ "$action" == remove ]]; then
   systemctl --user stop "$unit.timer" "$unit.service" >/dev/null 2>&1 || true

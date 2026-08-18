@@ -313,7 +313,7 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
 {
   "aria": {
     "enabled": true,
-    "description": "Fresh workers report to their issue owner. Issue status compacts to the epic owner. Epic status compacts to Fable. Leaf workers do not flood the top-level operator."
+    "description": "Fresh workers report to their issue owner. Issue status compacts to the epic owner. Epic status compacts to the active meta-operator. Leaf workers do not flood the top-level operator."
   },
   "tooltip": {
     "trigger": "item"
@@ -436,7 +436,7 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
           }
         },
         {
-          "name": "Fable",
+          "name": "Active meta-operator",
           "x": 1000,
           "y": 250,
           "symbolSize": [
@@ -503,14 +503,14 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
         },
         {
           "source": "Epic Opus",
-          "target": "Fable",
+          "target": "Active meta-operator",
           "value": "compacted status",
           "lineStyle": {
             "curveness": 0
           }
         },
         {
-          "source": "Fable",
+          "source": "Active meta-operator",
           "target": "Whole-operation view",
           "value": "sole writer",
           "lineStyle": {
@@ -531,12 +531,12 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
 </section>
 
 <section data-anchor="diagram-sweep" id="diagram-sweep">
-<h2>Session-durable heartbeat sweep</h2>
+<h2>Dedicated Fable heartbeat sweep</h2>
 <script type="application/spec+json" data-render="chart" data-lib="echarts">
 {
   "aria": {
     "enabled": true,
-    "description": "One host timer runs the lean heartbeat directly. No change is a silent no-op. A material delta regenerates a fresh operator snapshot and messages the verified operator route for the Fable update. The heartbeat spawns no reconciler and binds no target canonical specs."
+    "description": "In dedicated Fable mode, one host timer runs the lean heartbeat directly. No change is a silent no-op. A material delta regenerates a fresh operator snapshot and messages the verified Fable route. Codex-thread mode installs no timer and reconciles on reopen."
   },
   "tooltip": {
     "trigger": "item"
@@ -755,7 +755,7 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
 
 <section data-anchor="supervision" id="supervision">
 <h2>Operator supervision</h2>
-<p data-anchor="supervision-view" id="supervision-view">Fable is the sole writer of the reconciled whole-operation view but does not ingest every raw log.</p>
+<p data-anchor="supervision-view" id="supervision-view">The active meta-operator, either the dedicated Fable session or the explicitly activated Codex thread, is the sole writer of the reconciled whole-operation view but does not ingest every raw log.</p>
 <p data-anchor="supervision-report-order" id="supervision-report-order">Upward status leads with product outcome, current gate, blocker, and next operator action; tracker and run identifiers are secondary.</p>
 <p data-anchor="supervision-operator-gate-no-hashes" id="supervision-operator-gate-no-hashes">An operator notification never presents or requests an exact head or hash; it carries plain-language what-changed context and rendered pages, while tooling stamps the exact head at action time and records the binding on the PR and status surfaces.</p>
 <p data-anchor="supervision-default-action" id="supervision-default-action">Default to action: prior explicit operator intent is authorization, no action waits on double confirmation, and no blocking human gate exists beyond the lawful stops below.</p>
@@ -765,27 +765,110 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
 <p data-anchor="supervision-carve-out-instruction-gated" id="supervision-carve-out-instruction-gated">The three carve-outs are gated on the human instruction, not the human's manual action: the human decides and instructs the acceptance, the preproduction promotion, or the live traffic shift, and the operator agent then executes that instruction by recording the acceptance artifact, running the preproduction promotion, or running the traffic shift, never handing the mechanical action back to the human.</p>
 <p data-anchor="supervision-carve-out-guard" id="supervision-carve-out-guard">The preserved guard is that no agent infers, self-authorizes, or decides acceptance, a preproduction promotion, or a traffic shift on its own, and the operator agent acts only on an explicit human instruction.</p>
 <p data-anchor="supervision-notifications" id="supervision-notifications">Proactive operator messages are limited to required decisions, blockers, failures, and meaningful gate or outcome changes.</p>
-<p data-anchor="supervision-primary-surface" id="supervision-primary-surface">A target operations view becomes primary only when it is accurate and digestible across all workstreams; until then Fable supplies the complete operation update.</p>
+<p data-anchor="supervision-primary-surface" id="supervision-primary-surface">A target operations view becomes primary only when it is accurate and digestible across all workstreams; until then the active meta-operator supplies the complete operation update.</p>
 <p data-anchor="supervision-files" id="supervision-files">Each stream uses one parent-owned <code>brief.md</code> and one child-owned <code>status.md</code> in the operator control directory.</p>
-<p data-anchor="supervision-compaction" id="supervision-compaction">Status compacts upward one parent at a time, and leaf workers do not all message Fable.</p>
-<p data-anchor="supervision-timer" id="supervision-timer">One session-durable host timer runs the deterministic sweep directly throughout the operator lifecycle, including idle periods, primed to fire without a manual first start; only a changed sweep messages the operator, so no periodic wake message ever enters the operator context.</p>
+<p data-anchor="supervision-compaction" id="supervision-compaction">Status compacts upward one parent at a time, and leaf workers do not all message the meta-operator.</p>
+<p data-anchor="supervision-timer" id="supervision-timer">Dedicated Fable mode runs one session-durable host timer throughout its lifecycle, including idle periods, primed to fire without a manual first start; only a changed sweep messages Fable. Codex-thread mode installs no timer and reconciles the same durable facts on every reopen.</p>
 <p data-anchor="supervision-sweep" id="supervision-sweep">A wake is a lean heartbeat: it regenerates a fresh operator snapshot with deterministic exact checks, spawns no reconciler subprocess, and binds no target canonical specs, so it never fails closed on target-repo shape.</p>
 <p data-anchor="heartbeat-fresh-snapshot" id="heartbeat-fresh-snapshot">The snapshot is regenerated from current facts on every wake and nothing persisted is trusted as current state, so a stale record can never survive to mislead the operator; freshness is structural, not a timestamp or expiry protocol.</p>
 <p data-anchor="heartbeat-one-layer" id="heartbeat-one-layer">The heartbeat reports one layer down only, per orchestrator: its stream, its last delivery or forward-progress marker, and any operator-gated state; worker-level liveness is the orchestrator's own duty and is never probed or classified by the heartbeat.</p>
 <p data-anchor="heartbeat-operator-gate" id="heartbeat-operator-gate">Operator-gated states (awaiting acceptance, preproduction promotion, live traffic shift) surface loudly on every wake regardless of any other delta, so a parked gate is never silently missed.</p>
 <p data-anchor="heartbeat-judgment-in-roles" id="heartbeat-judgment-in-roles">The heartbeat carries no classification or judgment of its own; the operator applies its role to the fresh snapshot, poking a stale orchestrator to investigate and relaunching a dead one, and the poked orchestrator applies its own role to its workers.</p>
 <p data-anchor="heartbeat-outside-digest" id="heartbeat-outside-digest">The snapshot is an operator report living in the heartbeat output and one control-level file, never a persisted current-state record that downstream roles read as authoritative.</p>
-<p data-anchor="supervision-noop" id="supervision-noop">A wake with no delta is a cheap no-op and does not remove the timer.</p>
-<p data-anchor="supervision-direct" id="supervision-direct">The human may converse directly with an orchestrator, and stream-local rulings apply after durable status capture while cross-stream effects wait for Fable reconciliation.</p>
+<p data-anchor="supervision-noop" id="supervision-noop">A dedicated heartbeat wake with no delta is a cheap no-op and does not remove the timer; a Codex-thread reopen with no delta is likewise a no-op after owner readback and reconciliation.</p>
+<p data-anchor="supervision-direct" id="supervision-direct">The human may converse directly with an orchestrator, and stream-local rulings apply after durable status capture while cross-stream effects wait for active meta-operator reconciliation.</p>
+</section>
+
+<section data-anchor="diagram-codex-thread-activation" id="diagram-codex-thread-activation">
+<h2>Codex thread activation state table</h2>
+<p data-anchor="codex-thread-activation-table-note" id="codex-thread-activation-table-note">The current host thread identity, current owner record, explicit request, and existing handoff state determine whether this session is active, pending, or ordinary.</p>
+<table data-anchor="codex-thread-activation-table" id="codex-thread-activation-table">
+<thead>
+<tr><th>Current fact</th><th>Required act</th><th>Result</th></tr>
+</thead>
+<tbody>
+<tr><td>No owner record; exact <code>CODEX_THREAD_ID</code> present</td><td>Explicit activation</td><td>Atomically create existing owner record for this thread; active after readback.</td></tr>
+<tr><td>Owner record already names this exact Codex thread</td><td>Explicit activation or reopen</td><td>Revalidate owner and reconcile durable stream state; resume active.</td></tr>
+<tr><td>Different owner; no valid next-revision handoff and no direct human forced-takeover instruction</td><td>Activation attempt</td><td>Refuse with no write; current thread remains ordinary.</td></tr>
+<tr><td>Different owner; valid handoff; this thread explicitly activates</td><td>Reconcile and declare successor readiness</td><td>Pending candidate only; ordinary until existing owner-transfer commits.</td></tr>
+<tr><td>Verified active dedicated Fable owner; direct human forced-takeover instruction</td><td>Capture durable context, retire and verify Fable, record takeover receipt, atomically transfer</td><td>Active only after the receipt-bound owner commit succeeds; any failed proof leaves Codex ordinary and the Fable owner record intact.</td></tr>
+<tr><td>Existing owner-transfer now names this exact thread</td><td>Read back owner record and reconciled durable context</td><td>Active with the complete existing meta-operator capability set; prior owner becomes read-only.</td></tr>
+<tr><td>Missing or invalid thread ID, stale compare, incomplete handoff, or write failure</td><td>Any activation attempt</td><td>Fail closed; current thread remains ordinary and authority is unchanged.</td></tr>
+<tr><td>A prior Codex owner reopens after authority transferred away</td><td>Revalidate owner record</td><td>Ordinary and read-only; conversation continuity grants nothing.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section data-anchor="codex-thread-activation" id="codex-thread-activation">
+<h2>Codex thread activation</h2>
+<p data-anchor="activation-explicit" id="activation-explicit">Only an explicit user request in the current Codex app thread starts activation; opening, reopening, forking, copying, or receiving a handoff brief never activates a thread.</p>
+<p data-anchor="activation-thread-identity" id="activation-thread-identity">Activation derives the exact current session only from the host-provided <code>CODEX_THREAD_ID</code>, verifies the corresponding local Codex session exists, and accepts no caller-supplied thread substitute.</p>
+<p data-anchor="activation-entrypoint" id="activation-entrypoint">The existing <code>launch-meta-operator</code> skill exposes one current-thread entry point, <code>activate-codex-thread-operator.sh --workspace ID [--cwd PATH] [--handoff PATH]</code>; it has no thread-ID argument and does not invoke the dedicated Fable launcher.</p>
+<p data-anchor="activation-workspace" id="activation-workspace">Initial Codex-thread activation requires and read-verifies one exact existing Herdr workspace ID, stores it as routing configuration in the existing owner record, and uses it for every canonical orchestrator spawn. Same-thread resume and a lawful successor reuse that exact workspace; an attempt to substitute another workspace fails closed.</p>
+<p data-anchor="activation-existing-owner-record" id="activation-existing-owner-record">The existing <code>operator-owner.toml</code> remains the sole authority record and identifies Codex-thread ownership by the exact thread ID plus a Codex-thread owner mode; no parallel activation record exists.</p>
+<p data-anchor="activation-owner-compatibility" id="activation-owner-compatibility">Existing owner records without an owner-mode field remain dedicated-Fable records. New Codex-thread ownership requires <code>owner_mode = "codex-thread"</code> and the verified Herdr workspace ID, while dedicated Fable records retain their routable owner route; no existing Fable launch or handoff invocation changes.</p>
+<p data-anchor="activation-initial" id="activation-initial">When no owner exists, activation creates the existing control directory and owner record atomically, reads both back, and grants authority only after the exact current thread is confirmed as owner.</p>
+<p data-anchor="activation-same-thread-resume" id="activation-same-thread-resume">When the owner record already names this exact Codex thread, reopening is pause and resume rather than handoff: the thread revalidates ownership and reconciles current Linear, repository, pull-request, Herdr, and stream-control facts before its first mutation.</p>
+<p data-anchor="activation-pause" id="activation-pause">Closing an activated Codex thread pauses meta-operator supervision but does not stop already-owned issue orchestrators; those orchestrators continue their own work and durable status, and the same thread reconciles them when it reopens.</p>
+<p data-anchor="activation-no-background" id="activation-no-background">Codex-thread mode installs no operator timer, daemon, polling service, app-server dependency, background resume, surrogate operator agent, duplicate inbox, or alternate stream registry.</p>
+<p data-anchor="activation-existing-contract" id="activation-existing-contract">The activated thread loads the canonical <code>roles/meta-operator.md</code> contract and existing <code>herdr-comms</code> and <code>launch-meta-operator</code> skills, and uses the existing role resolver, <code>herdr-spawn</code>, stream controls, and workflow path to create one canonical orchestrator per issue; it creates no role, adapter, skill, control tree, or worker implementation path.</p>
+<p data-anchor="activation-complete-capability" id="activation-complete-capability">After initial ownership, normal handoff, or successful forced takeover, the exact Codex owner has the complete existing meta-operator capability set: canonical Herdr messaging and acknowledgment skills, issue and epic orchestration, resolver-bound role spawning, stream and owner controls, lifecycle helpers, reconciliation, and the human-only acceptance, preproduction, and traffic-shift gates.</p>
+<p data-anchor="activation-authoritative-context" id="activation-authoritative-context">Complete durable operating context means current owner and control records, the applicable handoff or takeover artifact, source-tracked work and repository state, Linear issue state, GitHub pull-request state, canonical specs and ADRs, child-owned stream statuses, and applicable workspace and runtime configuration, all re-read from their authoritative sources before the first owner mutation.</p>
+<p data-anchor="activation-context-not-conversation" id="activation-context-not-conversation">Complete context never means automatically copying raw conversation history, treating a summary as current truth, or inheriting authority from prose; a compact brief may orient the thread, while exact authority and current state come only from live durable readback.</p>
+<p data-anchor="activation-herdr-boundary" id="activation-herdr-boundary">While active, the Codex thread drives existing Herdr commands and acknowledgments outward; because it is not a Herdr pane, upward child truth remains the existing durable child-owned <code>status.md</code> and source systems that the thread pulls on every wake, never a fabricated Herdr delivery to the app thread.</p>
+<p data-anchor="activation-different-owner" id="activation-different-owner">When another session owns the record, ordinary activation cannot replace it: with no valid handoff it refuses without writes, while a valid next-revision handoff permits only successor reconciliation and the existing readiness record until the current owner runs the existing atomic owner-transfer. The sole exception is the human-only forced-takeover contract below for a verified active dedicated Fable owner.</p>
+<p data-anchor="activation-distinct-thread" id="activation-distinct-thread">A distinct Codex thread has a different host ID and inherits no role authority, owner capability, or mutation right from shared workspace, conversation content, fork ancestry, copied instructions, or a compact handoff brief.</p>
+<p data-anchor="activation-handoff-brief" id="activation-handoff-brief">A compact handoff brief transfers context only; the receiving thread must explicitly activate, reconcile the brief against sources, declare successor readiness, and wait for the same lawful owner-transfer commit before becoming meta-operator.</p>
+<p data-anchor="activation-owner-binding" id="activation-owner-binding">After verifying the successor's explicit activation, the current owner writes one immutable owner-authored binding record at <code>handoffs/&lt;zero-padded-revision&gt;.binding.toml</code> cross-binding the exact activated successor thread and the readiness record; per the operator security ruling of 2026-08-17 this owner-authored record is the transfer provenance authority and it introduces no new authentication mechanism.</p>
+<p data-anchor="activation-owner-binding-fields" id="activation-owner-binding-fields">The binding record is flat TOML carrying exactly <code>schema_version</code>, <code>revision</code>, <code>successor_session</code>, <code>herdr_workspace</code>, <code>readiness_digest</code>, <code>handoff_digest</code>, <code>authored_by_session</code>, and <code>authored_at_utc</code>; the current owner's own tooling creates it exclusively with no overwrite under the existing owner lock, and no activation or successor path ever writes it.</p>
+<p data-anchor="activation-binding-order" id="activation-binding-order">The digest domain is nonrecursive by ordered construction: the owner writes the immutable handoff artifact first, the successor's activation then writes the readiness record digesting that handoff, and the owner finally writes the binding record digesting both the readiness record and the handoff artifact; nothing digests the binding record.</p>
+<p data-anchor="activation-binding-transfer" id="activation-binding-transfer">Owner transfer to a Codex successor is one owner-locked act: within a single owner-lock hold the current owner validates the readiness record and live state, creates the binding record exclusively, and commits the atomic owner rename; the binding accepted by the transfer is only the one this same lock hold created; any pre-existing file at the binding path is void residue that the hold reclaims unread before its exclusive create, so hand-written bytes are never read and never influence the transfer. Positive activated-transfer proof inside that hold requires the readiness record present and matching, the binding fields naming the exact successor session, workspace, readiness digest, and handoff digest, and a live transfer-time Herdr workspace lookup returning the exact bound workspace; a correct-digest readiness without the in-hold owner-authored binding, any field mismatch, and a failed or mismatched transfer-time lookup each refuse and leave the prior owner record byte-identical. The owner rename is the single durable commit point, and the committed owner record for a Codex successor carries the exact binding path and binding digest written by that same rename: a binding record that the committed owner record does not reference by that path and digest is void residue with no authority, whether left by a caught failure, a killed process, or a failed cleanup. On entry, the owner-locked act first reclaims any void-residue file at its binding path, never reading its bytes, then performs its own exclusive create, so a crash at any point leaves either the unchanged prior owner plus reclaimable residue or the fully committed transfer, and no failure poisons a retry; partial control state means authority-bearing state, and authority-free void residue awaiting reclaim is not partial control state.</p>
+<p data-anchor="activation-binding-owner-modes" id="activation-binding-owner-modes">The same binding law governs every current owner mode: a dedicated Fable owner and a Codex-thread owner author the binding record identically before transferring to a Codex successor, while the dedicated-Fable successor path is unchanged and requires no binding record.</p>
+<p data-anchor="activation-binding-command" id="activation-binding-command">The binding record is authored only inside the owner-locked transfer act above: the transfer invocation runs solely from the current owner's own tooling, verifies the caller is the exact current owner named in the owner record, validates every binding field against live state including the activated successor session, the read-verified workspace, and the recomputed readiness and handoff digests, and creates the record exclusively in the same hold that commits the transfer; no separate creation command exists, nothing ever overwrites a binding, and an invocation by a successor, a non-owner, or with any failed validation refuses without writing (operator security ruling, 2026-08-17: the sibling record is authoritative only because its creation is owner-locked, validated, and inseparable from the transfer commit).</p>
+<p data-anchor="activation-failure-ordinary" id="activation-failure-ordinary">Missing or invalid thread identity, stale or conflicting ownership, incomplete handoff, failed source readback, or any partial write attempt fails closed, leaves existing authority unchanged, and leaves the current Codex session ordinary.</p>
+<p data-anchor="activation-transfer-away" id="activation-transfer-away">A Codex thread loses authority only when the existing owner-transfer or manual-takeover law changes the owner record; if that old thread later reopens, live owner readback makes it ordinary and read-only.</p>
+<p data-anchor="activation-dedicated-path" id="activation-dedicated-path">The dedicated persistent Fable initial launcher, exact runtime, Herdr route, heartbeat, and live-handoff launcher remain available and behaviorally unchanged as the continuous-supervision path.</p>
+<p data-anchor="activation-no-new-auth" id="activation-no-new-auth">Activation invents no authentication mechanism and weakens no caller gate: exact-thread derivation feeds the pre-existing owner identity, successor readiness, owner compare, and manual-takeover boundaries signed by ADR 0001.</p>
+</section>
+
+<section data-anchor="codex-forced-takeover" id="codex-forced-takeover">
+<h2>Operator-authorized forced takeover</h2>
+<table data-anchor="takeover-sequence" id="takeover-sequence">
+<thead>
+<tr><th>Ordered phase</th><th>Required proof</th><th>Authority state</th></tr>
+</thead>
+<tbody>
+<tr><td>1. Candidate validation</td><td>Direct human forced-takeover instruction, exact current thread, canonical contract, workspace, verified active Fable owner</td><td>Fable sole owner; Codex ordinary</td></tr>
+<tr><td>2. Context capture</td><td>All authoritative durable operating sources read and one exact digest prepared</td><td>Fable sole owner; Codex ordinary</td></tr>
+<tr><td>3. Fable retirement</td><td>Exact Herdr session non-running and exact heartbeat timer absent</td><td>Fable owner record intact; Codex ordinary</td></tr>
+<tr><td>4. Receipt</td><td>Immutable prior-owner, reason, time, context, fence, and outcome record</td><td>Fable owner record intact; Codex ordinary</td></tr>
+<tr><td>5. Owner commit</td><td>Locked exact compare then one atomic owner rename binding receipt path and digest</td><td>Exact Codex thread sole owner</td></tr>
+<tr><td>6. Continue</td><td>Owner readback plus complete capability and durable-context reconciliation</td><td>Codex acts; former Fable stays retired and read-only</td></tr>
+</tbody>
+</table>
+<p data-anchor="takeover-human-only" id="takeover-human-only">Forced takeover is a clearly named human-only action: the current Codex thread must receive a direct human instruction to force takeover with a nonempty reason, and no prior objective, activation request, timer, model judgment, or operator-role inference substitutes for that instruction.</p>
+<p data-anchor="takeover-candidate" id="takeover-candidate">The exact current Codex thread must first pass explicit activation identity, source, contract, and workspace validation; while the active Fable owner remains in the owner record, that validated thread is only a takeover candidate and remains ordinary.</p>
+<p data-anchor="takeover-entrypoint" id="takeover-entrypoint">The existing current-thread activation entry point exposes the exceptional form <code>--force-takeover --reason TEXT</code>, accepts no owner or thread-ID override, and is never selected for an ordinary activation request.</p>
+<p data-anchor="takeover-normal-preferred" id="takeover-normal-preferred">The existing explicit live handoff remains the preferred path for a cooperative active owner; forced takeover is an exceptional operator-directed path and never silently replaces, races, or shadows normal handoff.</p>
+<p data-anchor="takeover-live-fable-only" id="takeover-live-fable-only">Forced takeover admits only an owner record that resolves to one structured, verified active dedicated Fable Herdr session; another Codex owner and a missing, dead, stopped, unreadable, or ambiguous Fable owner are ineligible and retain the existing handoff or manual-takeover law.</p>
+<p data-anchor="takeover-context-capture" id="takeover-context-capture">Before fencing, the candidate captures exact references and digests for the authoritative durable operating context defined above, including the current Fable owner record and control tree, and refuses when any required source cannot be read or reconciled.</p>
+<p data-anchor="takeover-fence" id="takeover-fence">The takeover retires the exact Fable Herdr session and its heartbeat timer, verifies structured non-running and timer-absent state, then relies on the existing owner check to reject any stale former-owner mutation after transfer; an unverified stop, timer removal, route, or session identity aborts before any owner write.</p>
+<p data-anchor="takeover-receipt" id="takeover-receipt">One immutable <code>takeovers/&lt;zero-padded-revision&gt;.toml</code> receipt records schema version, prior owner session and route, exact new Codex thread ID, required human reason, UTC request time, context references and digest, fence evidence, and verification outcome. The updated owner record references the exact receipt path and digest; raw conversation history is never copied into it.</p>
+<p data-anchor="takeover-atomic" id="takeover-atomic">Only after context and fence verification does the existing owner lock compare the exact prior Fable identity, route, control directory, and revision, then atomically rename one complete owner record naming the exact current Codex thread and receipt; that rename is the sole authority commit and creates no second owner.</p>
+<p data-anchor="takeover-no-split" id="takeover-no-split">At no point may Fable and Codex both make owner decisions: the Fable owner record remains sole authority before atomic commit even after its session is retired, Codex remains ordinary until commit, and every stale former-Fable mutation fails the post-commit owner check.</p>
+<p data-anchor="takeover-receipt-residue" id="takeover-receipt-residue">The same commit-point law classifies the takeover receipt: a receipt the committed owner record does not reference is void residue with no authority. A failed owner write after fencing leaves the loudly-surfaced blocked-owner state of the takeover failure law, and that surface names the unreferenced receipt path; no agent path retries, reads, or reclaims it, because the stopped prior owner is ineligible for another forced takeover and manual takeover deliberately has no agent-callable seam, so the human resolves the blocked state and its residue out of band under the existing manual-takeover law.</p>
+<p data-anchor="takeover-failure" id="takeover-failure">If eligibility, context capture, fencing, receipt verification, owner compare, or atomic rename cannot be proven, Codex remains ordinary, no Codex owner record is written, and the prior Fable ownership record remains byte-identical. A verified Fable retirement followed by a later transfer failure is surfaced as a blocked existing owner, never hidden or auto-recovered.</p>
+<p data-anchor="takeover-success" id="takeover-success">After the receipt-bound owner commit, the former Fable session is retired and read-only, the exact Codex thread is the sole owner, and it re-reads the complete canonical capability and durable-context set before its first control decision.</p>
+<p data-anchor="takeover-human-gates" id="takeover-human-gates">Forced takeover transfers operator ownership only; it grants no acceptance, preproduction promotion, or live traffic-shift decision, each of which still requires its own explicit human instruction.</p>
 </section>
 
 <section data-anchor="diagram-operator-handoff" id="diagram-operator-handoff">
-<h2>Atomic Fable handoff</h2>
+<h2>Atomic operator handoff</h2>
 <script type="application/spec+json" data-render="chart" data-lib="echarts">
 {
   "aria": {
     "enabled": true,
-    "description": "Only an explicit operator request starts handoff. The successor reconciles and becomes ready before one locked compare-and-rename commits authority. Routing observes the new owner and the old operator becomes read-only."
+    "description": "Only an explicit operator request starts handoff. The Fable or Codex successor reconciles and becomes ready before one locked compare-and-rename commits authority. Owner resolution observes the new exact session and the old operator becomes read-only."
   },
   "tooltip": {
     "trigger": "item"
@@ -920,7 +1003,7 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
           }
         },
         {
-          "name": "New routing owner",
+          "name": "New exact owner",
           "x": 700,
           "y": 540,
           "symbolSize": [
@@ -1003,7 +1086,7 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
         },
         {
           "source": "Atomic TOML rename",
-          "target": "New routing owner",
+          "target": "New exact owner",
           "value": "commit",
           "lineStyle": {
             "curveness": 0
@@ -1032,12 +1115,12 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
 
 <section data-anchor="operator-handoff" id="operator-handoff">
 <h2>Operator handoff</h2>
-<p data-anchor="handoff-explicit" id="handoff-explicit">Only an explicit operator request starts a Fable-to-Fable handoff.</p>
-<p data-anchor="handoff-artifact" id="handoff-artifact">The outgoing Fable writes one concise immutable Markdown handoff at <code>handoffs/&lt;zero-padded-revision&gt;.md</code> containing objective, stream tree, exact facts, pending decisions, authorities, blockers, control path, timer, and reply routes.</p>
-<p data-anchor="handoff-reconcile" id="handoff-reconcile">The fresh successor loads canonical instructions, reconciles the handoff against source systems, and declares readiness before cutover.</p>
-<p data-anchor="handoff-owner" id="handoff-owner">One <code>operator-owner.toml</code> stores schema version, exact owner session ID, handoff revision, and control-directory identity.</p>
+<p data-anchor="handoff-explicit" id="handoff-explicit">Only an explicit operator request starts a meta-operator handoff between Fable or Codex sessions.</p>
+<p data-anchor="handoff-artifact" id="handoff-artifact">The outgoing current owner writes one concise immutable Markdown handoff at <code>handoffs/&lt;zero-padded-revision&gt;.md</code> containing objective, stream tree, exact facts, pending decisions, authorities, blockers, control path, timer or paused mode, and reply routes.</p>
+<p data-anchor="handoff-reconcile" id="handoff-reconcile">The fresh Fable successor or explicitly activating Codex-thread successor loads canonical instructions, reconciles the handoff against source systems, and declares readiness before cutover.</p>
+<p data-anchor="handoff-owner" id="handoff-owner">One <code>operator-owner.toml</code> stores schema version, exact owner session ID, owner mode, handoff revision, control-directory identity, and mode-specific routing: a Herdr owner route for dedicated Fable or a verified Herdr workspace ID for a foreground Codex-thread owner. A successful forced takeover also binds the immutable takeover receipt path and digest.</p>
 <p data-anchor="handoff-atomic" id="handoff-atomic">A locked expected-owner and revision check plus atomic TOML rename is the sole authority commit.</p>
-<p data-anchor="handoff-routing" id="handoff-routing">The timer and top-level child notifications resolve the owner through <code>operator-say</code>, so the next message observes the same atomic commit.</p>
+<p data-anchor="handoff-routing" id="handoff-routing">For a dedicated Fable owner, the timer and top-level child notifications resolve the routable owner through <code>operator-say</code>, so the next message observes the same atomic commit. A Codex-thread owner has no fabricated Herdr route; it observes the commit and child status by live owner readback and pull reconciliation.</p>
 <p data-anchor="handoff-old-owner" id="handoff-old-owner">The old operator becomes read-only at commit and may only forward late direct messages until cleanup.</p>
 <p data-anchor="handoff-dead-owner" id="handoff-dead-owner">A dead or ambiguous owner record has no agent-callable recovery path; only an explicit manual operator takeover outside role authority may replace it.</p>
 <p data-anchor="handoff-no-failover" id="handoff-no-failover">No probe, self-asserted authorization, timeout, or automatic failover transfers authority; a blocked owner record stays blocked until manual takeover.</p>
@@ -1274,8 +1357,9 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
 streams/&lt;stream&gt;/status.md
 streams/&lt;stream&gt;/trace.jsonl
 operator-owner.toml
-handoffs/0001.md</code></pre>
-<p data-anchor="stream-registry-sole" id="stream-registry-sole">The control-directory <code>streams/</code> tree is the sole sweep-visible stream registry; Fable is the sole writer of the registry itself, meaning which streams exist, while each child writes only its own <code>status.md</code> within its stream.</p>
+handoffs/0001.md
+takeovers/0001.toml</code></pre>
+<p data-anchor="stream-registry-sole" id="stream-registry-sole">The control-directory <code>streams/</code> tree is the sole sweep-visible stream registry; the active meta-operator is the sole writer of the registry itself, meaning which streams exist, while each child writes only its own <code>status.md</code> within its stream.</p>
 <p data-anchor="stream-registry-live-read" id="stream-registry-live-read">A receipt <code>streams_json</code> field is a launch-time snapshot only; a reconcile pass reads the live control-directory <code>streams/</code> registry, never the receipt snapshot field, so a stream added or removed after launch is seen.</p>
 <p data-anchor="stream-issue-binding" id="stream-issue-binding">The host-owned registry entry records the exact issue its stream delivers alongside its owner, distinct from a descriptive stream name, so a verified issue transition binds authority to that registry-recorded issue and owner rather than requiring the stream name to equal the issue.</p>
 <p data-anchor="stream-brief-owner" id="stream-brief-owner">Only the parent writes a child brief.</p>
@@ -1854,7 +1938,7 @@ handoffs/0001.md</code></pre>
 <p data-anchor="related-overview" id="related-overview">Overview: <a href="./operating-model.spec.html">operating-model.spec.html</a>.</p>
 <p data-anchor="related-delivery-lifecycle" id="related-delivery-lifecycle">Sibling: <a href="./delivery-lifecycle.spec.html">delivery-lifecycle.spec.html</a> for shaping, delivery, Linear, and QA behavior.</p>
 <p data-anchor="related-role-runtime" id="related-role-runtime">Sibling: <a href="./role-runtime.spec.html">role-runtime.spec.html</a> for role, model, launch, and reconcile runtime.</p>
-<p data-anchor="related-adr" id="related-adr">Boundary: <a href="../adr/0001-operating-model-boundaries.spec.html">ADR 0001 operating-model boundaries</a>.</p>
+<p data-anchor="related-adr" id="related-adr">Boundaries: <a href="../adr/0001-operating-model-boundaries.spec.html">ADR 0001 operating-model boundaries</a> and <a href="../adr/0005-codex-thread-meta-operator-activation.spec.html">ADR 0005 Codex thread meta-operator activation</a>.</p>
 </section>
 
 </article>
