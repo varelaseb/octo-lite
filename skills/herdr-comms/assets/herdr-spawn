@@ -7,22 +7,44 @@ label=""
 cwd="$PWD"
 role=""
 receipt=""
+direct=0
+
+usage() {
+  cat <<'EOF'
+usage:
+  herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
+    --role ROLE --receipt FILE -- claude CLAUDE_ARGS...
+  herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
+    --role ROLE --direct -- codex --model gpt-5.6-sol \
+    --config 'model_reasoning_effort="high"' \
+    --config 'service_tier="fast"' \
+    --ask-for-approval never --sandbox danger-full-access
+
+Direct Codex launches use no receipt or external bootstrap. ROLE must be
+orchestrator, explorer, implementer, merger, or reviewer. They require exact
+Sol, high reasoning, fast service, approval-never, and danger-full-access.
+The shared Codex app-server daemon is started with Remote Control enabled before
+a Herdr tab is created.
+EOF
+}
+
 while (($#)); do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     --workspace) workspace="${2:?}"; shift 2 ;;
     --name) name="${2:?}"; shift 2 ;;
     --label) label="${2:?}"; shift 2 ;;
     --cwd) cwd="${2:?}"; shift 2 ;;
     --role) role="${2:?}"; shift 2 ;;
     --receipt) receipt="${2:?}"; shift 2 ;;
+    --direct) direct=1; shift ;;
     --) shift; break ;;
     *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
   esac
 done
-[[ -n "$workspace" && -n "$name" && -n "$role" && -n "$receipt" && $# -gt 0 ]] || exit 64
+[[ -n "$workspace" && -n "$name" && -n "$role" && $# -gt 0 ]] || { usage >&2; exit 64; }
 [[ -d "$cwd" ]] || exit 66
 cwd="$(cd "$cwd" && pwd -P)"
-[[ -f "$receipt" ]] || exit 66
 
 value_after() {
   local wanted="$1" previous=""
@@ -43,11 +65,75 @@ flag_present() {
   return 1
 }
 
-[[ "$1" == claude ]] || { echo "herdr-spawn: persistent tabs require Claude" >&2; exit 65; }
-model="$(value_after --model "$@" || true)"
-effort="$(value_after --effort "$@" || true)"
-mode="$(value_after --permission-mode "$@" || true)"
-agent="$(value_after --agent "$@" || true)"
+config_value() {
+  local wanted="$1" previous="" value=""
+  shift
+  for value in "$@"; do
+    if [[ "$previous" == --config || "$previous" == -c ]]; then
+      case "$value" in
+        "$wanted"=*)
+          value="${value#*=}"
+          value="${value%\"}"
+          value="${value#\"}"
+          echo "$value"
+          return 0
+          ;;
+      esac
+    fi
+    previous="$value"
+  done
+  return 1
+}
+
+runtime_executable="$1"
+runtime="$(basename "$runtime_executable")"
+model="$(value_after --model "$@" || value_after -m "$@" || true)"
+effort=""
+service_tier=""
+mode=""
+agent=""
+sandbox=""
+kind=""
+remote_control="disabled"
+bootstrap_status="acknowledged"
+receipt_ref="$receipt"
+
+if [[ "$runtime" == codex ]]; then
+  [[ "$direct" == 1 && -z "$receipt" ]] || {
+    echo "herdr-spawn: Codex requires --direct and forbids --receipt" >&2
+    exit 65
+  }
+  case "$role" in
+    orchestrator|explorer|implementer|merger|reviewer) ;;
+    *) echo "herdr-spawn: unsupported direct Codex role: $role" >&2; exit 65 ;;
+  esac
+  effort="$(config_value model_reasoning_effort "$@" || true)"
+  service_tier="$(config_value service_tier "$@" || true)"
+  mode="$(value_after --ask-for-approval "$@" || value_after -a "$@" || true)"
+  sandbox="$(value_after --sandbox "$@" || value_after -s "$@" || true)"
+  [[ "$model" == gpt-5.6-sol && "$effort" == high && "$service_tier" == fast \
+    && "$mode" == never && "$sandbox" == danger-full-access ]] || {
+    echo "herdr-spawn: direct Codex requires gpt-5.6-sol, high, fast, approval never, and danger-full-access" >&2
+    exit 65
+  }
+  grep -Eq '^(🎤 )?(◆)?([0-9]+(/[0-9]+)?|[A-Z][A-Z0-9]+-[0-9]+) · .+$' <<<"$label" || exit 65
+  kind="codex"
+  bootstrap_status="direct"
+  receipt_ref="none"
+elif [[ "$runtime" == claude ]]; then
+  [[ "$direct" == 0 && -n "$receipt" && -f "$receipt" ]] || {
+    echo "herdr-spawn: Claude requires a readable --receipt" >&2
+    exit 66
+  }
+  effort="$(value_after --effort "$@" || true)"
+  mode="$(value_after --permission-mode "$@" || true)"
+  agent="$(value_after --agent "$@" || true)"
+  kind="claude"
+else
+  echo "herdr-spawn: persistent tabs require Codex or Claude" >&2
+  exit 65
+fi
+
 # herdr-label-remote-control-gate: every 🎤 or 🧠 spawn must enable Claude
 # remote control durably at launch (--rc), never post-hoc. Fail closed.
 require_remote_control() {
@@ -56,23 +142,25 @@ require_remote_control() {
     exit 65
   }
 }
-case "$role" in
-  meta-operator)
-    [[ "$model" == claude-fable-5 && "$effort" == xhigh && "$mode" == auto && "$agent" == meta-operator ]] || exit 65
-    [[ "$label" == "🧠 operator" ]] || exit 65
-    require_remote_control "$@"
-    ;;
-  orchestrator)
-    # Operator choice at spawn: the default Fable orchestrator OR the sanctioned
-    # Opus fallback. Any other runtime fails closed.
-    [[ "$mode" == auto && "$agent" == "$role" ]] || exit 65
-    [[ ( "$model" == claude-fable-5 && "$effort" == high ) \
-      || ( "$model" == claude-opus-5 && "$effort" == high ) ]] || exit 65
-    grep -Eq '^(🎤 )?(◆)?[0-9]+(/[0-9]+)? · .+$' <<<"$label" || exit 65
-    [[ "$label" == 🎤* ]] && require_remote_control "$@"
-    ;;
-  *) echo "herdr-spawn: role has no persistent tab" >&2; exit 65 ;;
-esac
+if [[ "$runtime" == claude ]]; then
+  case "$role" in
+    meta-operator)
+      [[ "$model" == claude-fable-5 && "$effort" == xhigh && "$mode" == auto && "$agent" == meta-operator ]] || exit 65
+      [[ "$label" == "🧠 operator" ]] || exit 65
+      require_remote_control "$@"
+      ;;
+    orchestrator)
+      # Operator choice at spawn: the default Fable orchestrator OR the sanctioned
+      # Opus fallback. Any other runtime fails closed.
+      [[ "$mode" == auto && "$agent" == "$role" ]] || exit 65
+      [[ ( "$model" == claude-fable-5 && "$effort" == high ) \
+        || ( "$model" == claude-opus-5 && "$effort" == high ) ]] || exit 65
+      grep -Eq '^(🎤 )?(◆)?[0-9]+(/[0-9]+)? · .+$' <<<"$label" || exit 65
+      [[ "$label" == 🎤* ]] && require_remote_control "$@"
+      ;;
+    *) echo "herdr-spawn: role has no persistent tab" >&2; exit 65 ;;
+  esac
+fi
 
 # The passed --role and canonical --cwd must exactly equal the receipt's role.name
 # and workspace.worktree before any bootstrap call or pane creation. This never
@@ -81,6 +169,7 @@ esac
 # verification failure; it never mutates the receipt. `-P` keeps the process cwd
 # and script dir off sys.path so a cwd-controlled stdlib shadow (e.g. tomllib.py)
 # cannot execute inside this host-trusted verification.
+if [[ "$runtime" == claude ]]; then
 python3 -P - "$receipt" "$role" "$cwd" <<'PY'
 import os
 import sys
@@ -119,7 +208,20 @@ provider_session_id="$(jq -r '.provider_session_id // empty' <<<"$bootstrap_outp
 [[ -n "$provider_session_id" ]] || { echo "herdr-spawn: bootstrap verification returned no session" >&2; exit 2; }
 
 # Resume the exact verified provider session; never start a fresh unverified one.
-resumed=("$1" "--resume" "$provider_session_id" "${@:2}")
+launch_argv=("$runtime_executable" "--resume" "$provider_session_id" "${@:2}")
+else
+  # Codex Remote Control is a shared app-server capability. Start is idempotent
+  # and happens before pane creation so a failure cannot leave an orphan tab.
+  "$runtime_executable" remote-control start --json >/dev/null || {
+    echo "herdr-spawn: could not enable Codex Remote Control" >&2
+    exit 69
+  }
+  remote_control="enabled"
+  provider_session_id=""
+  # `herdr agent start --kind codex` supplies the canonical executable. Pass
+  # only Codex arguments or the extra `codex` token becomes an initial prompt.
+  launch_argv=("${@:2}")
+fi
 
 # The tab is created at the receipt-verified cwd; that is the sole cwd anchor.
 # The real 0.7.5 tab-create result (bundled API schema, `tab_created`) carries
@@ -161,7 +263,7 @@ start_attempt=0
 while :; do
   start_attempt=$((start_attempt + 1))
   start_rc=0
-  start_err="$(herdr agent start "$name" --kind claude --pane "$pane" -- "${resumed[@]}" 2>&1 >/dev/null)" || start_rc=$?
+  start_err="$(herdr agent start "$name" --kind "$kind" --pane "$pane" -- "${launch_argv[@]}" 2>&1 >/dev/null)" || start_rc=$?
   [[ "$start_rc" == 0 ]] && break
   start_code="$(jq -r '.error.code // empty' <<<"$start_err" 2>/dev/null || true)"
   if [[ "$start_code" != agent_pane_busy ]]; then
@@ -183,8 +285,8 @@ while :; do
   esac
 done
 
-# Bootstrap is already verified. This loop only dismisses the one-time trusted-folder
-# dialog that Claude onboarding still shows on a fresh pane; it never infers
+# Bootstrap or direct runtime checks are already verified. This loop only
+# dismisses a one-time trusted-folder dialog; it never infers
 # readiness from pane text. 0.7.5 grammar: accept the dialog with a literal
 # `agent send-keys` Enter, never an atomic `agent prompt`, which would submit
 # text into the modal.
@@ -204,7 +306,7 @@ dialog_state() {
   if ! text="$(herdr pane read "$pane" --source visible --lines 50 2>/dev/null)"; then
     return 2
   fi
-  if grep -qiE 'Quick safety check|trust this folder' <<<"$text"; then
+  if grep -qiE 'Quick safety check|trust this folder|trust the contents of this directory' <<<"$text"; then
     return 0
   fi
   return 1
@@ -245,4 +347,10 @@ if [[ "$dialog_cleared" != 1 ]]; then
   esac
 fi
 
-echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort mode=$mode bootstrap=acknowledged provider_session_id=$provider_session_id receipt=$receipt"
+if [[ "$runtime" == codex ]]; then
+  agent_info="$(herdr agent get "$name" 2>/dev/null || true)"
+  provider_session_id="$(jq -r '.result.agent.agent_session.value // empty' <<<"$agent_info" 2>/dev/null || true)"
+  [[ -n "$provider_session_id" ]] || provider_session_id="herdr:$name"
+fi
+
+echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd model=$model effort=$effort service_tier=${service_tier:-default} mode=$mode sandbox=${sandbox:-provider-default} bootstrap=$bootstrap_status remote_control=$remote_control provider_session_id=$provider_session_id receipt=$receipt_ref"

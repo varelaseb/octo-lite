@@ -17,6 +17,9 @@
   "local/skill/herdr-comms": {
     "path": "skills/herdr-comms"
   },
+  "local/skill/implement-spec": {
+    "path": "skills/implement-spec"
+  },
   "local/skill/launch-meta-operator": {
     "path": "skills/launch-meta-operator"
   },

@@ -44,19 +44,11 @@ required_skills = ["herdr-comms"]
 alt_runtimes = [{ model = "claude-opus-5", effort = "high" }]
 
 [[roles.orchestrator.conditional_skills]]
-skill = "octo-lite-issue-shaper"
+skill = "spec-chat-shape"
 when = "shaping"
 
 [[roles.orchestrator.conditional_skills]]
-skill = "grill-with-docs"
-when = "shaping"
-
-[[roles.orchestrator.conditional_skills]]
-skill = "octo-lite-github"
-when = "shaping"
-
-[[roles.orchestrator.conditional_skills]]
-skill = "octo-lite-loop"
+skill = "implement-spec"
 when = "delivery"
 
 [roles.shaping-reviewer]

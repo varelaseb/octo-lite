@@ -439,7 +439,7 @@
 <p data-anchor="intent-spec" id="intent-spec">Canonical specs and ADRs own detailed behavior, acceptance rules, interfaces, edge cases, and constraints.</p>
 <p data-anchor="intent-pr" id="intent-pr">One evolving draft pull request carries shaping and implementation without creating divergent branches of truth.</p>
 <p data-anchor="intent-tdd" id="intent-tdd">Every behavior-changing implementation follows spec-driven red then green unless shaping records a narrow operator-approved waiver.</p>
-<p data-anchor="intent-refactor-review" id="intent-refactor-review">Refactoring is not part of the implementation loop; it arrives through reviewer-flagged refactor-only fix passes verified green-stays-green per the delivery lifecycle.</p>
+<p data-anchor="intent-refactor-review" id="intent-refactor-review">Refactoring follows the owning ticket, applicable skills, and target validation rather than a separate delivery phase.</p>
 </section>
 
 <section data-anchor="domain-concepts" id="domain-concepts">
@@ -882,7 +882,7 @@
 
 <section data-anchor="instruction-ownership" id="instruction-ownership">
 <h2>Instruction ownership</h2>
-<p data-anchor="instruction-generic" id="instruction-generic">octo-lite owns generic lifecycle, roles, gates, TDD, review mechanics, model policy, and reusable skills.</p>
+<p data-anchor="instruction-generic" id="instruction-generic">octo-lite owns shaping, ticket-graph delivery, Herdr coordination, and reusable skills.</p>
 <p data-anchor="instruction-target" id="instruction-target">A target repo root <code>AGENTS.md</code> exclusively owns repo-specific commands, architecture, validation, deployment, fixtures, and conventions.</p>
 <p data-anchor="instruction-target-exclusive" id="instruction-target-exclusive">A target root <code>AGENTS.md</code> contains only that target's instructions and is its sole repo instruction source.</p>
 <p data-anchor="instruction-claude" id="instruction-claude">A target root <code>CLAUDE.md</code> is a tracked relative symlink to root <code>AGENTS.md</code> when Claude tooling needs that entry point.</p>
@@ -1179,7 +1179,7 @@
 <p data-anchor="source-slices" id="source-slices">Bounded delivery slices are <a href="https://linear.app/martellventures/issue/TUR-445">TUR-445</a>, <a href="https://linear.app/martellventures/issue/TUR-447">TUR-447</a>, <a href="https://linear.app/martellventures/issue/TUR-449">TUR-449</a>, <a href="https://linear.app/martellventures/issue/TUR-446">TUR-446</a>, <a href="https://linear.app/martellventures/issue/TUR-444">TUR-444</a>, and <a href="https://linear.app/martellventures/issue/TUR-448">TUR-448</a>.</p>
 <p data-anchor="boundary-adr" id="boundary-adr">Decision 104's boundaries are signed in the canonical ADR at <a href="../adr/0001-operating-model-boundaries.spec.html">0001-operating-model-boundaries.spec.html</a>.</p>
 <p data-anchor="decision-105-historical-cutover" id="decision-105-historical-cutover">Decision 105 approves a one-time historical sequencing exception for PR 6 commits through <code>bc02cc600b3ebbad02890976ed594fc429e1344a</code>, made while the readiness and launch gates were themselves being built.</p>
-<p data-anchor="decision-105-preserves-evidence" id="decision-105-preserves-evidence">It preserves that implementation evidence but waives no TDD, current-head shaping review, code review, QA, acceptance, or future requirement to reach Linear <code>Shaped</code> before implementation.</p>
+<p data-anchor="decision-105-preserves-evidence" id="decision-105-preserves-evidence">Its post-shaping gate requirements are superseded by ADR 0005; the historical evidence remains.</p>
 <p data-anchor="decision-105-no-later-pass" id="decision-105-no-later-pass">This exception cannot authorize any later pass.</p>
 <p data-anchor="decision-106-spec-structure" id="decision-106-spec-structure">Decision 106 replaces the single broad operating-model spec with one concise overview plus three canonical specs: delivery lifecycle, role/runtime, and operator control.</p>
 <p data-anchor="decision-106-split-rule" id="decision-106-split-rule">Split by independent change and review boundaries, preserve exact cross-links, and do not create one file per subsection.</p>
@@ -1192,7 +1192,7 @@
 <p data-anchor="decision-108-other-representation" id="decision-108-other-representation">The other representation may clarify or link but should not overlap.</p>
 <p data-anchor="decision-108-mismatch" id="decision-108-mismatch">A mismatch invalidates the spec and blocks shaping until reconciled, with neither representation silently taking precedence.</p>
 <p data-anchor="decision-109-workflow-native" id="decision-109-workflow-native">Decision 109 runs every worker role as a Claude Workflow subagent of the owning session, retires the octo-launch CLI pass model, and runs OpenAI review roles through a Claude relay subagent that returns codex findings verbatim.</p>
-<p data-anchor="decision-109-binding" id="decision-109-binding">Worker binding proof is the workflow journal plus a schema-forced acknowledgment echo of the exact bound inputs the orchestrator verifies before mutation, durable TOML receipts bind only persistent sessions, and the launch admission and revalidation gates re-home to workflow-layer helpers.</p>
+<p data-anchor="decision-109-binding" id="decision-109-binding">Its worker journal binding is superseded for implementation by ADR 0005; legacy role-launched paths retain it.</p>
 <p data-anchor="decision-log" id="decision-log">The chronological rationale is preserved in <a href="../../docs/operating-model-audit-2026-07-17/optimal-model-grill.md">optimal-model-grill.md</a> through Decision 109.</p>
 <p data-anchor="audit-draft" id="audit-draft">The integrated working narrative is preserved in <a href="../../docs/operating-model-audit-2026-07-17/operating-model-draft.md">operating-model-draft.md</a>.</p>
 <p data-anchor="failure-catalog" id="failure-catalog">Observed failure modes are preserved in <a href="../../docs/operating-model-audit-2026-07-17/failure-catalog.md">failure-catalog.md</a>.</p>

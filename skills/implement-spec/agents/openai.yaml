@@ -1,0 +1,6 @@
+interface:
+  display_name: "Implement Spec"
+  short_description: "Implement a shaped spec with parallel Herdr workers."
+  default_prompt: "Use $implement-spec to implement this shaped specification and its ticket graph."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0005: Herdr ticket-graph delivery</title>
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header" id="header">
+<h1>ADR 0005: Herdr ticket-graph delivery</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/delivery-lifecycle.spec.html">delivery lifecycle</a> / ADR 0005</nav>
+<p>Decision from <a href="https://github.com/varelaseb/octo-lite/issues/95">GitHub issue 95</a>, 2026-09-01.</p>
+</header>
+
+<section data-anchor="status" id="status">
+<h2>Status</h2>
+<p data-anchor="status-value" id="status-value">Accepted.</p>
+</section>
+
+<section data-anchor="context" id="context">
+<h2>Context</h2>
+<p data-anchor="context-old-loop" id="context-old-loop">The post-shaping loop accumulated role resolution, receipts, journals, exact-model gates, verdict publication, QA gates, and lifecycle transitions around ordinary implementation.</p>
+<p data-anchor="context-natural-unit" id="context-natural-unit">A reviewed spec already has implementation tickets whose blocking relations expose the work that can safely run in parallel.</p>
+</section>
+
+<section data-anchor="decision" id="decision">
+<h2>Decision</h2>
+<p data-anchor="decision-shaping-output" id="decision-shaping-output"><code>spec-chat-shape</code> finishes with a reviewed spec, its issue, and dependency-linked implementation tickets.</p>
+<p data-anchor="decision-explicit-skill" id="decision-explicit-skill"><code>implement-spec</code> is explicit-only and owns post-shaping delivery.</p>
+<p data-anchor="decision-direct-workers" id="decision-direct-workers">It launches temporary Herdr explorer, implementer, merger, and reviewer agents directly, outside <code>roles.toml</code>, role contracts, and the legacy Workflow loop.</p>
+<p data-anchor="decision-frontier" id="decision-frontier">Implementers fill the ready ticket frontier in isolated worktrees and branches while one merger at a time integrates completed commits onto one PR branch.</p>
+<p data-anchor="decision-linear" id="decision-linear">Linear records the actual ticket graph and live work state, with Done reserved for integrated and pushed work.</p>
+<p data-anchor="decision-review" id="decision-review">After full integration, <code>/code-review</code> runs once, one implementation agent fixes all findings, and review reruns once before the PR becomes ready for human review.</p>
+<p data-anchor="decision-compatibility" id="decision-compatibility"><code>octo-lite-loop</code> remains only as a compatibility redirect to <code>implement-spec</code>.</p>
+</section>
+
+<section data-anchor="consequences" id="consequences">
+<h2>Consequences</h2>
+<p data-anchor="consequence-throughput" id="consequence-throughput">Independent tickets run concurrently and task dependencies, not a fixed phase sequence, control throughput.</p>
+<p data-anchor="consequence-sparse-context" id="consequence-sparse-context">Agents communicate through durable pointers and commits instead of copied briefs and machine receipts.</p>
+<p data-anchor="consequence-tradeoff" id="consequence-tradeoff">The workflow gives up deterministic role and verdict gates in exchange for simpler execution, direct observability, and Linear state that reflects actual work.</p>
+<p data-anchor="consequence-supersedes" id="consequence-supersedes">This decision supersedes ADR 0002 through ADR 0004 only where they prescribe post-shaping implementation-loop ceremony; their skill-vendoring, historical, and non-delivery decisions remain.</p>
+</section>
+</article>
+</body>
+</html>

@@ -12,12 +12,11 @@ client, product, or engagement.
 
 ## What It Provides
 
-- A user-facing Issue Shaper workflow for turning ideas or rough Linear/GitHub
-  issues into clear, spec-backed work, plus an independent fresh shaping
-  review before readiness.
-- A native Claude Workflow delivery loop for fresh implementer, code-reviewer,
-  QA-capture, and QA-reviewer passes, with Codex relays for shaping and review
-  roles.
+- Spec Chat shaping that produces a reviewed canonical spec, its issue, and a
+  dependency-linked implementation ticket graph.
+- Explicit `$implement-spec` delivery that fills the ready ticket frontier with
+  parallel Herdr workers, integrates onto one branch, runs `/code-review`, and
+  leaves one PR ready for human review.
 - A cross-client meta-operator launcher for consolidating and supervising
   long-running Herdr workstreams.
 - Templates bundled inside skills, not copied as top-level target repo
@@ -38,11 +37,9 @@ at them with symlinks:
 ~/.agents/skills/<skill> -> skills/<skill>
 ```
 
-Codex has no generated custom-agent adapter. Per Decision 109 every worker role
-runs as a Claude Workflow subagent of the owning session, and an OpenAI-backed
-role pass runs inside a Claude relay subagent that executes one explicit
-`codex exec` relay, carrying the canonical role contract as the exec prompt and
-returning the codex findings verbatim; see ADR 0001.
+`implement-spec` workers are direct Herdr Codex sessions. They use the target
+instructions and applicable skills, not generated role adapters or the legacy
+delivery contract.
 
 The Claude Code surface reuses the same source repo. Skills share the SKILL.md
 format and symlink directly. Claude uses generated Markdown + YAML frontmatter
@@ -57,9 +54,8 @@ subagent adapters, which install the same way:
 ~/.claude/workflows/octo-loop-qa.js -> workflows/octo-loop-qa.js
 ```
 
-`workflows/octo-loop-qa.js` is the target-neutral native Claude Workflow.
-Target repos supply their own instructions and evidence publication helpers.
-The workflow, roles, mappings, skills, and profile always install by symlink.
+`workflows/octo-loop-qa.js` remains installed for legacy compatibility only.
+The old `$octo-lite-loop` skill redirects to `$implement-spec`.
 
 Install or verify all links:
 
@@ -72,9 +68,8 @@ scripts/install-octo-lite --check
 is the documented user-skill location in the current Codex manual, so both are
 installed.
 
-Install every directory under `skills/`. `roles.toml` defines required and
-conditional skills for all eight roles. `roles/<role>.md` is the sole prose
-contract. `agents/` is generated and must match the resolver exactly.
+Install every directory under `skills/`. `roles.toml`, `roles/`, and generated
+adapters remain for persistent coordination and legacy workflows.
 
 Validate or regenerate after role changes:
 
@@ -90,32 +85,22 @@ responsibility for active Herdr workstreams.
 
 ## Workflow
 
-Issue shaping is the most important step.
+Shape first, then implement the ticket graph.
 
 ```text
 idea or rough Linear/GitHub issue
-  -> .octo-lite/drafts/<slug>.md
-  -> specs/ADRs/repo init where needed
-  -> operator approval
-  -> Linear issue/spec updates, or GitHub issue body for GitHub-first work
-  -> evolving draft PR
-  -> fresh shaping review (clear verdict required)
-  -> implement with spec-derived red, green, refactor
-  -> fresh code review, fresh fix when blocking
-  -> QA capture and fresh QA review when user-facing
-  -> operator acceptance
-  -> merge and lifecycle transition
+  -> $spec-chat-shape
+  -> reviewed spec + spec issue + blocking-linked tickets
+  -> $implement-spec
+  -> parallel Herdr implementers on ready tickets
+  -> serialized Herdr mergers onto one PR branch
+  -> /code-review + one consolidated fix pass when needed
+  -> PR ready for human review
 ```
 
-During shaping, the draft file is the canonical working artifact. In
-Linear-first repos, Linear becomes canonical after finalization and specs remain
-the durable behavior source. In GitHub-first repos, the approved draft may be
-written to GitHub and labeled `octo-lite:ready`.
-
-Issue Shaper uses `$grill-with-docs` during shaping to preserve the useful
-thoroughness octo-lite needs: docs-first clarification, one question at a time
-with a recommendation, acceptance-criteria classification, ADR checkpoint,
-spec/doc updates, and explicit ready-gate review.
+Linear remains current for issue and ticket identity, scope, dependencies, and
+state. Specs own detailed behavior. Worker messages point to those sources
+instead of copying them.
 
 ## Target Repositories
 
@@ -152,9 +137,9 @@ with vendored libraries so rendering works offline, ignore `*.review/` event
 spools, and run the browser review loop during shaping: serve, annotate, hand
 off, drain, edit, and reply.
 
-The shaper, grill, loop, and role profiles read this signal before touching a
-spec. They preserve the repo's declared format, and spec-chat work never
-regenerates a Markdown counterpart.
+The shaper and worker skills read this signal before touching a spec. They
+preserve the repo's declared format, and spec-chat work never regenerates a
+Markdown counterpart.
 
 ## Trackers And GitHub
 

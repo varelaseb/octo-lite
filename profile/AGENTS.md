@@ -8,12 +8,13 @@ Use octo-lite for Linear-first product and development work.
   dependencies, and lifecycle state.
 - Canonical specs and ADRs own detailed behavior, acceptance rules, interfaces,
   edge cases, and constraints.
-- One evolving draft PR carries shaping, implementation, exact-head verdicts,
-  code discussion, and merge readiness.
+- Shaping artifacts and the implementation PR link the same Linear issue and
+  canonical spec; implementation uses one integration branch and one PR.
 - Target root `AGENTS.md` exclusively owns repo-specific commands,
   architecture, validation, deployment, fixtures, and conventions.
-- `roles.toml` and `roles/*.md` own generic role runtime and prose. Every role
-  launch uses the resolver. Generated adapters are not raw spawn paths.
+- `roles.toml` and `roles/*.md` own legacy role-launched workflows.
+- `$implement-spec` owns post-shaping delivery. Its Herdr workers use relevant
+  octo-lite skills but do not use role contracts, the resolver, or loop gates.
 
 Stop on source conflict. Conversation and memory never silently override these
 sources. Memory may retain only dated, evidence-backed gotchas with a durable
@@ -21,15 +22,16 @@ source or fix link.
 
 ## Workflow
 
-- Linear `Shaped` means the complete issue, specs, draft PR, pinned logs, hard
-  TDD contract, and clear exact-head shaping verdict agree.
-- Use `$octo-lite-loop` only from that readiness gate; loop fire performs the
-  mechanical `Shaped -> Todo` first delivery step per the canonical
-  delivery-entry-gate, never `Shaped -> In Progress`.
-- Every behavior change and fix uses spec-derived red, green, refactor unless
-  shaping records a narrow operator waiver and alternative proof.
-- Every implement, fix, review, re-review, QA capture, and QA review pass is a
-  fresh exact-role instance. Never use `--last`.
+- Use `$spec-chat-shape` to produce the reviewed spec, spec issue, and
+  dependency-linked implementation tickets.
+- Use `$implement-spec` to deliver the whole spec on one PR branch.
+- `$implement-spec` keeps Linear truthful, fills the ready ticket frontier with
+  parallel Herdr workers, integrates each worker through a merger agent, runs
+  `/code-review`, fixes findings once, and marks the PR ready for human review.
+- Implementation workers follow target `AGENTS.md` and relevant octo-lite
+  skills. They do not follow the octo-lite delivery contract or ceremony.
+- Keep communication sparse and point agents to durable context instead of
+  repeating it.
 - Default to action: prior explicit operator intent is authorization; former
   approval gates are act-then-notify steps with a prepared rollback and the
   operator vetoes by rollback. Lawful stops: operator-held access, legally

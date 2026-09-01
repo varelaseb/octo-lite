@@ -141,9 +141,9 @@ class RoleResolverTest(unittest.TestCase):
         self.assertEqual(base.skills, ("herdr-comms",))
         self.assertEqual(
             shaping.skills,
-            ("herdr-comms", "octo-lite-issue-shaper", "grill-with-docs", "octo-lite-github"),
+            ("herdr-comms", "spec-chat-shape"),
         )
-        self.assertEqual(delivery.skills, ("herdr-comms", "octo-lite-loop"))
+        self.assertEqual(delivery.skills, ("herdr-comms", "implement-spec"))
 
     # The following three checks are structural wiring only: they prove the required
     # keyword text is present in the canonical contract a session bootstraps from.

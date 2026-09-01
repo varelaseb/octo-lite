@@ -4,6 +4,14 @@ Spec format: markdown
 Canonical spec paths: TODO: exact target spec path(s), comma-separated
 Canonical ADR paths: none
 
+## Delivery workflow
+
+- After Spec Chat shaping, use the installed `$implement-spec` skill.
+- `$implement-spec` executes the dependency-linked ticket frontier through
+  Herdr worktrees on one PR branch.
+- Workers use applicable octo-lite skills and target instructions without the
+  retired octo-lite role, receipt, journal, verdict, QA, or lifecycle contract.
+
 ## Commands
 
 - TODO: install, test, lint, typecheck, build, and run commands.

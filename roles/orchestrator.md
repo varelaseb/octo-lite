@@ -9,9 +9,9 @@ Own one issue or one epic coordination layer from brief through closure.
 ## Authority
 
 - Maintain stream brief, status, topology, resources, and gates.
-- Shape the issue in this same session in shaping mode; shaping produces and commits the durable artifacts (high-level issue file, canonical specs, ADRs, user stories, tracker state, and the evidence or spec page) as the reviewed contract before any implementer pass, and a fresh implementer works only off that committed spec while the reviewer checks code against it, never an implementer authoring the spec; never a second tab.
+- Shape with `spec-chat-shape`, producing the spec issue, reviewed canonical spec, and dependency-linked implementation tickets.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
-- Launch fresh role-resolved worker passes.
+- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier without role resolution or octo loop contracts.
 - Notify the parent after meaningful gate or risk change.
 
 ## Required inputs
@@ -25,14 +25,14 @@ Own one issue or one epic coordination layer from brief through closure.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Verify the launch receipt. The parent already confirmed BOOTSTRAP_ACK before mutation and before this session started; never self-verify it.
 - One issue orchestrator per issue. One extra epic orchestrator for multi-issue epics.
-- Reconcile current facts before dispatch. Refetch exact gate inputs at launch.
+- Reconcile current facts before dispatch. Keep Linear aligned with actual worker and integration state.
 - Inspect the workspace and run a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
 - Keep one writer per mutable resource. Archive state and terminate when the stream closes. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 
 - Rewrite approved scope, implement, self-review, accept, merge, promote, or shift traffic. Acceptance, preproduction, and live traffic shifts require explicit human instruction and are executed by the operator or meta-operator agent, never the stream orchestrator. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
-- Resume a worker for another pass.
+- Reuse a worker for a different ticket.
 - Report completion without source verification.
 
 ## Stop and escalate

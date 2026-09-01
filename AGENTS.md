@@ -22,6 +22,8 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
 - `README.md` explains the product and install shape.
 - `roles.toml` records every role's runtime and skill mapping.
 - `roles/` contains the sole canonical prose contract for each LLM role.
+- `skills/implement-spec/` owns post-shaping delivery. Its direct Herdr workers
+  use applicable skills without loading role contracts or the legacy loop.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
 - `skills/` contains reusable octo-lite skills authored locally and their
   bundled templates.
@@ -42,7 +44,7 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
 
 - Spec format: spec-chat
 - Canonical spec paths: spec/domains/operating-model.spec.html, spec/domains/delivery-lifecycle.spec.html, spec/domains/role-runtime.spec.html, spec/domains/operator-control.spec.html
-- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html, spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0003-drop-loop-trust-root.spec.html, spec/adr/0004-derive-delivery-entry.spec.html
+- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html, spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0003-drop-loop-trust-root.spec.html, spec/adr/0004-derive-delivery-entry.spec.html, spec/adr/0005-herdr-ticket-graph-delivery.spec.html
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact
@@ -66,6 +68,8 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
 - Keep always-loaded guidance in `profile/AGENTS.md` short.
 - Do not copy octo-lite skills, agents, or templates into target repos.
 - Install profile, roles, adapters, skills, workflows, and helpers by symlink.
+- Keep the legacy loop installable only as a compatibility redirect to
+  `implement-spec`; add no new delivery ceremony to it.
 
 ## Validation
 
