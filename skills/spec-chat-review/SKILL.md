@@ -20,13 +20,13 @@ Your job in review mode: wait for hand-off batches, apply each comment to the sp
 
 ## The loop
 
-1. **Reconnect before parking.** On every newly started or resumed spec-chat turn, first inspect each relevant `review/state.json`. If an unexpired `ownerKind: "detached"` lease names a live pid, do not drain or edit concurrently. Wait for that owner to finish or stop it explicitly. Otherwise write an `ownerKind: "interactive"` lease with your pid, `leaseUntil`, and `heartbeatAt`, then run one immediate, read-only collection scan:
+1. **Reconnect before parking.** On every newly started or resumed spec-chat turn, run one immediate, read-only collection scan:
 
    ```
    scripts/watch-specs.sh <spec-root> .cursor-<cli-or-session> 0 3
    ```
 
-   Exit 0 prints tab-separated `<html-path> <human-event-filename>` rows for the first ready page; exit 3 means the backlog is empty. A ready result contains every unprocessed event through the newest completed hand-off, in filename/event order. Do not reuse, poll, or wait on a watcher/tool session cancelled with the prior turn, and do not start detached Codex processing automatically-the detached process could race the interactive thread.
+   Exit 0 prints tab-separated `<html-path> <human-event-filename>` rows for the first ready page; exit 3 means the backlog is empty. A ready result contains every unprocessed event through the newest completed hand-off, in filename/event order. Do not reuse, poll, or wait on a watcher/tool session cancelled with the prior turn.
 
 2. **Drain the reported batch.** Read each event file in the printed order. Rehydrate context from FILES - the current spec, the unresolved events, `<spec>.review/context.md` - not from what you remember of the chat. Chat history is never the review database; files are what survive compaction, session changes, CLI switches, and stopped turns. Fold each thread before acting: human `reply` events continue the existing conversation, and human `edit` events replace the message named by `supersedes`. Ignore superseded text.
 
@@ -62,7 +62,7 @@ Your job in review mode: wait for hand-off batches, apply each comment to the sp
 
    The host attachment is part of the contract. During an explicitly active review window, keep the authoring turn open and wait on the yielded watcher so its completion re-invokes this same agent thread. The parked wait must be silent: do not emit idle heartbeats, periodic commentary, custom tool output, or spinner-producing polls into the chat. The shell may poll the spool internally, but the host wakes the agent only when the watcher exits with a real batch (or an actionable error). If the user presses Stop, the Codex thread cannot wake itself: watcher output has no reliable path back into the stopped turn. The user must send one new message; that message starts a turn whose mandatory zero-wait reconciliation automatically recovers every completed, unprocessed hand-off.
 
-   A yielded wait still leaves some hosts visibly in a long-running “working” state. Do not use it as an indefinite background service when the human expects the turn to look finished while idle. That experience requires a host-native event trigger or same-task automation capable of reactivating the existing thread. If the current surface does not expose one, state the limitation and ask the human to choose between an open active-review wait and detached unattended processing; do not claim that a shell process solves both. Merely leaving a process running, returning its session id, and finishing the turn cannot wake the chat. A detached `codex exec`, even one resumed with the same session id, also cannot stream activity into the already-open chat surface.
+   A yielded wait still leaves some hosts visibly in a long-running “working” state. Do not use it as an indefinite background service when the human expects the turn to look finished while idle. That experience requires a host-native event trigger or same-task automation capable of reactivating the existing thread. If the current surface does not expose one, state the limitation; do not substitute a detached reviewer that could race the interactive owner.
 
    Use `scripts/watch.sh <spec>.review/ <cursor-file> 3600 3` only when the human explicitly narrows review to one page or while debugging a page-specific problem. Per-page watching is not the default.
 
@@ -96,7 +96,7 @@ Full field-by-field reference for reading and writing the spool: `references/eve
 
 ## Per-CLI attachment
 
-The loop is identical on every CLI; only how the collection watch is hosted differs. Interactive review must use an in-session attachment that re-invokes the open authoring thread. `scripts/codex-review.sh <spec-root>` is an explicitly detached, context-degraded fallback for unattended review after the authoring thread has closed; it is not interactive review. Details, plus the per-spec session-continuity and concurrency rules: `references/cli-adapters.md`.
+The loop is identical on every CLI; only how the collection watch is hosted differs. Review uses an in-session attachment that re-invokes the open authoring thread. Detached review is unsupported because it can race the interactive owner. CLI details: `references/cli-adapters.md`.
 
 ## Git-derived focus
 
@@ -142,7 +142,7 @@ If the server was already running when migration occurred, restart it on the sam
 3. Set up the public capability transport when the page must open outside the file host.
 4. On both an initial start and any resumed/reconnected turn, run `scripts/watch-specs.sh <spec-root> .cursor-<cli-or-session> 0 3`; drain, reply, and cursor each ready batch, then repeat until exit 3.
 5. Only after reconciliation is empty, park a fresh collection watcher with `scripts/watch-specs.sh <spec-root> .cursor-<cli-or-session> 3600 3` using the host's same-thread yielded/background wait, keep the turn open, and tell the user the public capability URL and that every reviewable HTML document below the root is covered. The watcher discovers a spool as soon as the browser creates it; its ready output must wake this same thread for the drain cycle.
-6. Use `scripts/codex-review.sh <spec-root>` only when the human explicitly chooses unattended detached review after the interactive thread closes. State that detached mode will not wake or show live activity in the authoring chat. Passing a specific HTML file remains an explicit single-page override.
+6. Do not launch a detached reviewer. If the host cannot reactivate the same thread, require a user reconnect message and drain the durable backlog then.
 
 ## Mobile review contract
 

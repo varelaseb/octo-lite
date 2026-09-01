@@ -104,7 +104,7 @@ class RuntimeReferenceParser(HTMLParser):
         if tag != "script":
             return
         source = dict(attrs).get("src")
-        if source and urlsplit(source).path.endswith("runtime.js"):
+        if source and Path(urlsplit(source).path).name == "runtime.js":
             self.sources.append(source)
 
 

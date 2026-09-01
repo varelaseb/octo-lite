@@ -16,12 +16,16 @@ while [ "$t" -lt "$TMO" ]; do
     ready=$new
     if [ "${LIVE:-0}" != 1 ]; then
       last_handoff=$(printf '%s\n' "$new" | awk '/-handoff-/ { line = NR } END { if (line) print line }')
-      [ -n "$last_handoff" ] || continue
-      ready=$(printf '%s\n' "$new" | sed -n "1,${last_handoff}p")
+      if [ -n "$last_handoff" ]; then
+        ready=$(printf '%s\n' "$new" | sed -n "1,${last_handoff}p")
+      else
+        ready=""
+      fi
     fi
-    [ -n "$ready" ] || continue
-    printf '%s\n' "$ready"
-    exit 0
+    if [ -n "$ready" ]; then
+      printf '%s\n' "$ready"
+      exit 0
+    fi
   fi
   sleep "$POLL"
   t=$((t + POLL))
