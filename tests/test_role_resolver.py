@@ -141,7 +141,7 @@ class RoleResolverTest(unittest.TestCase):
         self.assertEqual(base.skills, ("herdr-comms",))
         self.assertEqual(
             shaping.skills,
-            ("herdr-comms", "spec-chat-shape"),
+            ("herdr-comms", "octo-lite-issue-shaper"),
         )
         self.assertEqual(delivery.skills, ("herdr-comms", "implement-spec"))
 
