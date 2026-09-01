@@ -21,8 +21,6 @@ source or fix link.
 
 ## Workflow
 
-- Use `$octo-lite-issue-shaper` for intake, grilling, specs, stories, draft PR,
-  and final fresh shaping review.
 - Linear `Shaped` means the complete issue, specs, draft PR, pinned logs, hard
   TDD contract, and clear exact-head shaping verdict agree.
 - Use `$octo-lite-loop` only from that readiness gate; loop fire performs the
