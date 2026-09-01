@@ -56,6 +56,12 @@
   "local/skill/qa-evidence-capture": {
     "path": "skills/qa-evidence-capture"
   },
+  "local/skill/spec-chat-review": {
+    "path": "skills/spec-chat-review"
+  },
+  "local/skill/spec-chat-shape": {
+    "path": "skills/spec-chat-shape"
+  },
   "local/skill/typescript": {
     "path": "skills/typescript"
   }

@@ -30,4 +30,6 @@ local  skill  pull                    skills/pull
 local  skill  push                    skills/push
 local  skill  python                  skills/python
 local  skill  qa-evidence-capture     skills/qa-evidence-capture
+local  skill  spec-chat-review        skills/spec-chat-review
+local  skill  spec-chat-shape         skills/spec-chat-shape
 local  skill  typescript              skills/typescript

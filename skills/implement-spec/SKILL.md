@@ -89,8 +89,10 @@ After every ticket is integrated:
    implementer to fix all findings. Merge it through one merger agent, then
    rerun `/code-review` once on the new integration head.
 3. Run the target repo's required validation.
-4. Mark the PR ready for review. Keep the spec issue open until human review or
-   repository automation closes it.
+4. Mark the PR ready for review only when the final review is clear and every
+   required validation succeeds. Otherwise keep it draft and report the
+   blocker. Keep the spec issue open until human review or repository
+   automation closes it.
 5. Remove every temporary worker worktree only after it is clean and its
    commits are reachable from the integration branch. Never force-remove a
    worktree with uncommitted or unmerged work.
