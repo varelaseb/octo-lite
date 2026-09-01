@@ -46,8 +46,64 @@ command -v codex >/dev/null 2>&1 || {
   echo "codex-review: codex CLI not found" >&2
   exit 2
 }
+command -v jq >/dev/null 2>&1 || {
+  echo "codex-review: jq is required for session and ownership state" >&2
+  exit 2
+}
 
 echo "codex-review: detached mode; this will not wake or stream activity into the authoring chat" >&2
+
+LEASE_SECONDS=${SPEC_CHAT_LEASE_SECONDS:-3600}
+LEASE_ACTIVE=0
+
+claim_lease() {
+  exec 9>"$REVIEW/.state.lock"
+  if ! flock -n 9; then
+    echo "codex-review: another detached owner holds $REVIEW" >&2
+    return 75
+  fi
+  NOW=$(date +%s)
+  OWNER=""
+  OWNER_PID=""
+  LEASE_UNTIL=0
+  if [ -s "$STATE" ] && jq empty "$STATE" >/dev/null 2>&1; then
+    OWNER=$(jq -r '.ownerKind // empty' "$STATE")
+    OWNER_PID=$(jq -r '.pid // empty' "$STATE")
+    LEASE_UNTIL=$(jq -r '.leaseUntil // 0' "$STATE")
+  fi
+  if [ "$OWNER" = interactive ] && [ "$LEASE_UNTIL" -gt "$NOW" ] \
+    && [ -n "$OWNER_PID" ] && kill -0 "$OWNER_PID" 2>/dev/null; then
+    echo "codex-review: interactive owner holds $REVIEW until $LEASE_UNTIL" >&2
+    flock -u 9
+    return 75
+  fi
+  STATE_TMP="$STATE.tmp.$$"
+  HEARTBEAT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  NEXT_LEASE=$((NOW + LEASE_SECONDS))
+  if [ -s "$STATE" ] && jq empty "$STATE" >/dev/null 2>&1; then
+    jq --argjson pid "$$" --argjson lease "$NEXT_LEASE" --arg heartbeat "$HEARTBEAT" \
+      '. + {ownerKind:"detached", pid:$pid, leaseUntil:$lease, heartbeatAt:$heartbeat}' \
+      "$STATE" > "$STATE_TMP"
+  else
+    jq -n --argjson pid "$$" --argjson lease "$NEXT_LEASE" --arg heartbeat "$HEARTBEAT" \
+      '{ownerKind:"detached", pid:$pid, leaseUntil:$lease, heartbeatAt:$heartbeat}' > "$STATE_TMP"
+  fi
+  mv "$STATE_TMP" "$STATE"
+  LEASE_ACTIVE=1
+}
+
+release_lease() {
+  [ "$LEASE_ACTIVE" -eq 1 ] || return 0
+  STATE_TMP="$STATE.tmp.$$"
+  if [ -s "$STATE" ] && jq empty "$STATE" >/dev/null 2>&1; then
+    jq 'del(.ownerKind, .pid, .leaseUntil, .heartbeatAt)' "$STATE" > "$STATE_TMP"
+    mv "$STATE_TMP" "$STATE"
+  fi
+  LEASE_ACTIVE=0
+  flock -u 9
+}
+
+trap 'release_lease' EXIT HUP INT TERM
 
 record_session() {
   RECORDED_SID=$1
@@ -90,8 +146,9 @@ while :; do
     NEW=$READY
   fi
   STATE="$REVIEW/state.json"
+  claim_lease || exit $?
   SID=""
-  if [ -f "$STATE" ] && command -v jq >/dev/null 2>&1; then
+  if [ -f "$STATE" ]; then
     SID=$(jq -r '.sessionId // empty' "$STATE" 2>/dev/null || true)
   fi
 
@@ -105,7 +162,7 @@ $NEW"
   if [ -n "$SID" ]; then
     echo "codex-review: resuming session $SID for $SPEC"
     codex exec -s workspace-write --skip-git-repo-check resume "$SID" "$PROMPT" </dev/null
-  elif command -v jq >/dev/null 2>&1; then
+  else
     RUN_JSON=$(mktemp "${TMPDIR:-/tmp}/spec-chat-codex.XXXXXX")
     echo "codex-review: cold dispatch for $SPEC"
     set +e
@@ -122,9 +179,7 @@ $NEW"
     SID=$(jq -r 'select(.type == "thread.started") | .thread_id' "$RUN_JSON" | sed -n '1p')
     record_session "$SID"
     rm -f "$RUN_JSON"
-  else
-    echo "codex-review: jq unavailable; cold session cannot be recorded" >&2
-    codex exec -s workspace-write --skip-git-repo-check "$PROMPT" </dev/null
   fi
+  release_lease
   [ "$ONCE" -eq 1 ] && exit 0
 done

@@ -21,7 +21,7 @@ usage:
     --ask-for-approval never --sandbox danger-full-access
 
 Direct Codex launches use no receipt or external bootstrap. ROLE must be
-orchestrator, explorer, implementer, merger, or reviewer. They require exact
+explorer, implementer, merger, or reviewer. They require exact
 Sol, high reasoning, fast service, approval-never, and danger-full-access.
 The shared Codex app-server daemon is started with Remote Control enabled before
 a Herdr tab is created.
@@ -66,23 +66,23 @@ flag_present() {
 }
 
 config_value() {
-  local wanted="$1" previous="" value=""
+  local wanted="$1" previous="" value="" found=0 result=""
   shift
   for value in "$@"; do
     if [[ "$previous" == --config || "$previous" == -c ]]; then
       case "$value" in
         "$wanted"=*)
-          value="${value#*=}"
-          value="${value%\"}"
-          value="${value#\"}"
-          echo "$value"
-          return 0
+          found=$((found + 1))
+          result="${value#*=}"
+          result="${result%\"}"
+          result="${result#\"}"
           ;;
       esac
     fi
     previous="$value"
   done
-  return 1
+  [[ "$found" == 1 ]] || return 1
+  echo "$result"
 }
 
 runtime_executable="$1"
@@ -104,7 +104,7 @@ if [[ "$runtime" == codex ]]; then
     exit 65
   }
   case "$role" in
-    orchestrator|explorer|implementer|merger|reviewer) ;;
+    explorer|implementer|merger|reviewer) ;;
     *) echo "herdr-spawn: unsupported direct Codex role: $role" >&2; exit 65 ;;
   esac
   effort="$(config_value model_reasoning_effort "$@" || true)"

@@ -89,14 +89,15 @@ Use `operator-say` for messages to the current Fable owner. It resolves
 ## Spawn
 
 Persistent issue orchestrators and temporary `implement-spec` workers get Herdr
-tabs. Temporary worker roles are `explorer`, `implementer`, `merger`, and
-`reviewer`. Close their tabs after their commits or notes are safely integrated.
+tabs. Persistent orchestrators remain receipt-bound Claude launches. Temporary
+worker roles are `explorer`, `implementer`, `merger`, and `reviewer`. Close
+their tabs after their commits or notes are safely integrated.
 
 Always use `herdr-spawn`. Inspect `herdr-spawn --help` before the first launch.
 It creates one pane, passes exact cwd, handles a trusted-folder prompt, and
 fails closed on unsupported runtime settings.
 
-For a direct Codex orchestrator or `implement-spec` worker, use no receipt:
+For a direct Codex `implement-spec` worker, use no receipt:
 
 ```sh
 herdr-spawn --workspace WORKSPACE --name NAME --label LABEL --cwd WORKTREE \
@@ -110,8 +111,7 @@ herdr-spawn --workspace WORKSPACE --name NAME --label LABEL --cwd WORKTREE \
 Direct Codex launch enables the shared Codex Remote Control app-server before
 creating a Herdr tab. A Remote Control failure creates no tab. Direct mode uses
 no receipt, bootstrap, role resolver, generated adapter, or external control
-plane. `ROLE` is `orchestrator`, `explorer`, `implementer`, `merger`, or
-`reviewer`.
+plane. `ROLE` is `explorer`, `implementer`, `merger`, or `reviewer`.
 
 Legacy Claude launches keep the receipt-backed verified bootstrap. Before any
 pane exists, `herdr-spawn` verifies the full BOOTSTRAP_ACK and resumes only the

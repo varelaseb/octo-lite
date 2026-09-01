@@ -13,10 +13,15 @@ t=0
 while [ "$t" -lt "$TMO" ]; do
   new=$(ls "$DIR/human" 2>/dev/null | grep -vxFf "$CUR" || true)
   if [ -n "$new" ]; then
-    if [ "${LIVE:-0}" = 1 ] || echo "$new" | grep -q handoff; then
-      echo "$new"
-      exit 0
+    ready=$new
+    if [ "${LIVE:-0}" != 1 ]; then
+      last_handoff=$(printf '%s\n' "$new" | awk '/-handoff-/ { line = NR } END { if (line) print line }')
+      [ -n "$last_handoff" ] || continue
+      ready=$(printf '%s\n' "$new" | sed -n "1,${last_handoff}p")
     fi
+    [ -n "$ready" ] || continue
+    printf '%s\n' "$ready"
+    exit 0
   fi
   sleep "$POLL"
   t=$((t + POLL))

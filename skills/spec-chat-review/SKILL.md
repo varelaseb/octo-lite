@@ -20,7 +20,7 @@ Your job in review mode: wait for hand-off batches, apply each comment to the sp
 
 ## The loop
 
-1. **Reconnect before parking.** On every newly started or resumed spec-chat turn, first run one immediate, read-only collection scan:
+1. **Reconnect before parking.** On every newly started or resumed spec-chat turn, first inspect each relevant `review/state.json`. If an unexpired `ownerKind: "detached"` lease names a live pid, do not drain or edit concurrently. Wait for that owner to finish or stop it explicitly. Otherwise write an `ownerKind: "interactive"` lease with your pid, `leaseUntil`, and `heartbeatAt`, then run one immediate, read-only collection scan:
 
    ```
    scripts/watch-specs.sh <spec-root> .cursor-<cli-or-session> 0 3
