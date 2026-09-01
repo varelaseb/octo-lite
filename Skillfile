@@ -17,6 +17,7 @@ local  skill  commit                  skills/commit
 local  skill  frontend-design         skills/frontend-design
 local  skill  grill-with-docs         skills/grill-with-docs
 local  skill  herdr-comms             skills/herdr-comms
+local  skill  implement-spec          skills/implement-spec
 local  skill  launch-meta-operator    skills/launch-meta-operator
 local  skill  nodejs                  skills/nodejs
 local  skill  octo-lite-debug         skills/octo-lite-debug
@@ -29,4 +30,6 @@ local  skill  pull                    skills/pull
 local  skill  push                    skills/push
 local  skill  python                  skills/python
 local  skill  qa-evidence-capture     skills/qa-evidence-capture
+local  skill  spec-chat-review        skills/spec-chat-review
+local  skill  spec-chat-shape         skills/spec-chat-shape
 local  skill  typescript              skills/typescript

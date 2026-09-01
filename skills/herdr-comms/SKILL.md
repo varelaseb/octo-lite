@@ -88,15 +88,34 @@ Use `operator-say` for messages to the current Fable owner. It resolves
 
 ## Spawn
 
-Only persistent Fable and Opus orchestrators get Herdr tabs. Workflow workers
-run inside the owning Opus session.
+Persistent issue orchestrators and temporary `implement-spec` workers get Herdr
+tabs. Persistent orchestrators remain receipt-bound Claude launches. Temporary
+worker roles are `explorer`, `implementer`, `merger`, and `reviewer`. Close
+their tabs after their commits or notes are safely integrated.
 
-Always use `herdr-spawn`. Before any pane exists, it runs a read-only print-mode
-bootstrap itself and verifies the full BOOTSTRAP_ACK; the child never runs
-bootstrap-ack or mutates the receipt. Only the exact verified provider session is
-then resumed into the persistent pane. It creates one pane, passes exact cwd,
-handles the trusted-folder prompt, and enforces exact Claude model and auto mode
-for operator and orchestrator roles.
+Always use `herdr-spawn`. Inspect `herdr-spawn --help` before the first launch.
+It creates one pane, passes exact cwd, handles a trusted-folder prompt, and
+fails closed on unsupported runtime settings.
+
+For a direct Codex `implement-spec` worker, use no receipt:
+
+```sh
+herdr-spawn --workspace WORKSPACE --name NAME --label LABEL --cwd WORKTREE \
+  --role ROLE --direct -- \
+  codex --model gpt-5.6-sol \
+    --config 'model_reasoning_effort="high"' \
+    --config 'service_tier="fast"' \
+    --ask-for-approval never --sandbox danger-full-access
+```
+
+Direct Codex launch enables the shared Codex Remote Control app-server before
+creating a Herdr tab. A Remote Control failure creates no tab. Direct mode uses
+no receipt, bootstrap, role resolver, generated adapter, or external control
+plane. `ROLE` is `explorer`, `implementer`, `merger`, or `reviewer`.
+
+Legacy Claude launches keep the receipt-backed verified bootstrap. Before any
+pane exists, `herdr-spawn` verifies the full BOOTSTRAP_ACK and resumes only the
+exact verified provider session.
 
 Labels:
 
@@ -105,12 +124,13 @@ Labels:
 [🎤] [◆]issue[/pr] · outcome
 ```
 
-`◆` marks epic Opus. Normal issues have no marker. `🎤` appears only during a
-direct investigation, grill, diagnosis, or decision that needs the operator.
-Fable removes it as soon as the Opus can work autonomously. No worker tabs.
+`◆` marks an epic orchestrator. Temporary workers use the ticket key in the
+label. `🎤` appears only
+during a direct investigation, diagnosis, or decision that needs the operator.
+Remove it as soon as the agent can work autonomously.
 
-Remote control: every `🎤` or `🧠` session must have Claude remote control
-enabled durably at launch through the launcher (`claude --rc` flag or a
-`remoteControlAtStartup` settings injection), never post-hoc. `herdr-spawn`
-fails closed on a `🎤` or `🧠` spawn without it. Flipping `🎤` on is a Fable
-duty that requires ensuring remote control is active on that session.
+Remote control: direct Codex launch enables the shared Codex Remote Control
+app-server for every session. Legacy Claude `🎤` or `🧠` sessions must enable
+Claude remote control durably at launch through `claude --rc` or a
+`remoteControlAtStartup` settings injection. `herdr-spawn` fails closed when
+the required Remote Control surface cannot be enabled.

@@ -48,15 +48,7 @@ skill = "octo-lite-issue-shaper"
 when = "shaping"
 
 [[roles.orchestrator.conditional_skills]]
-skill = "grill-with-docs"
-when = "shaping"
-
-[[roles.orchestrator.conditional_skills]]
-skill = "octo-lite-github"
-when = "shaping"
-
-[[roles.orchestrator.conditional_skills]]
-skill = "octo-lite-loop"
+skill = "implement-spec"
 when = "delivery"
 
 [roles.shaping-reviewer]

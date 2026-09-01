@@ -1328,6 +1328,13 @@ exec {real_mv} "$@"
         fake.chmod(0o755)
         (fake_bin / "claude").write_text(FAKE_BOOTSTRAP_CLAUDE)
         (fake_bin / "claude").chmod(0o755)
+        (fake_bin / "codex").write_text(
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            'echo "codex $*" >>"$FAKE_LOG"\n'
+            "printf '{\"status\":\"running\",\"remoteControlEnabled\":true}\\n'\n"
+        )
+        (fake_bin / "codex").chmod(0o755)
         env = dict(
             os.environ,
             PATH=f"{fake_bin}:{OCTO_LAUNCH.parent}:{os.environ['PATH']}",
@@ -1404,6 +1411,70 @@ exec {real_mv} "$@"
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertIn("bootstrap=acknowledged", result.stdout)
             self.assertIn(f"provider_session_id={receipt['spawn_id']}", result.stdout)
+
+    def test_spawn_rejects_direct_codex_orchestrator_without_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            env, log = self.spawn_environment(td)
+            cmd = [
+                str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(repo),
+                "--role", "orchestrator", "--label", "443/6 · operating model",
+                "--direct", "--",
+                "codex", "--model", "gpt-5.6-sol",
+                "--config", 'model_reasoning_effort="high"',
+                "--config", 'service_tier="fast"',
+                "--ask-for-approval", "never", "--sandbox", "danger-full-access",
+            ]
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertEqual(65, result.returncode)
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("tab create") for line in calls))
+            self.assertFalse(any(line.startswith("codex remote-control") for line in calls))
+
+    def test_spawn_accepts_direct_implement_spec_worker(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            env, log = self.spawn_environment(td)
+            cmd = [
+                str(SPAWN), "--workspace", "w1", "--name", "impl-tur-123", "--cwd", str(repo),
+                "--role", "implementer", "--label", "TUR-123 · implement",
+                "--direct", "--",
+                "codex", "--model", "gpt-5.6-sol",
+                "--config", 'model_reasoning_effort="high"',
+                "--config", 'service_tier="fast"',
+                "--ask-for-approval", "never", "--sandbox", "danger-full-access",
+            ]
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("role=implementer", result.stdout)
+            self.assertIn("bootstrap=direct", result.stdout)
+            self.assertIn("remote_control=enabled", result.stdout)
+            calls = log.read_text().splitlines()
+            self.assertIn("codex remote-control start --json", calls)
+            start = next(line for line in calls if line.startswith("agent start"))
+            self.assertIn("--kind codex", start)
+
+    def test_spawn_rejects_duplicate_direct_codex_runtime_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            env, log = self.spawn_environment(td)
+            cmd = [
+                str(SPAWN), "--workspace", "w1", "--name", "impl-tur-123", "--cwd", str(repo),
+                "--role", "implementer", "--label", "TUR-123 · implement",
+                "--direct", "--",
+                "codex", "--model", "gpt-5.6-sol",
+                "--config", 'model_reasoning_effort="high"',
+                "--config", 'model_reasoning_effort="low"',
+                "--config", 'service_tier="fast"',
+                "--ask-for-approval", "never", "--sandbox", "danger-full-access",
+            ]
+            result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+            self.assertEqual(65, result.returncode)
+            calls = log.read_text().splitlines() if log.exists() else []
+            self.assertFalse(any(line.startswith("codex remote-control") for line in calls))
 
     def test_spawn_rejects_an_unsanctioned_orchestrator_runtime(self):
         # A runtime that is neither the default Fable nor the sanctioned Opus fails

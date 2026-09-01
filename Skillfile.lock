@@ -17,6 +17,9 @@
   "local/skill/herdr-comms": {
     "path": "skills/herdr-comms"
   },
+  "local/skill/implement-spec": {
+    "path": "skills/implement-spec"
+  },
   "local/skill/launch-meta-operator": {
     "path": "skills/launch-meta-operator"
   },
@@ -52,6 +55,12 @@
   },
   "local/skill/qa-evidence-capture": {
     "path": "skills/qa-evidence-capture"
+  },
+  "local/skill/spec-chat-review": {
+    "path": "skills/spec-chat-review"
+  },
+  "local/skill/spec-chat-shape": {
+    "path": "skills/spec-chat-shape"
   },
   "local/skill/typescript": {
     "path": "skills/typescript"

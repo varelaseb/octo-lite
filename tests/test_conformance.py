@@ -876,15 +876,11 @@ class CutoverConformanceTests(unittest.TestCase):
             block_start = code.index(mode_marker)
             self.assertIn(spawn_call, code[block_start:block_start + 1200])
 
-    def test_loop_skill_directs_journal_based_gating_with_no_worker_receipt(self) -> None:
-        # Deterministic wiring check only (prompt-tdd-deterministic): the installed
-        # loop skill directs journal-plus-ack-echo gating and keeps the retired
-        # launcher binding surfaces retired.
+    def test_loop_skill_redirects_to_implement_spec(self) -> None:
         text = " ".join((ROOT / "skills/octo-lite-loop/SKILL.md").read_text().split())
-        self.assertIn("workflow journal plus a schema-forced acknowledgment echo", text)
-        self.assertIn("no worker TOML receipt", text)
-        self.assertIn("No worker TOML receipt exists to pass anywhere", text)
-        self.assertNotIn("recomputes the result binding", text)
+        self.assertIn("Load and follow `$implement-spec`", text)
+        self.assertIn("native role-gated delivery loop is retired", text)
+        self.assertNotIn("schema-forced acknowledgment echo", text)
 
     def test_install_is_symlink_only_and_checkable(self) -> None:
         installer = ROOT / "scripts/install-octo-lite"
@@ -1054,34 +1050,15 @@ class CutoverConformanceTests(unittest.TestCase):
 
 
 
-    def test_refactor_out_of_loop_ruling_conformance(self) -> None:
-        # Issue #11 rulings (operator grill 2026-07-23, ADR 0002): refactoring leaves
-        # the implementation loop; reviewer-flagged refactor-only passes are verified
-        # green-stays-green; the diagram renames Red green refactor to Red green.
+    def test_ticket_graph_delivery_supersedes_loop_tdd_ceremony(self) -> None:
         delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        operating = (ROOT / "spec/domains/operating-model.spec.html").read_text()
         index = (ROOT / "spec/index.spec.html").read_text()
-
-        for anchor in ("delivery-refactor-out-of-loop", "delivery-refactor-pass-contract",
-                       "delivery-tdd-named-test-refactor-pass"):
-            self.assertIn(f'data-anchor="{anchor}"', delivery, anchor)
-            self.assertIn(f'id="{anchor}"', delivery, anchor)
-        self.assertIn("Refactoring is not part of the implementation loop", delivery)
-        self.assertIn("reviewer-flagged refactor-only fix passes", delivery)
-        self.assertIn("verified green-stays-green", delivery)
-        self.assertIn("<code>test_refactor_pass_green_stays_green</code>", delivery)
-
-        self.assertIn('data-anchor="intent-refactor-review"', operating)
-        self.assertIn("spec-driven red then green", operating)
-        self.assertIn("Refactoring is not part of the implementation loop", operating)
-
-        # Diagram island: node renamed; the old label is fully gone from the suite.
-        self.assertIn('"Red green"', delivery)
-        self.assertNotIn("Red green refactor", delivery)
-
-        # ADR 0002 exists and is indexed.
-        self.assertTrue((ROOT / "spec/adr/0002-tdd-skill-vendoring.spec.html").is_file())
-        self.assertIn('data-anchor="adr-0002"', index)
+        self.assertIn('data-anchor="delivery-frontier"', delivery)
+        self.assertIn('data-anchor="delivery-worker-isolation"', delivery)
+        self.assertIn('data-anchor="delivery-tdd-ticket-proof"', delivery)
+        self.assertIn("no separate red and green commit ceremony", delivery)
+        self.assertTrue((ROOT / "spec/adr/0005-herdr-ticket-graph-delivery.spec.html").is_file())
+        self.assertIn('data-anchor="adr-0005"', index)
 
 
 

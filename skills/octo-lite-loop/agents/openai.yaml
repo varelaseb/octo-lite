@@ -1,4 +1,4 @@
 interface:
   display_name: "octo-lite Loop"
-  short_description: "Run the implementer-reviewer subagent loop for ready Linear-first work or explicitly GitHub-first issues."
-  default_prompt: "Use $octo-lite-loop to run the implementer/reviewer loop for this octo-lite-ready issue."
+  short_description: "Redirect an old octo-lite loop request to implement-spec."
+  default_prompt: "Use $implement-spec to implement the shaped specification and its ticket graph."

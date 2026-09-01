@@ -79,7 +79,7 @@ elif [[ "$1 $2" == "agent start" ]]; then
     exit 2
   fi
 elif [[ "$1 $2" == "agent get" ]]; then
-  echo '{"result":{"agent":{"pane_id":"w1:p1"}}}'
+  echo '{"result":{"agent":{"pane_id":"w1:p1","agent_status":"idle"}}}'
 elif [[ "$1 $2" == "pane read" ]]; then
   printf 'ready\n'
 elif [[ "$1 $2" == "agent prompt" ]]; then
@@ -87,7 +87,7 @@ elif [[ "$1 $2" == "agent prompt" ]]; then
   # observed post-submission state; this fake models a clean submit.
   for arg in "$@"; do
     if [[ "$arg" == "--wait" ]]; then
-      echo '{"result":{"agent":{"state":"idle","state_change_seq":2}}}'
+      echo '{"result":{"type":"agent_prompted","agent":{"agent_status":"idle","state_change_seq":2}}}'
     fi
   done
 fi
