@@ -1036,6 +1036,7 @@ Independently, the attempt-cap check precedes the eligibility gate in a fire, so
 <p data-anchor="handoff-artifact" id="handoff-artifact">The outgoing Fable writes one concise immutable Markdown handoff at <code>handoffs/&lt;zero-padded-revision&gt;.md</code> containing objective, stream tree, exact facts, pending decisions, authorities, blockers, control path, timer, and reply routes.</p>
 <p data-anchor="handoff-reconcile" id="handoff-reconcile">The fresh successor loads canonical instructions, reconciles the handoff against source systems, and declares readiness before cutover.</p>
 <p data-anchor="handoff-owner" id="handoff-owner">One <code>operator-owner.toml</code> stores schema version, exact owner session ID, handoff revision, and control-directory identity.</p>
+<p data-anchor="handoff-owner-scope" id="handoff-owner-scope">This pointer scopes only meta-operator handoff, timer, top-level message routing, and helpers that mutate that control plane; it is never an acceptance or merge authority gate for an ordinary PR-owning lane.</p>
 <p data-anchor="handoff-atomic" id="handoff-atomic">A locked expected-owner and revision check plus atomic TOML rename is the sole authority commit.</p>
 <p data-anchor="handoff-routing" id="handoff-routing">The timer and top-level child notifications resolve the owner through <code>operator-say</code>, so the next message observes the same atomic commit.</p>
 <p data-anchor="handoff-old-owner" id="handoff-old-owner">The old operator becomes read-only at commit and may only forward late direct messages until cleanup.</p>
@@ -1284,6 +1285,7 @@ handoffs/0001.md</code></pre>
 <p data-anchor="stream-owner-writer" id="stream-owner-writer">Only the owner-transfer helper replaces <code>operator-owner.toml</code>.</p>
 <p data-anchor="stream-trace-writer" id="stream-trace-writer">Only deterministic workflow and gate helpers append trace events.</p>
 <p data-anchor="stream-mutation-caller" id="stream-mutation-caller">Operator-owned mutation helpers verify the exact caller against <code>operator-owner.toml</code>; ordinary read-only commands do not.</p>
+<p data-anchor="stream-mutation-not-merge" id="stream-mutation-not-merge">PR acceptance records and repository merges are not operator-control mutation helpers and never consult this pointer.</p>
 </section>
 
 <section data-anchor="diagram-herdr-labels" id="diagram-herdr-labels" hidden>
