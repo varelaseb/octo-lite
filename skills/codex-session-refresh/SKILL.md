@@ -45,12 +45,13 @@ Run the smallest thing that fixes the report. A full pass is three steps, but
 most calls are one of them, and doing all three when one was asked for is how
 live work gets killed for nothing.
 
-- **Auth only.** Credentials are gone or capped, lanes are otherwise fine. Do
-  step 1, then mint a pairing code and hand it over. The daemon keeps serving;
-  it only holds a stale token once auth actually changes, so restart it in the
-  same pass ONLY if lanes then reject input. Note that a login lands while
-  lanes are already running, so every one of them is now `stale-auth` and needs
-  a refresh even though nothing was restarted.
+- **Auth only.** Nobody needs the running lanes to transact yet. Do step 1,
+  then mint a pairing code and hand it over.
+  This mode is narrower than it looks. The daemon caches the old token, so the
+  moment any lane has to work under the new account you also need step 2, and
+  every lane that was already running is `stale-auth` and needs step 3. A login
+  on its own fixes a file on disk and nothing else. If the ask was "get the
+  fleet going", it was never this mode.
 - **Server only, usually for remote.** The operator wants to pair a phone or a
   second machine. **Try `codex remote-control pair --json` first.** It very
   often just works, and then there is nothing to do but hand over the code. A
@@ -58,6 +59,46 @@ live work gets killed for nothing.
   inventory in step 2.
 - **Full pass.** Auth changed AND lanes must transact under it. Step 1, then 2,
   then 3.
+
+## Reading the banners
+
+A stopped lane shows one of three things. They look alike and mean completely
+different things, so classify before acting.
+
+- `You've hit your usage limit ... try again at <date>` is **quota**. No amount
+  of refreshing, restarting, or rotating fixes it. Only a window reset, bought
+  credits, or an account that still has room.
+- `Your access token could not be refreshed because you have since logged out
+  or signed in to another account` is **the daemon holding the old token**, not
+  a broken login. Auth is fine on disk. Restart the app-server.
+- A WebSocket transport error plus `Disconnected from this task` and a
+  `Reconnect:` line is **the app-server having respawned**, most often an auto
+  update replacing the binary under the running TUIs. Nothing is wrong with
+  auth or quota. Reconnect the lanes.
+
+**The reset date is an account fingerprint.** Two accounts never share a
+window, so `try again at Sep 7th 2:25 AM` and `try again at Sep 8th 5:02 PM`
+are two different exhausted accounts, and a banner's date tells you which
+account a lane was talking to when it stopped. Use it before rotating: read the
+dates already sitting in the lanes, and do not sign in to an account whose
+window is one of them. Keep the map as you learn it.
+
+| account | window |
+| --- | --- |
+| example@host | resets Sep 7, 2:25 AM |
+
+Rotating into an already-capped account is the default failure, because the
+obvious next account is usually the one that was capped last time.
+
+When every known account is capped, stop rotating and say so. Refreshing cannot
+manufacture quota, and each attempt spends a real turn to be refused. Report the
+earliest reset date, because that is the actual unblock time unless credits are
+bought or a genuinely new account appears.
+
+Say it plainly when the accounts are being exhausted faster than they reset. A
+large fleet on high reasoning effort can burn a weekly allowance in an
+afternoon, and then every rotation buys one session. That is a fleet-size and
+effort problem wearing a credentials costume, and no run of this skill fixes it.
 
 ## Order
 
@@ -200,6 +241,10 @@ Two things in that list deserve a pause before restarting:
   no amount of care gets the old hostname back. This is outward facing and
   irreversible: name the affected URLs to the operator and get a go-ahead
   before restarting, rather than after.
+  Read the URL out of the tunnel's own pane BEFORE restarting, because nothing
+  else records it. It is not in the review directory and not in the owning
+  lane's scrollback, so once that pane dies the old address cannot even be
+  quoted to the people who lost it, let alone restored.
 - **One-shot jobs**, such as a `claude -p` evaluation reading a `.tmp-*` input.
   These are somebody's in-flight work, not services. Do not blindly re-run
   them; report that they died and let their owning lane decide.
@@ -299,6 +344,11 @@ codex-lanes scan
   select <title> (<id>)` on rename. That one is deliberately not an anchor: the
   TUI printing it is still running, and claiming a pane on it would adopt live
   lanes as dropped ones.
+- Not every codex-looking pane is a lane. A spec-chat review session runs a
+  `review-control.sh external ... wake-herdr.py` process that reads as a pane
+  with no agent and names its owning lane in its own output. It is the verified
+  external-wake channel for that lane. Never wake it and never kill it while
+  its owner is alive.
 - `role=driver`: the lane shows `Waiting for agents`, so it owns subagents.
   This reads a recent scrollback window, so it can miss a driver that has since
   scrolled. `GOAL` is the durable signal: any `thread_goals` status other than
@@ -370,6 +420,16 @@ Message content that works, as plain prose with no metacharacters:
 Message every lane the restart dropped, not only drivers. A plain lane mid-task
 is just as stopped as a driver, and it has no way to learn why. The operator's
 standing expectation is that anything killed by a refresh gets told to resume.
+
+**Prove the account on ONE lane before processing the fleet.** Refresh a single
+lane, wake it, and watch what comes back. The `codex exec` probe cannot do this
+job, so the first refreshed lane IS the probe. Only when that lane actually
+transacts do the rest follow.
+
+A canary costs one turn. Skipping it costs one dead turn per lane, and on a
+capped account every one of them comes back with the same banner. This has paid
+for itself twice: eight lanes and seventeen lanes respectively, both times
+stopped after one.
 
 **Read each lane before waking it. Never blanket-notify.** A refresh drops
 finished lanes and mid-task lanes alike, and they are indistinguishable from
