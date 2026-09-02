@@ -5,9 +5,6 @@ description: Shape a new work unit from a plain-language feature prompt into a c
 
 # Spec Chat Shape
 
-Be extremely concise. Sacrifice grammar for the sake of concision.
-No em-dashes or en-dashes. Ever.
-
 Create durable current truth before deep investigation.
 Keep instructions, artifacts, and questions concise and human-readable.
 
@@ -96,11 +93,11 @@ Finish only when hierarchy, contrast, artifact density, label and edge collision
 ## Create the implementation graph
 
 Before finishing shaping, use the repository-selected issue skill to create or update implementation tickets linked to the spec issue.
-Each ticket describes one independently assignable code outcome, links the exact governing spec anchors, names observable completion evidence, and lists its explicit blockers.
+Each ticket describes one independently assignable code outcome, links exact governing spec anchors, names observable completion evidence, and lists explicit blockers.
 Represent dependencies with tracker blocking relations, not prose ordering or ticket numbering.
-The tickets form a task graph, not a list of steps: every incomplete ticket with no incomplete blocker is on the ready frontier.
+Every incomplete ticket with no incomplete blocker is on the ready frontier.
 Do not create artificial dependencies merely to serialize work.
-Reconcile ticket scope and relations after every material spec edit, and remove or close tickets made obsolete by the current spec.
+Reconcile ticket scope and relations after every material spec edit, and remove or close tickets made obsolete by current spec truth.
 Keep tracker state truthful; shaping does not mark implementation tickets In Progress or Done.
 
 ## Publish the seed
@@ -112,7 +109,7 @@ Keep tracker state truthful; shaping does not mark implementation tickets In Pro
 5. Require no SSH, VPN, or separate login; possession of the URL is the only review authentication.
 6. Tell the human the URL is a secret and never publish it into the issue or change request.
 7. Open the spec with `focus=changes&base=<exact-local-change-request-base>` so stacked branches compare against their real base and the runtime derives changed current blocks from local Git.
-8. Start `spec-chat-review` in its active in-session attachment mode.
+8. Start `spec-chat-review` and establish turn-yielded, verified external-wake, or explicit manual-resume before describing review availability.
 
 Never fetch or mutate Git from the review server.
 If no safe public capability transport exists, stop rather than exposing the repository or substituting SSH.

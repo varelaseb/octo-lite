@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
-MANAGED_SKILL = "tdd"
+MANAGED_SKILLS = ("tdd", "spec-chat-review", "spec-chat-shape")
 
 
 class InstallSkillMirrorTests(unittest.TestCase):
@@ -35,20 +35,22 @@ class InstallSkillMirrorTests(unittest.TestCase):
     def test_install_mirrors_managed_skill_into_both_platforms(self) -> None:
         result = self._install()
         self.assertEqual(0, result.returncode, result.stderr)
-        claude = self.prefix / ".claude" / "skills" / MANAGED_SKILL
-        codex = self.prefix / ".codex" / "skills" / MANAGED_SKILL
-        self.assertTrue(claude.exists(), f"missing {claude}")
-        self.assertTrue(codex.exists(), f"missing {codex}")
-        self.assertEqual(
-            os.path.realpath(claude),
-            os.path.realpath(codex),
-            "managed skill must resolve identically from .claude/skills and .codex/skills",
-        )
-        self.assertEqual(
-            os.path.realpath(claude),
-            str((ROOT / "agents" / "skills" / MANAGED_SKILL).resolve()),
-            "mirror source must be the agents/skills managed tree",
-        )
+        for managed_skill in MANAGED_SKILLS:
+            with self.subTest(managed_skill=managed_skill):
+                claude = self.prefix / ".claude" / "skills" / managed_skill
+                codex = self.prefix / ".codex" / "skills" / managed_skill
+                self.assertTrue(claude.exists(), f"missing {claude}")
+                self.assertTrue(codex.exists(), f"missing {codex}")
+                self.assertEqual(
+                    os.path.realpath(claude),
+                    os.path.realpath(codex),
+                    "managed skill must resolve identically from .claude/skills and .codex/skills",
+                )
+                self.assertEqual(
+                    os.path.realpath(claude),
+                    str((ROOT / "agents" / "skills" / managed_skill).resolve()),
+                    "mirror source must be the agents/skills managed tree",
+                )
 
     def test_check_passes_after_clean_install(self) -> None:
         self.assertEqual(0, self._install().returncode)
@@ -57,7 +59,7 @@ class InstallSkillMirrorTests(unittest.TestCase):
 
     def test_check_fails_when_managed_mirror_is_broken(self) -> None:
         self.assertEqual(0, self._install().returncode)
-        (self.prefix / ".codex" / "skills" / MANAGED_SKILL).unlink()
+        (self.prefix / ".codex" / "skills" / MANAGED_SKILLS[0]).unlink()
         check = self._install("--check")
         self.assertNotEqual(0, check.returncode, "--check must flag a broken managed-skill mirror")
 
@@ -73,12 +75,12 @@ class ManagedSkillResolutionTests(unittest.TestCase):
         from workflows.lib import role_resolver
 
         self.assertFalse(
-            (ROOT / "skills" / MANAGED_SKILL / "SKILL.md").exists(),
+            (ROOT / "skills" / MANAGED_SKILLS[0] / "SKILL.md").exists(),
             "tdd must no longer live under skills/",
         )
-        self.assertTrue((ROOT / "agents" / "skills" / MANAGED_SKILL / "SKILL.md").is_file())
+        self.assertTrue((ROOT / "agents" / "skills" / MANAGED_SKILLS[0] / "SKILL.md").is_file())
         # Resolves without raising because it is found in agents/skills.
-        self.assertTrue(role_resolver._skill_blob(ROOT, MANAGED_SKILL))
+        self.assertTrue(role_resolver._skill_blob(ROOT, MANAGED_SKILLS[0]))
         with self.assertRaises(ValueError):
             role_resolver._skill_blob(ROOT, "no-such-skill-xyz")
 

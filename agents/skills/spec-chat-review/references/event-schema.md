@@ -1,4 +1,4 @@
-# Event schema - reading and writing the spool
+# Event schema — reading and writing the spool
 
 One JSON object per file. Read this instead of reverse-engineering the schema from `runtime.js`. Human events land in `<spec>.review/human/`, agent events in `<spec>.review/agent/`; filenames are `<ns-timestamp>-<event>-<id>.json` and sort into chronological order.
 
@@ -22,11 +22,11 @@ One JSON object per file. Read this instead of reverse-engineering the schema fr
 ```
 
 - `anchorId`: the `data-anchor` block the pin lives in.
-- `target`: narrows to an element within the block, or `null` for the whole block. Types: `datum` / `axis-x` / `axis-y` / `target` (chart marks, `key` is the datum/tick/markLine value) · `node` / `edge` / `note` (diagram parts) · `element` (`key` is a structural path - which is also a source location, since the spec IS the source file) · `text` (`key` is the selected quote).
-- `element` key grammar: `p[2]`-style positional (nth tag within the anchored block) · `button#cycle-play`-style id-based (used when the element has a unique id - survives reordering) · `svg[1]/g[2]/path[5]`-style slash-separated paths for children of inline SVG figures (each segment is `tag[n]` among same-tag siblings, or `tag#id`).
-- `datum` targets may additionally carry `seriesIndex`/`dataIndex` (pin-positioning hints) and `chartKey` (disambiguates when one anchored block holds several charts). `key` stays the greppable value - interpret anchors from it; the extra fields are for the browser runtime.
-- `legend` (`key` is the legend/series name): a comment on a chart's legend entry - the series as a whole, not one datum. `target` also covers markPoint/markArea values, not just markLines.
-- `quote`: captured surrounding text - the fallback if the anchor later moves.
+- `target`: narrows to an element within the block, or `null` for the whole block. Types: `datum` / `axis-x` / `axis-y` / `target` (chart marks, `key` is the datum/tick/markLine value) · `node` / `edge` / `note` (diagram parts) · `element` (`key` is a structural path — which is also a source location, since the spec IS the source file) · `text` (`key` is the selected quote).
+- `element` key grammar: `p[2]`-style positional (nth tag within the anchored block) · `button#cycle-play`-style id-based (used when the element has a unique id — survives reordering) · `svg[1]/g[2]/path[5]`-style slash-separated paths for children of inline SVG figures (each segment is `tag[n]` among same-tag siblings, or `tag#id`).
+- `datum` targets may additionally carry `seriesIndex`/`dataIndex` (pin-positioning hints) and `chartKey` (disambiguates when one anchored block holds several charts). `key` stays the greppable value — interpret anchors from it; the extra fields are for the browser runtime.
+- `legend` (`key` is the legend/series name): a comment on a chart's legend entry — the series as a whole, not one datum. `target` also covers markPoint/markArea values, not just markLines.
+- `quote`: captured surrounding text — the fallback if the anchor later moves.
 
 ## `handoff` (human)
 
@@ -57,7 +57,7 @@ An agent reply is written by `emit-reply.sh`:
 ```
 
 - `respondsTo`: the exact human `comment`, `reply`, or `edit` id being answered. Do not respond to the root id when a newer human message is pending.
-- `status`: `acknowledged` (addressed, awaiting human resolve) or `orphaned` (anchor gone - quote the stored quote, don't guess).
+- `status`: `acknowledged` (addressed, awaiting human resolve) or `orphaned` (anchor gone — quote the stored quote, don't guess).
 - `change`: short summary the page badges, or `"no spec change"` for informational replies.
 
 ## `edit` (human)
@@ -76,7 +76,7 @@ Human-authored comments and follow-up replies remain append-only on disk. Editin
 - An edit becomes the newest human message id. It returns the thread to `draft`; after hand-off it becomes `pending`, and the agent replies to the edit id.
 - Collapse each supersession chain before acting. Never apply or answer text that a later edit supersedes.
 
-## `status` (human) - resolution
+## `status` (human) — resolution
 
 ```json
 {"id":"s1","event":"status","respondsTo":"u1","status":"resolved",
