@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# codex-lanes: classify, restart, and message Herdr codex lanes across an
+# app-server daemon restart. Read-only by default. See SKILL.md.
+set -uo pipefail
+
+PIDFILE=/root/.codex/app-server-daemon/app-server.pid
+POLL_TRIES=${CODEX_LANES_POLL_TRIES:-30}
+POLL_SLEEP=${CODEX_LANES_POLL_SLEEP:-2}
+
+die() { echo "codex-lanes: $*" >&2; exit 1; }
+
+AUTHFILE=${CODEX_LANES_AUTHFILE:-/root/.codex/auth.json}
+
+auth_mtime() {
+  stat -c %Y "$AUTHFILE" 2>/dev/null
+}
+
+# A TUI reads auth.json once, at startup, and holds that account in memory for
+# its whole life. So a login that lands AFTER a lane started leaves that lane
+# presenting the previous account: it keeps showing the old account's usage
+# limit and cannot transact, while the file on disk is perfectly healthy.
+#
+# Daemon age cannot see this. A lane started after the last daemon restart is
+# `live` by that measure and still be holding dead credentials, which is
+# exactly how a whole fleet reads as healthy while nothing works. The honest
+# comparison is the lane's own start time against the credential file's mtime.
+#
+# Answers 0 when the lane started before the current credentials.
+tui_predates_auth() {
+  local pid="$1" amtime ptimes now started
+  amtime=$(auth_mtime)
+  [ -n "$amtime" ] || return 1
+  ptimes=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')
+  [ -n "$ptimes" ] || return 1
+  now=$(date +%s)
+  started=$((now - ptimes))
+  [ "$started" -lt "$amtime" ]
+}
+
+daemon_etimes() {
+  local pid
+  pid=$(python3 -c "
+import json,sys
+try:
+    print(json.load(open('$PIDFILE'))['pid'])
+except Exception:
+    print('')
+" 2>/dev/null)
+  [ -n "$pid" ] || { echo ""; return; }
+  ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' '
+}
+
+# Foreground process of a pane, as: <pid> <name> <argv...>
+pane_fg() {
+  timeout 10 herdr pane process-info --pane "$1" 2>/dev/null | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)['result']['process_info']
+    p=(d.get('foreground_processes') or [{}])[0]
+    print(p.get('pid',''), p.get('name',''), p.get('cmdline',''))
+except Exception:
+    print('', '', '')
+"
+}
+
+# Scrollback plus the current viewport. A pane whose whole content still fits
+# on screen has no scrollback at all, and recent-unwrapped comes back holding
+# just the prompt line, which makes scan and refresh blind to exactly the
+# short-lived lane they are being pointed at. Visible goes last so the newest
+# text stays last and "last match wins" still resolves to the newest id.
+pane_text() {
+  local hist vis
+  hist=$(timeout 10 herdr pane read "$1" --source recent-unwrapped --lines "${2:-40}" 2>/dev/null)
+  vis=$(pane_visible "$1" "${2:-40}")
+  printf '%s\n%s' "$hist" "$vis"
+}
+
+# Only what is on screen right now. Anything asking "is this prompt up" must
+# read this and not scrollback, where a stale copy of the same prompt lives.
+pane_visible() {
+  timeout 10 herdr pane read "$1" --source visible --lines "${2:-40}" 2>/dev/null
+}
+
+# Candidate lanes: panes herdr still calls codex, plus unclaimed panes. A lane
+# whose TUI died loses its agent field entirely, so filtering on agent codex
+# hides exactly the panes that most need a refresh. cmd_scan confirms an
+# unclaimed pane from its scrollback before putting it in the table.
+codex_panes() {
+  timeout 20 herdr pane list 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for x in d['result']['panes']:
+    agent=x.get('agent') or ''
+    if agent and agent!='codex':
+        continue
+    print(x['pane_id'], agent or '-', x.get('cwd',''))
+"
+}
+
+pane_cwd() {
+  timeout 20 herdr pane list 2>/dev/null | python3 -c "
+import json,sys
+pane='$1'
+for x in json.load(sys.stdin)['result']['panes']:
+    if x['pane_id']==pane:
+        print(x.get('cwd',''))
+        break
+"
+}
+
+goal_status() {
+  local thread="$1"
+  [ -n "$thread" ] || { echo ""; return; }
+  python3 -c "
+import sqlite3,sys
+t='$thread'
+try:
+    c=sqlite3.connect('file:/root/.codex/goals_1.sqlite?mode=ro', uri=True)
+    r=c.execute('select status from thread_goals where thread_id=?',(t,)).fetchone()
+    print(r[0] if r else '')
+except Exception:
+    print('')
+" 2>/dev/null
+}
+
+# A pane is TUI-ready when its composer placeholder is on screen. On screen is
+# the whole claim, so this reads the viewport: a composer line sitting in
+# scrollback belongs to a TUI that has already exited.
+composer_ready() {
+  pane_visible "$1" 8 | grep -q 'Ask Codex to do anything'
+}
+
+# Session id out of the line codex prints when a TUI stops. Three forms ship,
+# and which one a lane prints depends on its codex build and on how it stopped:
+#   To continue this session, run codex resume <id>
+#   To continue this session, run codex resume, then select <title> (<id>)
+#   Reconnect: codex resume <id>
+# The third appears when the TUI is interrupted with a turn still in flight.
+# That lane is not finished, its work continues server side, and resuming
+# reconnects to it, so it has to be claimable like any other dropped lane.
+# One of these anchors is required, because a bare "codex resume <id>" is also
+# what a shell echo of the last typed command looks like, carrying a stale id.
+# Newlines inside the window are stripped so an exit line the terminal wrapped
+# still resolves. The last match wins: a lane prints a fresh id every time it
+# stops.
+exit_line_id() {
+  python3 -c "
+import re,sys
+txt=sys.stdin.read()
+anchors=('To continue this session, run codex resume','Reconnect: codex resume')
+uuid=re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+hits=[]
+for anchor in anchors:
+    for m in re.finditer(re.escape(anchor), txt):
+        window=txt[m.end():m.end()+250].replace('\n','')
+        found=uuid.search(window)
+        if found:
+            hits.append((m.end(), found.group(0)))
+print(max(hits)[1] if hits else '')
+" 2>/dev/null
+}
+
+# Prefer the exact exit line. Fall back to a bare "codex resume <id>" only when
+# no exit line is present at all, since that fallback can pick up a stale id.
+resume_id_from_pane() {
+  local txt id
+  txt=$(pane_text "$1" "${2:-25}")
+  id=$(printf '%s' "$txt" | exit_line_id)
+  [ -n "$id" ] || id=$(printf '%s' "$txt" \
+    | grep -oE 'codex resume [0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' \
+    | tail -1 | awk '{print $3}')
+  printf '%s' "$id"
+}
+
+# Claiming a pane as a dropped lane takes the exit line and nothing looser: a
+# shell echo must never make scan adopt an unrelated pane.
+dropped_lane_id() {
+  pane_text "$1" "${2:-60}" | exit_line_id
+}
+
+# A paused goal blocks the TUI on a confirm prompt instead of a composer. Same
+# reason as composer_ready: the prompt has to be up now, not once upon a time.
+goal_prompt_open() {
+  pane_visible "$1" 12 | grep -q 'Resume paused goal?'
+}
+
+cmd_scan() {
+  local dtimes; dtimes=$(daemon_etimes)
+  [ -n "$dtimes" ] || echo "codex-lanes: warning: no daemon pid, staleness unknown" >&2
+  printf '%-9s %-8s %-9s %-8s %-12s %s\n' PANE HEALTH ROLE GOAL THREAD CWD
+  while read -r pane agent cwd; do
+    [ -n "$pane" ] || continue
+    read -r fpid fname fcmd <<<"$(pane_fg "$pane")"
+    local health role thread gstat txt dropped
+    txt=$(pane_text "$pane" 60)
+    thread=""
+    case "$fcmd" in
+      *"codex resume "*) thread=$(echo "$fcmd" | grep -oE '[0-9a-f-]{36}' | tail -1) ;;
+    esac
+    # An unclaimed pane counts as a dropped lane only if it printed a resume
+    # id. That keeps unrelated shells and other agents out of the table.
+    if [ "$agent" != "codex" ]; then
+      dropped=$(dropped_lane_id "$pane" 60)
+      [ -n "$dropped" ] || continue
+      [ -n "$thread" ] || thread="$dropped"
+    fi
+    if [ "$fname" != "codex" ]; then
+      health=shell
+    elif [ -n "$dtimes" ] && [ -n "$fpid" ]; then
+      local ptimes; ptimes=$(ps -o etimes= -p "$fpid" 2>/dev/null | tr -d ' ')
+      if [ -n "$ptimes" ] && [ "$ptimes" -gt "$dtimes" ]; then
+        health=stale
+      elif tui_predates_auth "$fpid"; then
+        health=stale-auth
+      else
+        health=live
+      fi
+    else
+      health=unknown
+    fi
+    if echo "$txt" | grep -q 'Waiting for agents'; then role=driver; else role=plain; fi
+    gstat=$(goal_status "$thread")
+    [ -n "$gstat" ] || gstat=-
+    [ -n "$thread" ] || thread=-
+    printf '%-9s %-8s %-9s %-8s %-12s %s\n' \
+      "$pane" "$health" "$role" "$gstat" "${thread:0:8}" "${cwd##*/}"
+  done < <(codex_panes)
+}
+
+# Restart one stale lane in place and resume its exact session id.
+cmd_refresh() {
+  local pane="$1"
+  [ -n "$pane" ] || die "refresh needs a pane id"
+  # A lane whose worktree was deleted cannot resume in place, and resuming it
+  # somewhere else silently relocates the work. Refuse, let a human decide.
+  local cwd; cwd=$(pane_cwd "$pane")
+  case "$cwd" in
+    *" (deleted)") die "$pane: cwd $cwd no longer exists, refusing to resume" ;;
+  esac
+  [ -z "$cwd" ] || [ -d "$cwd" ] || die "$pane: cwd $cwd is missing, refusing to resume"
+  read -r fpid fname fcmd <<<"$(pane_fg "$pane")"
+  if [ "$fname" = "codex" ]; then
+    # /quit is not a codex TUI command, it submits as a message. Ctrl+C twice exits.
+    timeout 15 herdr pane send-keys "$pane" 'ctrl+c' >/dev/null 2>&1
+    sleep 2
+    timeout 15 herdr pane send-keys "$pane" 'ctrl+c' >/dev/null 2>&1
+  fi
+  local n=0 id=""
+  until [ -n "$id" ]; do
+    id=$(resume_id_from_pane "$pane")
+    n=$((n+1)); [ "$n" -gt "$POLL_TRIES" ] && break
+    [ -n "$id" ] || sleep "$POLL_SLEEP"
+  done
+  [ -n "$id" ] || die "$pane: no resume id printed, refusing to guess"
+  timeout 20 herdr pane run "$pane" codex resume "$id" >/dev/null 2>&1
+  # Escape residue can mangle the typed line so bash receives garbage like
+  # 9;5:1ucodex resume <id>. Confirm codex really took the foreground, and
+  # retype once before trusting the resume.
+  local rpid rname rcmd retyped=0
+  while :; do
+    sleep "$POLL_SLEEP"
+    read -r rpid rname rcmd <<<"$(pane_fg "$pane")"
+    [ "$rname" = "codex" ] && break
+    [ "$retyped" -eq 1 ] && die "$pane: resume never reached codex, foreground is '$rname'"
+    retyped=1
+    timeout 20 herdr pane run "$pane" codex resume "$id" >/dev/null 2>&1
+  done
+  n=0
+  until composer_ready "$pane"; do
+    # A paused-goal prompt is a live resume, not a failure. The choice to
+    # resume that goal belongs to a human, so report it and stop here.
+    if goal_prompt_open "$pane"; then
+      echo "$pane resumed $id, paused-goal prompt open, confirm with enter"
+      return 0
+    fi
+    n=$((n+1)); [ "$n" -gt "$POLL_TRIES" ] && die "$pane: resumed $id but composer never appeared"
+    sleep "$POLL_SLEEP"
+  done
+  echo "$pane resumed $id"
+}
+
+# Send a message only into a pane that is really a codex composer.
+# Guards the trap where text lands on a bash prompt and executes as shell.
+cmd_notify() {
+  local pane="$1"; shift
+  local msg="$*"
+  [ -n "$pane" ] || die "notify needs a pane id"
+  [ -n "$msg" ] || die "notify needs a message"
+  case "$msg" in
+    *'`'*|*'$('*|*';'*|*'|'*|*'&'*)
+      die "message contains shell metacharacters, strip them first" ;;
+  esac
+  read -r fpid fname fcmd <<<"$(pane_fg "$pane")"
+  [ "$fname" = "codex" ] || die "$pane: foreground is '$fname', not codex, refusing to type"
+  composer_ready "$pane" || die "$pane: composer not ready, refusing to type"
+  timeout 15 herdr pane send-text "$pane" "$msg" >/dev/null 2>&1 || die "$pane: send-text failed"
+  sleep 1
+  timeout 15 herdr pane send-keys "$pane" enter >/dev/null 2>&1 || die "$pane: enter failed"
+  echo "$pane notified"
+}
+
+usage() {
+  cat <<'EOF'
+codex-lanes scan                 classify every codex lane: health role goal thread cwd
+codex-lanes refresh <pane>       exit a stale TUI, resume its exact session id, verify composer
+codex-lanes notify <pane> <msg>  type one message into a verified codex composer
+
+health: stale      = TUI older than the running app-server daemon, must be refreshed
+        stale-auth = TUI started before the current auth.json, so it still holds
+                     the previous account and cannot transact however healthy
+                     the daemon and the credentials on disk are. Refresh it.
+        live       = started after both the daemon and the current credentials
+        shell      = TUI died, pane sits at a shell prompt, refresh resumes it
+role:   driver = lane shows "Waiting for agents", it owns subagents
+
+refresh refuses a lane whose cwd was deleted, retypes a resume that escape
+residue mangled, and reports a paused-goal prompt instead of failing on the
+composer that prompt is hiding.
+EOF
+}
+
+case "${1:-}" in
+  scan) shift; cmd_scan "$@" ;;
+  refresh) shift; cmd_refresh "$@" ;;
+  notify) shift; cmd_notify "$@" ;;
+  *) usage; exit 2 ;;
+esac

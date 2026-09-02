@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Pins how codex-lanes reads a pane. Every case here is a real string a lane
+# printed, not an invented one. Run: assets/test-codex-lanes
+set -uo pipefail
+
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/codex-lanes"
+[ -f "$SRC" ] || { echo "cannot find codex-lanes next to this test" >&2; exit 1; }
+
+# Source the functions without firing the dispatch case at the bottom.
+LIB=$(mktemp)
+trap 'rm -f "$LIB"' EXIT
+sed '/^case "${1:-}" in/,$d' "$SRC" > "$LIB"
+# shellcheck disable=SC1090
+source "$LIB"
+
+pass=0; fail=0
+check() {
+  if [ "$2" = "$3" ]; then
+    pass=$((pass+1)); printf 'ok   %s\n' "$1"
+  else
+    fail=$((fail+1)); printf 'FAIL %s\n  expected: [%s]\n  actual:   [%s]\n' "$1" "$2" "$3"
+  fi
+}
+
+NEW='01a04501-72d4-7800-8d39-fb34fc00c7f3'
+OLD='01a03a54-00ef-7193-925f-c5403ce60e15'
+OTHER='01a04472-9061-7761-b86a-b7d3054bc9f8'
+RECON='01a058a6-8d9c-7ae0-aeb1-bba83499d5f3'
+
+# form 1, older codex builds
+t2="To continue this session, run codex resume $OLD
+root@host:~#"
+check "form 1 plain" "$OLD" "$(printf '%s' "$t2" | exit_line_id)"
+
+# form 2, codex 0.150.1
+t1="Token usage: total=275,334
+To continue this session, run codex resume, then select Shape TUR-801 Search Signal ($NEW)
+root@host:~#"
+check "form 2 select-title" "$NEW" "$(printf '%s' "$t1" | exit_line_id)"
+
+t3="To continue this session, run codex resume, then select Own TUR-794 en
+d to end. Read Linear ($OTHER)
+root@host:~#"
+check "form 2 wrapped title" "$OTHER" "$(printf '%s' "$t3" | exit_line_id)"
+
+t4="To continue this session, run codex resume, then select Some Lane (01a04501-72d4-7800-8d
+39-fb34fc00c7f3)
+root@host:~#"
+check "form 2 wrapped uuid" "$NEW" "$(printf '%s' "$t4" | exit_line_id)"
+
+# form 3, TUI interrupted with a turn still in flight
+t5="› Reply with exactly: OK
+
+Disconnected from this task. Any running work continues.
+Reconnect: codex resume $RECON
+Stop the current turn: run codex agents, select this task, and press ctrl + x.
+root@host:~# ^C
+root@host:~#"
+check "form 3 reconnect" "$RECON" "$(printf '%s' "$t5" | exit_line_id)"
+
+t6="Disconnected from this task. Any running work continues.
+Reconnect: codex resume 01a058a6-8d9c-7ae0-aeb1-bb
+a83499d5f3
+Stop the current turn: run codex agents"
+check "form 3 wrapped uuid" "$RECON" "$(printf '%s' "$t6" | exit_line_id)"
+
+# a live TUI prints this on rename. Claiming a pane on it would adopt a lane
+# that never stopped, so it must not anchor.
+t12="• Session renamed to Reply with exactly the word ACK and. To resume this session run codex resume, then select Reply with exactly the word ACK and ($RECON)"
+check "rename line is not an anchor" "" "$(printf '%s' "$t12" | exit_line_id)"
+
+# a shell echo of the last typed command carries a stale id
+t7="root@host:~# codex resume $OTHER
+root@host:~#"
+check "bare echo not adopted" "" "$(printf '%s' "$t7" | exit_line_id)"
+
+t8="To continue this session, run codex resume $OLD
+...later...
+To continue this session, run codex resume, then select Newer ($NEW)"
+check "newest wins, same anchor" "$NEW" "$(printf '%s' "$t8" | exit_line_id)"
+
+t9="To continue this session, run codex resume $OLD
+...later...
+Reconnect: codex resume $RECON"
+check "newest wins, reconnect last" "$RECON" "$(printf '%s' "$t9" | exit_line_id)"
+
+t10="Reconnect: codex resume $RECON
+...later...
+To continue this session, run codex resume $OLD"
+check "newest wins, exit line last" "$OLD" "$(printf '%s' "$t10" | exit_line_id)"
+
+t11="root@host:~# codex resume $OTHER
+To continue this session, run codex resume, then select Real ($NEW)"
+check "resume line beats echo" "$NEW" "$(printf '%s' "$t11" | exit_line_id)"
+
+check "no id anywhere" "" "$(printf '%s' "nothing here at all" | exit_line_id)"
+
+# resume_id_from_pane may fall back to a bare echo. dropped_lane_id never may.
+pane_text() { printf '%s' "$STUB"; }
+STUB="$t1";  check "resume_id form 2" "$NEW" "$(resume_id_from_pane fake)"
+STUB="$t5";  check "resume_id form 3" "$RECON" "$(resume_id_from_pane fake)"
+STUB="$t7";  check "resume_id falls back to echo" "$OTHER" "$(resume_id_from_pane fake)"
+STUB="$t11"; check "resume_id prefers anchor" "$NEW" "$(resume_id_from_pane fake)"
+STUB="nothing"; check "resume_id empty" "" "$(resume_id_from_pane fake)"
+STUB="$t7";  check "dropped_lane_id refuses echo" "" "$(dropped_lane_id fake)"
+STUB="$t1";  check "dropped_lane_id takes exit line" "$NEW" "$(dropped_lane_id fake)"
+STUB="$t5";  check "dropped_lane_id takes reconnect" "$RECON" "$(dropped_lane_id fake)"
+
+# A lane that started before the current auth.json holds the previous account
+# in memory, however healthy the daemon and the file on disk are. Daemon age
+# cannot see it, which is how a whole fleet reads live while nothing transacts.
+AUTHDIR=$(mktemp -d)
+trap 'rm -f "$LIB"; rm -rf "$AUTHDIR"' EXIT
+export CODEX_LANES_AUTHFILE="$AUTHDIR/auth.json"
+
+# credentials written just now, checked against a process that has been up far
+# longer. That is the real shape: a login lands while lanes are already up.
+# Uses pid 1 because this test's own shell starts in the same second as the
+# touch, and equal timestamps are not "older".
+touch "$CODEX_LANES_AUTHFILE"
+tui_predates_auth 1 && r=yes || r=no
+check "lane older than credentials is stale-auth" "yes" "$r"
+
+# credentials written long before this shell started
+touch -d '@'"$(( $(date +%s) - 86400 ))" "$CODEX_LANES_AUTHFILE"
+tui_predates_auth $$ && r=yes || r=no
+check "lane newer than credentials is not stale-auth" "no" "$r"
+
+# no credential file at all must not claim staleness it cannot prove
+rm -f "$CODEX_LANES_AUTHFILE"
+tui_predates_auth $$ && r=yes || r=no
+check "absent auth.json does not assert stale-auth" "no" "$r"
+
+# a pid that is gone proves nothing either
+touch "$CODEX_LANES_AUTHFILE"
+tui_predates_auth 999999 && r=yes || r=no
+check "dead pid does not assert stale-auth" "no" "$r"
+
+# "is this prompt up" reads the viewport, never scrollback holding a stale copy
+pane_visible() { printf '%s' "$VIS"; }
+VIS="› Ask Codex to do anything"; composer_ready fake && r=yes || r=no
+check "composer_ready true on screen" "yes" "$r"
+VIS="root@host:~#"; composer_ready fake && r=yes || r=no
+check "composer_ready false at shell" "no" "$r"
+VIS="Resume paused goal?"; goal_prompt_open fake && r=yes || r=no
+check "goal_prompt_open true" "yes" "$r"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
