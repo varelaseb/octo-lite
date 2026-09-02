@@ -1,5 +1,5 @@
-// spec-chat runtime v0.1 - hydrates semantic islands and mounts the annotation layer.
-// spec-chat-capabilities: finish-review git-focus mobile-review reopen-thread semantic-islands
+// spec-chat runtime v0.1 — hydrates semantic islands and mounts the annotation layer.
+// spec-chat-capabilities: finish-review git-focus manual-resume-status mobile-review reopen-thread semantic-islands
 // Transports: FSA (file://, primary) | HTTP review-serve (http(s)://, secondary).
 // Same spools, same event schema either way. See DESIGN.md.
 // Classic script, NOT a module: browsers CORS-block module scripts on file:// pages,
@@ -13,7 +13,7 @@
 'use strict';
 
 const SPEC_FILE = decodeURIComponent(location.pathname.split('/').pop());
-// document.currentScript is only valid during the initial synchronous run - capture now.
+// document.currentScript is only valid during the initial synchronous run — capture now.
 const EMBED_REVIEW_DIR = (document.currentScript && document.currentScript.dataset && document.currentScript.dataset.reviewDir) || null;
 const REVIEW_DIRNAME = SPEC_FILE + '.review';
 const RUNTIME_URL = (document.currentScript && document.currentScript.src) || new URL('./.viz/runtime.js', document.baseURI).href;
@@ -189,7 +189,7 @@ function fsaTransport() {
         return found;
       };
       // exact segment match first; APFS-casing fallback second. Accept only an unambiguous
-      // result - two valid walks could bind the spool to the wrong same-named spec.
+      // result — two valid walks could bind the spool to the wrong same-named spec.
       let found = await candidates((a, b) => a === b);
       if (!found.length) found = await candidates((a, b) => a.toLowerCase() === b.toLowerCase());
       return found.length === 1 ? found[0] : null;
@@ -243,14 +243,14 @@ function fsaTransport() {
       // opens the directory picker while the button's activation is still live.
       if (t.connected) return;
       // The picker can't be pointed at a path, but ANY ancestor folder works (Documents,
-      // home, the repos dir) - so wherever it opens, "Open" usually suffices. Steer it
+      // home, the repos dir) — so wherever it opens, "Open" usually suffices. Steer it
       // anyway: id-scoped memory, startIn from the last grant, and the exact path on the
       // clipboard for the native panel's Go-to-Folder (⌘⇧G on macOS).
       const opts = { mode: 'readwrite', id: 'spec-chat' };
       if (useLastDir) try { const last = await store('readonly', s => s.get('last-dir')); if (last) opts.startIn = last; } catch {}
       const dir = decodeURIComponent(location.pathname).replace(/\/[^/]*$/, '');
       // fire-and-forget: awaiting could burn the gesture's activation before the picker call
-      try { navigator.clipboard.writeText(dir).then(() => toast(/Mac/.test(navigator.platform) ? 'Pick \u201c' + suggestedGrant() + '\u201d - or any folder above the spec. Exact path copied: \u2318\u21e7G + paste jumps there' : 'Pick \u201c' + suggestedGrant() + '\u201d or any folder above the spec (path copied)'), () => {}); } catch {}
+      try { navigator.clipboard.writeText(dir).then(() => toast(/Mac/.test(navigator.platform) ? 'Pick \u201c' + suggestedGrant() + '\u201d — or any folder above the spec. Exact path copied: \u2318\u21e7G + paste jumps there' : 'Pick \u201c' + suggestedGrant() + '\u201d or any folder above the spec (path copied)'), () => {}); } catch {}
       let picked;
       try { picked = await window.showDirectoryPicker(opts); }
       catch (e) {
@@ -259,13 +259,13 @@ function fsaTransport() {
         picked = await window.showDirectoryPicker(opts);
       }
       const d = await t._toSpecDir(picked);
-      if (!d) throw new Error('that folder isn’t above this spec - pick a parent of ' + dir + ' (Chrome refuses top-level folders like Documents itself; a projects folder works)');
+      if (!d) throw new Error('that folder isn’t above this spec — pick a parent of ' + dir + ' (Chrome refuses top-level folders like Documents itself; a projects folder works)');
       await t._settle(picked, d, true);
       return 'connected';
     },
     async adopt(h) { // directory handle from drag-and-drop; write access needs an explicit ask
       if (t.connected) return 'ok';
-      const d = await t._toSpecDir(h); // drop carries read access - locate first, then ask for write
+      const d = await t._toSpecDir(h); // drop carries read access — locate first, then ask for write
       if (!d) return 'wrong';
       if (await h.requestPermission({ mode: 'readwrite' }) !== 'granted') return 'denied';
       await t._settle(h, d, true);
@@ -323,7 +323,7 @@ async function hydrateIslands() {
       if (config.animation === undefined) config.animation = false; // deterministic renders: screenshots, diffs, headless review
       const chart = window.echarts.init(target);
       // clickable axes/labels for universal anchoring
-      // multi-axis charts pass xAxis/yAxis as arrays - wrap each element, never Object.assign an array
+      // multi-axis charts pass xAxis/yAxis as arrays — wrap each element, never Object.assign an array
       for (const ax of ['xAxis', 'yAxis']) if (config[ax]) {
         config[ax] = Array.isArray(config[ax])
           ? config[ax].map(a => Object.assign({ triggerEvent: true }, a))
@@ -383,7 +383,7 @@ function wireChartCommentEvents(chartKey, chart) {
 }
 
 // A comment-mode canvas click nobody claims (blank space, gridlines, markAreas, silent
-// marks) anchors to the figure itself - no click may feel dead. Claimed clicks open the
+// marks) anchors to the figure itself — no click may feel dead. Claimed clicks open the
 // composer synchronously, so "composer unchanged after a tick" means unclaimed.
 function zrFallback(chart, openFig) {
   chart.getZr().on('click', ev => {
@@ -442,7 +442,7 @@ function datumKey(params) { // grep-friendly even when name is empty (time axes,
   return String(params.value ?? params.dataIndex ?? params.seriesIndex ?? 'unknown');
 }
 
-function nearestDatum(info, seriesIndex, ev) { // line-body clicks carry no dataIndex - snap to the closest point
+function nearestDatum(info, seriesIndex, ev) { // line-body clicks carry no dataIndex — snap to the closest point
   try {
     const opt = info.config;
     const sList = Array.isArray(opt.series) ? opt.series : [opt.series];
@@ -701,7 +701,7 @@ function ingest(events) {
 // Document presentation applies only to standalone spec pages: an embedding host app
 // owns its own look, so embed mode ships the hx-* overlay CSS alone.
 const DOC_CSS = `
-/* document presentation - the spec file stays lean; the dialect's look lives here */
+/* document presentation — the spec file stays lean; the dialect's look lives here */
 :where(body){margin:0;background:#faf9f6;color:#22242a;padding-bottom:100px}
 article.spec{max-width:720px;margin:0 auto;padding:40px 24px;font:16.5px/1.65 "Iowan Old Style","Palatino Linotype",Georgia,serif}
 article.spec header{border-bottom:1px solid #e2e0d8;padding-bottom:16px;margin-bottom:28px}
@@ -942,7 +942,7 @@ function setCommentMode(on) {
       const n = (opt.series || []).length || 1;
       patch.series = Array.from({ length: n }, () => ({ emphasis: { itemStyle: on ? { borderColor: '#d98e04', borderWidth: 3 } : { borderWidth: 0 } } }));
       // comment mode silences chart interactivity: no tooltips / axis pointers.
-      // Only touch charts that have a tooltip - patching one in would add hover UI on exit.
+      // Only touch charts that have a tooltip — patching one in would add hover UI on exit.
       const tt = Array.isArray(opt.tooltip) ? opt.tooltip[0] : opt.tooltip;
       if (tt) {
         if (info.tooltipShow === undefined) info.tooltipShow = tt.show !== false;
@@ -1003,7 +1003,7 @@ function addComposer(parent, c) {
     else body = Object.assign(common, { id: humanId('u'), event: 'comment' });
     await state.transport.postEvent(body);
     state.composer = null;
-    toast((c.kind === 'edit' ? 'Edit' : c.kind === 'reply' ? 'Reply' : 'Comment') + ' saved as draft - hand off when ready');
+    toast((c.kind === 'edit' ? 'Edit' : c.kind === 'reply' ? 'Reply' : 'Comment') + ' saved as draft — hand off when ready');
     refresh();
   });
   box.querySelector('[data-act=cancel]').addEventListener('click', e => { e.stopPropagation(); state.composer = null; renderPanel(); });
@@ -1371,7 +1371,7 @@ async function handoff() {
   state.handoffPosting = true;
   try {
     await state.transport.postEvent({ id: 'h' + Date.now().toString(36), event: 'handoff', anchorId: '', target: null, quote: null, text: 'batch from ' + state.transport.mode, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 });
-    toast(action.finish ? 'Review finished' : 'Handed off ' + action.drafts + ' comment' + (action.drafts === 1 ? '' : 's') + ' - agent notified');
+    toast(action.finish ? 'Review finished' : 'Handed off ' + action.drafts + ' comment' + (action.drafts === 1 ? '' : 's') + ' — agent notified');
     refresh();
   } finally {
     state.handoffPosting = false;
@@ -1405,7 +1405,7 @@ async function refresh() {
     document.getElementById('hx-agent').textContent = observation === 'waiting'
       ? '· handed off, waiting for agent'
       : observation === 'queued'
-        ? '· hand-off still queued; review session may be disconnected'
+        ? '· automatic wake did not occur; send a new chat message to resume'
         : last
           ? '· agent last event ' + new Date(last.body.createdAt).toLocaleTimeString()
           : '· no agent events yet';
@@ -1445,7 +1445,7 @@ async function watchSpec() {
   }).observe(document.body, { childList: true, subtree: true });
   if (location.protocol === 'file:' && !('showDirectoryPicker' in window)) {
     document.getElementById('hx-mode').disabled = true;
-    status('view-only - this browser cannot annotate file:// pages; use Chrome/Edge, or serve via review-serve.py over http://');
+    status('view-only — this browser cannot annotate file:// pages; use Chrome/Edge, or serve via review-serve.py over http://');
     console.warn('[spec-chat] showDirectoryPicker unavailable; file:// annotation needs the File System Access API (Chromium). Run review-serve.py and open the http://localhost URL instead.');
     return;
   }
@@ -1459,8 +1459,8 @@ async function watchSpec() {
       btn.hidden = false;
       btn.textContent = restored === 'prompt' ? 'Resume review' : 'Connect review folder';
       status(restored === 'prompt'
-        ? 'view-only - resume the saved folder, or choose a different ancestor of this spec'
-        : 'view-only - pick or drop \u201c' + suggestedGrant() + '\u201d to connect');
+        ? 'view-only — resume the saved folder, or choose a different ancestor of this spec'
+        : 'view-only — pick or drop \u201c' + suggestedGrant() + '\u201d to connect');
       const connected = () => { btn.hidden = true; repick.hidden = true; startLoops(); };
       const resumeReview = async () => {
         btn.textContent = 'Waiting for browser approval…';
@@ -1471,7 +1471,7 @@ async function watchSpec() {
           else {
             btn.textContent = 'Resume review';
             btn.disabled = false;
-            status('edit access was not granted - resume again or choose a different folder');
+            status('edit access was not granted — resume again or choose a different folder');
           }
         } catch (e) {
           btn.textContent = 'Resume review';
@@ -1480,7 +1480,7 @@ async function watchSpec() {
         }
       };
       const chooseFolder = async options => {
-        status('choose the folder, then approve “Allow this site to edit files?” - the browser may open it as a separate window');
+        status('choose the folder, then approve “Allow this site to edit files?” — the browser may open it as a separate window');
         await state.transport.connect(options);
         connected();
       };
@@ -1532,7 +1532,7 @@ async function watchSpec() {
         if (!item || !item.getAsFileSystemHandle) return;
         try {
           const h = await item.getAsFileSystemHandle();
-          if (!h || h.kind !== 'directory') { toast('Drop a folder, not a file - any parent folder of the spec works'); return; }
+          if (!h || h.kind !== 'directory') { toast('Drop a folder, not a file — any parent folder of the spec works'); return; }
           const r = await state.transport.adopt(h);
           if (r === 'ok') connected();
           else toast(r === 'wrong' ? 'That folder isn\u2019t above this spec \u2014 drop \u201c' + suggestedGrant() + '\u201d instead' : 'Write access declined');

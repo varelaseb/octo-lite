@@ -56,11 +56,17 @@
   "local/skill/qa-evidence-capture": {
     "path": "skills/qa-evidence-capture"
   },
-  "local/skill/spec-chat-review": {
-    "path": "skills/spec-chat-review"
+  "github/skill/spec-chat-review": {
+    "owner_repo": "0xTomDaniel/spec-chat",
+    "path": "skill/review-spec",
+    "ref": "d8de08483b62471bc0f65623a03ec309c058fe40",
+    "sha": "d8de08483b62471bc0f65623a03ec309c058fe40"
   },
-  "local/skill/spec-chat-shape": {
-    "path": "skills/spec-chat-shape"
+  "github/skill/spec-chat-shape": {
+    "owner_repo": "0xTomDaniel/spec-chat",
+    "path": "skill/shape-spec",
+    "ref": "d8de08483b62471bc0f65623a03ec309c058fe40",
+    "sha": "d8de08483b62471bc0f65623a03ec309c058fe40"
   },
   "local/skill/typescript": {
     "path": "skills/typescript"

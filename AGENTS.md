@@ -29,8 +29,8 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
   bundled templates.
 - `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` are the skillfile
   (eljulians/skillfile) manifest, lockfile, and pinned patches that manage
-  skills per ADR 0002: they pin the vendored upstream tdd skill at an exact SHA
-  and carry the single seam-gate patch across upstream updates.
+  skills per ADR 0002: they pin tdd and authoritative Spec Chat skills at exact
+  SHAs and carry the single tdd seam-gate patch across upstream updates.
 - `agents/` contains generated Claude Markdown launch adapters plus the managed
   skillfile install target `agents/skills/`. Never edit or spawn adapters raw;
   regenerate through the role resolver. Never hand-edit `agents/skills/`; it is
