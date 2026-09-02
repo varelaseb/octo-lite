@@ -39,9 +39,13 @@ source or fix link.
   carve-outs, actual acceptance of delivered work, preproduction promotion,
   and live traffic shifts.
   No agent infers, self-authorizes, or decides acceptance, a preproduction
-  promotion, or a traffic shift, and no agent merges unaccepted work. On
-  explicit human instruction, the operator agent executes the acceptance
-  record, merge, preproduction promotion, or traffic shift.
+  promotion, or a traffic shift, and no agent merges unaccepted work. An
+  explicit human instruction to merge a named PR accepts that exact head unless
+  the human says otherwise. The active owning agent receiving that instruction
+  records acceptance and executes the merge. It does not consult
+  `operator-owner.toml`, which only routes meta-operator handoffs and messages.
+  Required failed checks remain blockers until fixed or durably waived through
+  a repository-approved path.
 
 ## Artifacts
 

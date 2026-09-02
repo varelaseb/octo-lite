@@ -87,11 +87,15 @@ Do not create extra workflow labels unless the operator explicitly asks.
 
 ## Merge And Linear Sync
 
-- Merge to the main branch is not a separate carve-out; it is the operator
-  agent's mechanical execution of an accepted PR, bound to the human acceptance
-  instruction. The operator or meta-operator agent executes the merge on that
-  acceptance instruction. No worker merges, no agent decides acceptance, and no
-  agent merges unaccepted work.
+- Merge to the main branch is the active owning agent's mechanical execution of
+  an accepted PR, bound to explicit human instruction. An explicit instruction
+  to merge a named PR accepts that exact head unless the human says otherwise.
+  A human statement assigning the current lane ownership is sufficient for this
+  action. Record acceptance, verify required checks, then merge. Do not consult
+  `operator-owner.toml`; it scopes only meta-operator handoff and message
+  routing. No worker merges, no agent decides acceptance, and no agent merges
+  unaccepted work. Required failed checks remain blockers until fixed or
+  durably waived through a repository-approved path.
   Once a merge lands, its tracked issue owes the `In Staging` transition: the
   merge is not complete until Linear reflects that the merge-sha is genuinely
   an ancestor of the deployed main branch.
@@ -110,6 +114,6 @@ Do not create extra workflow labels unless the operator explicitly asks.
   unless the operator explicitly asks.
 - Do not create extra PRs for the same issue.
 - No worker or reviewer role merges or approves as the human reviewer.
-- Only the operator or meta-operator agent executes a merge, and only on
-  explicit human acceptance and instruction, per Merge And Linear Sync above;
-  no agent merges unaccepted work or decides acceptance itself.
+- Only the active owning agent receiving explicit human acceptance and merge
+  instruction executes the merge, per Merge And Linear Sync above; no agent
+  merges unaccepted work or decides acceptance itself.
