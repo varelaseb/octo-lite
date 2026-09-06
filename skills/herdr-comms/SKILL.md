@@ -104,7 +104,7 @@ herdr-spawn --workspace WORKSPACE --name NAME --label LABEL --cwd WORKTREE \
   --role ROLE --direct -- \
   codex --model gpt-5.6-sol \
     --config 'model_reasoning_effort="high"' \
-    --config 'service_tier="fast"' \
+    --config 'service_tier="default"' \
     --ask-for-approval never --sandbox danger-full-access
 ```
 
