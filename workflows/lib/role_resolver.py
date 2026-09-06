@@ -180,7 +180,7 @@ def load_registry(root: Path | str) -> Registry:
             raise ValueError(f"role {name} subagent_access unsupported")
         if provenance is not None and provenance not in PROVENANCE_VALUES:
             raise ValueError(f"role {name} provenance unsupported")
-        if raw["service_tier"] not in {"default", "fast"}:
+        if raw["service_tier"] != "default":
             raise ValueError(f"role {name} service_tier unsupported")
 
         # Operator-selectable alternate runtimes (model, effort) an orchestrator may
