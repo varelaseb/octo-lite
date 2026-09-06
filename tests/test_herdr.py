@@ -1423,7 +1423,7 @@ exec {real_mv} "$@"
                 "--direct", "--",
                 "codex", "--model", "gpt-5.6-sol",
                 "--config", 'model_reasoning_effort="high"',
-                "--config", 'service_tier="fast"',
+                "--config", 'service_tier="default"',
                 "--ask-for-approval", "never", "--sandbox", "danger-full-access",
             ]
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)
@@ -1443,7 +1443,7 @@ exec {real_mv} "$@"
                 "--direct", "--",
                 "codex", "--model", "gpt-5.6-sol",
                 "--config", 'model_reasoning_effort="high"',
-                "--config", 'service_tier="fast"',
+                "--config", 'service_tier="default"',
                 "--ask-for-approval", "never", "--sandbox", "danger-full-access",
             ]
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)
@@ -1468,7 +1468,7 @@ exec {real_mv} "$@"
                 "codex", "--model", "gpt-5.6-sol",
                 "--config", 'model_reasoning_effort="high"',
                 "--config", 'model_reasoning_effort="low"',
-                "--config", 'service_tier="fast"',
+                "--config", 'service_tier="default"',
                 "--ask-for-approval", "never", "--sandbox", "danger-full-access",
             ]
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)

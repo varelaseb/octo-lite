@@ -29,8 +29,6 @@ def main() -> int:
             "codex", "exec", "-m", role["model"],
             "-c", f'model_reasoning_effort="{role["effort"]}"',
         ]
-        if role["service_tier"] == "fast":
-            command.extend(["-c", 'service_tier="fast"'])
         command.extend(["-s", "read-only", prompt])
 
     result = subprocess.run(command, check=False, capture_output=True, text=True)

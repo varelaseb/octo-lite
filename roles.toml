@@ -61,7 +61,7 @@ session = "fresh"
 execution = "workflow-subagent"
 subagent_access = "read-restricted"
 provenance = "relay-verbatim-rollout"
-service_tier = "fast"
+service_tier = "default"
 tools = ["repo-read", "linear-read", "github-read", "session-log-read"]
 required_skills = []
 
@@ -157,7 +157,7 @@ session = "fresh"
 execution = "workflow-subagent"
 subagent_access = "read-restricted"
 provenance = "relay-verbatim-rollout"
-service_tier = "fast"
+service_tier = "default"
 tools = ["repo-read", "artifact-read", "image-read", "video-frame-read"]
 required_skills = []
 conditional_skills = []

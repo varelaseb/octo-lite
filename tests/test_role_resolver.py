@@ -77,11 +77,11 @@ class RoleResolverTest(unittest.TestCase):
         expected = {
             "meta-operator": ("anthropic", "claude-fable-5", "xhigh", "auto", "persistent", "default"),
             "orchestrator": ("anthropic", "claude-fable-5", "high", "auto", "persistent", "default"),
-            "shaping-reviewer": ("openai", "gpt-5.6-sol", "xhigh", "never", "fresh", "fast"),
+            "shaping-reviewer": ("openai", "gpt-5.6-sol", "xhigh", "never", "fresh", "default"),
             "implementer": ("anthropic", "claude-opus-5", "medium", "auto", "fresh", "default"),
             "code-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "default"),
             "qa-capture": ("anthropic", "claude-sonnet-5", "high", "auto", "fresh", "default"),
-            "qa-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "fast"),
+            "qa-reviewer": ("openai", "gpt-5.6-sol", "high", "never", "fresh", "default"),
             "reconciler": ("anthropic", "claude-sonnet-5", "high", "auto", "fresh", "default"),
         }
         actual = {
@@ -505,6 +505,10 @@ class RoleResolverTest(unittest.TestCase):
     def test_registry_rejects_unsupported_provenance_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "provenance unsupported"):
             self._load_mutated_registry(lambda text: _mutate_role(text, "code-reviewer", "provenance", "summarized"))
+
+    def test_registry_rejects_fast_service_tier(self) -> None:
+        with self.assertRaisesRegex(ValueError, "service_tier unsupported"):
+            self._load_mutated_registry(lambda text: _mutate_role(text, "code-reviewer", "service_tier", "fast"))
 
     def test_registry_rejects_provenance_on_persistent_role(self) -> None:
         with self.assertRaisesRegex(ValueError, "provenance only on workflow-subagent"):
