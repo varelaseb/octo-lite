@@ -4,29 +4,41 @@
 set -uo pipefail
 
 PIDFILE=/root/.codex/app-server-daemon/app-server.pid
+SOCK=/root/.codex/app-server-control/app-server-control.sock
 POLL_TRIES=${CODEX_LANES_POLL_TRIES:-30}
 POLL_SLEEP=${CODEX_LANES_POLL_SLEEP:-2}
+AUTHFILE=${CODEX_LANES_AUTHFILE:-/root/.codex/auth.json}
+CONFIG=${CODEX_LANES_CONFIG:-/root/.codex/config.toml}
 
 die() { echo "codex-lanes: $*" >&2; exit 1; }
 
-AUTHFILE=${CODEX_LANES_AUTHFILE:-/root/.codex/auth.json}
+# Two identities live on this box and they are not the same account.
+#   inference      = the cliproxyapi gateway, keyed by CLIPROXYAPI_API_KEY. Its
+#                    pooled ChatGPT accounts rotate on the gateway. Nothing on
+#                    this box changes when they do.
+#   remote control = the ChatGPT account in auth.json. The app-server daemon
+#                    registers its environment under that account at startup
+#                    and holds it for life, so the phone must be signed into
+#                    that exact account, and a daemon older than auth.json is
+#                    presenting an account the file no longer holds.
+auth_email() {
+  python3 - "$AUTHFILE" <<'PYEOF' 2>/dev/null
+import json,base64,sys
+d=json.load(open(sys.argv[1])); t=d.get('tokens') or {}
+p=t['id_token'].split('.')[1]; p+='='*(-len(p)%4)
+c=json.loads(base64.urlsafe_b64decode(p)); a=c.get('https://api.openai.com/auth',{})
+print(c.get('email',''), a.get('chatgpt_plan_type',''))
+PYEOF
+}
 
 auth_mtime() {
   stat -c %Y "$AUTHFILE" 2>/dev/null
 }
 
-# A TUI reads auth.json once, at startup, and holds that account in memory for
-# its whole life. So a login that lands AFTER a lane started leaves that lane
-# presenting the previous account: it keeps showing the old account's usage
-# limit and cannot transact, while the file on disk is perfectly healthy.
-#
-# Daemon age cannot see this. A lane started after the last daemon restart is
-# `live` by that measure and still be holding dead credentials, which is
-# exactly how a whole fleet reads as healthy while nothing works. The honest
-# comparison is the lane's own start time against the credential file's mtime.
-#
-# Answers 0 when the lane started before the current credentials.
-tui_predates_auth() {
+# Answers 0 when the process started before the current auth.json was written,
+# so it still holds whatever account the file held then. Absent file or dead
+# pid proves nothing and answers 1.
+pid_predates_auth() {
   local pid="$1" amtime ptimes now started
   amtime=$(auth_mtime)
   [ -n "$amtime" ] || return 1
@@ -37,15 +49,49 @@ tui_predates_auth() {
   [ "$started" -lt "$amtime" ]
 }
 
-daemon_etimes() {
+# The app-server that owns the control socket IS the daemon. Newer codex builds
+# stopped writing app-server.pid (only the updater's pid file remains), so read
+# the socket listener first and fall back to the pid file for older builds.
+# Never pgrep for it: the pattern matches the grepping shell.
+daemon_pid() {
   local pid
-  pid=$(python3 -c "
-import json,sys
+  pid=$(ss -xlp 2>/dev/null | grep -F "$SOCK" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+  [ -n "$pid" ] || pid=$(python3 -c "
+import json
 try:
     print(json.load(open('$PIDFILE'))['pid'])
 except Exception:
     print('')
 " 2>/dev/null)
+  echo "$pid"
+}
+
+# One answer for "what account do I log into on mobile": the auth.json account,
+# plus whether the running daemon actually presents it. follows=no means the
+# daemon started before the current credentials and must be restarted before a
+# pairing code from it is worth anything.
+cmd_identity() {
+  local email plan dpid follows provider keyset
+  read -r email plan <<<"$(auth_email)"
+  dpid=$(daemon_pid)
+  if [ -z "$dpid" ] || ! kill -0 "$dpid" 2>/dev/null; then
+    follows=no-daemon
+  elif pid_predates_auth "$dpid"; then
+    follows=no
+  else
+    follows=yes
+  fi
+  provider=$(grep -E '^model_provider *= *"' "$CONFIG" 2>/dev/null | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+  [ -n "$provider" ] || provider=openai
+  keyset=no; [ -n "${CLIPROXYAPI_API_KEY:-}" ] && keyset=yes
+  echo "remote-control account: ${email:-none} ${plan:+($plan)}"
+  echo "daemon follows auth.json: $follows${dpid:+ (pid $dpid)}"
+  echo "inference provider: $provider (CLIPROXYAPI_API_KEY in this shell: $keyset)"
+  [ "$follows" = yes ]
+}
+
+daemon_etimes() {
+  local pid; pid=$(daemon_pid)
   [ -n "$pid" ] || { echo ""; return; }
   ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' '
 }
@@ -210,8 +256,6 @@ cmd_scan() {
       local ptimes; ptimes=$(ps -o etimes= -p "$fpid" 2>/dev/null | tr -d ' ')
       if [ -n "$ptimes" ] && [ "$ptimes" -gt "$dtimes" ]; then
         health=stale
-      elif tui_predates_auth "$fpid"; then
-        health=stale-auth
       else
         health=live
       fi
@@ -301,16 +345,15 @@ cmd_notify() {
 
 usage() {
   cat <<'EOF'
+codex-lanes identity             remote-control account, whether the daemon presents it, inference provider
+codex-lanes daemon-pid           pid of the app-server owning the control socket
 codex-lanes scan                 classify every codex lane: health role goal thread cwd
 codex-lanes refresh <pane>       exit a stale TUI, resume its exact session id, verify composer
 codex-lanes notify <pane> <msg>  type one message into a verified codex composer
 
-health: stale      = TUI older than the running app-server daemon, must be refreshed
-        stale-auth = TUI started before the current auth.json, so it still holds
-                     the previous account and cannot transact however healthy
-                     the daemon and the credentials on disk are. Refresh it.
-        live       = started after both the daemon and the current credentials
-        shell      = TUI died, pane sits at a shell prompt, refresh resumes it
+health: stale  = TUI older than the running app-server daemon, must be refreshed
+        live   = started after the running daemon
+        shell  = TUI died, pane sits at a shell prompt, refresh resumes it
 role:   driver = lane shows "Waiting for agents", it owns subagents
 
 refresh refuses a lane whose cwd was deleted, retypes a resume that escape
@@ -320,6 +363,8 @@ EOF
 }
 
 case "${1:-}" in
+  identity) shift; cmd_identity "$@" ;;
+  daemon-pid) daemon_pid ;;
   scan) shift; cmd_scan "$@" ;;
   refresh) shift; cmd_refresh "$@" ;;
   notify) shift; cmd_notify "$@" ;;

@@ -1,6 +1,6 @@
 ---
 name: codex-session-refresh
-description: Rotate Codex CLI auth, restart the remote-control app-server, and refresh parent lanes plus their subagents, together or one at a time. Use when Codex lanes show a usage-limit banner, when codex login status says Not logged in or auth.json is missing, when the operator cannot pair a phone or second machine or remote-control pairing fails 401 token_revoked, or when lanes reject input with "access token could not be refreshed because you have since logged out or signed in to another account".
+description: Keep the Codex remote-control app-server following the ChatGPT account in auth.json, answer which account the operator must sign into on mobile, restart the daemon, and refresh parent lanes plus their subagents. Use when the operator asks what account to log into on the phone or cannot pair, when remote-control pairing fails, when the operator signed into a different ChatGPT account on this box, when lanes show a usage-limit banner, or when lanes show a WebSocket transport error with a Disconnected from this task or Reconnect line. Inference runs through the cliproxyapi gateway and is never rotated from this box.
 ---
 
 # Codex session refresh
@@ -8,18 +8,40 @@ description: Rotate Codex CLI auth, restart the remote-control app-server, and r
 Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
+## Two identities
+
+This box carries two ChatGPT identities. They are not the same account and
+this skill never confuses them.
+
+- **Inference** goes through the CLIProxyAPI gateway at
+  `https://cliproxy.topicfinder.ai/v1`, selected by `model_provider =
+  "cliproxyapi"` in `~/.codex/config.toml` and keyed by `CLIPROXYAPI_API_KEY`.
+  The gateway holds a pool of six Codex accounts and rotates them itself.
+  Nothing on this box logs in, logs out, or rotates for inference, ever. A
+  usage-limit banner is the gateway's whole pool being capped, and the answer
+  is the runbook at `scaling-octo-engine/docs/operations/cliproxyapi.md`, not
+  a login here.
+- **Remote control** is the ChatGPT account in `/root/.codex/auth.json`. The
+  app-server daemon registers its `environmentId` under that account at
+  startup and holds it for life. The phone must be signed into that exact
+  account to see this box, and a daemon older than `auth.json` presents an
+  account the file no longer holds.
+
+The only auth this skill touches is the remote-control one, and only after the
+operator has already changed it by signing in on this box. Rotation is never
+the fix for anything here.
+
 ## Intent
 
 Two outcomes, every time, whatever the reported symptom:
 
-1. **The fleet is working again.** Credentials valid, daemon serving, every lane
-   that was stopped either transacting again or knowingly finished. Reconnecting
-   a TUI is not the finish line: a lane sitting at a composer with interrupted
-   work is still stopped.
-2. **The operator can connect from mobile on the CURRENT authed session.** End
-   every run by minting a pairing code and handing it over, even when the run
-   was only an auth fix and nothing was restarted. The `environmentId` moves
-   with the account, so a code minted before the last login is worthless.
+1. **The fleet is working again.** Daemon serving, every lane that was stopped
+   either transacting again or knowingly finished. Reconnecting a TUI is not
+   the finish line: a lane sitting at a composer with interrupted work is still
+   stopped.
+2. **The operator can connect from mobile on the account the daemon actually
+   presents.** End every run by naming that account and minting a pairing
+   code, even when nothing was restarted.
 
 The steps below are means. If a step is unnecessary, skip it; if the fleet is
 still stopped after the steps, the run is not done.
@@ -28,186 +50,115 @@ still stopped after the steps, the run is not done.
 
 Symlink `assets/codex-lanes` into `~/.local/bin`. Never copy it.
 
+## Which account for mobile
+
+The answer to "what account do I need to log into on mobile" is one command:
+
+```sh
+codex-lanes identity
+```
+
+It prints the `auth.json` account, whether the running daemon started after
+that file was written, and the inference provider. Read it as:
+
+- `daemon follows auth.json: yes`: tell the operator that email, mint a code
+  with `codex remote-control pair --json`, hand over `manualPairingCode`.
+  Done.
+- `daemon follows auth.json: no`: the file changed under a running daemon. The
+  daemon still presents the old account and a code minted from it lands there.
+  Run step 1 first, then answer.
+- `daemon follows auth.json: no-daemon`: nothing is serving. Step 1.
+
+Never answer from memory or from a backup file. Every `auth.json.bak-*` is the
+account a previous login REPLACED, and the operator has held at least four
+accounts on this box. The file on disk is the only source.
+
+The daemon reads `auth.json` once. It does not watch the file, so an auth
+change while it runs is exactly the case `identity` exists to catch. There is
+no watcher and there must not be one: the restart kills every lane's
+subagents, so it runs only when the operator asks (operator 2026-09-08). On
+`no`, report the mismatch and the cost, then wait for the word.
+
 ## Trigger
 
 Any one of these:
 
-- `You've hit your usage limit ... try again at <date>` across lanes.
-- `codex remote-control pair` fails HTTP 401 `token_revoked`, or the operator
-  cannot pair a phone or a second machine.
-- A lane rejects every input with `access token could not be refreshed because you have since logged out or signed in to another account`.
-- `codex login status` says `Not logged in`, or `/root/.codex/auth.json` is
-  absent.
+- The operator asks which account to sign into on the phone, or cannot see
+  this box in the mobile app.
+- `codex remote-control pair` fails, or the operator cannot pair a phone or a
+  second machine.
+- `auth.json` changed after the daemon started, so `codex-lanes identity`
+  says `no`.
+- Lanes show a WebSocket transport error plus `Disconnected from this task`
+  and a `Reconnect:` line.
+- `You've hit your usage limit ... try again at <date>` across lanes. Classify
+  first: see the banners section.
 
 ## Modes
 
-Run the smallest thing that fixes the report. A full pass is three steps, but
-most calls are one of them, and doing all three when one was asked for is how
-live work gets killed for nothing.
+Run the smallest thing that fixes the report. A full pass is two steps, but
+most calls are one of them, and doing both when one was asked for is how live
+work gets killed for nothing.
 
-- **Auth only.** Nobody needs the running lanes to transact yet. Do step 1,
-  then mint a pairing code and hand it over.
-  This mode is narrower than it looks. The daemon caches the old token, so the
-  moment any lane has to work under the new account you also need step 2, and
-  every lane that was already running is `stale-auth` and needs step 3. A login
-  on its own fixes a file on disk and nothing else. If the ask was "get the
-  fleet going", it was never this mode.
 - **Server only, usually for remote.** The operator wants to pair a phone or a
-  second machine. **Try `codex remote-control pair --json` first.** It very
-  often just works, and then there is nothing to do but hand over the code. A
-  restart is warranted only when pair fails, and it costs everything in the
-  inventory in step 2.
-- **Full pass.** Auth changed AND lanes must transact under it. Step 1, then 2,
-  then 3.
+  second machine. Run `codex-lanes identity`. On `yes`, **try
+  `codex remote-control pair --json` first.** It very often just works, and
+  then there is nothing to do but name the account and hand over the code. A
+  restart is warranted only when pair fails or `identity` says `no`, and it
+  costs everything in the inventory in step 1.
+- **Lanes only.** The daemon respawned on its own, most often an auto update,
+  and the TUIs dropped. Step 2 alone.
+- **Full pass.** The daemon must restart AND lanes must transact after it.
+  Step 1, then 2.
 
 ## Reading the banners
 
-A stopped lane shows one of three things. They look alike and mean completely
-different things, so classify before acting.
+A stopped lane shows one of two things, and neither is fixed by a login. They
+look alike and mean completely different things, so classify before acting.
 
-- `You've hit your usage limit ... try again at <date>` is **quota**. No amount
-  of refreshing, restarting, or rotating fixes it. Only a window reset, bought
-  credits, or an account that still has room.
-- `Your access token could not be refreshed because you have since logged out
-  or signed in to another account` is **the daemon holding the old token**, not
-  a broken login. Auth is fine on disk. Restart the app-server.
+- `You've hit your usage limit ... try again at <date>` is **quota on the
+  gateway pool**. No amount of refreshing or restarting on this box fixes it,
+  and no login here touches it. Stop and say so. Each attempt spends a real
+  turn to be refused. Report the reset date, because that is the actual
+  unblock time unless the gateway operator adds capacity. Before blaming the
+  pool, confirm the lane is actually on the gateway: a lane started with
+  `--config model_provider=openai` bypasses it and caps on the `auth.json`
+  account instead.
 - A WebSocket transport error plus `Disconnected from this task` and a
   `Reconnect:` line is **the app-server having respawned**, most often an auto
   update replacing the binary under the running TUIs. Nothing is wrong with
-  auth or quota. Reconnect the lanes.
+  quota. Reconnect the lanes.
 
-**The reset date is an account fingerprint.** Two accounts never share a
-window, so `try again at Sep 7th 2:25 AM` and `try again at Sep 8th 5:02 PM`
-are two different exhausted accounts, and a banner's date tells you which
-account a lane was talking to when it stopped. Use it before rotating: read the
-dates already sitting in the lanes, and do not sign in to an account whose
-window is one of them. Keep the map as you learn it.
-
-| account | window |
-| --- | --- |
-| example@host | resets Sep 7, 2:25 AM |
-
-Rotating into an already-capped account is the default failure, because the
-obvious next account is usually the one that was capped last time.
-
-When every known account is capped, stop rotating and say so. Refreshing cannot
-manufacture quota, and each attempt spends a real turn to be refused. Report the
-earliest reset date, because that is the actual unblock time unless credits are
-bought or a genuinely new account appears.
-
-Say it plainly when the accounts are being exhausted faster than they reset. A
-large fleet on high reasoning effort can burn a weekly allowance in an
-afternoon, and then every rotation buys one session. That is a fleet-size and
-effort problem wearing a credentials costume, and no run of this skill fixes it.
+Say it plainly when quota is being exhausted faster than it resets. A large
+fleet on high reasoning effort can burn a weekly allowance in an afternoon.
+That is a fleet-size and effort problem, and no run of this skill fixes it.
 
 ## Order
 
-When running more than one step: auth, then server, then parent lanes, then
-their subs. Never reorder. Each step invalidates the one after it. Auth
-rotation revokes the token the daemon holds. The daemon restart kills every
-in-flight subagent and every process the daemon parents. Lane refresh is only
-durable once both are done.
+When running both steps: server, then parent lanes, then their subs. Never
+reorder. The daemon restart kills every in-flight subagent and every process
+the daemon parents, so a lane refresh is only durable once the restart is done.
 
-## 1 Auth
+## 1 Server
 
-Back up first, then log in. Do not `codex logout` first: `login --device-auth`
-replaces `auth.json` on its own, and a logout only opens a window with no
-credentials at all.
-
-`auth.json` absent is a normal starting state, not a separate fault. It means
-something already logged out. There is nothing to back up, so skip the copy and
-log in.
-
-Backups are not a shortcut back. Every `.bak` holds an expired `id_token`
-within days, and the newest one is always of the account the last run
-REPLACED, never of the account it moved to, because the copy happens before the
-login. Restoring one reinstates the account you previously rotated away from.
-Read them to learn which accounts exist, then still do the device login.
+**Check identity, then try pairing, before restarting anything.** A restart
+is a means, never the request:
 
 ```sh
-cp -a /root/.codex/auth.json /root/.codex/auth.json.bak-preauth-$(date +%Y%m%d)
-herdr tab create --workspace <WS> --cwd /root --label "codex re-auth" --no-focus
-herdr pane run <PANE> codex login --device-auth
-herdr pane wait-output <PANE> --regex '[A-Z0-9]{4}-[A-Z0-9]{4,6}' --timeout 40000
-```
-
-Hand the operator the URL `https://auth.openai.com/codex/device` and the code
-the moment it prints. Codes expire in 15 minutes.
-
-Read the code off the LIVE VIEWPORT before handing it over, never off a
-`wait-output` match:
-
-```sh
-herdr pane read <PANE> --source visible --lines 20
-```
-
-`wait-output --regex` searches scrollback, so on a second attempt it re-matches
-the EXPIRED code from the first one and reports it as current. Handing that
-over burns another 15 minutes on a code that can never work.
-
-A code that expires unused kills the login process. The pane prints
-`Error logging in with device code: device auth timed out after 15 minutes` and
-its foreground goes back to bash while the old code stays on screen, which
-reads exactly like a login still waiting. Check the foreground before
-believing the screen:
-
-```sh
-herdr pane process-info --pane <PANE>
-```
-
-Foreground `bash` means dead, so re-run `codex login --device-auth` for a fresh
-code. Foreground `codex` means it is still waiting and a new code would
-invalidate the one the operator may be mid-way through typing. Never re-mint
-unprompted.
-
-Then wait for completion in the background and **never interrupt the poller**:
-
-```sh
-herdr pane wait-output <PANE> --regex 'Successfully logged in|expired|[Ff]ailed' --timeout 870000
-```
-
-A code the operator authorized in the browser is lost if the local poller dies
-before it exchanges the token. There is no recovery, only a new code.
-
-That protects an exchange already in flight. It is not a reason to sit on the
-turn. This step is operator-held access, so once the code is handed over and
-the poller is running, say plainly that the refresh is blocked on their browser
-and stop. Do not spin, and do not re-mint on a timer: a fresh code invalidates
-the one they may be mid-way through typing.
-
-Verify the account actually changed:
-
-```sh
-codex login status
-python3 -c "
-import json,base64
-d=json.load(open('/root/.codex/auth.json')); t=d['tokens']
-p=t['id_token'].split('.')[1]; p+='='*(-len(p)%4)
-c=json.loads(base64.urlsafe_b64decode(p)); a=c.get('https://api.openai.com/auth',{})
-print(c.get('email'), a.get('chatgpt_plan_type'), a.get('chatgpt_subscription_active_until'))
-"
-```
-
-Sign in to an account with headroom. Re-authing the capped account reproduces
-the cap.
-
-## 2 Server
-
-The daemon caches the old oauth token, so `pair` returns 401 `token_revoked`
-until it restarts. That 401 is the signal for this step, not an auth defect.
-
-**Try pairing before restarting anything.** A restart is a means, never the
-request:
-
-```sh
+codex-lanes identity
 codex remote-control pair --json
 ```
 
-A `pairingCode` back means the daemon is healthy and the job is done: hand over
-`manualPairingCode` and stop. Only a 401 or a timeout earns the restart below,
+`identity` on `yes` plus a `pairingCode` back means the daemon is healthy and
+the job is done: name the account, hand over `manualPairingCode`, stop. Only
+`identity` on `no`, a pair failure, or a timeout earns the restart below,
 which costs every service in the inventory and cannot give the tunnel URLs
-back. Asked to "refresh the daemon for remote", pair first: the ask is working
-remote access, not a restarted process.
+back. Asked to "refresh the daemon for remote", check and pair first: the ask
+is working remote access on the right account, not a restarted process.
+
+`pair` succeeding is not proof of the right account. It succeeds against
+whatever account the daemon registered at startup, so on `identity: no` a
+green pair is a code for the wrong phone login.
 
 Capture the lane roster first. The restart kills remote-control-attached TUIs
 outright, not only subagents, and a dead TUI leaves no trace of what it was:
@@ -227,7 +178,7 @@ Capture the cwd too. A service started from a lane runs in that lane's
 worktree, and the same command in the wrong directory serves the wrong repo:
 
 ```sh
-DPID=$(python3 -c "import json;print(json.load(open('/root/.codex/app-server-daemon/app-server.pid'))['pid'])")
+DPID=$(codex-lanes daemon-pid)
 for pid in $(ps -eo pid,ppid --no-headers | awk -v p="$DPID" '$2==p {print $1}'); do
   echo "$pid cwd=$(readlink /proc/$pid/cwd)"
   tr '\0' ' ' < /proc/$pid/cmdline; echo
@@ -249,8 +200,9 @@ Two things in that list deserve a pause before restarting:
   These are somebody's in-flight work, not services. Do not blindly re-run
   them; report that they died and let their owning lane decide.
 
-Read the pid file. Never `pgrep -f 'app-server --remote-control'`: it matches
-the grepping shell itself.
+`daemon-pid` reads the owner of the control socket and falls back to the pid
+file, which newer codex builds no longer write. Never
+`pgrep -f 'app-server --remote-control'`: it matches the grepping shell itself.
 
 Restart through systemd. `codex remote-control stop` followed by `start` does
 not work, because `start` cannot recreate the control socket that `stop`
@@ -259,7 +211,12 @@ removed:
 ```sh
 systemctl restart codex-remote-control.service
 systemctl is-active codex-remote-control.service
+codex-lanes identity
 ```
+
+`identity` must now say `yes`. The restarted daemon read the current
+`auth.json`, so its `environmentId` belongs to that account and a paired phone
+on any other account stops seeing this box. Say so when the account changed.
 
 Check whether a recorded watcher is still needed before relaunching it. A
 poller whose condition already went true is finished, and restarting it just
@@ -291,7 +248,7 @@ curl -s -o /dev/null -w '%{http_code}\n' --max-time 20 "<URL>/"
 ```
 
 Confirm the ports listen and every new URL answers 200 before moving on, and
-carry those URLs into the lane messages in step 3. A lane that is not told its
+carry those URLs into the lane messages in step 2. A lane that is not told its
 review link changed will keep serving a dead one to a human.
 
 Mint the pairing code last, at the moment the operator will use it:
@@ -300,16 +257,14 @@ Mint the pairing code last, at the moment the operator will use it:
 codex remote-control pair --json
 ```
 
-Codes live 10 minutes. Never hand over one minted earlier in the run. The
-`environmentId` changes when the account changes, so a paired client from the
-previous account has to pair again.
+Codes live 10 minutes. Never hand over one minted earlier in the run, and
+always name the account from `identity` next to the code. A code without the
+account it belongs to sends the operator guessing across four logins.
 
 Mint one at the END of EVERY run, including runs that never restarted the
-daemon. Mobile access on the current authed session is half the point of this
-skill, and an auth-only pass silently invalidates whatever the operator paired
-before.
+daemon. Mobile access is half the point of this skill.
 
-## 3 Parent lanes
+## 2 Parent lanes
 
 Classify before touching anything:
 
@@ -318,18 +273,9 @@ codex-lanes scan
 ```
 
 - `health=stale`: the TUI process is older than the running daemon. It holds
-  the previous account identity in memory and rejects every input, however
-  healthy the CLI is. It must be restarted, not messaged.
-- `health=stale-auth`: the TUI started before the current `auth.json` was
-  written. A TUI reads credentials once, at startup, so a login that lands
-  while lanes are already up leaves every one of them presenting the PREVIOUS
-  account. They keep showing that account's usage-limit banner and cannot
-  transact, while the file on disk is perfectly healthy and a `codex exec`
-  probe passes. Daemon age cannot see this, so before this classification
-  existed an entire fleet read as `live` while nothing worked. Refresh, do not
-  message: a notify alone makes the lane re-hit the old account's cap
-  instantly.
-- `health=live`: started after both the daemon and the current credentials.
+  a dead connection and rejects every input, however healthy the CLI is. It
+  must be restarted, not messaged.
+- `health=live`: started after the running daemon.
 - `health=shell`: the TUI stopped and the pane is at a shell prompt. `scan`
   claims such a pane only when codex itself printed a resume line, because
   herdr drops the `agent` field the moment a TUI exits and anything looser
@@ -405,15 +351,16 @@ a shell prompt executes: a wake message beginning `1)` produced
 
 Message content that works, as plain prose with no metacharacters:
 
-- auth rotated, to which account, at what time, prior account capped until when
 - daemon restarted at what time, so every in-flight subagent is dead and will
   never report
+- if the remote-control account changed, which account, so the lane does not
+  report the old one to the operator
 - their own TUI was restarted and resumed at its exact session id
 - instruction: treat all prior waiting-for-agents state as void, re-check the
   subagent roster, re-spawn every sub that had not reached a terminal state
-- any new tunnel URL from step 2, since the lane is still holding the dead one
-- that replayed scrollback above the message is history, so a usage-limit
-  banner in it is stale rather than a live failure
+- any new tunnel URL from step 1, since the lane is still holding the dead one
+- that replayed scrollback above the message is history, so a transport
+  error in it is stale rather than a live failure
 - own-lane work only
 - an explicit instruction to pick the work back up now
 
@@ -421,15 +368,14 @@ Message every lane the restart dropped, not only drivers. A plain lane mid-task
 is just as stopped as a driver, and it has no way to learn why. The operator's
 standing expectation is that anything killed by a refresh gets told to resume.
 
-**Prove the account on ONE lane before processing the fleet.** Refresh a single
-lane, wake it, and watch what comes back. The `codex exec` probe cannot do this
-job, so the first refreshed lane IS the probe. Only when that lane actually
-transacts do the rest follow.
+**Prove the daemon on ONE lane before processing the fleet.** Refresh a single
+lane, wake it, and watch what comes back. The first refreshed lane IS the
+probe. Only when that lane actually transacts do the rest follow.
 
-A canary costs one turn. Skipping it costs one dead turn per lane, and on a
-capped account every one of them comes back with the same banner. This has paid
-for itself twice: eight lanes and seventeen lanes respectively, both times
-stopped after one.
+A canary costs one turn. Skipping it costs one dead turn per lane, and under a
+usage cap every one of them comes back with the same banner. This has paid for
+itself twice: eight lanes and seventeen lanes respectively, both times stopped
+after one.
 
 **Read each lane before waking it. Never blanket-notify.** A refresh drops
 finished lanes and mid-task lanes alike, and they are indistinguishable from
@@ -459,24 +405,25 @@ Do not wake lanes reporting `Goal achieved`. Their work is finished.
 
 ## Verify
 
+- `codex-lanes identity` says `yes`, and the account it names is the one you
+  told the operator.
 - `codex-lanes scan` shows no `stale` lane you meant to keep, and no `shell`
   lane you meant to keep.
 - Diff the scan against `/tmp/lanes-before.txt`. Every lane that vanished is a
   TUI the restart killed, and each needs a `refresh` or an explicit decision.
-- One throwaway probe proves the credentials LOAD, not that the plan has room:
+- One throwaway probe proves the CLI answers, not that the plan has room:
   `codex exec --skip-git-repo-check 'Reply with exactly: OK'`. Run it before
-  telling lanes to resume, not after: lanes waking onto dead credentials are a
+  telling lanes to resume, not after: lanes waking onto a dead backend are a
   second outage. Do not read more into a pass than that. This probe spends
-  about 6k tokens and has returned `OK` while every lane on the same account was
-  hard-capped, so a green probe next to lanes reporting a usage limit is not a
-  contradiction and not proof the banners are stale. The account is only proven
-  by a real lane transacting.
+  about 6k tokens and has returned `OK` while every lane was hard-capped, so a
+  green probe next to lanes reporting a usage limit is not a contradiction and
+  not proof the banners are stale. Only a real lane transacting proves it.
 - Every lane the run touched is transacting or has said it is finished. A
   roster of `live` lanes sitting at composers is not a working fleet.
-- Every service from the step 2 inventory is back, its port listens, and every
+- Every service from the step 1 inventory is back, its port listens, and every
   new tunnel URL answers 200.
 - Only the steps the report actually called for ran. A pass that restarted the
   daemon when `pair` would have answered did damage for nothing.
-- Resumed lanes replay their transcripts, so the old usage-limit and
-  token-refresh banners reappear in scrollback. They are history, not live
+- Resumed lanes replay their transcripts, so old usage-limit and transport
+  banners reappear in scrollback. They are history, not live
   failures. Judge a lane by whether it reaches `Working`, never by a banner.
