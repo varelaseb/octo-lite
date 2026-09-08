@@ -106,35 +106,35 @@ STUB="$t7";  check "dropped_lane_id refuses echo" "" "$(dropped_lane_id fake)"
 STUB="$t1";  check "dropped_lane_id takes exit line" "$NEW" "$(dropped_lane_id fake)"
 STUB="$t5";  check "dropped_lane_id takes reconnect" "$RECON" "$(dropped_lane_id fake)"
 
-# A lane that started before the current auth.json holds the previous account
-# in memory, however healthy the daemon and the file on disk are. Daemon age
-# cannot see it, which is how a whole fleet reads live while nothing transacts.
+# The daemon registers the remote-control environment under the auth.json
+# account at startup and holds it for life. A daemon older than the file is
+# presenting an account the file no longer holds, and a pairing code from it
+# lands on the wrong account.
 AUTHDIR=$(mktemp -d)
 trap 'rm -f "$LIB"; rm -rf "$AUTHDIR"' EXIT
-export CODEX_LANES_AUTHFILE="$AUTHDIR/auth.json"
+AUTHFILE="$AUTHDIR/auth.json"
 
-# credentials written just now, checked against a process that has been up far
-# longer. That is the real shape: a login lands while lanes are already up.
-# Uses pid 1 because this test's own shell starts in the same second as the
-# touch, and equal timestamps are not "older".
-touch "$CODEX_LANES_AUTHFILE"
-tui_predates_auth 1 && r=yes || r=no
-check "lane older than credentials is stale-auth" "yes" "$r"
+# credentials written just now, checked against a process up far longer. Uses
+# pid 1 because this shell starts in the same second as the touch, and equal
+# timestamps are not "older".
+touch "$AUTHFILE"
+pid_predates_auth 1 && r=yes || r=no
+check "daemon older than credentials does not follow" "yes" "$r"
 
 # credentials written long before this shell started
-touch -d '@'"$(( $(date +%s) - 86400 ))" "$CODEX_LANES_AUTHFILE"
-tui_predates_auth $$ && r=yes || r=no
-check "lane newer than credentials is not stale-auth" "no" "$r"
+touch -d '@'"$(( $(date +%s) - 86400 ))" "$AUTHFILE"
+pid_predates_auth $$ && r=yes || r=no
+check "daemon newer than credentials follows" "no" "$r"
 
 # no credential file at all must not claim staleness it cannot prove
-rm -f "$CODEX_LANES_AUTHFILE"
-tui_predates_auth $$ && r=yes || r=no
-check "absent auth.json does not assert stale-auth" "no" "$r"
+rm -f "$AUTHFILE"
+pid_predates_auth $$ && r=yes || r=no
+check "absent auth.json does not assert stale" "no" "$r"
 
 # a pid that is gone proves nothing either
-touch "$CODEX_LANES_AUTHFILE"
-tui_predates_auth 999999 && r=yes || r=no
-check "dead pid does not assert stale-auth" "no" "$r"
+touch "$AUTHFILE"
+pid_predates_auth 999999 && r=yes || r=no
+check "dead pid does not assert stale" "no" "$r"
 
 # "is this prompt up" reads the viewport, never scrollback holding a stale copy
 pane_visible() { printf '%s' "$VIS"; }
