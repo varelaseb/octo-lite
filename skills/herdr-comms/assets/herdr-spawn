@@ -15,14 +15,12 @@ usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
     --role ROLE --receipt FILE -- claude CLAUDE_ARGS...
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
-    --role ROLE --direct -- codex --model gpt-5.6-sol \
-    --config 'model_reasoning_effort="high"' \
-    --config 'service_tier="default"' \
+    --role ROLE --direct -- codex \
     --ask-for-approval never --sandbox danger-full-access
 
 Direct Codex launches use no receipt or external bootstrap. ROLE must be
-explorer, implementer, merger, or reviewer. They require exact
-Sol, high reasoning, default service tier, approval-never, and danger-full-access.
+orchestrator, explorer, implementer, merger, or reviewer. They use the
+configured Codex CLI model and require approval-never and danger-full-access.
 The shared Codex app-server daemon is started with Remote Control enabled before
 a Herdr tab is created.
 EOF
@@ -104,16 +102,15 @@ if [[ "$runtime" == codex ]]; then
     exit 65
   }
   case "$role" in
-    explorer|implementer|merger|reviewer) ;;
+    orchestrator|explorer|implementer|merger|reviewer) ;;
     *) echo "herdr-spawn: unsupported direct Codex role: $role" >&2; exit 65 ;;
   esac
   effort="$(config_value model_reasoning_effort "$@" || true)"
   service_tier="$(config_value service_tier "$@" || true)"
   mode="$(value_after --ask-for-approval "$@" || value_after -a "$@" || true)"
   sandbox="$(value_after --sandbox "$@" || value_after -s "$@" || true)"
-  [[ "$model" == gpt-5.6-sol && "$effort" == high && "$service_tier" == default \
-    && "$mode" == never && "$sandbox" == danger-full-access ]] || {
-    echo "herdr-spawn: direct Codex requires gpt-5.6-sol, high, default tier, approval never, and danger-full-access" >&2
+  [[ -z "$model" && "$mode" == never && "$sandbox" == danger-full-access ]] || {
+    echo "herdr-spawn: direct Codex uses the configured model and requires approval never plus danger-full-access" >&2
     exit 65
   }
   grep -Eq '^(🎤 )?(◆)?([0-9]+(/[0-9]+)?|[A-Z][A-Z0-9]+-[0-9]+) · .+$' <<<"$label" || exit 65
