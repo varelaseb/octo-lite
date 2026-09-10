@@ -1412,7 +1412,7 @@ exec {real_mv} "$@"
             self.assertIn("bootstrap=acknowledged", result.stdout)
             self.assertIn(f"provider_session_id={receipt['spawn_id']}", result.stdout)
 
-    def test_spawn_rejects_direct_codex_orchestrator_without_receipt(self):
+    def test_spawn_accepts_direct_codex_orchestrator_without_receipt(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -1421,16 +1421,12 @@ exec {real_mv} "$@"
                 str(SPAWN), "--workspace", "w1", "--name", "orch-1", "--cwd", str(repo),
                 "--role", "orchestrator", "--label", "443/6 · operating model",
                 "--direct", "--",
-                "codex", "--model", "gpt-5.6-sol",
-                "--config", 'model_reasoning_effort="high"',
-                "--config", 'service_tier="default"',
-                "--ask-for-approval", "never", "--sandbox", "danger-full-access",
+                "codex", "--ask-for-approval", "never", "--sandbox", "danger-full-access",
             ]
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)
-            self.assertEqual(65, result.returncode)
-            calls = log.read_text().splitlines() if log.exists() else []
-            self.assertFalse(any(line.startswith("tab create") for line in calls))
-            self.assertFalse(any(line.startswith("codex remote-control") for line in calls))
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn("role=orchestrator", result.stdout)
+            self.assertIn("bootstrap=direct", result.stdout)
 
     def test_spawn_accepts_direct_implement_spec_worker(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1441,10 +1437,7 @@ exec {real_mv} "$@"
                 str(SPAWN), "--workspace", "w1", "--name", "impl-tur-123", "--cwd", str(repo),
                 "--role", "implementer", "--label", "TUR-123 · implement",
                 "--direct", "--",
-                "codex", "--model", "gpt-5.6-sol",
-                "--config", 'model_reasoning_effort="high"',
-                "--config", 'service_tier="default"',
-                "--ask-for-approval", "never", "--sandbox", "danger-full-access",
+                "codex", "--ask-for-approval", "never", "--sandbox", "danger-full-access",
             ]
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
@@ -1456,7 +1449,7 @@ exec {real_mv} "$@"
             start = next(line for line in calls if line.startswith("agent start"))
             self.assertIn("--kind codex", start)
 
-    def test_spawn_rejects_duplicate_direct_codex_runtime_config(self):
+    def test_spawn_rejects_direct_codex_model_override(self):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -1466,9 +1459,6 @@ exec {real_mv} "$@"
                 "--role", "implementer", "--label", "TUR-123 · implement",
                 "--direct", "--",
                 "codex", "--model", "gpt-5.6-sol",
-                "--config", 'model_reasoning_effort="high"',
-                "--config", 'model_reasoning_effort="low"',
-                "--config", 'service_tier="default"',
                 "--ask-for-approval", "never", "--sandbox", "danger-full-access",
             ]
             result = subprocess.run(cmd, env=env, capture_output=True, text=True)
