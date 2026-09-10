@@ -55,10 +55,11 @@ For each ready ticket:
    to the ticket, spec, target `AGENTS.md`, optional research notes, integration
    branch, and relevant prior commits.
 4. Tell it to load only applicable octo-lite skills such as `tdd`,
-   `frontend-design`, `nodejs`, `pnpm`, `python`, or `typescript`. The worker
-   owns only that ticket, validates it, commits it, and returns the commit plus
-   terse evidence. It does not merge, update unrelated tickets, or follow the
-   octo-lite delivery contract.
+   `frontend-design`, `nodejs`, `pnpm`, `python`, or `typescript`. For UI work
+   in TopicFinder, also load `topicfinder-ui`. The worker owns only that ticket,
+   validates it, commits it, and returns the commit plus terse evidence. It does
+   not merge, update unrelated tickets, or follow the octo-lite delivery
+   contract.
 
 Use `herdr-say` for commands and `herdr-ack` for command completion. Keep
 messages sparse. A status pointer or commit is better than a recap.

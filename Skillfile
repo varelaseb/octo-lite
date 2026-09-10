@@ -33,3 +33,4 @@ local  skill  qa-evidence-capture     skills/qa-evidence-capture
 local  skill  spec-chat-review        skills/spec-chat-review
 local  skill  spec-chat-shape         skills/spec-chat-shape
 local  skill  typescript              skills/typescript
+local  skill  topicfinder-ui          skills/topicfinder-ui

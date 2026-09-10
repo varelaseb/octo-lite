@@ -13,6 +13,10 @@ No em-dashes or en-dashes. Ever.
 Use this skill only when the Linear/GitHub issue, specs, ADRs, repo instructions, or
 code clearly put UI/frontend work in scope.
 
+When the target has a domain-specific UI skill or design constitution, load it
+before making visual or interaction decisions. That source supplies the local
+language; this skill supplies the general frontend practice.
+
 ## Scope
 
 - Respect existing design systems, component libraries, tokens, and patterns.
@@ -30,3 +34,5 @@ code clearly put UI/frontend work in scope.
 - Do not hide incomplete behavior behind decorative UI.
 - Stop for Issue Shaper/operator clarification when visual requirements,
   brand constraints, or acceptance evidence are ambiguous.
+- Treat design guidance as agent judgment. Do not turn it into product code,
+  lint gates, or new enforcement machinery unless the issue explicitly asks.
