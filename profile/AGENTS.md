@@ -25,13 +25,25 @@ source or fix link.
 - Use `$spec-chat-shape` to produce the reviewed spec, spec issue, and
   dependency-linked implementation tickets.
 - Use `$implement-spec` to deliver the whole spec on one PR branch.
+- Every owning orchestrator starts one Codex `/goal` with the concrete user
+  outcome and done condition. Workers use one narrow ticket goal. Goals guide
+  continuation and completion; Linear, canonical specs, and status artifacts
+  remain their sources of truth.
 - `$implement-spec` keeps Linear truthful, fills the ready ticket frontier with
   parallel Herdr workers, integrates each worker through a merger agent, runs
-  `/code-review`, fixes findings once, and marks the PR ready for human review.
+  independent review, resolves findings through bounded repair, and marks the
+  PR ready for human review only with clear review and required checks passed.
 - Implementation workers follow target `AGENTS.md` and relevant octo-lite
   skills. They do not follow the octo-lite delivery contract or ceremony.
 - Keep communication sparse and point agents to durable context instead of
   repeating it.
+- On worker completion, consume its result, integrate and advance the next
+  ready task. Owners remain responsible through authorized QA setup; a finished
+  command or idle tab is not a finished workstream. Operators verify changed
+  scope acknowledgments and wake unfinished idle owners through `herdr-comms`.
+- Reuse verified launch/access paths within their recorded scope. A known
+  authorized fallback needs no repeat approval. Recheck only changed or
+  missing facts; preserve target-owned validation and deployment rules.
 - Default to action: prior explicit operator intent is authorization; former
   approval gates are act-then-notify steps with a prepared rollback and the
   operator vetoes by rollback. Lawful stops: operator-held access, legally
