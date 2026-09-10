@@ -1,4 +1,0 @@
-interface:
-  display_name: "TopicFinder UI"
-  short_description: "Apply TopicFinder's established UI language."
-  default_prompt: "Use $topicfinder-ui for this TopicFinder UI task."
