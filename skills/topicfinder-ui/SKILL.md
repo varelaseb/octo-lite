@@ -5,10 +5,16 @@ description: Apply TopicFinder's established visual and UX language during UI im
 
 # TopicFinder UI
 
-Use this skill for UI work in the TopicFinder repository. Read
-[the design constitution](references/design-constitution.md) before making
-design decisions, then inspect the relevant shipped reference surface in the
-target worktree.
+Use this skill for TopicFinder UI work in the Turbo-Outreach repository. Read
+the target worktree's root `DESIGN.md` before making design decisions, then
+inspect the relevant shipped reference surface. `DESIGN.md` is the canonical
+TopicFinder design source: it owns the accepted visual language, tokens,
+migration authority, and explicit exceptions.
+
+Use [the bundled orientation reference](references/design-constitution.md) only
+when the target has no `DESIGN.md`. It is a fallback summary, not a competing
+source. Never let it override `DESIGN.md`, the current spec, or the shipped
+surface.
 
 Treat the constitution as design judgment, not an automated pass/fail gate.
 The current ticket and canonical spec own requested behavior. The constitution
