@@ -13,7 +13,7 @@ REVIEW = ROOT / "agents/skills/spec-chat-review"
 SHAPE = ROOT / "agents/skills/spec-chat-shape"
 PREFLIGHT = REVIEW / "scripts/preflight.py"
 WATCH = REVIEW / "scripts/watch.sh"
-SPEC_CHAT_SHA = "d8de08483b62471bc0f65623a03ec309c058fe40"
+SPEC_CHAT_SHA = "bdb5174ffb7b2baca7ce1c8731686c57898bea5a"
 
 
 class SpecChatSkillTests(unittest.TestCase):

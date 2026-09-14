@@ -1,6 +1,6 @@
 ---
 name: spec-chat-review
-description: "Run the spec-chat review loop - park on a visual HTML spec's annotation spool, address human comments as they arrive, edit the spec in place, and reply through the review channel. Use this whenever the user wants to review, annotate, or discuss a .spec.html file; says things like start review mode, watch for annotations, address the annotations, or I'll comment in the browser; mentions spec-chat, spec.html, hand-off batches, or a *.review/ directory; or asks about the status of a spec review. Also use it when the user authored a spec earlier in the session and now wants feedback round-trips on it, even if they don't name the tool - and when they ask to see, understand, or be walked through a spec.html, since the walkthrough should happen visually in the rendered page rather than as terminal text."
+description: "Run the spec-chat review loop - park on a visual HTML spec's annotation spool, address human comments as they arrive, edit the spec in place, and reply through the review channel. Use this whenever the user wants to review, annotate, or discuss a .spec.html file; says things like start review mode, watch for annotations, address the annotations, or I'll comment in the browser; mentions spec-chat, spec.html, hand-off batches, or a *.review/ directory; or asks about the status of a spec review. Also use it when the user authored a spec earlier in the session and now wants feedback round-trips on it, even if they don't name the tool - and when they ask to see, understand, or be walked through a spec.html, since the walkthrough should happen visually in the rendered page rather than as terminal text. Review-only permits questions and atomic corrections; load spec-chat-shape too before any batch materially changes behavior or information architecture."
 ---
 
 # spec-chat review loop
@@ -13,7 +13,7 @@ spec-chat specs are visual HTML documents (`*.spec.html`) the user annotates in 
   agent/   ← you write here; the browser renders these live
 ```
 
-Your job in review mode: reconcile hand-off batches, apply each comment to the spec, reply through the spool, and leave review in one truthful terminal control state.
+Your job in review mode: reconcile hand-off batches, route material authoring through `spec-chat-shape`, apply each comment to the spec, reply through the spool, and leave review in one truthful terminal control state.
 
 ## The loop
 
@@ -27,7 +27,7 @@ Your job in review mode: reconcile hand-off batches, apply each comment to the s
 
 2. **Drain the reported batch.** Read each event file in the printed order. Rehydrate context from FILES — the current spec, the unresolved events, `<spec>.review/context.md` — not from what you remember of the chat. Chat history is never the review database; files are what survive compaction, session changes, CLI switches, and stopped turns. Fold each thread before acting: human `reply` events continue the existing conversation, and human `edit` events replace the message named by `supersedes`. Ignore superseded text.
 
-3. **Apply each comment** to the spec in place, honoring the dialect (see below). A comment may also be a question rather than a change request — informational replies with `change: "no spec change"` are a normal part of the protocol; answer through the channel, don't force an edit.
+3. **Classify before editing, then apply each comment** to the spec in place. Questions and atomic corrections that do not change behavior or information architecture remain review-only. A batch is material when it adds or changes a behavior cluster, user outcome, flow, state model, module boundary, acceptance family, spatial contract, or the page's information architecture. Before a material edit, load `spec-chat-shape` and apply its complete authoring and browser-quality contract to the affected spec. The existence or age of the spec never exempts it. If the current page cannot carry the new material with readable visual density, restructure it instead of appending prose, cards, or one catch-all diagram. An informational comment may use `change: "no spec change"`; answer through the channel without forcing an edit.
 
 4. **Publish accepted spec changes before reply.** When the active shaping contract requires durable publication, commit and push every accepted spec change before the browser receives its reply or refreshed Git focus. `spec-chat-shape` owns the exact issue and change-request order. Review-only work follows its caller's publication contract.
 
@@ -73,6 +73,14 @@ Your job in review mode: reconcile hand-off batches, apply each comment to the s
 - Visual state lives in semantic islands: `<script type="application/spec+json" data-render="chart" data-lib="echarts">` with pretty-printed JSON, rendered into a sibling `[data-render-target]`. Edit the island JSON, not rendered output. Pretty-printing is what makes your string-match edits land unambiguously — keep it.
 - New meaningful elements get sensible anchors; new sections get `data-anchor` + an `<h2>`.
 
+## Material edit gate
+
+`spec-chat-review` owns the conversation and spool transaction, not material authoring quality.
+When a handed-off batch is material, `spec-chat-shape` becomes a required co-skill before the first file edit.
+Read its authoring reference, reassess the complete affected page, and run its browser gate before the material batch's review handoff or replies, using its proportional recheck rule for later local corrections.
+Do not grandfather a weak existing page, preserve a poor layout merely to minimize the diff, or call a material expansion review-only.
+If `spec-chat-shape` is unavailable, leave the batch durable and stop before editing rather than silently using the review-only path.
+
 ## Anchors in events
 
 `anchorId` names the block; `target` narrows to an element within it:
@@ -91,7 +99,7 @@ A resolved thread remains expandable. When its latest message is from the agent,
 
 If a hand-off remains unacknowledged past the existing timeout, the browser states that automatic wake did not occur and instructs the human to send a new chat message to resume.
 
-When every thread is resolved and no material TBD remains, the no-draft action becomes **Finish review**. It writes the existing empty hand-off. Reconcile it, settle any final durable change, advance the exact cursor, stop the watcher, close any public capability transport, and end the active review window. Finish review is not implementation authorization, acceptance, merge approval, or deployment approval.
+When every thread is resolved and no material TBD remains, the no-draft action becomes **Finish review**. It writes the existing empty hand-off. Reconcile it, settle any final durable change, advance the exact cursor, stop the watcher, stop the review server, and end the active review window. Finish review is not implementation authorization, acceptance, merge approval, or deployment approval.
 
 ## Event schema
 
@@ -103,18 +111,28 @@ The loop is identical on every CLI; only the verified wake adapter differs. Read
 
 ## Git-derived focus
 
-Prompt-first shaping opens the HTTP page with `focus=changes&base=<exact-local-change-request-base>`. The runtime reads baseline HTML through the review server, compares stable current anchor signatures, keeps added or modified current blocks clear, and recedes unchanged current blocks. A new spec remains entirely clear. A normal URL renders every block at normal clarity. Automatic base discovery is only a fallback for direct unstacked review.
+Prompt-first shaping opens the HTTP page with `focus=changes&base=<exact-local-review-base>`. An explicit base is the exact selected snapshot, including a previously reviewed sibling branch; it may differ from the change request's merge base. Pin its resolved commit in the review URL. The runtime reads baseline HTML through the review server, compares stable current anchor signatures, keeps added or modified current blocks clear, and recedes unchanged current blocks. A new spec remains entirely clear. A normal URL renders every block at normal clarity. Only automatic base discovery uses a merge base.
+
+When the selected base does not contain a spec that is already committed on the current branch, the review server uses the first committed snapshot that introduced the file. This seed stays stable across later edits, keeping a newly seeded spec focused without adding another review mode. The baseline response keeps the selected commit in `base` and identifies the actual HTML source in `htmlBase`, or null for an uncommitted new file.
+
+Before collecting HTTP browser evidence or handing off the review, verify the served source and comparison:
+
+```sh
+python3 scripts/verify-review.py <repository> <spec-html> '<review-url>' <exact-review-base>
+```
+
+The read-only check compares page bytes and baseline HTML with local files and Git, reports any seed fallback, and fails on a substituted baseline or wrong served page. It does not replace visual inspection or require both changed and unchanged blocks. Reuse a verified host while its collection and owner remain unchanged; rerun the byte check after source or baseline changes.
 
 The review server reads only local Git. It never fetches, checks out, stages, commits, or writes repository state. If no baseline is available, the browser shows a visible warning and the complete current spec without stale focus.
 
-The highlighted current spec is the diff viewer. Do not require pull-request review, a side-by-side page, deleted-content ghosts, issue metadata, anchor lists, or a stored focus manifest.
+The highlighted current spec is the diff viewer. Added or modified root blocks carry a runtime-owned focus boundary that remains visible across custom page styles; unchanged context recedes but stays readable. Do not require pull-request review, a side-by-side page, deleted-content ghosts, issue metadata, anchor lists, or a stored focus manifest.
 
 ## Transports (agent side is identical)
 
 You only ever read and write spool files — the transport is the browser's problem. Two situations you may need to set up:
 
 - **Local browser, same machine**: nothing to run; the page connects to the folder directly (file:// + FSA). Browser security does not reliably persist write permission. When an IndexedDB handle returns `prompt`, the runtime shows **Resume review** and requests write permission on the already-selected handle; **Choose different folder** remains a separate picker fallback for a moved tree, wrong prior scope, or Chromium shell that does not surface the regrant prompt. Chromium can follow the native directory picker with a separate **Allow this site to edit files?** browser window; the runtime must name that step and visibly wait for it because shells such as Arc may not layer it over the spec window. The grant accepts ANY ancestor folder of the spec — pick it in the dialog or drag it from Finder onto the page; the runtime walks down to the spec's folder itself and remembers the ancestor. Caveats: Chromium refuses grants on the top-level roots themselves (home, Documents, Desktop, Downloads — children beneath them are fine), so suggest a workspace/projects folder one level down; if the granted tree contains two same-named specs at matching sub-paths the runtime refuses to guess and asks for a narrower grant. The spec's exact path also lands on the clipboard when the picker opens (⌘⇧G + paste in the macOS panel). If the user wants zero prompts or uses Safari or Firefox, run `assets/review-serve.py` on loopback; the HTTP transport auto-connects.
-- **Public capability review**: for prompt-first shaping or any review that must open from anywhere, start `assets/review-serve.py` on loopback against the narrow review collection, never the repository root. Publish that origin through the repository or host's configured public HTTPS capability transport. The unguessable URL is the only authentication: require no SSH, VPN, or separate login; tell the human to treat it as a secret; never publish it into the issue or change request. Stop the transport when review ends so the URL becomes invalid. The protocol does not depend on a specific tunnel provider.
+- **Remote browser**: start `assets/review-serve.py <docs-root> --public` against the narrow review collection, never the repository root. The server chooses a free port unless one is supplied, binds directly to the host interface, and prints the review URL. The URL itself is the secret; require no login, token, SSH, VPN, tunnel, or separate proxy. Verify the printed URL serves the exact spec and `/api/baseline` accepts the selected base before handing it to the human. Keep the same server and URL through review edits. Stop the server when review ends so the URL becomes invalid.
 
 ## Scaffolding spec-chat into a repo
 
@@ -141,8 +159,8 @@ If the server was already running when migration occurred, restart it on the sam
 ## Starting a review when asked
 
 1. Confirm the page exists, run `scripts/preflight.py`, and identify the shared collection root (normally the repository's `docs/` directory, not the page's immediate `docs/specs/`, `docs/specs/<domain>/`, or `docs/adr/` directory; use the narrowest common ancestor for a legacy or explicitly different layout).
-2. Start or restart the local server when HTTP review is required, then verify the served runtime advertises the required capabilities and `/api/baseline` succeeds for the exact page and change-request base.
-3. Set up the public capability transport when the page must open outside the file host.
+2. Start or restart `assets/review-serve.py` when HTTP review is required. For remote review, use `--public` and keep the server on the host interface. Verify the served runtime advertises the required capabilities and `/api/baseline` succeeds for the exact page and change-request base.
+3. Present the verified review URL. Do not hand back a GitHub link or a loopback URL when the human is reviewing from another machine.
 4. On both an initial start and any resumed/reconnected turn, run `scripts/watch-specs.sh <spec-root> .cursor-<cli-or-session> 0 3`; drain, reply, and cursor each ready batch, then repeat until exit 3.
 5. After reconciliation is empty, establish `turn-yielded`, verified `external-wake`, or `manual-resume` through `scripts/review-control.sh`.
 6. State the selected control state truthfully. Never say watching, attached, or active after final unless `external-wake` is verified.
@@ -174,4 +192,4 @@ If asked only for **status** (no review mode), read the spool, summarize threads
 
 ## Get out of the terminal — visual-first
 
-When the user asks to see, understand, or walk through a spec ("what's in this spec?", "walk me through it"), don't answer with a terminal summary — the whole point of spec-chat is that the spec is better experienced rendered. Set up the visual surface (open the file locally, or start the serve + tunnel if remote), start review mode, and offer to have the conversation in-page: they can pin questions on the elements they're asking about and your walkthrough arrives as replies anchored to the exact marks. A terminal summary is the fallback when the user can't open a browser, not the default.
+When the user asks to see, understand, or walk through a spec ("what's in this spec?", "walk me through it"), don't answer with a terminal summary — the whole point of spec-chat is that the spec is better experienced rendered. Set up the visual surface (open the file locally, or start the direct public review server if remote), start review mode, and offer to have the conversation in-page: they can pin questions on the elements they're asking about and your walkthrough arrives as replies anchored to the exact marks. A terminal summary is the fallback when the user can't open a browser, not the default.
