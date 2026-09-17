@@ -15,7 +15,6 @@ github  skill  spec-chat-review  0xTomDaniel/spec-chat@5d1a2b77150d3799ea47fce47
 github  skill  spec-chat-shape   0xTomDaniel/spec-chat@5d1a2b77150d3799ea47fce4777f6109dc31ee82  skill/shape-spec
 
 # octo-lite's own skills, authored locally under skills/.
-local  skill  codex-session-refresh   skills/codex-session-refresh
 local  skill  commit                  skills/commit
 local  skill  frontend-design         skills/frontend-design
 local  skill  grill-with-docs         skills/grill-with-docs
