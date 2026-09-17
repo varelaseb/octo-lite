@@ -57,18 +57,18 @@
     "path": "skills/qa-evidence-capture"
   },
   "github/skill/spec-chat-review": {
-    "sha": "4645fb69a93f829adf29a95437ee34435b94813b",
-    "raw_url": "https://api.github.com/repos/0xTomDaniel/spec-chat/contents/skill/review-spec?ref=4645fb69a93f829adf29a95437ee34435b94813b",
+    "sha": "5d1a2b77150d3799ea47fce4777f6109dc31ee82",
+    "raw_url": "https://api.github.com/repos/0xTomDaniel/spec-chat/contents/skill/review-spec?ref=5d1a2b77150d3799ea47fce4777f6109dc31ee82",
     "owner_repo": "0xTomDaniel/spec-chat",
     "path": "skill/review-spec",
-    "ref": "4645fb69a93f829adf29a95437ee34435b94813b"
+    "ref": "5d1a2b77150d3799ea47fce4777f6109dc31ee82"
   },
   "github/skill/spec-chat-shape": {
-    "sha": "4645fb69a93f829adf29a95437ee34435b94813b",
-    "raw_url": "https://api.github.com/repos/0xTomDaniel/spec-chat/contents/skill/shape-spec?ref=4645fb69a93f829adf29a95437ee34435b94813b",
+    "sha": "5d1a2b77150d3799ea47fce4777f6109dc31ee82",
+    "raw_url": "https://api.github.com/repos/0xTomDaniel/spec-chat/contents/skill/shape-spec?ref=5d1a2b77150d3799ea47fce4777f6109dc31ee82",
     "owner_repo": "0xTomDaniel/spec-chat",
     "path": "skill/shape-spec",
-    "ref": "4645fb69a93f829adf29a95437ee34435b94813b"
+    "ref": "5d1a2b77150d3799ea47fce4777f6109dc31ee82"
   },
   "local/skill/typescript": {
     "path": "skills/typescript"
