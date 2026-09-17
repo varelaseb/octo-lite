@@ -34,3 +34,4 @@ local  skill  push                    skills/push
 local  skill  python                  skills/python
 local  skill  qa-evidence-capture     skills/qa-evidence-capture
 local  skill  typescript              skills/typescript
+local  skill  topicfinder-ui          skills/topicfinder-ui
