@@ -1255,7 +1255,7 @@ async function spawnOpenaiReviewer(role, phaseTitle, startingHead, schema, { adm
     // with review_type, verdict clear|blocking, the exact reviewed head, and its findings), so the host
     // loop's verdict-publish binds and publishes THAT authoritative block verbatim rather than a re-authoring.
     emitVerdictBlock
-      ? 'The codex reviewer MUST end its final message with the canonical octo-lite-verdict block: the exact marker line for this review type, then a fenced ```toml``` document carrying review_type, verdict (clear or blocking), the exact 40-hex reviewed head, and its findings. The host loop parses and publishes THAT authoritative block, so it must be exactly what the reviewer asserted, verbatim.'
+      ? 'The codex reviewer MUST end its final message with the canonical octo-lite-verdict block: the exact marker line for this review type, then a fenced ```toml``` document carrying review_type, verdict (clear or blocking), the exact 40-hex reviewed head, and its findings. The fields findings, bound_inputs, and conversation_log_references MUST each be a TOML ARRAY of strings (["..."]), never a single string; a string where an array is required is a malformed block and the pass fails closed. The TOML document may carry ONLY these keys and no others: schema_version, review_type, verdict, head, bound_inputs, findings, reviewer_receipt, conversation_log_references, conversation_cutoff. Any additional key (validation, journal_references, notes, or anything else) makes the block malformed and the pass fails closed; fold validation facts and journal pointers into the reviewer_receipt string or the prose above the block. The host loop parses and publishes THAT authoritative block, so it must be exactly what the reviewer asserted, verbatim.'
       : '',
     'Return the codex final assistant message VERBATIM as payload (never summarize or edit it), the claimed_session_id, bootstrap_argv, resume_argv, worktree_before, and worktree_after. Do NOT read or return any codex rollout record; that is a separate reader.',
   ].filter(Boolean).join('\n\n')
@@ -1419,7 +1419,8 @@ async function deriveDeliveryEntry(mode) {
     '--git-common-dir`; the containment gate admits only when these two common-dirs are equal.',
     'From the forge, return pr_head, pr_base, and pr_issue for the declared PR in that derived repo.',
     'From Linear, return linear_issue, linear_state, and its canonical fingerprint.',
-    'From the pinned shaping-review journal, return shaping_verdict, shaping_verdict_head, and',
+    'From the pinned shaping-review journal, return shaping_verdict (LOWERCASE, exactly clear or',
+    'blocking, never uppercase), shaping_verdict_head, and',
     'shaping_reviewer_receipt. Compute shaping_head_descends with `git merge-base --is-ancestor',
     '<shaping_verdict_head> <head>`: exit 0 means true, inclusive of equal; otherwise false.',
     'From live reads at the derived head, return spec_blobs, adr_blobs, and a brief grounded in the',
@@ -1662,6 +1663,12 @@ if (mode === 'fix') {
   const reviewCycle = cycle()
   if (reviewCycle >= 3) return { stage: 'return-to-shaping', issue: A.issue, head }
   if (!Array.isArray(A.findings) || A.findings.length === 0) throw new Error('blocking findings required')
+  // Fix-mode briefs must carry the blocking findings (drop defect, remedied 2026-08-14).
+  A.brief = [
+    A.brief,
+    'BLOCKING CODE-REVIEW FINDINGS TO FIX IN THIS PASS (fix EXACTLY these; each needs its own spec-derived regression red that fails at the current head for the pinned reason):',
+    ...A.findings.map((f, i) => `${i + 1}. ${f}`),
+  ].join('\n\n')
   const implementation = await spawnWorker('implementer', 'Fix', head, IMPLEMENT_SCHEMA)
   if (implementation.blocked) return { stage: 'blocked', gate: 'fix', implementation }
   return {

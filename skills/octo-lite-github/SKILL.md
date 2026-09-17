@@ -96,15 +96,15 @@ Do not create extra workflow labels unless the operator explicitly asks.
   routing. No worker merges, no agent decides acceptance, and no agent merges
   unaccepted work. Required failed checks remain blockers until fixed or
   durably waived through a repository-approved path.
-  Once a merge lands, its tracked issue owes the `In Staging` transition: the
-  merge is not complete until Linear reflects that the merge-sha is genuinely
-  an ancestor of the deployed main branch.
-- Do not rely on a human remembering that move. Where the target repo provides
-  a post-merge hook that records `In Staging` from the merge-sha reality check,
-  that hook is the enforcement; state the expectation, let the hook fire it, and
-  verify it landed.
-- Only advance, never regress: leave an issue already at or beyond `In Staging`
-  untouched, and never claim a rung the repository reality has not reached.
+- After merging, read the team's actual Linear workflow and apply the target
+  repo's completion mapping. Do not assume deployment-named states exist.
+  For completed scope, use the configured completion state under the repo's
+  rules or explicit user instruction; keep remaining scope open.
+- Verify the state change landed, whether performed by repository automation
+  or by the owning agent. Do not claim a hook succeeded without readback.
+- Record merge and deployment evidence separately. A completion state does
+  not establish which environment serves the code. Do not regress completed
+  issues or create workflow states merely to match stale instructions.
 
 ## Boundaries
 
