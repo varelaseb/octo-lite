@@ -11,8 +11,8 @@ install-path  octo-lite  skill  agents/skills
 
 # Managed upstream skills pinned at exact canonical SHAs.
 github  skill  tdd  mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d  skills/engineering/tdd
-github  skill  spec-chat-review  0xTomDaniel/spec-chat@bdb5174ffb7b2baca7ce1c8731686c57898bea5a  skill/review-spec
-github  skill  spec-chat-shape   0xTomDaniel/spec-chat@bdb5174ffb7b2baca7ce1c8731686c57898bea5a  skill/shape-spec
+github  skill  spec-chat-review  0xTomDaniel/spec-chat@4645fb69a93f829adf29a95437ee34435b94813b  skill/review-spec
+github  skill  spec-chat-shape   0xTomDaniel/spec-chat@4645fb69a93f829adf29a95437ee34435b94813b  skill/shape-spec
 
 # octo-lite's own skills, authored locally under skills/.
 local  skill  codex-session-refresh   skills/codex-session-refresh
