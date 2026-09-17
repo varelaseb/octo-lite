@@ -1,7 +1,7 @@
 ---
 name: implement-spec
 description: Implement a specification in code.
-disable-model-invocation: true
+disable-model-invocation: false
 ---
 
 # Implement Spec
