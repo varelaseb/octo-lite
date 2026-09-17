@@ -528,7 +528,7 @@
 {
   "aria": {
     "enabled": true,
-    "description": "Shaped work moves through spec-derived implementation, fresh code review, QA, fresh QA review, explicit operator acceptance, and merge. Blocking reviews get fresh fixes and re-reviews, with a three-cycle cap."
+    "description": "Shaped work moves through spec-derived implementation, fresh code review, QA, fresh QA review, explicit operator acceptance, and merge. Confirmed defects continue through bounded fixes and independent re-reviews; repeated no-progress attempts require diagnosis or concrete repository-approved blocker handling."
   },
   "tooltip": {
     "trigger": "item"
@@ -755,7 +755,7 @@
         {
           "source": "Fresh fix",
           "target": "Return to shaping",
-          "value": "after 3 cycles",
+          "value": "diagnosed scope conflict",
           "lineStyle": {
             "curveness": 0
           }
@@ -787,13 +787,22 @@
 <p data-anchor="delivery-entry-gate-authority" id="delivery-entry-gate-authority"><code>implement-spec</code> owns delivery; <code>octo-lite-loop</code> is only a compatibility redirect.</p>
 <p data-anchor="delivery-one-pr" id="delivery-one-pr">One integration branch and one draft PR implement the complete spec, and the PR body marks the spec issue and every implementation ticket as closing.</p>
 <p data-anchor="delivery-frontier" id="delivery-frontier">The orchestrator repeatedly fills available capacity from the ready ticket frontier and recomputes it after every successful integration.</p>
+<p data-anchor="delivery-result-continuation" id="delivery-result-continuation">At the next owner wake, completed worker/review results are consumed before optional reporting and advance integration, repair or the next ready task in that turn; startup, dispatch and subtask completion never end an unfinished authorized workstream.</p>
 <p data-anchor="delivery-worker-isolation" id="delivery-worker-isolation">Each implementation ticket runs in its own Herdr agent, worktree, and branch.</p>
+<p data-anchor="delivery-writer-isolation" id="delivery-writer-isolation">Every concurrent writer, including the sole integration merger, has a distinct worktree; read-only source sharing excludes dependency installation, branch changes and generated files.</p>
 <p data-anchor="delivery-worker-context" id="delivery-worker-context">Worker communication is sparse and points to the spec, ticket, target instructions, optional shared research notes, and prior commits.</p>
 <p data-anchor="delivery-worker-skills" id="delivery-worker-skills">Workers load applicable octo-lite skills but do not load role contracts, the resolver, the legacy loop, receipts, journals, verdict blocks, exact-model gates, QA gates, or lifecycle transitions.</p>
 <p data-anchor="delivery-integration" id="delivery-integration">A merger agent serializes each completed worker commit onto the integration branch, resolves only integration conflicts, validates, and pushes.</p>
 <p data-anchor="delivery-linear-truth" id="delivery-linear-truth">Linear marks a ticket In Progress when its worker starts and Done only after its commit is integrated and pushed.</p>
-<p data-anchor="delivery-review" id="delivery-review">After every ticket is integrated, <code>/code-review</code> reviews the PR branch.</p>
-<p data-anchor="delivery-fix-review" id="delivery-fix-review">One implementation agent fixes all review findings on one fix branch, one merger integrates the fix, and <code>/code-review</code> reruns once.</p>
+<p data-anchor="delivery-review" id="delivery-review">After every ticket is integrated, <code>/code-review</code> or an available independent equivalent reviews the exact PR head against its base and spec; unsupported commands are not retried as if a review had started.</p>
+<p data-anchor="delivery-fix-review" id="delivery-fix-review">One implementation agent fixes the review findings on one fix branch, one merger integrates the fix, and independent review checks the resulting head.</p>
+<p data-anchor="delivery-review-bounded-repair" id="delivery-review-bounded-repair">A confirmed remaining defect continues through a bounded repair of the finding and changed surface; repeated no-progress attempts trigger diagnosis or concrete repository-approved blocker handling while independent work continues, never silent waiver or idleness solely because a review cycle ended.</p>
+<p data-anchor="delivery-validation-topology" id="delivery-validation-topology">Validation follows target instructions and CI topology, including database isolation and file/shard concurrency; an invalid shared-database run is stopped and diagnosed rather than repeated unchanged.</p>
+<p data-anchor="delivery-validation-reuse" id="delivery-validation-reuse">Unchanged-head evidence from a compatible environment is reused only where target rules permit; changed code, failures, unresolved integration risks and final-head required checks justify further validation, while a handoff alone does not.</p>
+<p data-anchor="delivery-manual-qa-outcome" id="delivery-manual-qa-outcome">When manual QA setup is authorized, the owner delivers a usable feature URL, deployed SHA, dependencies, account roles, secure credential pointer and starting scenarios with limitations; exhaustive agent proof does not replace that outcome or waive required spec evidence.</p>
+<p data-anchor="delivery-preview-owner" id="delivery-preview-owner">One preview deployment/fork owner publishes the current feature SHA, revision, fork/schema, scoped access and fixture namespace in existing control state; a healthy base-only preview is not feature readiness.</p>
+<p data-anchor="delivery-preview-preservation" id="delivery-preview-preservation">Affected owners agree setup-window closure and preserve fixtures/paid progress before recreation, then restore and verify against the new receipt with rollback retained; a dated idle observation does not authorize later conflicting writes.</p>
+<p data-anchor="delivery-terminal-outcome" id="delivery-terminal-outcome">A consumed terminal operation stops its watcher; retries of a known blocker require relevant changed evidence, and independent work continues while the exact dependency is reported.</p>
 <p data-anchor="delivery-ready" id="delivery-ready">Required target validation passes before the draft PR becomes ready for human review.</p>
 <p data-anchor="delivery-cleanup" id="delivery-cleanup">Temporary worktrees are removed only when clean and fully reachable from the integration branch.</p>
 <p data-anchor="delivery-source-issue" id="delivery-source-issue">Source issue: <a href="https://github.com/varelaseb/octo-lite/issues/95">GitHub issue 95</a>.</p>
@@ -1359,7 +1368,8 @@
 <p data-anchor="linear-loop-fire-transition" id="linear-loop-fire-transition">The mechanical loop-fire transition is retired by ADR 0005; <code>implement-spec</code> updates each implementation ticket to reflect actual work.</p>
 <p data-anchor="linear-loop-fire-arg-contract" id="linear-loop-fire-arg-contract">The loop-fire invocation carries the exact argument contract the installed <code>octo-control linear-transition</code> requires, deriving each value from receipt and stream state rather than a stale literal: the transition pair, the caller-authority binding of exactly one of the stream directory or the launch receipt with the caller identity that binding requires, the status and progress paths, the parent notify route, and the outcome and gate the status write records; it passes no argument the installed CLI has removed, so a retired flag such as <code>--reason</code> never appears.</p>
 <p data-anchor="embedded-cli-drift-probe" id="embedded-cli-drift-probe">A conformance probe validates every embedded <code>octo-control</code> invocation in the delivery loop against the installed CLI's own argument parser, so a drift between an embedded command string and the installed argument contract fails in the checked suite rather than at a lane's live fire.</p>
-<p data-anchor="linear-operator-authority" id="linear-operator-authority">Acceptance of delivered work, preproduction promotion, and live traffic shifts are the three human-gated operator carve-outs gated on the human instruction, so on an explicit human instruction the operator agent executes the resulting acceptance record, the bound merge of the accepted work, the preproduction promotion, or the traffic shift and never hands the mechanical action back to the human, while no agent self-authorizes or infers acceptance, a preproduction promotion, or a traffic shift, and no agent merges unaccepted work; the staging transition runs act-then-notify with prepared rollback under prior explicit operator intent as an automatic post-merge step, and the other lawful stops are operator-held access and legally binding irreversible actions without rollback.</p>
+<p data-anchor="linear-operator-authority" id="linear-operator-authority">Acceptance of delivered work, preproduction promotion, and live traffic shifts are the three human-gated carve-outs, so on explicit human instruction the active owning agent receiving that instruction executes the resulting acceptance record, bound merge, promotion, or traffic shift and never hands the mechanical action back to the human, while no agent self-authorizes or infers acceptance, promotion, or traffic shift and no agent merges unaccepted work; an explicit instruction to merge a named PR accepts that exact head unless the human says otherwise, and a human statement assigning the current lane ownership is sufficient for the action.</p>
+<p data-anchor="linear-acceptance-owner-pointer" id="linear-acceptance-owner-pointer">Ordinary PR acceptance and merge never read or mutate <code>operator-owner.toml</code>, because that pointer owns only meta-operator handoff and message routing; required failed checks remain blockers until fixed or durably waived through a repository-approved path.</p>
 <p data-anchor="linear-train" id="linear-train">Acceptance inside a stack or release train remains an acceptance-ledger fact while Linear stays <code>Awaiting Accept</code> until the commit reaches <code>main</code>.</p>
 <p data-anchor="linear-deployment-target-owned" id="linear-deployment-target-owned">Generic octo-lite defines only that post-acceptance deployment and promotion states are durable, operator-authorized, and evidence-backed; the exact state names and the concrete facts that trigger each one are target-owned Linear state mapping, defined in the target repo, never in generic octo-lite.</p>
 </section>

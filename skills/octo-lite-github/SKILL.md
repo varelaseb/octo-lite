@@ -87,20 +87,24 @@ Do not create extra workflow labels unless the operator explicitly asks.
 
 ## Merge And Linear Sync
 
-- Merge to the main branch is not a separate carve-out; it is the operator
-  agent's mechanical execution of an accepted PR, bound to the human acceptance
-  instruction. The operator or meta-operator agent executes the merge on that
-  acceptance instruction. No worker merges, no agent decides acceptance, and no
-  agent merges unaccepted work.
-  Once a merge lands, its tracked issue owes the `In Staging` transition: the
-  merge is not complete until Linear reflects that the merge-sha is genuinely
-  an ancestor of the deployed main branch.
-- Do not rely on a human remembering that move. Where the target repo provides
-  a post-merge hook that records `In Staging` from the merge-sha reality check,
-  that hook is the enforcement; state the expectation, let the hook fire it, and
-  verify it landed.
-- Only advance, never regress: leave an issue already at or beyond `In Staging`
-  untouched, and never claim a rung the repository reality has not reached.
+- Merge to the main branch is the active owning agent's mechanical execution of
+  an accepted PR, bound to explicit human instruction. An explicit instruction
+  to merge a named PR accepts that exact head unless the human says otherwise.
+  A human statement assigning the current lane ownership is sufficient for this
+  action. Record acceptance, verify required checks, then merge. Do not consult
+  `operator-owner.toml`; it scopes only meta-operator handoff and message
+  routing. No worker merges, no agent decides acceptance, and no agent merges
+  unaccepted work. Required failed checks remain blockers until fixed or
+  durably waived through a repository-approved path.
+- After merging, read the team's actual Linear workflow and apply the target
+  repo's completion mapping. Do not assume deployment-named states exist.
+  For completed scope, use the configured completion state under the repo's
+  rules or explicit user instruction; keep remaining scope open.
+- Verify the state change landed, whether performed by repository automation
+  or by the owning agent. Do not claim a hook succeeded without readback.
+- Record merge and deployment evidence separately. A completion state does
+  not establish which environment serves the code. Do not regress completed
+  issues or create workflow states merely to match stale instructions.
 
 ## Boundaries
 
@@ -110,6 +114,6 @@ Do not create extra workflow labels unless the operator explicitly asks.
   unless the operator explicitly asks.
 - Do not create extra PRs for the same issue.
 - No worker or reviewer role merges or approves as the human reviewer.
-- Only the operator or meta-operator agent executes a merge, and only on
-  explicit human acceptance and instruction, per Merge And Linear Sync above;
-  no agent merges unaccepted work or decides acceptance itself.
+- Only the active owning agent receiving explicit human acceptance and merge
+  instruction executes the merge, per Merge And Linear Sync above; no agent
+  merges unaccepted work or decides acceptance itself.

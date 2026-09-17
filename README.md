@@ -94,7 +94,7 @@ idea or rough Linear/GitHub issue
   -> $implement-spec
   -> parallel Herdr implementers on ready tickets
   -> serialized Herdr mergers onto one PR branch
-  -> /code-review + one consolidated fix pass when needed
+  -> independent review + consolidated fixes; bounded repair of remaining defects
   -> PR ready for human review
 ```
 
