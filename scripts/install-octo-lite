@@ -155,7 +155,8 @@ prune_dangling_skills
 # spec-chat is a peer repository, not a vendored dependency. Its skills link
 # straight from a clone, so a pull there is live and there is no pin to bump.
 # Override the location with SPEC_CHAT_ROOT.
-spec_chat_root="${SPEC_CHAT_ROOT:-/root/spec-chat}"
+# Default to a sibling checkout, so the stack works under any home.
+spec_chat_root="${SPEC_CHAT_ROOT:-$(dirname "$root")/spec-chat}"
 if [[ -d "$spec_chat_root/skill" ]]; then
   for pair in "shape-spec:spec-chat-shape" "review-spec:spec-chat-review"; do
     src="$spec_chat_root/skill/${pair%%:*}"; name="${pair##*:}"
