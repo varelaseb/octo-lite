@@ -51,11 +51,17 @@ esac
 
 remote_control="disabled"
 if [[ "$kind" == codex ]]; then
-  # Shared app-server capability. Idempotent, and done before the tab exists so
-  # a failure cannot leave an orphan.
-  "$1" remote-control start --json >/dev/null || {
-    echo "herdr-spawn: could not enable Codex Remote Control" >&2; exit 69; }
-  remote_control="enabled"
+  # Shared app-server capability, and optional: it powers Codex's own mobile
+  # approvals, which a spawned agent does not need in order to run. A system
+  # Codex has no standalone package to start it from, so a failure here is
+  # reported and the spawn continues. Done before the tab exists either way, so
+  # it can never leave an orphan.
+  if "$1" remote-control start --json >/dev/null 2>&1; then
+    remote_control="enabled"
+  else
+    remote_control="unavailable"
+    echo "herdr-spawn: Codex Remote Control unavailable; continuing without it" >&2
+  fi
   launch_argv=("${@:2}")   # `agent start --kind codex` supplies the executable
 else
   launch_argv=("${@:2}")
