@@ -9,31 +9,36 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REVIEW = ROOT / "agents/skills/spec-chat-review"
-SHAPE = ROOT / "agents/skills/spec-chat-shape"
+
+# spec-chat is a peer repository, not a vendored dependency: its skills are
+# linked straight from a clone so a pull there is live with no pin to bump.
+SPEC_CHAT = Path(os.environ.get("SPEC_CHAT_ROOT", "/root/spec-chat"))
+REVIEW = SPEC_CHAT / "skill/review-spec"
+SHAPE = SPEC_CHAT / "skill/shape-spec"
 PREFLIGHT = REVIEW / "scripts/preflight.py"
 WATCH = REVIEW / "scripts/watch.sh"
-SPEC_CHAT_SHA = "5d1a2b77150d3799ea47fce4777f6109dc31ee82"
 
 
+@unittest.skipUnless(SPEC_CHAT.is_dir(), f"no spec-chat clone at {SPEC_CHAT}")
 class SpecChatSkillTests(unittest.TestCase):
-    def test_skillfile_uses_authoritative_spec_chat_sources(self) -> None:
+    def test_spec_chat_is_a_peer_repository_not_a_vendored_pin(self) -> None:
         manifest = (ROOT / "Skillfile").read_text()
-        self.assertNotIn("local  skill  spec-chat-review", manifest)
-        self.assertNotIn("local  skill  spec-chat-shape", manifest)
         lock = json.loads((ROOT / "Skillfile.lock").read_text())
-        expected = {
-            "github/skill/spec-chat-review": "skill/review-spec",
-            "github/skill/spec-chat-shape": "skill/shape-spec",
-        }
-        for key, path in expected.items():
-            with self.subTest(key=key):
-                self.assertEqual("0xTomDaniel/spec-chat", lock[key]["owner_repo"])
-                self.assertEqual(path, lock[key]["path"])
-                self.assertEqual(SPEC_CHAT_SHA, lock[key]["sha"])
-                self.assertEqual(SPEC_CHAT_SHA, lock[key]["ref"])
-        self.assertTrue((REVIEW / "SKILL.md").is_file())
-        self.assertTrue((SHAPE / "SKILL.md").is_file())
+        for name in ("spec-chat-review", "spec-chat-shape"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, manifest, "spec-chat must not be pinned")
+                self.assertFalse(
+                    (ROOT / "agents/skills" / name).exists(),
+                    "spec-chat must not be vendored into agents/skills",
+                )
+        self.assertFalse(
+            [k for k in lock if "spec-chat" in k], "lockfile still pins spec-chat"
+        )
+
+    def test_the_installer_links_spec_chat_from_a_clone(self) -> None:
+        installer = (ROOT / "scripts/install-octo-lite").read_text()
+        self.assertIn("SPEC_CHAT_ROOT", installer)
+        self.assertIn("skill/${pair%%:*}", installer)
 
     def test_preflight_migrates_the_runtime_referenced_by_the_spec(self) -> None:
         with tempfile.TemporaryDirectory() as td:

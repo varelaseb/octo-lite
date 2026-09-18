@@ -129,6 +129,42 @@ done
 # annotateanything installs its own AGENTS.md there and is the owner going
 # forward, so octo-lite yields rather than fighting over it: it installs its
 # profile only when nobody else has claimed the path.
+# A skill deleted from any peer repository leaves a dangling link behind, which
+# no installer would otherwise heal: the owner stops creating it and everyone
+# else yields to it. A broken link is nobody's, so prune it. Whichever peer
+# still owns that name recreates it on its own install.
+prune_dangling_skills() {
+  local d f pruned=0
+  for d in "$prefix/.claude/skills" "$prefix/.codex/skills"; do
+    [[ -d "$d" ]] || continue
+    for f in "$d"/*; do
+      [[ -L "$f" && ! -e "$f" ]] || continue
+      if [[ "$check" == true ]]; then
+        echo "dangling skill link: $f" >&2; exit 1
+      fi
+      rm -f "$f"; pruned=$((pruned + 1))
+    done
+  done
+  (( pruned )) && echo "pruned $pruned dangling skill link(s)"
+  return 0
+}
+prune_dangling_skills
+
+# spec-chat is a peer repository, not a vendored dependency. Its skills link
+# straight from a clone, so a pull there is live and there is no pin to bump.
+# Override the location with SPEC_CHAT_ROOT.
+spec_chat_root="${SPEC_CHAT_ROOT:-/root/spec-chat}"
+if [[ -d "$spec_chat_root/skill" ]]; then
+  for pair in "shape-spec:spec-chat-shape" "review-spec:spec-chat-review"; do
+    src="$spec_chat_root/skill/${pair%%:*}"; name="${pair##*:}"
+    [[ -d "$src" ]] || continue
+    link_one "$src" "$prefix/.claude/skills/$name"
+    link_one "$src" "$prefix/.codex/skills/$name"
+  done
+elif [[ "$check" != true ]]; then
+  echo "spec-chat clone not found at $spec_chat_root; its skills are not installed" >&2
+fi
+
 link_one "$root/profile/AGENTS.md" "$prefix/.codex/AGENTS.md"
 link_one "$root/profile/AGENTS.md" "$prefix/.claude/CLAUDE.md"
 for base in "$prefix/.codex/octo-lite" "$prefix/.claude/octo-lite"; do

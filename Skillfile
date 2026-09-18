@@ -10,9 +10,9 @@
 install-path  octo-lite  skill  agents/skills
 
 # Managed upstream skills pinned at exact canonical SHAs.
+# spec-chat is NOT pinned here: it is a peer repository linked straight from a
+# clone by scripts/install-octo-lite, so a pull there is live with no pin to bump.
 github  skill  tdd  mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d  skills/engineering/tdd
-github  skill  spec-chat-review  0xTomDaniel/spec-chat@5d1a2b77150d3799ea47fce4777f6109dc31ee82  skill/review-spec
-github  skill  spec-chat-shape   0xTomDaniel/spec-chat@5d1a2b77150d3799ea47fce4777f6109dc31ee82  skill/shape-spec
 
 # octo-lite's own skills, authored locally under skills/.
 local  skill  commit                  skills/commit
@@ -23,13 +23,9 @@ local  skill  implement-spec          skills/implement-spec
 local  skill  nodejs                  skills/nodejs
 local  skill  octo-lite-debug         skills/octo-lite-debug
 local  skill  octo-lite-github        skills/octo-lite-github
-local  skill  octo-lite-issue-shaper  skills/octo-lite-issue-shaper
-local  skill  octo-lite-loop          skills/octo-lite-loop
 local  skill  pnpm                    skills/pnpm
 local  skill  pnpm-patching           skills/pnpm-patching
 local  skill  pull                    skills/pull
 local  skill  push                    skills/push
 local  skill  python                  skills/python
-local  skill  qa-evidence-capture     skills/qa-evidence-capture
 local  skill  typescript              skills/typescript
-local  skill  topicfinder-ui          skills/topicfinder-ui
