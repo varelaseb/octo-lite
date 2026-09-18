@@ -42,6 +42,10 @@ link_one() {
     return
   fi
   mkdir -p "$(dirname "$target")"
+  # A dangling link belongs to nobody: whoever owned it stopped shipping it.
+  # Replacing it is not clobbering, and refusing to wedges the whole install
+  # over a path no repo claims any more.
+  [[ -L "$target" && ! -e "$target" ]] && rm -f "$target"
   if [[ -e "$target" || -L "$target" ]]; then
     [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
     echo "refusing to replace: $target" >&2
