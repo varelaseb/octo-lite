@@ -31,4 +31,6 @@ jobs:
         with:
           python-version: "3.11"
       - run: python3 -m unittest discover -s tests -v
+        env:
+          SPEC_CHAT_ROOT: ${{ runner.temp }}/no-spec-chat
       - run: bash -n scripts/install-octo-lite skills/herdr-comms/assets/*
