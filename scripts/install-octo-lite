@@ -129,13 +129,15 @@ done
 # annotateanything installs its own AGENTS.md there and is the owner going
 # forward, so octo-lite yields rather than fighting over it: it installs its
 # profile only when nobody else has claimed the path.
-# A skill deleted from any peer repository leaves a dangling link behind, which
-# no installer would otherwise heal: the owner stops creating it and everyone
-# else yields to it. A broken link is nobody's, so prune it. Whichever peer
-# still owns that name recreates it on its own install.
+# Anything deleted from a peer repository leaves a dangling link behind, which
+# no installer would otherwise heal: the owner stops creating it and every peer
+# yields to it. Worse, link_one refuses to replace a dangling link, so one
+# stale entry blocks the whole install. A broken link is nobody's, so prune it;
+# whichever peer still owns that name recreates it.
 prune_dangling_skills() {
   local d f pruned=0
-  for d in "$prefix/.claude/skills" "$prefix/.codex/skills"; do
+  for d in "$prefix/.claude/skills" "$prefix/.codex/skills" \
+           "$prefix/.claude/agents" "$prefix/.codex/agents" "$prefix/.local/bin"; do
     [[ -d "$d" ]] || continue
     for f in "$d"/*; do
       [[ -L "$f" && ! -e "$f" ]] || continue
