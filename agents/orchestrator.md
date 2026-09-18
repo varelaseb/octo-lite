@@ -3,7 +3,7 @@ name: orchestrator
 description: "Own one issue or one epic coordination layer from brief through closure."
 permissionMode: auto
 tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
-skills: ["herdr-comms", "implement-spec"]
+skills: ["herdr-comms", "implement-spec", "spec-chat-shape"]
 ---
 
 <!-- Hand-written. No model pin: each CLI applies its own default. -->
