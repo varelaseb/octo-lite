@@ -14,7 +14,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
-MANAGED_SKILLS = ("tdd", "spec-chat-review", "spec-chat-shape")
+# Only genuinely third-party skills stay skillfile-managed. spec-chat is a
+# peer repository linked from a clone, so it is not part of this invariant.
+MANAGED_SKILLS = ("tdd",)
 
 
 class InstallSkillMirrorTests(unittest.TestCase):
