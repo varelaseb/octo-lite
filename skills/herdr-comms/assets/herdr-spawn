@@ -100,36 +100,60 @@ while :; do
   sleep "$delay"; [[ "$delay" == 0.5 ]] && delay=1 || delay=2
 done
 
-# Answer the one-time trusted-folder dialog, then verify it actually cleared.
+# Answer the startup dialogs, then verify they actually cleared.
 #
-# Never confirm blindly. The highlighted option is whichever the CLI last left
-# selected, and for a directory that was previously declined it is "No, exit" -
-# a bare Enter there kills the agent. So read the highlighted row, move the
-# selection onto the trust option, and only confirm once it is actually there.
+# Two agents, two shapes. Claude marks the selected row with U+276F and offers
+# "Yes, I trust this folder"; Codex marks it with U+203A and offers
+# "1. Yes, continue". Codex also asks, separately, to trust each hook before it
+# will run, which is a single keypress rather than a menu.
 #
-# Three dialog states matter: open (0), verified clear (1), read failed (2).
-# A failed read is not evidence of clearing, so it retries and then fails closed
-# rather than reporting a session that is really still trapped at the dialog.
+# Never confirm blindly. The highlighted row is whatever the CLI last left
+# selected, and for a previously declined directory it is the refusal, so a bare
+# Enter kills the agent being spawned. Read the row, move onto the affirmative,
+# verify it moved, and only then confirm.
+#
+# Three states matter: a dialog is open (0), verified clear (1), read failed
+# (2). A failed read is not evidence of clearing, so it retries and then fails
+# closed rather than reporting a session that is really still trapped.
 pane_text() { herdr pane read "$pane" --source visible --lines 60 2>/dev/null; }
+
 dialog_state() {
   local text
   text="$(pane_text)" || return 2
-  grep -qiE 'Quick safety check|trust this folder|trust the contents of this directory' <<<"$text" && return 0
+  grep -qiE 'Quick safety check|trust this folder|trust the contents of this directory|Press t to trust' <<<"$text" && return 0
+  is_appearance_wizard <<<"$text" && return 0
   return 1
 }
+
+# Claude's first-run appearance wizard. Every option is a preference and none of
+# them is destructive, so unlike a trust dialog this one may be confirmed as it
+# stands. It is recognised by its own options rather than by a title, so a
+# reworded heading does not turn it into an unrecognised dialog.
+is_appearance_wizard() {
+  local text; text="$(cat)"
+  grep -qiE 'Dark mode' <<<"$text" && grep -qiE 'Light mode' <<<"$text"
+}
+
+# The row the CLI has highlighted, for either marker.
+selected_row() { pane_text | grep -E '^[[:space:]]*(❯|›)' | head -1; }
+
 send_key() {
   herdr pane send-keys "$pane" "$1" >/dev/null 2>&1 || {
-    echo "herdr-spawn: trust-dialog keystroke failed; closing tab $tab" >&2
+    echo "herdr-spawn: dialog keystroke failed; closing tab $tab" >&2
     close_orphan_tab; exit 69; }
 }
 
 cleared=0
-for _ in $(seq 1 "${HERDR_SPAWN_TRUST_RETRIES:-12}"); do
+for _ in $(seq 1 "${HERDR_SPAWN_TRUST_RETRIES:-14}"); do
   state=0; dialog_state || state=$?
   [[ "$state" == 1 ]] && { cleared=1; break; }
   if [[ "$state" == 0 ]]; then
-    # The highlighted row is the one marked with the selection caret.
-    if pane_text | grep -E '^[[:space:]]*❯' | head -1 | grep -qiE 'trust (this folder|the contents)'; then
+    if pane_text | grep -qiE 'Press t to trust'; then
+      # hook trust: a single key, not a menu
+      herdr pane send-text "$pane" "t" >/dev/null 2>&1 || send_key t
+    elif pane_text | is_appearance_wizard; then
+      send_key Enter
+    elif selected_row | grep -qiE 'trust (this folder|the contents)|Yes, continue|^[^A-Za-z]*[0-9]+\. *Yes'; then
       send_key Enter
     else
       send_key Down
@@ -141,17 +165,20 @@ if [[ "$cleared" != 1 ]]; then
   state=0; dialog_state || state=$?
   case "$state" in
     1) : ;;
-    2) echo "herdr-spawn: could not read the pane to verify the trust dialog; failing closed" >&2
+    2) echo "herdr-spawn: could not read the pane to verify the dialog; failing closed" >&2
        close_orphan_tab; exit 69 ;;
-    *) echo "herdr-spawn: trust dialog did not clear; failing closed" >&2
+    *) # Print what was actually on screen: an unrecognised dialog shape is a
+       # fixable report, where a bare "did not clear" is a guessing game.
+       echo "herdr-spawn: a startup dialog did not clear; failing closed. Pane showed:" >&2
+       pane_text | grep -vE '^[[:space:]]*$' | tail -12 >&2
        close_orphan_tab; exit 69 ;;
   esac
 fi
 
-# The dialog clearing does not mean the agent can accept a prompt yet: it may
+# The dialogs clearing does not mean the agent can accept a prompt yet: it may
 # still be booting, and a prompt fired into that window is never reacted to -
 # Herdr reports `agent_prompt_stalled` and the message is lost. Wait until the
-# agent reports its own session and status before calling the spawn done.
+# agent reports its own status before calling the spawn done.
 provider_session_id=""; agent_status=""
 for _ in $(seq 1 "${HERDR_SPAWN_READY_RETRIES:-20}"); do
   info="$(herdr agent get "$name" 2>/dev/null || true)"

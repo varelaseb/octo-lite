@@ -58,11 +58,23 @@ case "$sub" in
       no)  printf ' Quick safety check: Is this a project you created or one you trust?\n ❯ No, exit\n   Yes, I trust this folder\n' ;;
       yes) printf ' Quick safety check: Is this a project you created or one you trust?\n   No, exit\n ❯ Yes, I trust this folder\n' ;;
       stuck) printf ' Quick safety check: Is this a project you created or one you trust?\n   No, exit\n ❯ Yes, I trust this folder\n' ;;
+      codexno)  printf ' Do you trust the contents of this directory?\n   1. Yes, continue\n \xe2\x80\xba 2. No, quit\n' ;;
+      codexyes) printf ' Do you trust the contents of this directory?\n \xe2\x80\xba 1. Yes, continue\n   2. No, quit\n' ;;
+      theme)    printf ' Choose the text style\n   1. Auto\n \xe2\x9d\xaf 2. Dark mode\n   3. Light mode\n' ;;
       *)   printf 'root@box:/tmp# \n' ;;
     esac ;;
   "pane send-keys")
     key="${4:-}"
     case "$(dialog_state)" in
+      codexno)
+        # confirming here picks "No, quit" and kills the agent
+        [[ "$key" == Enter ]] && echo "CONFIRMED_NO_EXIT" >>"$FAKE_WRONG"
+        [[ "$key" == Up ]] && echo codexyes >"$FAKE_DIALOG"
+        [[ "$key" == Down ]] && echo codexyes >"$FAKE_DIALOG" ;;
+      codexyes)
+        [[ "$key" == Enter ]] && echo none >"$FAKE_DIALOG" ;;
+      theme)
+        [[ "$key" == Enter ]] && echo none >"$FAKE_DIALOG" ;;
       no)
         # Confirming here is the bug this suite exists to catch: it selects
         # "No, exit" and kills the agent that was just spawned.
@@ -180,6 +192,29 @@ class HerdrWrapperTest(unittest.TestCase):
             "confirmed the dialog while 'No, exit' was highlighted",
         )
         self.assertEqual(self.dialog.read_text().strip(), "none")
+
+    def test_answers_the_codex_trust_dialog(self):
+        # Codex marks the row with a different glyph and its affirmative reads
+        # "1. Yes, continue", so a Claude-shaped matcher never confirms it.
+        self.dialog.write_text("codexno\n")
+        r = self.spawn_codex()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.wrong.exists(), "confirmed while 'No, quit' was selected")
+        self.assertEqual(self.dialog.read_text().strip(), "none")
+
+    def test_confirms_the_appearance_wizard(self):
+        # Every option is a preference, so this one may be confirmed as it
+        # stands; otherwise a first run blocks the spawn forever.
+        self.dialog.write_text("theme\n")
+        r = self.spawn()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.dialog.read_text().strip(), "none")
+
+    def test_an_unrecognised_dialog_reports_what_it_saw(self):
+        self.dialog.write_text("stuck\n")
+        r = self.spawn(HERDR_SPAWN_TRUST_RETRIES="2")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Pane showed", r.stderr)
 
     def test_fails_closed_and_cleans_up_when_the_dialog_never_clears(self):
         self.dialog.write_text("stuck\n")
