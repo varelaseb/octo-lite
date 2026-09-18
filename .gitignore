@@ -13,3 +13,5 @@ __pycache__/
 # that go stale the moment the source is edited.
 agents/skills/*
 !agents/skills/tdd/
+# skillfile bookkeeping, not skill content
+agents/skills/tdd/.meta
