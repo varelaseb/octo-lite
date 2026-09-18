@@ -77,12 +77,13 @@ provider: openai
 engine: codex
 model: gpt-5.6-sol
 effort: xhigh
+service_tier: fast
 tools: repo-read, linear-read, github-read, session-log-read
-launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh
+launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c model_service_tier=fast
 ```
 
 The shaping-reviewer contract is delivered as the first prompt. The explicit
-model and effort reuse the canonical role-runtime map; the hand-written role
+model, effort, and service tier reuse the canonical role-runtime map; the hand-written role
 contract remains model-free. The worker may inspect source, GitHub, tracker
 context, and session evidence, but never edits, commits, pushes, or mutates
 issue or PR state. The launcher must not substitute an implementer, code

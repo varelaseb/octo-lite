@@ -56,11 +56,11 @@ The pre-fleet shaping-review pass uses one fresh Codex worker with the
 
 ```sh
 herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
-  --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh
+  --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c model_service_tier=fast
 ```
 
 The contract is read-only and forbids edits, commits, pushes, and issue or PR
-mutations. The model and effort are explicit launcher inputs from the canonical
+mutations. The model, effort, and service tier are explicit launcher inputs from the canonical
 role-runtime map, not additions to the model-free role contract. A host that
 fails before command execution while applying `--sandbox read-only` may retry
 this exact mapping without that wrapper; the
