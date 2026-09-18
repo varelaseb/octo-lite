@@ -124,12 +124,20 @@ class HerdrWrapperTest(unittest.TestCase):
             "FAKE_WRONG": str(self.wrong),
             "FAKE_DIALOG": str(self.dialog),
             "FAKE_START_COUNT": str(d / "count"),
+            "HOME": str(d),
         }
 
     def spawn(self, **env):
         return subprocess.run(
             [str(SPAWN), "--workspace", "w1", "--name", "a1", "--label", "L",
              "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
+            capture_output=True, text=True, env={**self.env, **env},
+        )
+
+    def spawn_codex(self, **env):
+        return subprocess.run(
+            [str(SPAWN), "--workspace", "w1", "--name", "a1", "--label", "L",
+             "--cwd", str(self.cwd), "--role", "r", "--", "codex"],
             capture_output=True, text=True, env={**self.env, **env},
         )
 
@@ -189,6 +197,26 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("not ready for prompts", r.stderr)
         self.assertTrue(self.closed.exists())
+
+    def test_delivers_the_role_contract_to_a_codex_agent(self):
+        # Codex has no custom-agent file, so an undelivered contract is an agent
+        # that never read where it may write.
+        self.dialog.write_text("none\n")
+        agents = Path(self.env["HOME"]) / ".claude/agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / "r.md").write_text("# Role\nWrite only in your worktree.\n")
+        r = self.spawn_codex()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("contract=delivered", r.stdout)
+        # the fake logs the whole invocation, and the prompt spans lines
+        log = self.log.read_text()
+        self.assertIn("agent prompt", log)
+        self.assertIn("Write only in your worktree", log)
+
+    def test_a_claude_agent_loads_its_own_contract(self):
+        self.dialog.write_text("none\n")
+        r = self.spawn()
+        self.assertIn("contract=loaded-by-agent-flag", r.stdout)
 
     def test_reports_the_resolved_provider_session(self):
         self.dialog.write_text("none\n")

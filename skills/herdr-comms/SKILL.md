@@ -26,6 +26,13 @@ name= role= tab= pane= cwd= remote_control= provider_session_id=
 The runtime comes from the agent definition and each CLI's own defaults. This
 pins no model, effort, or service tier.
 
+`--role` is not just a label. A Claude agent loads its own contract through
+`--agent ROLE`, but Codex has no custom-agent file, so the contract is delivered
+as the agent's first prompt, looked up at `~/.claude/agents/ROLE.md` in the
+installed profile. Without it a Codex agent runs having read the operating model
+but never the contract that bounds it, which is where its write surface is
+stated. The output reports `contract=` so a silent miss is visible.
+
 It wraps `herdr tab create` and `herdr agent start`, and handles three things
 those leave to the caller:
 

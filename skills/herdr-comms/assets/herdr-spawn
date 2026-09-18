@@ -169,4 +169,30 @@ if [[ -z "$agent_status" ]]; then
 fi
 [[ -n "$provider_session_id" ]] || provider_session_id="herdr:$name"
 
-echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd remote_control=$remote_control provider_session_id=$provider_session_id"
+# Deliver the role contract.
+#
+# A Claude agent loads its contract itself, through `--agent ROLE`, which the
+# caller passes. Codex has no custom-agent file, so without this the role is
+# only a label and the agent runs having read the operating model but never the
+# contract that bounds it. That is not a detail: a role's write surface lives in
+# its contract, so an undelivered contract is an agent that does not know where
+# it may write.
+#
+# The installed profile is the lookup, so a contract owned by any peer
+# repository resolves without this script knowing which one.
+contract_file="$HOME/.claude/agents/$role.md"
+contract="not-found"
+if [[ "$kind" == claude ]]; then
+  contract="loaded-by-agent-flag"
+elif [[ -f "$contract_file" ]]; then
+  if herdr agent prompt "$name" "Your role contract follows. It governs this session, including where you may write. Follow it.
+
+$(cat "$contract_file")" --wait --until working --until idle >/dev/null 2>&1; then
+    contract="delivered"
+  else
+    contract="undelivered"
+    echo "herdr-spawn: could not deliver the $role contract; the agent does not know its bounds" >&2
+  fi
+fi
+
+echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd remote_control=$remote_control contract=$contract provider_session_id=$provider_session_id"
