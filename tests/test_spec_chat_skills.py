@@ -19,7 +19,16 @@ PREFLIGHT = REVIEW / "scripts/preflight.py"
 WATCH = REVIEW / "scripts/watch.sh"
 
 
-@unittest.skipUnless(SPEC_CHAT.is_dir(), f"no spec-chat clone at {SPEC_CHAT}")
+def _spec_chat_available() -> bool:
+    try:
+        return SPEC_CHAT.is_dir()
+    except OSError:
+        return False
+
+
+SPEC_CHAT_AVAILABLE = _spec_chat_available()
+
+
 class SpecChatSkillTests(unittest.TestCase):
     def test_spec_chat_is_a_peer_repository_not_a_vendored_pin(self) -> None:
         manifest = (ROOT / "Skillfile").read_text()
@@ -40,6 +49,7 @@ class SpecChatSkillTests(unittest.TestCase):
         self.assertIn("SPEC_CHAT_ROOT", installer)
         self.assertIn("skill/${pair%%:*}", installer)
 
+    @unittest.skipUnless(SPEC_CHAT_AVAILABLE, f"no spec-chat clone at {SPEC_CHAT}")
     def test_preflight_migrates_the_runtime_referenced_by_the_spec(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
@@ -59,6 +69,7 @@ class SpecChatSkillTests(unittest.TestCase):
             self.assertTrue((spec_dir / ".viz/runtime.js").is_file())
             self.assertFalse((repo / "docs/specs/.viz/runtime.js").exists())
 
+    @unittest.skipUnless(SPEC_CHAT_AVAILABLE, f"no spec-chat clone at {SPEC_CHAT}")
     def test_preflight_rejects_a_noncanonical_runtime_filename(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td) / "repo"
@@ -77,6 +88,7 @@ class SpecChatSkillTests(unittest.TestCase):
             self.assertEqual(2, result.returncode)
             self.assertFalse((spec_dir / "runtime.js").exists())
 
+    @unittest.skipUnless(SPEC_CHAT_AVAILABLE, f"no spec-chat clone at {SPEC_CHAT}")
     def test_single_page_watch_stops_at_the_newest_handoff(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             review = Path(td) / "example.spec.html.review"
@@ -100,6 +112,7 @@ class SpecChatSkillTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(names[:2], result.stdout.splitlines())
 
+    @unittest.skipUnless(SPEC_CHAT_AVAILABLE, f"no spec-chat clone at {SPEC_CHAT}")
     def test_single_page_watch_times_out_while_draft_is_unhanded(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             review = Path(td) / "example.spec.html.review"
