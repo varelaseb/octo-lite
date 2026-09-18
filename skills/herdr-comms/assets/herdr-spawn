@@ -142,7 +142,21 @@ if [[ "$cleared" != 1 ]]; then
   esac
 fi
 
-provider_session_id="$(herdr agent get "$name" 2>/dev/null | jq -r '.result.agent.agent_session.value // empty' 2>/dev/null || true)"
-[[ -n "$provider_session_id" ]] || provider_session_id="herdr:$name"
+# The dialog clearing does not mean the agent can accept a prompt yet: it may
+# still be booting, and a prompt fired into that window is never reacted to -
+# Herdr reports `agent_prompt_stalled` and the message is lost. Wait until the
+# agent reports its own session and status before calling the spawn done.
+provider_session_id=""; agent_status=""
+for _ in $(seq 1 "${HERDR_SPAWN_READY_RETRIES:-20}"); do
+  info="$(herdr agent get "$name" 2>/dev/null || true)"
+  provider_session_id="$(jq -r '.result.agent.agent_session.value // empty' <<<"$info" 2>/dev/null || true)"
+  agent_status="$(jq -r '.result.agent.agent_status // empty' <<<"$info" 2>/dev/null || true)"
+  [[ -n "$provider_session_id" && -n "$agent_status" ]] && break
+  sleep 1
+done
+if [[ -z "$provider_session_id" ]]; then
+  echo "herdr-spawn: agent never reported a session; it is not ready for prompts" >&2
+  close_orphan_tab; exit 69
+fi
 
 echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd remote_control=$remote_control provider_session_id=$provider_session_id"

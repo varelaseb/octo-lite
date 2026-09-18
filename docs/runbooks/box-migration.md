@@ -58,6 +58,11 @@ every spawned role, so these two settings are the fleet's model choice
 `gpt-6-astra` supersedes the `gpt-5.6-luna` / `gpt-5.6-sol` worker split from the
 pinned-model era; that split no longer exists.
 
+**Gotcha:** `codex exec` blocks reading stdin even when the prompt is passed as
+an argument, printing `Reading additional input from stdin...`. Unredirected it
+hangs forever and looks like a slow model; with `</dev/null` an `xhigh` reply to
+a trivial prompt takes about 6 seconds.
+
 A `modelSettings` entry pinning `claude-fable-5-1` to `high` effort is
 deliberate and unrelated to roles. It applies only when Fable is selected by
 hand for operator or adversarial shaping work.

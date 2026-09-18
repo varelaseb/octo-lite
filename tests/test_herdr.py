@@ -77,7 +77,13 @@ case "$sub" in
     # the pane. Failing here keeps the wrappers honest about which one they use.
     echo '{"error":{"code":"agent_blocked","message":"requires interactive input"},"id":"cli:agent:send-keys"}' >&2; exit 1 ;;
   "agent get")
-    echo '{"result":{"agent":{"agent_session":{"value":"sess-123"}}}}' ;;
+    # FAKE_NEVER_READY poses an agent that starts but never reports a session,
+    # which is the window in which a prompt is silently lost.
+    if [[ -n "${FAKE_NEVER_READY:-}" ]]; then
+      echo '{"result":{"agent":{}}}'
+    else
+      echo '{"result":{"agent":{"agent_session":{"value":"sess-123"},"agent_status":"idle"}}}'
+    fi ;;
   "agent prompt")
     if [[ -n "${FAKE_PROMPT_BLOCKED:-}" ]]; then
       echo '{"error":{"code":"agent_blocked","message":"requires interactive input"},"id":"cli:agent:prompt"}' >&2; exit 1
@@ -170,6 +176,16 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.spawn(HERDR_SPAWN_TRUST_RETRIES="2")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("failing closed", r.stderr)
+        self.assertTrue(self.closed.exists())
+
+    def test_fails_when_the_agent_never_becomes_ready_for_prompts(self):
+        # Regression: the trust dialog clearing is not readiness. Returning
+        # success here let callers fire a prompt into a still-booting agent,
+        # which Herdr rejects as agent_prompt_stalled and the message is lost.
+        self.dialog.write_text("none\n")
+        r = self.spawn(FAKE_NEVER_READY="1", HERDR_SPAWN_READY_RETRIES="2")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not ready for prompts", r.stderr)
         self.assertTrue(self.closed.exists())
 
     def test_reports_the_resolved_provider_session(self):
