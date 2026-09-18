@@ -41,6 +41,27 @@ SHA256:R8ETe8BBL1MP9LT4lHleLchPoRli1CdwdHfYgAyj1QQ
 - `pnpm` is absent even though Turbo declares it. It is presumably reached
   through corepack or npx; confirm before assuming a global install.
 
+## Model defaults
+
+octo-lite's role contracts pin no model. Each CLI's own default therefore runs
+every spawned role, so these two settings are the fleet's model choice
+(operator, 2026-09-18):
+
+| CLI | Setting | Value |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` `model` | `opus[1m]` |
+| Claude Code | `~/.claude/settings.json` `effortLevel` | `xhigh` |
+| Codex | `~/.codex/config.toml` `model` | `gpt-6-astra` |
+| Codex | `~/.codex/config.toml` `model_reasoning_effort` | `xhigh` |
+| Codex | `~/.codex/config.toml` `service_tier` | `fast` |
+
+`gpt-6-astra` supersedes the `gpt-5.6-luna` / `gpt-5.6-sol` worker split from the
+pinned-model era; that split no longer exists.
+
+A `modelSettings` entry pinning `claude-fable-5-1` to `high` effort is
+deliberate and unrelated to roles. It applies only when Fable is selected by
+hand for operator or adversarial shaping work.
+
 ## Configure, do not install
 
 **cliproxyapi is a remote gateway, not a local service.** Nothing to run. Codex
