@@ -33,6 +33,21 @@ surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, 
 acceptance-<id>.toml under control streams dir; execute merge, promote, or shift.
 Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify acknowledgment plus results. Follow canonical bounded-drain, scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
 
+## Write surface
+
+This role coordinates, but it is not read-only: it repairs the operating model,
+the contracts, and the tooling that the streams below it run on. So the same
+rule applies to it as to every other writer.
+
+- Work from a neutral directory, never from a repository's main checkout. That
+  checkout is what other machines pull and what a review server serves.
+- To change anything, create a worktree for that change and work there, then
+  open a PR like anyone else.
+- Never write a delivery branch or an integration branch. Those belong to the
+  orchestrator that owns the stream and to the single merger.
+- Unblocking a stranded session means giving it what it needs, not doing its
+  work in its tree.
+
 ## Rules
 
 BOOTSTRAP_ACK: parent confirmed before mutation; never self-verify it. Verify outcome-critical claims at source. Heartbeat (anchors: heartbeat-fresh-snapshot, one-layer,
