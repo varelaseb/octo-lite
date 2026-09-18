@@ -79,7 +79,7 @@ model: gpt-5.6-sol
 effort: xhigh
 service_tier: fast
 tools: repo-read, linear-read, github-read, session-log-read
-launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c model_service_tier=fast
+launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast
 ```
 
 The shaping-reviewer contract is delivered as the first prompt. The explicit
@@ -89,7 +89,7 @@ context, and session evidence, but never edits, commits, pushes, or mutates
 issue or PR state. The launcher must not substitute an implementer, code
 reviewer, or resumed session. If a host's
 Codex read-only sandbox wrapper fails before command execution, retry once with the
-same explicit read-only contract, model, and effort with no sandbox flag; record
+same explicit read-only contract, model, effort, and service tier with no sandbox flag; record
 the wrapper
 failure as infrastructure and verify a real read-only command result before
 accepting the review.

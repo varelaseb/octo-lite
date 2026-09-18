@@ -56,7 +56,7 @@ The pre-fleet shaping-review pass uses one fresh Codex worker with the
 
 ```sh
 herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
-  --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c model_service_tier=fast
+  --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast
 ```
 
 The contract is read-only and forbids edits, commits, pushes, and issue or PR
