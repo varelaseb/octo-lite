@@ -7,3 +7,9 @@
 __pycache__/
 *.pyc
 .claude/worktrees/
+
+# skillfile materializes this repo's own skills here alongside the genuine
+# upstream pins. Only the pins belong in git; the rest are copies of skills/
+# that go stale the moment the source is edited.
+agents/skills/*
+!agents/skills/tdd/
