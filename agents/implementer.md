@@ -3,7 +3,7 @@ name: implementer
 description: "Redirect retired implementation launches to `$implement-spec`."
 permissionMode: auto
 tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"]
-skills: ["frontend-design", "nodejs", "octo-lite-github", "pnpm", "pnpm-patching", "pull", "python", "tdd", "typescript"]
+skills: ["commit", "frontend-design", "nodejs", "octo-lite-github", "pnpm", "pnpm-patching", "pull", "push", "python", "tdd", "typescript"]
 ---
 
 <!-- Hand-written. No model pin: each CLI applies its own default. -->

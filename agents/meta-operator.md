@@ -3,7 +3,7 @@ name: meta-operator
 description: "Find agent needs, surface, unblock. Twofold primary goal: (1) no session left stranded"
 permissionMode: auto
 tools: ["Read", "Grep", "Glob", "Bash", "Skill", "Workflow"]
-skills: ["herdr-comms"]
+skills: ["commit", "herdr-comms", "push"]
 ---
 
 <!-- Hand-written. No model pin: each CLI applies its own default. -->
