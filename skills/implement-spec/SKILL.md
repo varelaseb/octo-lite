@@ -58,6 +58,41 @@ evidence still applies; human QA, code readiness and acceptance are separate.
 3. Create the integration branch from the target base and open one draft PR.
    Put `Closes <issue-key>` lines in the PR body for the spec issue and every
    implementation ticket.
+4. Before any implementer starts, run exactly one fresh shaping-review worker
+   against the integration branch. Use the launcher mapping below and bind the
+   worker to the current GitHub issue, PR, base, head, canonical specs, target
+   instructions, and review cutoff.
+5. Continue to the ready ticket frontier only after that worker returns a clear
+   verdict. A blocking verdict stops delivery and returns the stream to shaping.
+
+## Pre-fleet shaping-review mapping
+
+The pre-fleet pass is one fresh, read-only shaping-review worker. Its provider
+and logical tool mapping are fixed here so the delivery skill and launcher use
+the same contract:
+
+```text
+role: shaping-reviewer
+provider: openai
+engine: codex
+model: gpt-5.6-sol
+effort: xhigh
+service_tier: fast
+tools: repo-read, linear-read, github-read, session-log-read
+launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast
+```
+
+The shaping-reviewer contract is delivered as the first prompt. The explicit
+model, effort, and service tier reuse the canonical role-runtime map; the hand-written role
+contract remains model-free. The worker may inspect source, GitHub, tracker
+context, and session evidence, but never edits, commits, pushes, or mutates
+issue or PR state. The launcher must not substitute an implementer, code
+reviewer, or resumed session. If a host's
+Codex read-only sandbox wrapper fails before command execution, retry once with the
+same explicit read-only contract, model, effort, and service tier with no sandbox flag; record
+the wrapper
+failure as infrastructure and verify a real read-only command result before
+accepting the review.
 
 ## Herdr workers
 
