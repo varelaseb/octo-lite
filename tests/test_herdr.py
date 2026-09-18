@@ -81,6 +81,8 @@ case "$sub" in
     # which is the window in which a prompt is silently lost.
     if [[ -n "${FAKE_NEVER_READY:-}" ]]; then
       echo '{"result":{"agent":{}}}'
+    elif [[ -n "${FAKE_NO_SESSION:-}" ]]; then
+      echo '{"result":{"agent":{"agent_status":"idle"}}}'
     else
       echo '{"result":{"agent":{"agent_session":{"value":"sess-123"},"agent_status":"idle"}}}'
     fi ;;
@@ -192,6 +194,14 @@ class HerdrWrapperTest(unittest.TestCase):
         self.dialog.write_text("none\n")
         r = self.spawn()
         self.assertIn("provider_session_id=sess-123", r.stdout)
+
+    def test_a_host_that_resolves_no_session_still_spawns(self):
+        # Herdr resolves a provider session on some hosts and not others. A
+        # missing session is not a broken agent, so long as it reports status.
+        self.dialog.write_text("none\n")
+        r = self.spawn(FAKE_NO_SESSION="1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("provider_session_id=herdr:a1", r.stdout)
 
     # --- say -------------------------------------------------------------
 

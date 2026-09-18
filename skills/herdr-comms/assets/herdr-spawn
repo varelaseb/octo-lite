@@ -151,12 +151,16 @@ for _ in $(seq 1 "${HERDR_SPAWN_READY_RETRIES:-20}"); do
   info="$(herdr agent get "$name" 2>/dev/null || true)"
   provider_session_id="$(jq -r '.result.agent.agent_session.value // empty' <<<"$info" 2>/dev/null || true)"
   agent_status="$(jq -r '.result.agent.agent_status // empty' <<<"$info" 2>/dev/null || true)"
-  [[ -n "$provider_session_id" && -n "$agent_status" ]] && break
+  # Readiness is the reported status, not the session id: Herdr resolves a
+  # provider session on some hosts and not others, but a status means the agent
+  # is attached and can be prompted.
+  [[ -n "$agent_status" ]] && break
   sleep 1
 done
-if [[ -z "$provider_session_id" ]]; then
-  echo "herdr-spawn: agent never reported a session; it is not ready for prompts" >&2
+if [[ -z "$agent_status" ]]; then
+  echo "herdr-spawn: agent never reported a status; it is not ready for prompts" >&2
   close_orphan_tab; exit 69
 fi
+[[ -n "$provider_session_id" ]] || provider_session_id="herdr:$name"
 
 echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd remote_control=$remote_control provider_session_id=$provider_session_id"
