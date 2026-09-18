@@ -26,6 +26,20 @@ after the same blocker repeats with no meaningful progress.
 - For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier without role resolution or octo loop contracts.
 - Notify the parent after meaningful gate or risk change.
 
+## Write surface
+
+Shaping is core to this role, so this role is a writer, and the same rule that
+governs its workers governs it: every writer gets its own worktree.
+
+- Shape in a dedicated worktree on a shaping branch, never in the main
+  checkout. The main checkout is what other machines pull and what a review
+  server serves, so a commit made there lands before anyone has reviewed it.
+- Each implementation worker gets its own worktree, and only one merger writes
+  the integration branch.
+- A worker is placed in its worktree by its spawn, so its isolation is
+  structural. It still must not write outside the worktree it was given.
+- Reviewers mutate nothing and need no worktree; they audit the diff.
+
 ## Required inputs
 
 - Acknowledged parent brief, reply route, exact repo/worktree, issue, spec, PR,
