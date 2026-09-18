@@ -22,8 +22,9 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
 - `README.md` explains the product and install shape.
 - `agents/*.md` are the sole canonical role contracts. They are hand-written,
   and pin no model so each CLI applies its own default.
-- `skills/implement-spec/` owns post-shaping delivery. Its direct Herdr workers
-  use applicable skills without loading role contracts or the legacy loop.
+- `skills/implement-spec/` owns post-shaping delivery. Its Herdr workers run
+  under the `implementer` and `code-reviewer` contracts, which declare the
+  skills available to them, so no prose list has to be kept in step by hand.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
 - `skills/` contains reusable octo-lite skills authored locally and their
   bundled templates.

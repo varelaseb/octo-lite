@@ -76,15 +76,17 @@ For each ready ticket:
 
 1. Create a dedicated worktree and branch from the current integration branch.
 2. Mark the Linear ticket In Progress only when its worker starts.
-3. Spawn a direct Herdr implementer in that worktree. Prompt it with pointers
-   to the ticket, spec, target `AGENTS.md`, optional research notes, integration
-   branch, and relevant prior commits.
-4. Tell it to load only applicable octo-lite skills such as `tdd`,
-   `frontend-design`, `nodejs`, `pnpm`, `python`, or `typescript`. For UI work
-   in TopicFinder, also load `topicfinder-ui`. The worker owns only that ticket,
-   validates it, commits it, and returns the commit plus terse evidence. It does
-   not merge, update unrelated tickets, or follow the octo-lite delivery
-   contract.
+3. Spawn a Herdr implementer in that worktree, under the `implementer` role
+   contract. Prompt it with pointers to the ticket, spec, target `AGENTS.md`,
+   optional research notes, integration branch, and relevant prior commits.
+4. The contract declares the skills available to it and the bounds it works in,
+   so neither has to be restated here or kept in step by hand. A Claude worker
+   loads it with `--agent implementer`; a Codex worker has no custom-agent file,
+   so point it at `agents/implementer.md` as its first instruction.
+
+The worker owns only that ticket, validates it, commits it, and returns the
+commit plus terse evidence. It does not merge, push, or update unrelated
+tickets.
 
 Use `herdr-say` for commands. It returns only once Herdr has observed the
 target change state, so delivery needs no separate acknowledgement. Keep
