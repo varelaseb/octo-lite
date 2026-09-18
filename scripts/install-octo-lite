@@ -177,11 +177,17 @@ done
 # Managed skills live in the skillfile install target agents/skills (ADR 0002).
 # They mirror into every platform skills dir. Locally authored skills/ skills
 # that a managed entry does not shadow install alongside them.
+#
+# skillfile also materializes this repo's OWN skills into agents/skills, and
+# that copy goes stale the moment the source is edited. So a materialized entry
+# that shadows a directory in skills/ is skipped: the live source wins, and only
+# genuinely upstream pins are linked from agents/skills.
 managed_skills=""
 if [[ -d "$root/agents/skills" ]]; then
   for source in "$root"/agents/skills/*; do
     [[ -d "$source" ]] || continue
     name="$(basename "$source")"
+    [[ -d "$root/skills/$name" ]] && continue
     managed_skills+=" $name"
     link_one "$source" "$prefix/.codex/skills/$name"
     link_one "$source" "$prefix/.agents/skills/$name"
