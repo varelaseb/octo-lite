@@ -64,25 +64,16 @@ class InstallSkillMirrorTests(unittest.TestCase):
         self.assertNotEqual(0, check.returncode, "--check must flag a broken managed-skill mirror")
 
 
-class ManagedSkillResolutionTests(unittest.TestCase):
-    """The role resolver must resolve the vendored tdd skill from the managed
-    agents/skills tree, not only from skills/ (ADR 0002)."""
+class VendoredSkillLocationTest(unittest.TestCase):
+    """The vendored tdd skill is materialized into agents/skills, not skills/
+    (ADR 0002)."""
 
-    def test_vendored_tdd_resolves_from_agents_skills(self) -> None:
-        import sys
-
-        sys.path.insert(0, str(ROOT))
-        from workflows.lib import role_resolver
-
+    def test_vendored_tdd_lives_only_in_agents_skills(self) -> None:
         self.assertFalse(
             (ROOT / "skills" / MANAGED_SKILLS[0] / "SKILL.md").exists(),
             "tdd must no longer live under skills/",
         )
         self.assertTrue((ROOT / "agents" / "skills" / MANAGED_SKILLS[0] / "SKILL.md").is_file())
-        # Resolves without raising because it is found in agents/skills.
-        self.assertTrue(role_resolver._skill_blob(ROOT, MANAGED_SKILLS[0]))
-        with self.assertRaises(ValueError):
-            role_resolver._skill_blob(ROOT, "no-such-skill-xyz")
 
 
 if __name__ == "__main__":

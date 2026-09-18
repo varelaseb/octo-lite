@@ -1,4 +1,0 @@
-interface:
-  display_name: "octo-lite Loop"
-  short_description: "Redirect an old octo-lite loop request to implement-spec."
-  default_prompt: "Use $implement-spec to implement the shaped specification and its ticket graph."

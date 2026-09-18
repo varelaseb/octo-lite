@@ -50,6 +50,23 @@ legacy_links=(
   ".codex/agents/qa-capture.toml"
   ".codex/agents/qa-reviewer.toml"
   ".codex/agents/reconciler.toml"
+  ".claude/agents/shaping-reviewer.md"
+  ".claude/agents/qa-capture.md"
+  ".claude/agents/qa-reviewer.md"
+  ".claude/agents/reconciler.md"
+  ".claude/agents/tdd-observer.md"
+  ".codex/octo-lite/roles.toml"
+  ".claude/octo-lite/roles.toml"
+  ".codex/octo-lite/roles"
+  ".claude/octo-lite/roles"
+  ".codex/octo-lite/workflows"
+  ".claude/octo-lite/workflows"
+  ".claude/skills/octo-lite-loop"
+  ".codex/skills/octo-lite-loop"
+  ".claude/skills/octo-lite-issue-shaper"
+  ".codex/skills/octo-lite-issue-shaper"
+  ".claude/skills/qa-evidence-capture"
+  ".codex/skills/qa-evidence-capture"
 )
 
 migrate_legacy_link() {
@@ -83,12 +100,8 @@ done
 link_one "$root/profile/AGENTS.md" "$prefix/.codex/AGENTS.md"
 link_one "$root/profile/AGENTS.md" "$prefix/.claude/CLAUDE.md"
 for base in "$prefix/.codex/octo-lite" "$prefix/.claude/octo-lite"; do
-  link_one "$root/roles.toml" "$base/roles.toml"
-  link_one "$root/roles" "$base/roles"
   link_one "$root/agents" "$base/adapters"
-  link_one "$root/workflows" "$base/workflows"
 done
-link_one "$root/workflows/octo-loop-qa.js" "$prefix/.claude/workflows/octo-loop-qa.js"
 
 # Managed skills live in the skillfile install target agents/skills (ADR 0002).
 # They mirror into every platform skills dir. Locally authored skills/ skills

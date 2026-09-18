@@ -1,366 +1,45 @@
 #!/usr/bin/env bash
+# Send one message to a Herdr agent, and confirm it actually landed.
+#
+# This is a thin wrapper over a single native Herdr command:
+#   herdr agent prompt TARGET TEXT --wait --until working --until idle
+#
+# Native Herdr already solves what this script used to solve by hand. It
+# refuses a blocked agent outright (`agent_blocked`) rather than typing into an
+# open dialog, so no modal guard is needed; and `--wait --until` returns only on
+# an observed state change, so delivery is confirmed by Herdr rather than by an
+# acknowledgement the agent sends about itself.
+#
+# Exit codes are the contract callers rely on, including spec-chat's
+# `wake-herdr.py` adapter:
+#   0   delivered, and Herdr observed the agent change state
+#   75  not delivered now because the target is blocked on interactive input;
+#       the caller should retry once the target is free
+#   >0  anything else
 set -euo pipefail
 
-# TUR-505 phase-1 (rulings 83/86/87): bounded duplicate-prone transport with
-# no delivery guarantee. A message may be delivered zero times, once, or up to
-# the attempt cap per epoch; only an explicit herdr-ack proves delivery.
+usage() { echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE" >&2; }
 
-kind="info"
-artifact=""
 while (($#)); do
   case "$1" in
-    --kind) kind="${2:?}"; shift 2 ;;
-    --artifact) artifact="${2:?}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --kind|--artifact) shift 2 ;;   # accepted for caller compatibility, unused
     --) shift; break ;;
     -*) echo "herdr-say: unknown option $1" >&2; exit 64 ;;
     *) break ;;
   esac
 done
+(($# == 2)) || { usage; exit 64; }
+target="$1"; message="$2"
 
-target="${1:-}"
-shift || true
-message="$*"
-case "$kind" in info|command|ruling|ownership|question) ;; *) exit 64 ;; esac
-[[ -n "$target" && -n "$message" ]] || {
-  echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE" >&2
-  exit 64
-}
+rc=0
+out="$(herdr agent prompt "$target" "$message" --wait --until working --until idle 2>&1)" || rc=$?
+[[ "$rc" == 0 ]] && exit 0
 
-# L3 target grammar (ruling-87 fold): every target-derived path validates the
-# target BEFORE deriving any path. No slash, no dot-dot, no leading dot, so a
-# traversal target like ../../escape:p1 is rejected here and every resolved
-# path stays contained under the inbox root by construction.
-[[ "$target" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(:[A-Za-z0-9]+)?$ ]] || {
-  echo "herdr-say: invalid target $target" >&2
-  exit 64
-}
+# A blocked target is a retry, not a failure: it is sitting on a dialog and
+# Herdr correctly declined to type past it.
+[[ "$(jq -r '.error.code // empty' <<<"$out" 2>/dev/null || true)" == agent_blocked ]] && {
+  echo "herdr-say: $target is blocked on interactive input; not delivered" >&2; exit 75; }
 
-state_root="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite"
-root="$state_root/messages"
-inbox="$state_root/inbox/$target"
-locks="$state_root/locks"
-mkdir -p "$root" "$inbox" "$locks"
-
-# L3 id shape: ^[0-9]{8}T[0-9]{6}-[0-9]+-[0-9]+$
-new_id() { printf '%s-%s-%s' "$(date -u +%Y%m%dT%H%M%S)" "$$" "$RANDOM"; }
-id="$(new_id)"
-state="$root/$id.toml"
-created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-quote() { jq -Rn --arg value "$1" '$value'; }
-
-# S2 retry cap: positive int, default 3, invalid -> default + warn.
-cap="${OCTO_TRANSPORT_ATTEMPT_CAP:-3}"
-[[ "$cap" =~ ^[1-9][0-9]*$ ]] || {
-  echo "herdr-say: invalid OCTO_TRANSPORT_ATTEMPT_CAP '$cap', using default 3" >&2
-  cap=3
-}
-
-# A1 (soak finding 1) observed-state confirmation timeout, milliseconds:
-# positive int, default 15000, invalid -> default + warn.
-confirm_timeout_ms="${OCTO_PROMPT_CONFIRM_TIMEOUT_MS:-15000}"
-[[ "$confirm_timeout_ms" =~ ^[1-9][0-9]*$ ]] || {
-  echo "herdr-say: invalid OCTO_PROMPT_CONFIRM_TIMEOUT_MS '$confirm_timeout_ms', using default 15000" >&2
-  confirm_timeout_ms=15000
-}
-
-# gh#31 herdr 0.7.5 non-working state-change floor (ms): a submission from a
-# non-working start yields an observed state change within this floor or returns
-# agent_prompt_stalled; a --timeout BELOW it returns timeout WITHOUT that
-# guarantee, so a timeout is turn-start proof only when the configured timeout
-# exceeds the floor.
-FLOOR_MS=5000
-
-
-# Source B operator-gate stamp (sweep-operator-ask): when the lane operator-ask
-# path sends a --kind question and OCTO_STREAM names the sending stream, stamp a
-# mechanical per-stream operator-wait the sweep reads. This is written before any
-# transport so it holds even when the pane is unresolved, and is modal-safe (no
-# pane transcript scrape). The operator answer relay (herdr-ack of this exact
-# message) clears it. Today's live stamp law, unchanged in phase-1.
-stamp_written=""
-write_stamp() {
-  local waits="$state_root/operator-waits"
-  mkdir -p "$waits"
-  local wait_stamp="$waits/$OCTO_STREAM.toml"
-  local wait_tmp="$wait_stamp.$$.tmp"
-  {
-    echo 'schema_version = 1'
-    echo "owner = $(quote "operator")"
-    echo "stream = $(quote "$OCTO_STREAM")"
-    echo "message_id = $(quote "$id")"
-    echo "target = $(quote "$target")"
-    echo "ask = $(quote "$message")"
-    echo "created_at = $(quote "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
-  } >"$wait_tmp"
-  mv "$wait_tmp" "$wait_stamp"
-  stamp_written=1
-}
-if [[ "$kind" == "question" && -n "${OCTO_STREAM:-}" ]]; then
-  write_stamp
-fi
-
-render_state() { # $1 status, $2 delivery_path, $3 transport_attempts ('' omits)
-  echo 'schema_version = 1'
-  echo "message_id = $(quote "$id")"
-  echo "target = $(quote "$target")"
-  echo "kind = $(quote "$kind")"
-  echo "status = $(quote "$1")"
-  echo "delivery_path = $(quote "$2")"
-  if [[ -n "${3:-}" ]]; then
-    echo "transport_attempts = $3"
-  fi
-  echo "artifact = $(quote "$artifact")"
-  echo "message = $(quote "$message")"
-  echo "created_at = $(quote "$created_at")"
-}
-
-# L3 exclusive INIT creation: a hard-link publish refuses to clobber an
-# existing id; on collision regenerate the id (bounded retries) and never
-# leave partial state. Exhaustion is a nonzero exit with nothing written.
-# The operator-wait stamp, if one was written, is re-keyed to the new id.
-init_state() { # $1 status, $2 delivery_path
-  local tries=0 temporary
-  while :; do
-    temporary="$state.$$.tmp"
-    render_state "$1" "$2" >"$temporary"
-    if ln "$temporary" "$state" 2>/dev/null; then
-      rm -f "$temporary"
-      return 0
-    fi
-    rm -f "$temporary"
-    tries=$((tries + 1))
-    if (( tries >= 5 )); then
-      echo "herdr-say: message id collision retries exhausted" >&2
-      exit 70
-    fi
-    id="$(new_id)"
-    state="$root/$id.toml"
-    if [[ -n "$stamp_written" ]]; then
-      write_stamp
-    fi
-  done
-}
-
-# Atomic item publication (L3/E1): a dot-temporary is invisible to drain and
-# the sweep until the rename publishes it; content is exactly the id.
-publish_item() {
-  local temporary="$inbox/.$id.tmp"
-  printf '%s\n' "$id" >"$temporary"
-  mv "$temporary" "$inbox/$id"
-}
-
-# S2b: every transported body carries the [msg:<id>] suffix, info included
-# (info carries the id with no ack instruction), so every duplicate is
-# id-correlated.
-body_with_suffix() {
-  if [[ "$kind" == "info" ]]; then
-    printf '%s [msg:%s]' "$message" "$id"
-  else
-    printf '%s [msg:%s kind:%s] Acknowledge with: herdr-ack %s acknowledged --by %s' \
-      "$message" "$id" "$kind" "$id" "$target"
-  fi
-}
-
-case "$target" in
-  *:p*) pane="$target" ;;
-  *)
-    # TUR-447: a NON-ZERO `herdr agent get` (a hard error, not an empty pane)
-    # must not abort herdr-say under set -euo pipefail before the pending
-    # guard below, or the pre-transport operator-wait stamp is orphaned.
-    # Capture resolution tolerantly so BOTH an empty AND an errored resolution
-    # fall through to the unresolved-target pending path.
-    pane=""
-    resolved="$(herdr agent get "$target" 2>/dev/null || true)"
-    pane="$(printf '%s' "$resolved" | jq -r '.result.agent.pane_id // empty' 2>/dev/null || true)"
-    ;;
-esac
-# TUR-447: an unresolved target aborts before any transport. The pending
-# message-state guard exists ONLY to make a stamped operator-wait clearable.
-# D5: scope it to the operator-wait kinds (--kind question with OCTO_STREAM,
-# the exact case that just wrote the pre-transport operator-wait stamp keyed to
-# this message id). For that case persist a pending message-state record with
-# delivery_path=unresolved-ask (ACK-WAIT: never drain-fired, never repaired,
-# caller-retry law) so herdr-ack of this exact id can acknowledge and clear
-# the wait. For every NON-operator-wait message leave no state and exit 66 so
-# the send stays retryable by the caller.
-[[ -n "$pane" ]] || {
-  if [[ "$kind" == "question" && -n "${OCTO_STREAM:-}" ]]; then
-    init_state pending unresolved-ask
-  fi
-  echo "herdr-say: unresolved target $target" >&2
-  exit 66
-}
-
-# herdr 0.7.5: `agent prompt` is atomic (bracketed-paste preserved + submit in
-# one server-owned op). herdr-say never infers composer state or delivery from
-# pane transcript text. This read only detects a trust or safety dialog so the
-# atomic prompt is never allowed to bulldoze an open modal.
-dialog_open() {
-  herdr pane read "$pane" --source visible --lines 40 2>/dev/null \
-    | grep -qE 'Do you want|Do you trust|Quick safety check|trust this folder|Enter to confirm|to select|esc to cancel|❯ [0-9]+\.|❯ Yes|❯ No|\(y/n\)'
-}
-
-# Modal-safe guard: if a trust or safety dialog is open, never fire the atomic
-# prompt; durably queue for herdr-drain (INIT: state before item, order law).
-if dialog_open; then
-  init_state queued modal-queued
-  publish_item
-  echo "herdr-say: queued message_id=$id" >&2
-  exit 75
-fi
-
-# Transport-attempting send (INIT order law): state (provisional
-# path=deferred) THEN item THEN transport, so death pre-fire leaves an
-# ordinary drain retry and a retryable state with no item cannot outlive a
-# crash window.
-init_state pending deferred
-publish_item
-
-# L4: say's own first transport sequence (increment + fire + post-transport
-# transition/promotion) runs under the permanent message lock
-# locks/<id>.lock, exactly like drain's check-then-fire. Only the INIT
-# exclusive creation itself is exempt.
-lock="$locks/$id.lock"
-exec 9>>"$lock"
-flock -w "${HERDR_SAY_LOCK_WAIT:-30}" 9 || {
-  echo "herdr-say: timed out waiting for message lock $lock" >&2
-  exit 70
-}
-
-# Check-then-fire under the lock: re-read the durable state; a concurrent
-# drain may already have fired (path=direct) or an ack may have landed.
-read_status_path_attempts() {
-  python3 - "$state" <<'PY'
-import sys, tomllib
-with open(sys.argv[1], 'rb') as f:
-    data = tomllib.load(f)
-print(data.get('status', ''))
-print(data.get('delivery_path', ''))
-print(data.get('transport_attempts', 0))
-PY
-}
-snapshot="$(read_status_path_attempts)"
-current_status="$(sed -n 1p <<<"$snapshot")"
-current_path="$(sed -n 2p <<<"$snapshot")"
-attempts="$(sed -n 3p <<<"$snapshot")"
-[[ "$attempts" =~ ^[0-9]+$ ]] || attempts=0
-
-if [[ "$current_status" != "pending" || "$current_path" != "deferred" ]]; then
-  # Another actor already advanced this message; never double-fire.
-  echo "message_id=$id status=$current_status"
-  exit 0
-fi
-
-write_locked_state() { # $1 status, $2 delivery_path, $3 attempts
-  local temporary="$state.$$.tmp"
-  render_state "$1" "$2" "$3" >"$temporary"
-  mv "$temporary" "$state"
-}
-
-# gh#31: per-message submission-correlated confirmation (replaces the global
-# state_change_seq heuristic that produced BOTH a stuck-in-composer false
-# positive, when unrelated status churn advanced the shared counter, AND a
-# duplicate-flood false negative, when a continuously-working target never
-# advanced it). herdr 0.7.5 guarantees a submission from a NON-WORKING start
-# yields an observed state change within its floor or returns
-# agent_prompt_stalled; so we FIRE ONLY into a non-working target and read the
-# real `agent_status` field (never a phantom "state", never the global seq).
-read_agent_status() { # prints agent_status for $target; nonzero on any failure
-  local raw st
-  raw="$(herdr agent get "$target" 2>/dev/null)" || return 1
-  st="$(printf '%s' "$raw" | jq -er '.result.agent.agent_status' 2>/dev/null)" || return 1
-  [[ -n "$st" ]] || return 1
-  printf '%s' "$st"
-}
-
-# Fire-eligible only into a non-working target (idle|done): a working, blocked,
-# or unreadable target DEFERS so we never fire a send we cannot confirm. Every
-# target is gated (no pane-form bypass): the confirmation soundness theorem
-# needs a verified non-working start.
-fire_eligible() {
-  local st; st="$(read_agent_status)" || return 1
-  case "$st" in idle|done) return 0 ;; *) return 1 ;; esac
-}
-
-# gh#31 RULING order: the cap check runs BEFORE the eligibility gate, so a
-# cap-reached message stalls LOUD regardless of whether the target is busy.
-if (( attempts >= cap )); then
-  write_locked_state stalled deferred "$attempts"
-  rm -f "$inbox/$id"
-  echo "herdr-say: transport attempt cap reached, stalled message_id=$id" >&2
-  exit 75
-fi
-
-# gh#31 per-target serialization (non-blocking, so deadlock-free): concurrent
-# sends to ONE target must not both read idle and race their fires. The gate
-# read and the fire run under this lock; a loser DEFERS without burning an
-# attempt. The permanent per-message lock (fd 9) plus this per-target lock
-# (fd 8) are the only two a helper holds, always in that acquisition order.
-target_lock="$locks/target-$target.lock"
-exec 8>>"$target_lock"
-if ! flock -n 8; then
-  echo "herdr-say: target $target busy with another fire, deferred message_id=$id" >&2
-  exit 75
-fi
-
-# Busy-gate under the target lock: a fresh send into a busy target defers (young,
-# no attempt burned); the age-bounded stall is the sweep's job. An eligible
-# (non-working) target proceeds to the single fire below.
-if ! fire_eligible; then
-  echo "herdr-say: target busy, deferred message_id=$id" >&2
-  exit 75
-fi
-
-# Attempts-increment before fire (attempts law).
-attempts=$((attempts + 1))
-write_locked_state pending deferred "$attempts"
-
-# gh#31 confirmation: because we only fire into a gated NON-WORKING target, THIS
-# prompt's own outcome is the delivery proof, parsed from the STRUCTURED herdr
-# result (never a free-text grep that an error payload could satisfy):
-#   agent_prompt_stalled            -> submit swallowed: unconfirmed, retry
-#   result.type=agent_prompted (rc 0), agent_status idle|done|blocked|working
-#                                   -> settled/turn-started after our submit
-#   error.code=timeout AND configured timeout > the 5000ms floor
-#                                   -> turn started, still running (delivered)
-# Any other error (agent_not_running, client_disconnected, sub-floor timeout,
-# malformed) fails closed as unconfirmed.
-prompt_confirmed() { # $1 pane, $2 body -> 0 on submission-correlated confirmation
-  local out="$state.$$.wait" rc=0 type code astatus
-  herdr agent prompt "$1" "$2" --wait --timeout "$confirm_timeout_ms" 8>&- >"$out" 2>&1 || rc=$?
-  code="$(jq -r 'if type=="object" then (.error.code // "") else "" end' "$out" 2>/dev/null)"
-  # Swallow (structured or bare-text) only ever WITHHOLDS confirmation: safe.
-  if [[ "$code" == "agent_prompt_stalled" ]] || grep -q 'agent_prompt_stalled' "$out"; then
-    rm -f "$out"; return 1
-  fi
-  type="$(jq -r 'if type=="object" then (.result.type // "") else "" end' "$out" 2>/dev/null)"
-  astatus="$(jq -r 'if type=="object" then (.result.agent.agent_status // "") else "" end' "$out" 2>/dev/null)"
-  if [[ "$type" == "agent_prompted" ]] && (( rc == 0 )); then
-    case "$astatus" in idle|done|blocked|working) rm -f "$out"; return 0 ;; esac
-  fi
-  if [[ "$code" == "timeout" ]] && (( confirm_timeout_ms > FLOOR_MS )); then
-    rm -f "$out"; return 0
-  fi
-  rm -f "$out"; return 1
-}
-
-# On CONFIRMED direct success, under the lock: transition (info -> completed,
-# non-info stays pending) + promote delivery_path=direct + remove the item
-# (state-transition precedes item removal, order law). An unconfirmed outcome
-# keeps the message pending + deferred with its item so herdr-drain retries
-# under the attempts law, never claiming delivery.
-if prompt_confirmed "$pane" "$(body_with_suffix)"; then
-  if [[ "$kind" == "info" ]]; then
-    write_locked_state completed direct "$attempts"
-    rm -f "$inbox/$id"
-    echo "message_id=$id status=completed"
-  else
-    write_locked_state pending direct "$attempts"
-    rm -f "$inbox/$id"
-    echo "message_id=$id status=pending"
-  fi
-else
-  echo "herdr-say: transport unconfirmed, delivery pending message_id=$id" >&2
-  exit 75
-fi
+printf '%s\n' "$out" >&2
+exit "${rc:-1}"

@@ -1,2 +1,0 @@
-.octo-lite/drafts/
-

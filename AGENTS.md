@@ -20,8 +20,8 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
 ## Durable Sources
 
 - `README.md` explains the product and install shape.
-- `roles.toml` records every role's runtime and skill mapping.
-- `roles/` contains the sole canonical prose contract for each LLM role.
+- `agents/*.md` are the sole canonical role contracts. They are hand-written,
+  and pin no model so each CLI applies its own default.
 - `skills/implement-spec/` owns post-shaping delivery. Its direct Herdr workers
   use applicable skills without loading role contracts or the legacy loop.
 - `profile/AGENTS.md` is the global user-profile guidance to install.
@@ -31,14 +31,12 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
   (eljulians/skillfile) manifest, lockfile, and pinned patches that manage
   skills per ADR 0002: they pin tdd and authoritative Spec Chat skills at exact
   SHAs and carry the single tdd seam-gate patch across upstream updates.
-- `agents/` contains generated Claude Markdown launch adapters plus the managed
-  skillfile install target `agents/skills/`. Never edit or spawn adapters raw;
-  regenerate through the role resolver. Never hand-edit `agents/skills/`; it is
+- `agents/` contains the hand-written Claude role contracts plus the managed
+  skillfile install target `agents/skills/`. Never hand-edit `agents/skills/`; it is
   materialized by skillfile from the `Skillfile`, and `scripts/install-octo-lite
   --check` verifies every managed skill there resolves identically from
   `.claude/skills` and `.codex/skills`. OpenAI roles use a direct `codex exec`
   relay with no generated Codex custom-agent file.
-- `workflows/` contains target-neutral native Claude Workflow scripts.
 
 ## Target Spec Format Capability
 
@@ -67,15 +65,12 @@ gh#31 (one age bound, dropped lock/TOCTOU armor).
 - Keep templates inside the relevant skill `assets/` directory.
 - Keep always-loaded guidance in `profile/AGENTS.md` short.
 - Do not copy octo-lite skills, agents, or templates into target repos.
-- Install profile, roles, adapters, skills, workflows, and helpers by symlink.
-- Keep the legacy loop installable only as a compatibility redirect to
-  `implement-spec`; add no new delivery ceremony to it.
+- Install profile, role contracts, skills, and helpers by symlink.
 
 ## Validation
 
 - Check Markdown and TOML syntax after edits.
-- Run `python3 workflows/lib/role_resolver.py check` and
-  `python3 -m unittest tests/test_role_resolver.py` after role changes.
+- Run `python3 -m unittest tests.test_herdr` after changing the Herdr wrappers.
 - Verify skill symlinks point at this source repo when installing locally.
 - Run `scripts/install-octo-lite --check` after installed-surface changes.
 

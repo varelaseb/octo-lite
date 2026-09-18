@@ -23,7 +23,7 @@ is why per-lock deletion is forbidden.
 1. Stop the sweep timer so no P1 repair runs mid-reclamation:
 
    ```sh
-   scripts/operator-timer remove --name <operator-name> --control-dir <control-dir>
+   (the sweep timer was retired with launch-meta-operator; no unit to remove)
    ```
 
 2. Verify no helper process is live:

@@ -86,7 +86,8 @@ For each ready ticket:
    not merge, update unrelated tickets, or follow the octo-lite delivery
    contract.
 
-Use `herdr-say` for commands and `herdr-ack` for command completion. Keep
+Use `herdr-say` for commands. It returns only once Herdr has observed the
+target change state, so delivery needs no separate acknowledgement. Keep
 messages sparse. A status pointer or commit is better than a recap.
 
 ## Integrate and advance

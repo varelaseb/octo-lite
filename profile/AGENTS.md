@@ -12,9 +12,10 @@ Use octo-lite for Linear-first product and development work.
   canonical spec; implementation uses one integration branch and one PR.
 - Target root `AGENTS.md` exclusively owns repo-specific commands,
   architecture, validation, deployment, fixtures, and conventions.
-- `roles.toml` and `roles/*.md` own legacy role-launched workflows.
+- `agents/*.md` own the role contracts. They are hand-written and pin no
+  model, so each CLI applies its own default.
 - `$implement-spec` owns post-shaping delivery. Its Herdr workers use relevant
-  octo-lite skills but do not use role contracts, the resolver, or loop gates.
+  octo-lite skills but do not load role contracts.
 
 Stop on source conflict. Conversation and memory never silently override these
 sources. Memory may retain only dated, evidence-backed gotchas with a durable
