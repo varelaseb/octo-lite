@@ -52,9 +52,9 @@ evidence still applies; human QA, code readiness and acceptance are separate.
 1. Read the spec, issue, tickets, and enough of the graph to identify the first
    frontier.
 2. When exploration would remove duplicated implementation work, spawn one
-   optional exploration agent. Give it write access only to a shared directory
-   outside the repo. Its deliverable is concise Markdown notes linked from the
-   relevant tickets.
+   optional exploration agent through `herdr-comms`. Give it write access only
+   to a shared directory outside the repo. Its deliverable is concise Markdown
+   notes linked from the relevant tickets.
 3. Create the integration branch from the target base and open one draft PR.
    Put `Closes <issue-key>` lines in the PR body for the spec issue and every
    implementation ticket.
@@ -93,7 +93,7 @@ messages sparse. A status pointer or commit is better than a recap.
 
 When an implementer completes:
 
-1. Spawn a merger agent in a clean integration worktree.
+1. Spawn a merger agent through `herdr-comms` in a clean integration worktree.
 2. Give it the ticket, worker commit, integration branch, and spec pointers.
 3. Have it merge or cherry-pick the worker commit, resolve only integration
    conflicts, run proportionate validation, push the integration branch, and
@@ -147,7 +147,8 @@ After every ticket is integrated:
    base, spec and scope. Verify acknowledgment and actual review work once;
    do not retry an unrecognized slash command or count pasted text as review.
 2. If review reports issues, create one fix branch and worktree and spawn one
-   implementer to fix all findings. Merge it through one merger agent, then
+   implementer through `herdr-comms` to fix all findings. Merge it through one
+   Herdr merger, then
    review the new integration head. One consolidated batch is the default,
    not a lifetime repair cap. If a confirmed defect remains, continue a bounded
    repair of that finding and changed surface. If the same attempt makes no

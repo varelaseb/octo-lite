@@ -23,10 +23,7 @@ execution = "persistent"
 service_tier = "default"
 tools = ["Read", "Grep", "Glob", "Bash", "Skill", "Workflow"]
 required_skills = ["herdr-comms"]
-
-[[roles.meta-operator.conditional_skills]]
-skill = "launch-meta-operator"
-when = "operator-launch"
+conditional_skills = []
 
 [roles.orchestrator]
 contract = "roles/orchestrator.md"

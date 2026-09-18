@@ -16,7 +16,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 META_OPERATOR = ROOT / "roles/meta-operator.md"
 ORCHESTRATOR = ROOT / "roles/orchestrator.md"
-LAUNCH_SKILL = ROOT / "skills/launch-meta-operator/SKILL.md"
 
 
 def _text(path: Path) -> str:
@@ -298,61 +297,6 @@ class TransportDoctrineTests(unittest.TestCase):
         # Must reference herdr-comms.
         text = _lower(META_OPERATOR)
         self.assertIn("herdr-comms", text)
-
-
-class LaunchSkillAccuracyTests(unittest.TestCase):
-    """AC-H: launch-meta-operator/SKILL.md path accuracy and tool-neutral sweep wording."""
-
-    def test_launch_skill_references_real_script_path(self) -> None:
-        # Must reference skills/launch-meta-operator/scripts/ paths.
-        text = _text(LAUNCH_SKILL)
-        self.assertIn("skills/launch-meta-operator/scripts/", text)
-
-    def test_launch_skill_no_bare_scripts_prefix_for_launcher(self) -> None:
-        # Must NOT use bare "scripts/launch-meta-operator.sh" (wrong path).
-        text = _text(LAUNCH_SKILL)
-        # Acceptable: any line that has the full path; unacceptable: bare scripts/ prefix only
-        # We check that every launcher reference includes the full path.
-        bare_refs = [
-            line.strip() for line in text.splitlines()
-            if re.search(r'\bscripts/launch-meta-operator\.sh\b', line)
-            and 'skills/launch-meta-operator/scripts/' not in line
-        ]
-        self.assertEqual(
-            [], bare_refs,
-            f"launch-meta-operator.sh referenced with bare scripts/ prefix (wrong path): {bare_refs}"
-        )
-
-    def test_launch_skill_no_bare_handoff_script_prefix(self) -> None:
-        # Must NOT use bare "scripts/handoff-meta-operator.sh" (wrong path).
-        text = _text(LAUNCH_SKILL)
-        bare_refs = [
-            line.strip() for line in text.splitlines()
-            if re.search(r'\bscripts/handoff-meta-operator\.sh\b', line)
-            and 'skills/launch-meta-operator/scripts/' not in line
-        ]
-        self.assertEqual(
-            [], bare_refs,
-            f"handoff-meta-operator.sh referenced with bare scripts/ prefix (wrong path): {bare_refs}"
-        )
-
-    def test_launch_skill_sweep_wording_is_tool_neutral(self) -> None:
-        # Pending #23: sweep-tool wording must be tool-neutral (e.g. "operator heartbeat sweep")
-        # not hard-coding "operator-sweep" as the tool name.
-        text = _text(LAUNCH_SKILL)
-        # The phrase "runs operator-sweep directly" must be gone.
-        self.assertNotIn("runs operator-sweep directly", text)
-        # Must mention the sweep in a tool-neutral way.
-        self.assertTrue(
-            "heartbeat" in text.lower() or "heartbeat sweep" in text.lower() or "operator heartbeat" in text.lower(),
-            "launch-meta-operator/SKILL.md must use tool-neutral sweep wording (e.g. 'operator heartbeat sweep')"
-        )
-
-    def test_launch_skill_no_hardcoded_operator_sweep_tool_name_in_timer_section(self) -> None:
-        # The timer section must not hard-code "operator-sweep" as what the timer runs.
-        text = _text(LAUNCH_SKILL)
-        # Check specific sentence that is known to be wrong.
-        self.assertNotIn("installs one lifecycle-bound host timer that runs `operator-sweep` directly", text)
 
 
 class HeartbeatSweepReconcileTests(unittest.TestCase):

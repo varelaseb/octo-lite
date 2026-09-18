@@ -112,11 +112,22 @@ supported equivalent and verified task start, not repeated identical dispatch.
 
 ## Spawn
 
+Every agent created or launched by any skill uses Herdr. Do not use a generic
+sub-agent API, raw `claude` or `codex` process, or an untracked pane. Route
+creation through `herdr-spawn` (or its documented native Herdr shape when an
+authorized fallback is required), and verify the returned session, workspace,
+task acknowledgment, and launch outcome.
+
 Persistent issue orchestrators and temporary `implement-spec` workers get Herdr
 tabs. Receipt-bound Claude launch rules apply to legacy role launches. Explicit
 operator-selected direct Codex orchestrators keep the chosen runtime. Temporary
 worker roles are `explorer`, `implementer`, `merger`, and `reviewer`. Close
 their tabs after their commits or notes are safely integrated.
+
+The `meta-operator` is always a persistent Herdr pane. Launch it with
+`herdr-spawn --role meta-operator` from the operator's current Herdr session,
+using its verified receipt and the `🧠 operator` label. Never create this role
+through a generic sub-agent API or a direct Codex launch.
 
 The orchestrator starts one Codex `/goal` for the user outcome and done
 condition. A temporary worker starts one narrow goal for its ticket. Goals are

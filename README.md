@@ -79,9 +79,9 @@ python3 workflows/lib/role_resolver.py generate
 python3 -m unittest tests/test_role_resolver.py
 ```
 
-Operator utility skills are not role-bound. Invoke `launch-meta-operator`
-explicitly when a separate Claude or Codex session should inventory and take
-responsibility for active Herdr workstreams.
+The meta-operator is a persistent Herdr pane. Start it with `herdr-spawn
+--role meta-operator` from the operator's own Herdr session; there is no
+separate launcher skill and no supervised sweep.
 
 ## Workflow
 

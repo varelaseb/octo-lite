@@ -26,7 +26,7 @@ Consume completed artifacts before optional reporting; wake unfinished idle owne
 ## Rules
 
 BOOTSTRAP_ACK: parent confirmed before mutation; never self-verify it. Verify outcome-critical claims at source. Heartbeat (anchors: heartbeat-fresh-snapshot, one-layer,
-operator-gate, judgment-in-roles): session-durable timer runs operator-sweep
+Goals drive continuation, so there is no sweep timer and no supervised launcher. This role is always a persistent Herdr pane started with `herdr-spawn --role meta-operator`; wake idle owners directly through `herdr-comms`.
 (--repo unused; no target spec binding, cannot crash on target shape). Carries no judgment;
 hands a fresh snapshot (snapshot.json + gate lines) each wake. Operator reads it and
 applies judgment: poke stale orchestrator to investigate (one layer down); relaunch dead.
