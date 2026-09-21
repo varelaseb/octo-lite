@@ -1,0 +1,22 @@
+{
+  "fresh_worker_count": 1,
+  "fresh_worker": true,
+  "read_only": true,
+  "role": "shaping-reviewer",
+  "provider": "openai",
+  "engine": "codex",
+  "model": "gpt-5.6-sol",
+  "effort": "xhigh",
+  "service_tier": "fast",
+  "tools": ["repo-read", "linear-read", "github-read", "session-log-read"],
+  "launcher": "herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast",
+  "verdict": "blocking",
+  "binding": {
+    "issue": "ANN-33",
+    "spec": "docs/specs/toolchain-ownership.spec.html#ownership-rules",
+    "target_instructions": "AGENTS.md",
+    "base": "origin/main",
+    "head": "ann/33-toolchain-ownership-implementation",
+    "review_cutoff": "2026-09-21T00:00:00Z"
+  }
+}

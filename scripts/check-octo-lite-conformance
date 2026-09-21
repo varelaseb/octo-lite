@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Check the octo-lite side of the ANN-28 toolchain contract.
+
+The command reads one declarative fixture, inspects a shared profile without
+mutating it, probes installer ownership behavior in isolated temporary
+profiles, and validates one fresh shaping-review receipt. It writes one
+machine-readable receipt bound to the current octo-lite revision and fixture
+bytes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_FIXTURE = ROOT / "fixtures" / "conformance" / "octo-lite" / "fixture.json"
+INSTALLER = ROOT / "scripts" / "install-octo-lite"
+SHAPING_KEYS = (
+    "role",
+    "provider",
+    "engine",
+    "model",
+    "effort",
+    "service_tier",
+    "tools",
+    "launcher",
+    "read_only",
+    "fresh_worker_count",
+)
+BINDING_KEYS = ("issue", "spec", "target_instructions", "base", "head", "review_cutoff")
+
+
+def _error(message: str) -> dict[str, str]:
+    return {"message": message}
+
+
+def _status(errors: list[dict[str, str]]) -> str:
+    return "blocking" if errors else "clear"
+
+
+def _load_json(path: Path) -> tuple[Any | None, list[dict[str, str]]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")), []
+    except FileNotFoundError:
+        return None, [_error(f"missing JSON file: {path}")]
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [_error(f"cannot read JSON file {path}: {exc}")]
+
+
+def _git_revision() -> tuple[str | None, list[dict[str, str]]]:
+    try:
+        revision = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return None, [_error(f"cannot resolve octo-lite revision: {exc}")]
+    if len(revision) != 40 or any(ch not in "0123456789abcdef" for ch in revision):
+        return None, [_error(f"git returned a non-commit revision: {revision!r}")]
+    return revision, []
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fixture_errors(fixture: Any) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    if not isinstance(fixture, dict):
+        return [_error("fixture root must be a JSON object")]
+    if fixture.get("schema_version") != 1:
+        errors.append(_error("fixture schema_version must be 1"))
+    if fixture.get("repository") != "octo-lite":
+        errors.append(_error("fixture repository must be octo-lite"))
+    owned = fixture.get("owned_skills")
+    if not isinstance(owned, list) or not owned:
+        errors.append(_error("fixture owned_skills must be a non-empty list"))
+    else:
+        names: dict[str, str] = {}
+        for item in owned:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not isinstance(item.get("source"), str):
+                errors.append(_error("each owned skill needs a name and source"))
+                continue
+            name = item["name"]
+            prior = names.get(name)
+            if prior is not None and prior != item["source"]:
+                errors.append(_error(f"duplicate skill owner: {name}"))
+            names[name] = item["source"]
+    roles = fixture.get("roles")
+    if not isinstance(roles, list) or not roles:
+        errors.append(_error("fixture roles must be a non-empty list"))
+    else:
+        role_names: set[str] = set()
+        known = {item.get("name") for item in owned if isinstance(item, dict)}
+        peer_values = fixture.get("peer_skills", [])
+        peers = set(peer_values) if isinstance(peer_values, list) else set()
+        for role in roles:
+            if not isinstance(role, dict) or not isinstance(role.get("name"), str):
+                errors.append(_error("each role needs a name"))
+                continue
+            if role["name"] in role_names:
+                errors.append(_error(f"duplicate role: {role['name']}"))
+            role_names.add(role["name"])
+            if not isinstance(role.get("source"), str) or not isinstance(role.get("skills"), list):
+                errors.append(_error(f"role {role['name']} needs source and skills"))
+                continue
+            unknown = set(role["skills"]) - known - peers
+            if unknown:
+                errors.append(_error(f"role {role['name']} names unknown skills: {sorted(unknown)}"))
+    mapping = fixture.get("provider_mapping")
+    if not isinstance(mapping, dict):
+        errors.append(_error("fixture provider_mapping must be an object"))
+    else:
+        for key in SHAPING_KEYS:
+            if key not in mapping:
+                errors.append(_error(f"fixture provider_mapping missing {key}"))
+    if not isinstance(fixture.get("yield_cases"), list) or not fixture["yield_cases"]:
+        errors.append(_error("fixture yield_cases must be a non-empty list"))
+    targets = fixture.get("profile_targets")
+    if not isinstance(targets, dict) or not isinstance(targets.get("skills"), list) or not isinstance(targets.get("roles"), list):
+        errors.append(_error("fixture profile_targets must name skills and roles lists"))
+    return errors
+
+
+def _real(path: Path) -> str:
+    return str(path.resolve(strict=False))
+
+
+def _check_link(path: Path, expected: Path) -> tuple[dict[str, str], dict[str, str] | None]:
+    observed = {"target": str(path), "source": _real(expected)}
+    if not path.is_symlink():
+        return observed, _error(f"missing symlink: {path}")
+    if not path.exists():
+        return observed, _error(f"dangling symlink: {path}")
+    actual = _real(path)
+    observed["resolved"] = actual
+    if actual != _real(expected):
+        return observed, _error(f"mismatched symlink: {path} -> {actual}")
+    return observed, None
+
+
+def _frontmatter_skills(path: Path) -> tuple[list[str] | None, list[dict[str, str]]]:
+    errors: list[dict[str, str]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return None, [_error(f"cannot read role contract {path}: {exc}")]
+    if not lines or lines[0].strip() != "---":
+        return None, [_error(f"role contract has no frontmatter: {path}")]
+    try:
+        end = next(i for i in range(1, len(lines)) if lines[i].strip() == "---")
+    except StopIteration:
+        return None, [_error(f"unterminated role frontmatter: {path}")]
+    raw: str | None = None
+    for line in lines[1:end]:
+        if line.startswith("skills:"):
+            raw = line.split(":", 1)[1].strip()
+            break
+    if raw is None:
+        return None, [_error(f"role contract has no skills field: {path}")]
+    try:
+        skills = ast.literal_eval(raw)
+    except (SyntaxError, ValueError) as exc:
+        return None, [_error(f"invalid skills field in {path}: {exc}")]
+    if not isinstance(skills, list) or not all(isinstance(skill, str) for skill in skills):
+        return None, [_error(f"skills field must be a string list: {path}")]
+    if len(set(skills)) != len(skills):
+        errors.append(_error(f"role contract repeats a skill: {path}"))
+    return skills, errors
+
+
+def _check_profile(fixture: dict[str, Any], profile_root: Path) -> dict[str, Any]:
+    errors: list[dict[str, str]] = []
+    owned_items = fixture.get("owned_skills", [])
+    owned_items = owned_items if isinstance(owned_items, list) else []
+    owned_by_name = {item["name"]: item for item in owned_items if isinstance(item, dict) and "name" in item}
+    peer_values = fixture.get("peer_skills", [])
+    peer_skills = set(peer_values) if isinstance(peer_values, list) else set()
+    target_config = fixture.get("profile_targets", {})
+    target_config = target_config if isinstance(target_config, dict) else {}
+    skill_targets = target_config.get("skills", [])
+    role_targets = target_config.get("roles", [])
+    skill_targets = skill_targets if isinstance(skill_targets, list) else []
+    role_targets = role_targets if isinstance(role_targets, list) else []
+    resolved_paths: list[dict[str, Any]] = []
+    skill_observations: list[dict[str, Any]] = []
+
+    for item in owned_items:
+        if not isinstance(item, dict):
+            continue
+        name = item["name"]
+        source = ROOT / item["source"]
+        for target_root in skill_targets:
+            observed, failure = _check_link(profile_root / target_root / name, source)
+            observed["skill"] = name
+            observed["owner"] = "octo-lite"
+            skill_observations.append(observed)
+            if failure:
+                errors.append(failure)
+
+    for name in sorted(peer_skills):
+        targets: list[dict[str, str]] = []
+        for target_root in skill_targets:
+            target = profile_root / target_root / name
+            if not target.is_symlink():
+                errors.append(_error(f"missing peer skill symlink: {target}"))
+                continue
+            if not target.exists():
+                errors.append(_error(f"dangling peer skill symlink: {target}"))
+                continue
+            resolved = _real(target)
+            if resolved.startswith(_real(ROOT) + os.sep):
+                errors.append(_error(f"copied peer skill resolves inside octo-lite: {target}"))
+            targets.append({"target": str(target), "resolved": resolved})
+        if len({entry["resolved"] for entry in targets}) > 1:
+            errors.append(_error(f"peer skill resolves to different owners: {name}"))
+        skill_observations.append({"skill": name, "owner": "peer", "targets": targets})
+
+    for role in fixture.get("roles", []):
+        if not isinstance(role, dict):
+            continue
+        name = role["name"]
+        source = ROOT / role["source"]
+        declared, parse_errors = _frontmatter_skills(source)
+        errors.extend(parse_errors)
+        if declared is None:
+            declared = []
+        expected = role.get("skills", [])
+        if declared != expected:
+            errors.append(_error(f"role {name} skills differ from fixture"))
+        role_targets: dict[str, str] = {}
+        for target_root in role_targets:
+            observed, failure = _check_link(profile_root / target_root / f"{name}.md", source)
+            if failure:
+                errors.append(failure)
+            if "resolved" in observed:
+                role_targets[target_root] = observed["resolved"]
+        role_resolution: list[dict[str, Any]] = []
+        for skill in declared:
+            targets: dict[str, str] = {}
+            expected_source: Path | None = None
+            if skill in owned_by_name:
+                expected_source = ROOT / owned_by_name[skill]["source"]
+            for target_root in skill_targets:
+                target = profile_root / target_root / skill
+                if not target.is_symlink() or not target.exists():
+                    errors.append(_error(f"role {name} skill {skill} is not a live symlink: {target}"))
+                    continue
+                resolved = _real(target)
+                targets[target_root] = resolved
+                if expected_source is not None and resolved != _real(expected_source):
+                    errors.append(_error(f"role {name} skill {skill} resolves to the wrong owner"))
+                if expected_source is None and resolved.startswith(_real(ROOT) + os.sep):
+                    errors.append(_error(f"role {name} peer skill {skill} is copied into octo-lite"))
+            if len(set(targets.values())) > 1:
+                errors.append(_error(f"role {name} skill {skill} has mismatched profile resolutions"))
+            role_resolution.append({"skill": skill, "owner": "octo-lite" if expected_source is not None else "peer", "source": next(iter(targets.values()), None), "targets": targets})
+            resolved_paths.append({"role": name, "skill": skill, "owner": "octo-lite" if expected_source is not None else "peer", "source": next(iter(targets.values()), None), "targets": targets})
+        resolved_paths.append({"role": name, "contract": str(source), "targets": role_targets, "skills": role_resolution})
+
+    return {
+        "status": _status(errors),
+        "skills": skill_observations,
+        "roles": resolved_paths,
+        "errors": errors,
+    }
+
+
+def _shape_receipt(path: Path, expected: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    raw, errors = _load_json(path)
+    if errors:
+        return {"verdict": "blocking", "errors": errors}, errors
+    if not isinstance(raw, dict):
+        errors = [_error("shaping-review receipt must be a JSON object")]
+        return {"verdict": "blocking", "errors": errors}, errors
+    data = raw.get("provider_mapping", raw.get("mapping", raw))
+    if not isinstance(data, dict):
+        errors.append(_error("shaping-review provider mapping must be an object"))
+        data = {}
+    for key in SHAPING_KEYS:
+        if data.get(key) != expected.get(key):
+            errors.append(_error(f"shaping-review mapping mismatch for {key}"))
+    count = raw.get("fresh_worker_count", raw.get("worker_count", data.get("fresh_worker_count")))
+    if count != 1:
+        errors.append(_error("shaping-review must report exactly one fresh worker"))
+    if raw.get("fresh_worker", raw.get("fresh", True)) is not True:
+        errors.append(_error("shaping-review worker must be fresh"))
+    if raw.get("resumed", False) is True:
+        errors.append(_error("shaping-review must not resume a worker"))
+    if raw.get("read_only", data.get("read_only")) is not True:
+        errors.append(_error("shaping-review worker must be read only"))
+    for key in ("edits", "commits", "pushes", "tracker_mutations", "mutations"):
+        if raw.get(key, False) is True:
+            errors.append(_error(f"shaping-review has forbidden authority: {key}"))
+    tools = raw.get("tools", raw.get("logical_tools", data.get("tools")))
+    if tools != expected.get("tools"):
+        errors.append(_error("shaping-review logical tools do not match the contract"))
+    verdict = raw.get("verdict", raw.get("status"))
+    if verdict not in ("clear", "blocking"):
+        errors.append(_error("shaping-review verdict must be clear or blocking"))
+        verdict = "blocking"
+    binding = raw.get("binding")
+    if not isinstance(binding, dict):
+        errors.append(_error("shaping-review receipt must bind exact inputs"))
+        binding = {}
+    for key in BINDING_KEYS:
+        if not isinstance(binding.get(key), str) or not binding[key].strip():
+            errors.append(_error(f"shaping-review binding missing {key}"))
+    shaped = {
+        "role": expected.get("role"),
+        "provider": expected.get("provider"),
+        "engine": expected.get("engine"),
+        "model": expected.get("model"),
+        "effort": expected.get("effort"),
+        "service_tier": expected.get("service_tier"),
+        "tools": expected.get("tools"),
+        "launcher": expected.get("launcher"),
+        "fresh_worker_count": 1,
+        "fresh_worker": raw.get("fresh_worker", raw.get("fresh", True)),
+        "read_only": True,
+        "verdict": verdict,
+        "binding": binding,
+    }
+    if verdict == "blocking":
+        errors.append(_error("shaping-review returned blocking"))
+    return {**shaped, "status": _status(errors), "errors": errors}, errors
+
+
+def _run_installer(prefix: Path, spec_chat_root: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["SPEC_CHAT_ROOT"] = str(spec_chat_root)
+    return subprocess.run(
+        [str(INSTALLER), "--prefix", str(prefix)],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+
+def _yield_probe() -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    with tempfile.TemporaryDirectory(prefix="octo-lite-conformance-") as raw_tmp:
+        tmp = Path(raw_tmp)
+        spec_chat = tmp / "missing-spec-chat"
+
+        clean = tmp / "clean"
+        result = _run_installer(clean, spec_chat)
+        target = clean / ".claude" / "skills" / "commit"
+        if result.returncode == 0 and target.is_symlink() and target.resolve() == (ROOT / "skills" / "commit").resolve():
+            cases.append({"name": "clean-install", "status": "clear"})
+        else:
+            error = _error("clean install did not create the owned symlink")
+            errors.append(error)
+            cases.append({"name": "clean-install", "status": "blocking", "error": error["message"]})
+
+        repeated = _run_installer(clean, spec_chat)
+        if repeated.returncode == 0:
+            cases.append({"name": "repeated-install", "status": "clear"})
+        else:
+            error = _error("repeated install was not idempotent")
+            errors.append(error)
+            cases.append({"name": "repeated-install", "status": "blocking", "error": error["message"]})
+
+        peer = tmp / "peer"
+        peer_source = peer / "commit"
+        peer_source.mkdir(parents=True)
+        (peer_source / "SKILL.md").write_text("peer\n", encoding="utf-8")
+        peer_profile = tmp / "peer-profile"
+        peer_target = peer_profile / ".claude" / "skills" / "commit"
+        peer_target.parent.mkdir(parents=True)
+        peer_target.symlink_to(peer_source)
+        result = _run_installer(peer_profile, spec_chat)
+        if result.returncode == 0 and peer_target.is_symlink() and peer_target.resolve() == peer_source.resolve() and "owned by another repo" in result.stdout:
+            cases.append({"name": "peer-owned-live-link", "status": "clear"})
+        else:
+            error = _error("peer-owned live link was not preserved")
+            errors.append(error)
+            cases.append({"name": "peer-owned-live-link", "status": "blocking", "error": error["message"]})
+
+        dangling = tmp / "dangling"
+        dangling_target = dangling / ".claude" / "skills" / "commit"
+        dangling_target.parent.mkdir(parents=True)
+        dangling_target.symlink_to(tmp / "removed-source")
+        result = _run_installer(dangling, spec_chat)
+        if result.returncode == 0 and dangling_target.is_symlink() and dangling_target.resolve() == (ROOT / "skills" / "commit").resolve():
+            cases.append({"name": "dangling-link", "status": "clear"})
+        else:
+            error = _error("dangling link was not pruned and recreated")
+            errors.append(error)
+            cases.append({"name": "dangling-link", "status": "blocking", "error": error["message"]})
+
+        collision = tmp / "collision"
+        collision_target = collision / ".claude" / "skills" / "commit"
+        collision_target.parent.mkdir(parents=True)
+        collision_target.write_text("keep\n", encoding="utf-8")
+        result = _run_installer(collision, spec_chat)
+        if result.returncode != 0 and collision_target.read_text(encoding="utf-8") == "keep\n":
+            cases.append({"name": "real-file-collision", "status": "clear"})
+        else:
+            error = _error("real-file collision was overwritten or accepted")
+            errors.append(error)
+            cases.append({"name": "real-file-collision", "status": "blocking", "error": error["message"]})
+
+    return {"status": _status(errors), "cases": cases, "errors": errors}
+
+
+def build_receipt(profile_root: Path, fixture_path: Path, shaping_path: Path) -> tuple[dict[str, Any], int]:
+    fixture, fixture_errors = _load_json(fixture_path)
+    if fixture is None:
+        receipt = {"schema_version": 1, "overall_status": "blocking", "errors": fixture_errors}
+        return receipt, 1
+    fixture_errors.extend(_fixture_errors(fixture))
+    revision, revision_errors = _git_revision()
+    fixture_errors.extend(revision_errors)
+    if not isinstance(fixture, dict):
+        receipt = {"schema_version": 1, "overall_status": "blocking", "errors": fixture_errors}
+        return receipt, 1
+    profile_root = profile_root.resolve()
+    ownership = _check_profile(fixture, profile_root)
+    yield_result = _yield_probe()
+    expected_mapping = fixture.get("provider_mapping", {})
+    if not isinstance(expected_mapping, dict):
+        expected_mapping = {}
+    shaping, shaping_errors = _shape_receipt(shaping_path, expected_mapping)
+    errors = fixture_errors + ownership["errors"] + yield_result["errors"] + shaping_errors
+    status = _status(errors)
+    receipt = {
+        "schema_version": 1,
+        "repository": "octo-lite",
+        "octo_lite_revision": revision,
+        "source_revision": revision,
+        "source_revisions": {"octo-lite": revision},
+        "fixture": {"path": str(fixture_path.resolve()), "sha256": _sha256(fixture_path)},
+        "profile_root": str(profile_root),
+        "ownership": {key: value for key, value in ownership.items() if key != "errors"},
+        "role_resolution": {"status": ownership["status"], "resolved_paths": ownership["roles"]},
+        "resolved_paths": ownership["roles"],
+        "yield": yield_result,
+        "fixture_results": {"profile": ownership, "installer": yield_result},
+        "provider_mapping": expected_mapping,
+        "shaping_review": shaping,
+        "validation_commands": [
+            "scripts/install-octo-lite --prefix <profile>",
+            "scripts/check-octo-lite-conformance --profile-root <profile>",
+        ],
+        "overall_status": status,
+        "errors": errors,
+    }
+    return receipt, 0 if status == "clear" else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile-root", default=os.environ.get("OCTO_LITE_PROFILE_ROOT", str(Path.home())))
+    parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
+    parser.add_argument("--shaping-review", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args(argv)
+    receipt, status = build_receipt(Path(args.profile_root), args.fixture.resolve(), args.shaping_review.resolve())
+    rendered = json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered, encoding="utf-8")
+    sys.stdout.write(rendered)
+    return status
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
