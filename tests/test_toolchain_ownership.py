@@ -111,6 +111,21 @@ class ToolchainOwnershipTests(unittest.TestCase):
         self.assertEqual("blocking", receipt["overall_status"])
         self.assertTrue(any("copied peer skill" in item["message"] for item in receipt["errors"]))
 
+    def test_missing_cli_role_link_blocks_conformance(self) -> None:
+        for cli in (".claude", ".codex"):
+            with self.subTest(cli=cli):
+                result = self._install()
+                self.assertEqual(0, result.returncode, result.stderr)
+                target = self.profile / cli / "agents" / "orchestrator.md"
+                target.unlink()
+
+                result, receipt = self._check(SHAPING_CLEAR)
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual("blocking", receipt["overall_status"])
+                self.assertEqual("blocking", receipt["role_resolution"]["status"])
+                self.assertTrue(any(str(target) in item["message"] for item in receipt["errors"]))
+
     def test_blocking_shaping_review_blocks_conformance(self) -> None:
         result = self._install()
         self.assertEqual(0, result.returncode, result.stderr)

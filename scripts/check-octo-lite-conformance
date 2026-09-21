@@ -243,13 +243,13 @@ def _check_profile(fixture: dict[str, Any], profile_root: Path) -> dict[str, Any
         expected = role.get("skills", [])
         if declared != expected:
             errors.append(_error(f"role {name} skills differ from fixture"))
-        role_targets: dict[str, str] = {}
+        role_links: dict[str, str] = {}
         for target_root in role_targets:
             observed, failure = _check_link(profile_root / target_root / f"{name}.md", source)
             if failure:
                 errors.append(failure)
             if "resolved" in observed:
-                role_targets[target_root] = observed["resolved"]
+                role_links[target_root] = observed["resolved"]
         role_resolution: list[dict[str, Any]] = []
         for skill in declared:
             targets: dict[str, str] = {}
@@ -271,7 +271,7 @@ def _check_profile(fixture: dict[str, Any], profile_root: Path) -> dict[str, Any
                 errors.append(_error(f"role {name} skill {skill} has mismatched profile resolutions"))
             role_resolution.append({"skill": skill, "owner": "octo-lite" if expected_source is not None else "peer", "source": next(iter(targets.values()), None), "targets": targets})
             resolved_paths.append({"role": name, "skill": skill, "owner": "octo-lite" if expected_source is not None else "peer", "source": next(iter(targets.values()), None), "targets": targets})
-        resolved_paths.append({"role": name, "contract": str(source), "targets": role_targets, "skills": role_resolution})
+        resolved_paths.append({"role": name, "contract": str(source), "targets": role_links, "skills": role_resolution})
 
     return {
         "status": _status(errors),
