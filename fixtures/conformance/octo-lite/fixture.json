@@ -77,11 +77,21 @@
     "read_only": true,
     "fresh_worker_count": 1
   },
+  "shaping_review_binding": {
+    "issue": "ANN-33",
+    "spec": "docs/specs/toolchain-ownership.spec.html#ownership-rules",
+    "target_instructions": "AGENTS.md",
+    "base": "origin/main",
+    "head": "ann/33-toolchain-ownership-implementation",
+    "branch": "ann/33-toolchain-ownership-implementation",
+    "review_cutoff": "2026-09-21T00:00:00Z"
+  },
   "yield_cases": [
     {"name": "clean-install", "expected": "owned-symlink"},
     {"name": "repeated-install", "expected": "idempotent"},
     {"name": "peer-owned-live-link", "expected": "preserve-and-report"},
     {"name": "dangling-link", "expected": "prune-and-recreate"},
-    {"name": "real-file-collision", "expected": "fail-without-overwrite"}
+    {"name": "real-file-collision", "expected": "fail-without-overwrite"},
+    {"name": "missing-required-skill", "expected": "fail-closed"}
   ]
 }

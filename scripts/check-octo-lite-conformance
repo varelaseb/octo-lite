@@ -37,7 +37,7 @@ SHAPING_KEYS = (
     "read_only",
     "fresh_worker_count",
 )
-BINDING_KEYS = ("issue", "spec", "target_instructions", "base", "head", "review_cutoff")
+BINDING_KEYS = ("issue", "spec", "target_instructions", "base", "head", "branch", "review_cutoff")
 
 
 def _error(message: str) -> dict[str, str]:
@@ -129,6 +129,14 @@ def _fixture_errors(fixture: Any) -> list[dict[str, str]]:
         for key in SHAPING_KEYS:
             if key not in mapping:
                 errors.append(_error(f"fixture provider_mapping missing {key}"))
+    binding = fixture.get("shaping_review_binding")
+    if not isinstance(binding, dict):
+        errors.append(_error("fixture shaping_review_binding must be an object"))
+    else:
+        for key in BINDING_KEYS:
+            value = binding.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(_error(f"fixture shaping_review_binding missing {key}"))
     if not isinstance(fixture.get("yield_cases"), list) or not fixture["yield_cases"]:
         errors.append(_error("fixture yield_cases must be a non-empty list"))
     targets = fixture.get("profile_targets")
@@ -281,7 +289,11 @@ def _check_profile(fixture: dict[str, Any], profile_root: Path) -> dict[str, Any
     }
 
 
-def _shape_receipt(path: Path, expected: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, str]]]:
+def _shape_receipt(
+    path: Path,
+    expected: dict[str, Any],
+    expected_binding: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     raw, errors = _load_json(path)
     if errors:
         return {"verdict": "blocking", "errors": errors}, errors
@@ -319,8 +331,11 @@ def _shape_receipt(path: Path, expected: dict[str, Any]) -> tuple[dict[str, Any]
         errors.append(_error("shaping-review receipt must bind exact inputs"))
         binding = {}
     for key in BINDING_KEYS:
-        if not isinstance(binding.get(key), str) or not binding[key].strip():
+        value = binding.get(key)
+        if not isinstance(value, str) or not value.strip():
             errors.append(_error(f"shaping-review binding missing {key}"))
+        elif value != expected_binding.get(key):
+            errors.append(_error(f"shaping-review binding mismatch for {key}"))
     shaped = {
         "role": expected.get("role"),
         "provider": expected.get("provider"),
@@ -341,11 +356,20 @@ def _shape_receipt(path: Path, expected: dict[str, Any]) -> tuple[dict[str, Any]
     return {**shaped, "status": _status(errors), "errors": errors}, errors
 
 
-def _run_installer(prefix: Path, spec_chat_root: Path) -> subprocess.CompletedProcess[str]:
+def _run_installer(
+    prefix: Path,
+    spec_chat_root: Path,
+    *,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["SPEC_CHAT_ROOT"] = str(spec_chat_root)
+    command = [str(INSTALLER)]
+    if check:
+        command.append("--check")
+    command.extend(("--prefix", str(prefix)))
     return subprocess.run(
-        [str(INSTALLER), "--prefix", str(prefix)],
+        command,
         text=True,
         capture_output=True,
         env=env,
@@ -418,6 +442,20 @@ def _yield_probe() -> dict[str, Any]:
             errors.append(error)
             cases.append({"name": "real-file-collision", "status": "blocking", "error": error["message"]})
 
+        missing = tmp / "missing-skill"
+        result = _run_installer(missing, spec_chat)
+        missing_target = missing / ".claude" / "skills" / "commit"
+        installed = result.returncode == 0 and missing_target.is_symlink()
+        if installed:
+            missing_target.unlink()
+            result = _run_installer(missing, spec_chat, check=True)
+        if installed and result.returncode != 0:
+            cases.append({"name": "missing-required-skill", "status": "clear"})
+        else:
+            error = _error("missing-required-skill probe did not fail closed")
+            errors.append(error)
+            cases.append({"name": "missing-required-skill", "status": "blocking", "error": error["message"]})
+
     return {"status": _status(errors), "cases": cases, "errors": errors}
 
 
@@ -438,7 +476,10 @@ def build_receipt(profile_root: Path, fixture_path: Path, shaping_path: Path) ->
     expected_mapping = fixture.get("provider_mapping", {})
     if not isinstance(expected_mapping, dict):
         expected_mapping = {}
-    shaping, shaping_errors = _shape_receipt(shaping_path, expected_mapping)
+    expected_binding = fixture.get("shaping_review_binding", {})
+    if not isinstance(expected_binding, dict):
+        expected_binding = {}
+    shaping, shaping_errors = _shape_receipt(shaping_path, expected_mapping, expected_binding)
     errors = fixture_errors + ownership["errors"] + yield_result["errors"] + shaping_errors
     status = _status(errors)
     receipt = {

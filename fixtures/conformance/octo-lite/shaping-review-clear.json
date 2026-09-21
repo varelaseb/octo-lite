@@ -17,6 +17,7 @@
     "target_instructions": "AGENTS.md",
     "base": "origin/main",
     "head": "ann/33-toolchain-ownership-implementation",
+    "branch": "ann/33-toolchain-ownership-implementation",
     "review_cutoff": "2026-09-21T00:00:00Z"
   }
 }

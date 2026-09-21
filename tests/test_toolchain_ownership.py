@@ -98,6 +98,42 @@ class ToolchainOwnershipTests(unittest.TestCase):
         self.assertEqual("clear", receipt["shaping_review"]["verdict"])
         self.assertTrue(receipt["resolved_paths"])
 
+    def test_wrong_shaping_binding_blocks_conformance(self) -> None:
+        result = self._install()
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        shaping = self.root / "shaping-review-wrong-binding.json"
+        payload = json.loads(SHAPING_CLEAR.read_text(encoding="utf-8"))
+        payload["binding"]["head"] = "unrelated-head"
+        shaping.write_text(json.dumps(payload), encoding="utf-8")
+
+        result, receipt = self._check(shaping)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("blocking", receipt["overall_status"])
+        self.assertTrue(any("binding mismatch for head" in item["message"] for item in receipt["errors"]))
+
+    def test_missing_required_skill_blocks_installer_check_and_conformance(self) -> None:
+        result = self._install()
+        self.assertEqual(0, result.returncode, result.stderr)
+        target = self.profile / ".claude" / "skills" / "commit"
+        target.unlink()
+
+        check = subprocess.run(
+            [str(INSTALLER), "--check", "--prefix", str(self.profile)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "SPEC_CHAT_ROOT": str(self.peer)},
+        )
+        self.assertNotEqual(0, check.returncode)
+
+        result, receipt = self._check(SHAPING_CLEAR)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("blocking", receipt["overall_status"])
+        self.assertTrue(any(str(target) in item["message"] for item in receipt["errors"]))
+
     def test_copied_peer_skill_blocks_role_resolution(self) -> None:
         result = self._install()
         self.assertEqual(0, result.returncode, result.stderr)
