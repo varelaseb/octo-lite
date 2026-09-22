@@ -65,6 +65,28 @@ class InstallSkillMirrorTests(unittest.TestCase):
         check = self._install("--check")
         self.assertNotEqual(0, check.returncode, "--check must flag a broken managed-skill mirror")
 
+    def test_real_file_collision_fails_without_overwrite(self) -> None:
+        target = self.prefix / ".claude" / "skills" / "commit"
+        target.parent.mkdir(parents=True)
+        target.write_text("operator-owned\n", encoding="utf-8")
+
+        result = self._install()
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("refusing to replace", result.stderr)
+        self.assertEqual("operator-owned\n", target.read_text(encoding="utf-8"))
+
+    def test_role_contracts_are_symlinked_for_both_clis(self) -> None:
+        result = self._install()
+        self.assertEqual(0, result.returncode, result.stderr)
+        for platform in (".claude", ".codex"):
+            target = self.prefix / platform / "agents" / "implementer.md"
+            self.assertTrue(target.is_symlink(), target)
+            self.assertEqual(
+                (ROOT / "agents" / "implementer.md").resolve(),
+                target.resolve(),
+            )
+
 
 class VendoredSkillLocationTest(unittest.TestCase):
     """The vendored tdd skill is materialized into agents/skills, not skills/

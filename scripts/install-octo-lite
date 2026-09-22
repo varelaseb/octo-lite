@@ -20,8 +20,10 @@ prefix="$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)"
 # to yield, and octo-lite is the one that yields.
 owned_elsewhere() {
   local target="$1" current
-  [[ -e "$target" || -L "$target" ]] || return 1
-  [[ -L "$target" && ! -e "$target" ]] && return 1   # dangling is ours to clean
+  # Only a live symlink can belong to another repository. A real file or
+  # directory at an owned target is a collision and must reach link_one's
+  # refusal path without being yielded.
+  [[ -L "$target" && -e "$target" ]] || return 1
   current="$(readlink -f "$target" 2>/dev/null || true)"
   [[ -z "$current" ]] && return 1
   case "$current" in "$root"/*) return 1 ;; *) return 0 ;; esac
@@ -225,6 +227,7 @@ fi
 for source in "$root"/agents/*.md; do
   name="$(basename "$source")"
   link_one "$source" "$prefix/.claude/agents/$name"
+  link_one "$source" "$prefix/.codex/agents/$name"
 done
 
 for source in "$root"/scripts/*; do

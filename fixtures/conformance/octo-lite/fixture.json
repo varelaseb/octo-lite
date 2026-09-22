@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "repository": "octo-lite",
+  "source_revision": "git:HEAD",
+  "owned_skills": [
+    {"name": "commit", "source": "skills/commit"},
+    {"name": "frontend-design", "source": "skills/frontend-design"},
+    {"name": "grill-with-docs", "source": "skills/grill-with-docs"},
+    {"name": "herdr-comms", "source": "skills/herdr-comms"},
+    {"name": "implement-spec", "source": "skills/implement-spec"},
+    {"name": "nodejs", "source": "skills/nodejs"},
+    {"name": "octo-lite-debug", "source": "skills/octo-lite-debug"},
+    {"name": "octo-lite-github", "source": "skills/octo-lite-github"},
+    {"name": "pnpm", "source": "skills/pnpm"},
+    {"name": "pnpm-patching", "source": "skills/pnpm-patching"},
+    {"name": "pull", "source": "skills/pull"},
+    {"name": "push", "source": "skills/push"},
+    {"name": "python", "source": "skills/python"},
+    {"name": "tdd", "source": "agents/skills/tdd"},
+    {"name": "typescript", "source": "skills/typescript"}
+  ],
+  "roles": [
+    {
+      "name": "orchestrator",
+      "source": "agents/orchestrator.md",
+      "skills": [
+        "commit",
+        "grill-with-docs",
+        "herdr-comms",
+        "implement-spec",
+        "push",
+        "spec-chat-review",
+        "spec-chat-shape"
+      ]
+    },
+    {
+      "name": "implementer",
+      "source": "agents/implementer.md",
+      "skills": [
+        "commit",
+        "frontend-design",
+        "nodejs",
+        "octo-lite-github",
+        "pnpm",
+        "pnpm-patching",
+        "pull",
+        "python",
+        "tdd",
+        "typescript"
+      ]
+    },
+    {
+      "name": "code-reviewer",
+      "source": "agents/code-reviewer.md",
+      "skills": ["octo-lite-debug", "octo-lite-github", "pull"]
+    },
+    {
+      "name": "meta-operator",
+      "source": "agents/meta-operator.md",
+      "skills": ["herdr-comms"]
+    }
+  ],
+  "peer_skills": ["spec-chat-review", "spec-chat-shape"],
+  "profile_targets": {
+    "skills": [".claude/skills", ".codex/skills"],
+    "roles": [".claude/agents", ".codex/agents"]
+  },
+  "provider_mapping": {
+    "role": "shaping-reviewer",
+    "provider": "openai",
+    "engine": "codex",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "service_tier": "fast",
+    "tools": ["repo-read", "linear-read", "github-read", "session-log-read"],
+    "launcher": "herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast",
+    "read_only": true,
+    "fresh_worker_count": 1
+  },
+  "shaping_review_binding": {
+    "issue": "ANN-33",
+    "spec": "docs/specs/toolchain-ownership.spec.html#ownership-rules",
+    "target_instructions": "AGENTS.md",
+    "base": "535eb017c8e3093db2538e348f5105825343faff",
+    "head": "b88784120e489c968dc58a45fbd7bbe616c5c1ef",
+    "branch": "ann/33-toolchain-ownership-implementation",
+    "review_cutoff": "2026-09-21T21:50:46Z"
+  },
+  "yield_cases": [
+    {"name": "clean-install", "expected": "owned-symlink"},
+    {"name": "repeated-install", "expected": "idempotent"},
+    {"name": "peer-owned-live-link", "expected": "preserve-and-report"},
+    {"name": "dangling-link", "expected": "prune-and-recreate"},
+    {"name": "real-file-collision", "expected": "fail-without-overwrite"},
+    {"name": "missing-required-skill", "expected": "fail-closed"}
+  ]
+}
