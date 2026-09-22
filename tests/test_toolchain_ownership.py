@@ -43,12 +43,14 @@ class ToolchainOwnershipTests(unittest.TestCase):
             check=False,
         )
 
-    def _check(self, shaping: Path) -> tuple[subprocess.CompletedProcess[str], dict]:
+    def _check(self, shaping: Path, fixture: Path = FIXTURE) -> tuple[subprocess.CompletedProcess[str], dict]:
         return_value = subprocess.run(
             [
                 str(CHECK),
                 "--profile-root",
                 str(self.profile),
+                "--fixture",
+                str(fixture),
                 "--shaping-review",
                 str(shaping),
             ],
@@ -104,7 +106,7 @@ class ToolchainOwnershipTests(unittest.TestCase):
 
         shaping = self.root / "shaping-review-wrong-binding.json"
         payload = json.loads(SHAPING_CLEAR.read_text(encoding="utf-8"))
-        payload["binding"]["head"] = "unrelated-head"
+        payload["binding"]["head"] = "f" * 40
         shaping.write_text(json.dumps(payload), encoding="utf-8")
 
         result, receipt = self._check(shaping)
@@ -112,6 +114,38 @@ class ToolchainOwnershipTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertEqual("blocking", receipt["overall_status"])
         self.assertTrue(any("binding mismatch for head" in item["message"] for item in receipt["errors"]))
+
+    def test_symbolic_base_or_head_blocks_expected_and_actual_binding(self) -> None:
+        result = self._install()
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        shaping = self.root / "shaping-review-symbolic-binding.json"
+        payload = json.loads(SHAPING_CLEAR.read_text(encoding="utf-8"))
+        payload["binding"]["base"] = "origin/main"
+        payload["binding"]["head"] = "HEAD"
+        shaping.write_text(json.dumps(payload), encoding="utf-8")
+
+        result, receipt = self._check(shaping)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("blocking", receipt["overall_status"])
+        messages = {item["message"] for item in receipt["errors"]}
+        self.assertIn("shaping-review binding base must be an exact 40-character commit", messages)
+        self.assertIn("shaping-review binding head must be an exact 40-character commit", messages)
+
+        fixture = self.root / "fixture-symbolic-binding.json"
+        fixture_payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        fixture_payload["shaping_review_binding"]["base"] = "origin/main"
+        fixture.write_text(json.dumps(fixture_payload), encoding="utf-8")
+
+        result, receipt = self._check(SHAPING_CLEAR, fixture)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("blocking", receipt["overall_status"])
+        self.assertIn(
+            "fixture shaping_review_binding base must be an exact 40-character commit",
+            {item["message"] for item in receipt["errors"]},
+        )
 
     def test_missing_required_skill_blocks_installer_check_and_conformance(self) -> None:
         result = self._install()

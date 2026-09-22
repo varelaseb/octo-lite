@@ -38,6 +38,8 @@ SHAPING_KEYS = (
     "fresh_worker_count",
 )
 BINDING_KEYS = ("issue", "spec", "target_instructions", "base", "head", "branch", "review_cutoff")
+COMMIT_KEYS = ("base", "head")
+HEX40 = frozenset("0123456789abcdef")
 
 
 def _error(message: str) -> dict[str, str]:
@@ -46,6 +48,10 @@ def _error(message: str) -> dict[str, str]:
 
 def _status(errors: list[dict[str, str]]) -> str:
     return "blocking" if errors else "clear"
+
+
+def _is_commit(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 40 and all(character in HEX40 for character in value)
 
 
 def _load_json(path: Path) -> tuple[Any | None, list[dict[str, str]]]:
@@ -137,6 +143,8 @@ def _fixture_errors(fixture: Any) -> list[dict[str, str]]:
             value = binding.get(key)
             if not isinstance(value, str) or not value.strip():
                 errors.append(_error(f"fixture shaping_review_binding missing {key}"))
+            elif key in COMMIT_KEYS and not _is_commit(value):
+                errors.append(_error(f"fixture shaping_review_binding {key} must be an exact 40-character commit"))
     if not isinstance(fixture.get("yield_cases"), list) or not fixture["yield_cases"]:
         errors.append(_error("fixture yield_cases must be a non-empty list"))
     targets = fixture.get("profile_targets")
@@ -334,6 +342,8 @@ def _shape_receipt(
         value = binding.get(key)
         if not isinstance(value, str) or not value.strip():
             errors.append(_error(f"shaping-review binding missing {key}"))
+        elif key in COMMIT_KEYS and not _is_commit(value):
+            errors.append(_error(f"shaping-review binding {key} must be an exact 40-character commit"))
         elif value != expected_binding.get(key):
             errors.append(_error(f"shaping-review binding mismatch for {key}"))
     shaped = {

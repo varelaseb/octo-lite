@@ -81,10 +81,10 @@
     "issue": "ANN-33",
     "spec": "docs/specs/toolchain-ownership.spec.html#ownership-rules",
     "target_instructions": "AGENTS.md",
-    "base": "origin/main",
-    "head": "ann/33-toolchain-ownership-implementation",
+    "base": "535eb017c8e3093db2538e348f5105825343faff",
+    "head": "f80521feeb109c7ac94cb41c296a4fe7ebe9b4ac",
     "branch": "ann/33-toolchain-ownership-implementation",
-    "review_cutoff": "2026-09-21T00:00:00Z"
+    "review_cutoff": "2026-09-21T21:50:46Z"
   },
   "yield_cases": [
     {"name": "clean-install", "expected": "owned-symlink"},
