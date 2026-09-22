@@ -82,7 +82,7 @@
     "spec": "docs/specs/toolchain-ownership.spec.html#ownership-rules",
     "target_instructions": "AGENTS.md",
     "base": "535eb017c8e3093db2538e348f5105825343faff",
-    "head": "f80521feeb109c7ac94cb41c296a4fe7ebe9b4ac",
+    "head": "b88784120e489c968dc58a45fbd7bbe616c5c1ef",
     "branch": "ann/33-toolchain-ownership-implementation",
     "review_cutoff": "2026-09-21T21:50:46Z"
   },
