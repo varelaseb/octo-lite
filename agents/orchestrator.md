@@ -54,7 +54,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Legacy launches use parent-verified BOOTSTRAP_ACK before mutation; direct Codex verifies the returned tab and one task acknowledgment.
 - One orchestrator per worklane, as defined in the operating model `AGENTS.md`.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
-- Keep one writer per mutable resource. Archive state and terminate when the stream closes. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
+- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the primary Linear issue to Done, complete the goal, archive state, and terminate. Residual QA gaps are historical notes; never infer, create, reopen, or drive follow-up from them without an explicit new ticket or operator instruction. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 

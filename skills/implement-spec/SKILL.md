@@ -222,3 +222,9 @@ Do not consult `operator-owner.toml`; it only routes meta-operator handoffs and
 messages. A human statement that this worklane owns the action is sufficient.
 Failed required checks still block merge until fixed or durably waived through
 a repository-approved path.
+
+The merge completes the worklane: reconcile the primary Linear issue to Done,
+complete the goal, remove clean worker worktrees, and stop. Residual QA gaps
+are historical notes only; never infer, create, reopen, or drive follow-up work
+from them. Follow-up exists only under an explicit new ticket or explicit
+operator instruction.
