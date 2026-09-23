@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ADR 0001: operating model boundaries</title>
+<link rel="stylesheet" href="../.style/spec.css">
 <script defer src="../.viz/runtime.js"></script>
 </head>
 <body>
@@ -13,6 +14,12 @@
 <nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/operating-model.spec.html">operating model</a> / ADR 0001</nav>
 <p>Boundary decisions closing the fresh exact-head review at PR 6 head <code>3a2c90edff3be3b8f2a71c82b7956aa1fc1a244e</code>.</p>
 </header>
+
+<section data-anchor="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-no-transcript-inference" data-user-facing="true" data-guided-journey="no">As an operator, I can trust that pane transcript text never decides message delivery and that only an explicit acknowledgment from the exact recipient proves it.</p>
+<p data-user-story data-anchor="user-story-no-self-asserted-authority" data-user-facing="true" data-guided-journey="no">As an operator, I keep sole authority over a dead or ambiguous owner record, which blocks every operator-owned mutation until I take over manually.</p>
+</section>
 
 <section data-anchor="status">
 <h2>Status</h2>

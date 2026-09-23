@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>octo-lite operator control</title>
+<link rel="stylesheet" href="../.style/spec.css">
 <script defer src="../.viz/runtime.js"></script>
 </head>
 <body>
@@ -13,6 +14,14 @@
 <nav><a href="../index.spec.html">Specifications</a> / <a href="./operating-model.spec.html">operating model</a> / operator control</nav>
 <p>Canonical messaging, supervision, handoff, control-file, label, trace, and dashboard behavior.</p>
 </header>
+
+<section data-anchor="user-stories" id="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-modal-safe-messaging" id="user-story-modal-safe-messaging" data-user-facing="true" data-guided-journey="no">As an operator, I can rely on agent messages queuing durably instead of submitting into an open trust or safety dialog.</p>
+<p data-user-story data-anchor="user-story-outcome-first-status" id="user-story-outcome-first-status" data-user-facing="true" data-guided-journey="no">As an operator, I can read upward status that leads with product outcome, current gate, blocker, and next operator action.</p>
+<p data-user-story data-anchor="user-story-explicit-handoff" id="user-story-explicit-handoff" data-user-facing="true" data-guided-journey="no">As an operator, I can hand the meta-operator role to a fresh successor only by explicit request, through one immutable handoff the successor reconciles before cutover.</p>
+<p data-user-story data-anchor="user-story-readonly-dashboard" id="user-story-readonly-dashboard" data-user-facing="true" data-guided-journey="no">As an operator, I can view the optional hosted dashboard as a read-only projection that never becomes a second control plane.</p>
+</section>
 
 <section data-anchor="diagram-control-panel" id="diagram-control-panel">
 <h2>Dashboard authority boundary</h2>

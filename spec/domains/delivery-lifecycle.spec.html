@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>octo-lite delivery lifecycle</title>
+<link rel="stylesheet" href="../.style/spec.css">
 <script defer src="../.viz/runtime.js"></script>
 </head>
 <body>
@@ -13,6 +14,15 @@
 <nav><a href="../index.spec.html">Specifications</a> / <a href="./operating-model.spec.html">operating model</a> / delivery lifecycle</nav>
 <p>Canonical shaping, TDD, delivery, Linear, release, story, QA, and acceptance behavior.</p>
 </header>
+
+<section data-anchor="user-stories" id="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-review-rendered-spec" id="user-story-review-rendered-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can review the rendered canonical spec while Linear keeps the issue and its dependency-linked implementation tickets current.</p>
+<p data-user-story data-anchor="user-story-one-ready-pr" id="user-story-one-ready-pr" data-user-facing="true" data-guided-journey="no">As an operator, I can invoke implement-spec and receive one PR that becomes ready for human review only after independent review is clear and required validation passes.</p>
+<p data-user-story data-anchor="user-story-served-qa-evidence" id="user-story-served-qa-evidence" data-user-facing="true" data-guided-journey="no">As an operator, I can review served QA artifacts and a fresh QA verdict for the exact head before I accept or reject delivered work.</p>
+<p data-user-story data-anchor="user-story-human-gates" id="user-story-human-gates" data-user-facing="true" data-guided-journey="no">As an operator, I alone accept delivered work, promote to preproduction, or shift live traffic, and the owning agent executes the mechanical step on my instruction.</p>
+<p data-user-story data-anchor="user-story-merge-closes-worklane" id="user-story-merge-closes-worklane" data-user-facing="true" data-guided-journey="no">As an operator, I can merge an accepted PR and see its worklane end with the primary issue Done and no follow-up inferred from residual QA gaps.</p>
+</section>
 
 <section data-anchor="diagram-shaping-readiness" id="diagram-shaping-readiness" hidden>
 <h2>Shaping readiness gate</h2>
