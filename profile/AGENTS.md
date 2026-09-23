@@ -23,6 +23,10 @@ source or fix link.
 
 ## Workflow
 
+- A worklane is one coherent outcome owned by one orchestrator, tracked by one
+  primary Linear issue, and delivered through one integration head and PR. Its
+  child tickets, workers, reviewers, and QA artifacts belong to that lane. They
+  advance through the owner and do not create competing lanes.
 - Use `$spec-chat-shape` to produce the reviewed spec, spec issue, and
   dependency-linked implementation tickets.
 - Use `$implement-spec` to deliver the whole spec on one PR branch.
@@ -52,10 +56,13 @@ source or fix link.
   carve-outs, actual acceptance of delivered work, preproduction promotion,
   and live traffic shifts.
   No agent infers, self-authorizes, or decides acceptance, a preproduction
-  promotion, or a traffic shift, and no agent merges unaccepted work. An
-  explicit human instruction to merge a named PR accepts that exact head unless
-  the human says otherwise. The active owning agent receiving that instruction
-  records acceptance and executes the merge. It does not consult
+  promotion, or a traffic shift, and no agent merges unaccepted work.
+  Acceptance follows the worklane. An explicit human
+  instruction to merge a named PR accepts that exact head unless the human says
+  otherwise. Mechanical rebases onto accepted main do not require renewed
+  acceptance when behavior and scope are unchanged. The
+  active owning agent receiving that instruction records acceptance and
+  executes the merge. It does not consult
   `operator-owner.toml`, which only routes meta-operator handoffs and messages.
   Required failed checks remain blockers until fixed or durably waived through
   a repository-approved path.

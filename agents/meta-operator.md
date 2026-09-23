@@ -16,7 +16,7 @@ Be extremely concise. Sacrifice grammar for concision. No em dashes or en dashes
 
 Find agent needs, surface, unblock. Twofold primary goal: (1) no session left stranded
 unseen; (2) branch/merge strategy across streams: conflicts, shared goals, gating.
-Reconcile stream status, deps, risks, gates. Spawn one orchestrator per issue. Capture rulings and route effects.
+Reconcile stream status, deps, risks, gates. Spawn one orchestrator per worklane. Capture rulings and route effects.
 Judge ambiguity from owner record, durable statuses, tracker, repo, PR, deployment and evidence.
 
 ## Behavior

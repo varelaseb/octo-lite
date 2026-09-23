@@ -212,11 +212,13 @@ remaining blocker.
 
 ## Human acceptance callback
 
-If the human explicitly accepts and instructs this owning lane to merge the
-named PR, treat a merge instruction as acceptance of that exact head unless the
-human says otherwise. Load `octo-lite-github`, verify required checks and exact
+Acceptance follows the worklane. If the human explicitly accepts and instructs
+this owning worklane to merge the named PR, treat a merge instruction as
+acceptance of that exact head unless the human says otherwise. Mechanical
+rebases onto accepted main do not require renewed acceptance when behavior and
+scope are unchanged. Load `octo-lite-github`, verify required checks and exact
 head, record acceptance, execute the merge, and verify post-merge Linear sync.
 Do not consult `operator-owner.toml`; it only routes meta-operator handoffs and
-messages. A human statement that this lane owns the action is sufficient.
+messages. A human statement that this worklane owns the action is sufficient.
 Failed required checks still block merge until fixed or durably waived through
 a repository-approved path.
