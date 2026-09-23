@@ -35,6 +35,15 @@ class AcceptanceOwnerScopeTests(unittest.TestCase):
         self.assertIn("never an acceptance or merge authority gate", operator)
         self.assertIn('id="stream-mutation-not-merge"', operator)
 
+    def test_merge_completes_worklane_without_follow_up_from_qa_gaps(self) -> None:
+        for path in ("profile/AGENTS.md", "skills/implement-spec/SKILL.md",
+                     "skills/octo-lite-github/SKILL.md", "agents/orchestrator.md"):
+            text = " ".join((ROOT / path).read_text().split())
+            self.assertIn("Done", text, path)
+            self.assertIn("never infer, create, reopen, or drive follow-up", text, path)
+        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
+        self.assertIn('id="linear-merge-completes-worklane"', delivery)
+
 
 if __name__ == "__main__":
     unittest.main()

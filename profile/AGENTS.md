@@ -66,6 +66,12 @@ source or fix link.
   `operator-owner.toml`, which only routes meta-operator handoffs and messages.
   Required failed checks remain blockers until fixed or durably waived through
   a repository-approved path.
+- An accepted PR merged into target main completes its worklane. The owner
+  reconciles the primary Linear issue to Done and stops the lane. Residual QA
+  gaps are historical notes only: never infer, create, reopen, or drive
+  follow-up work from them. Follow-up exists only under an explicit new ticket
+  or explicit operator instruction. Explicit human gates for spec review, QA
+  evidence review, acceptance, promotion, and traffic shifts are unchanged.
 
 ## Artifacts
 

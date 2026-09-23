@@ -98,10 +98,12 @@ Do not create extra workflow labels unless the operator explicitly asks.
   routing. No worker merges, no agent decides acceptance, and no agent merges
   unaccepted work. Required failed checks remain blockers until fixed or
   durably waived through a repository-approved path.
-- After merging, read the team's actual Linear workflow and apply the target
-  repo's completion mapping. Do not assume deployment-named states exist.
-  For completed scope, use the configured completion state under the repo's
-  rules or explicit user instruction; keep remaining scope open.
+- The merge completes the worklane. Move the primary Linear issue to Done, the
+  team's completed state, and stop the lane. Do not assume deployment-named
+  states exist. Residual QA gaps are historical notes only and never keep the
+  issue open: never infer, create, reopen, or drive follow-up work from them.
+  Follow-up exists only under an explicit new ticket or explicit operator
+  instruction.
 - Verify the state change landed, whether performed by repository automation
   or by the owning agent. Do not claim a hook succeeded without readback.
 - Record merge and deployment evidence separately. A completion state does
