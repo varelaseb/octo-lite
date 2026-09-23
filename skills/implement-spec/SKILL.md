@@ -35,6 +35,13 @@ Require:
 - explicit blocking relations between tickets
 - target root `AGENTS.md`
 
+A processed human **Finish review** hand-off is acceptance of the reviewed
+canonical spec and closes the browser review loop. It permits implementation
+dispatch under that accepted spec. It does not accept the implementation PR,
+approve a merge, promote to preproduction, or approve live traffic; those
+gates remain explicit. The hand-off must retain the exact baseline, cursor,
+Finish receipt, and source/head binding.
+
 The tickets are a task graph, not ordered steps. The ready frontier contains
 every incomplete ticket whose blockers are complete. Keep Linear titles,
 descriptions, relations, assignees, and states aligned with reality throughout.
