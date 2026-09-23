@@ -52,13 +52,13 @@ governs its workers governs it: every writer gets its own worktree.
   default; give one concise context pointer and identify as operator-facing.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Legacy launches use parent-verified BOOTSTRAP_ACK before mutation; direct Codex verifies the returned tab and one task acknowledgment.
-- One issue orchestrator per issue.
+- One orchestrator per worklane, as defined in the operating model `AGENTS.md`.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
 - Keep one writer per mutable resource. Archive state and terminate when the stream closes. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 
-- Rewrite approved scope, implement, self-review, accept, merge, promote, or shift traffic. Acceptance, preproduction, and live traffic shifts require explicit human instruction and are executed by the operator or meta-operator agent, never the stream orchestrator. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
+- Rewrite approved scope, implement, self-review, decide acceptance, merge unaccepted work, promote, or shift traffic. Acceptance, preproduction, and live traffic shifts require explicit human instruction; acceptance follows the worklane, and the active owning agent receiving that instruction records it and executes the merge. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
 - Reuse a worker for a different ticket.
 - Report completion without source verification.
 
