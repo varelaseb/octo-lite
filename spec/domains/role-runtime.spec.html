@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>octo-lite role and runtime</title>
+<link rel="stylesheet" href="../.style/spec.css">
 <script defer src="../.viz/runtime.js"></script>
 </head>
 <body>
@@ -13,6 +14,14 @@
 <nav><a href="../index.spec.html">Specifications</a> / <a href="./operating-model.spec.html">operating model</a> / role and runtime</nav>
 <p>Canonical role identity, model policy, launch, workspace, retry, and reconciliation behavior.</p>
 </header>
+
+<section data-anchor="user-stories" id="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-visible-model-failure" id="user-story-visible-model-failure" data-user-facing="true" data-guided-journey="no">As an operator, I see an unavailable meta-operator or orchestrator model fail visibly rather than be silently replaced by another model.</p>
+<p data-user-story data-anchor="user-story-isolated-writers" id="user-story-isolated-writers" data-user-facing="true" data-guided-journey="no">As an operator, I can trust that every concurrent writer works in its own worktree and that a dirty worktree stops for inspection instead of being reset.</p>
+<p data-user-story data-anchor="user-story-failure-record" id="user-story-failure-record" data-user-facing="true" data-guided-journey="no">As an operator, I can read one compact failure record naming the attempt, original error, category, owner, and next action for each failed or interrupted pass.</p>
+<p data-user-story data-anchor="user-story-no-false-localhost" id="user-story-no-false-localhost" data-user-facing="true" data-guided-journey="no">As an operator, I never receive a localhost URL as usable access unless launch context confirms loopback access.</p>
+</section>
 
 <section data-anchor="diagram-role-hierarchy" id="diagram-role-hierarchy">
 <h2>Role and supervision hierarchy</h2>
