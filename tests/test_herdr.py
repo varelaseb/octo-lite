@@ -122,6 +122,11 @@ class HerdrWrapperTest(unittest.TestCase):
         fake = bindir / "herdr"
         fake.write_text(FAKE_HERDR)
         fake.chmod(0o755)
+        # herdr-spawn runs `codex remote-control start` for Codex tabs. The real
+        # binary starts a daemon under this temp HOME that outlives the test.
+        stub = bindir / "codex"
+        stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+        stub.chmod(0o755)
         self.cwd = d / "worktree"
         self.cwd.mkdir()
         self.log = d / "calls.log"
