@@ -29,6 +29,10 @@ source or fix link.
   advance through the owner and do not create competing lanes.
 - Use `$spec-chat-shape` to produce the reviewed spec, spec issue, and
   dependency-linked implementation tickets.
+- A processed human **Finish review** hand-off is acceptance of the reviewed
+  canonical spec. It closes the browser review loop and permits implementation
+  dispatch under that spec. It is distinct from implementation PR acceptance,
+  merge, preproduction promotion, and live traffic gates, which remain explicit.
 - Use `$implement-spec` to deliver the whole spec on one PR branch.
 - Every owning orchestrator starts one Codex `/goal` with the concrete user
   outcome and done condition. Workers use one narrow ticket goal. Goals guide
