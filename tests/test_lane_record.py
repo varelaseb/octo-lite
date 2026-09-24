@@ -15,6 +15,10 @@ OWNER_SETS_ISSUE = (
     r"[Tt]he\s+lane\s+owner\s+sets\s+`issue`\s+when\s+shaping\s+creates\s+the\s+issue,"
     r"\s+if\s+the\s+operator\s+did\s+not,\s+no\s+later\s+than\s+`pr`"
 )
+GOAL_STATE_CHANGES = (
+    r"goal\s+state\s+change,\s+the\s+lane\s+owner\s+updates\s+`goal_state`\s+to"
+    r'\s+`"active"`,\s+`"blocked"`,\s+or\s+`"complete"`'
+)
 
 
 class LaneRecordTests(unittest.TestCase):
@@ -82,10 +86,7 @@ class LaneRecordTests(unittest.TestCase):
                 flags=re.DOTALL,
             ),
         )
-        self.assertRegex(
-            text,
-            re.compile(r"goal\s+blocked\s+or\s+complete.*`goal_state`", flags=re.DOTALL),
-        )
+        self.assertRegex(text, GOAL_STATE_CHANGES)
         self.assertRegex(
             text,
             r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"spec review\"`\s+or\s+`\"QA review\"`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"\"`",
@@ -123,7 +124,6 @@ class LaneRecordTests(unittest.TestCase):
             ("worker spawn", "`[[workers]]`"),
             ("worker close", "`[[workers]]`"),
             ("handoff consumed", "`last_handoff_at`"),
-            ("goal blocked/complete", "`goal_state`"),
         ):
             with self.subTest(event=event):
                 event_pattern = re.escape(event).replace("\\ ", r"\s+")
@@ -136,6 +136,7 @@ class LaneRecordTests(unittest.TestCase):
             r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"spec review\"`\s+or\s+`\"QA review\"`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"\"`",
         )
         self.assertRegex(paragraph, OWNER_SETS_ISSUE)
+        self.assertRegex(paragraph, GOAL_STATE_CHANGES)
 
     def test_no_unrelated_file_instructs_lane_record_writes(self) -> None:
         allowed = {

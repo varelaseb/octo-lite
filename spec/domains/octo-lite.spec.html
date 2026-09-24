@@ -83,10 +83,10 @@ In between, only the owner updates it.
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
 <tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it: owner, repository, goal, goal state active, and issue when known.</td></tr>
-<tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if not yet set, when shaping creates it, and <code>pr</code>. From here the lane appears on the board.</td></tr>
+<tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code>, if the operator did not, and <code>pr</code>. From here the lane appears on the board.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates workers and last handoff time.</td></tr>
 <tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to spec review or QA review; clears it when the gate resolves.</td></tr>
-<tr data-anchor="octo-lane-record-life-goal"><td>Goal becomes blocked or complete</td><td>Owner</td><td>Updates goal state.</td></tr>
+<tr data-anchor="octo-lane-record-life-goal"><td>Goal state changes (active, blocked, or complete)</td><td>Owner</td><td>Updates goal state.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
 </tbody>
 </table>

@@ -28,8 +28,9 @@ after the same blocker repeats with no meaningful progress.
 - Orchestrator: as lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
   Set `pr` when a draft PR opens. On worker spawn or close or handoff
-  consumption, update `[[workers]]` and `last_handoff_at`. On goal blocked or
-  complete, update `goal_state`; when the lane owner hands a human gate (spec
+  consumption, update `[[workers]]` and `last_handoff_at`. On every
+  goal state change, the lane owner updates `goal_state` to `"active"`,
+  `"blocked"`, or `"complete"`; when the lane owner hands a human gate (spec
   review or QA review) to the human, the lane owner sets `waiting_on` to
   `"spec review"` or `"QA review"`; when the gate resolves, the lane owner
   sets `waiting_on` to `""`.
