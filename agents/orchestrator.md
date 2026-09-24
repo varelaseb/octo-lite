@@ -27,7 +27,10 @@ after the same blocker repeats with no meaningful progress.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
-  Set `pr` when a draft PR opens. On worker spawn or close or handoff
+  The operator creates it at launch; edit that file in place, changing only the
+  fields a moment names and keeping every other field;
+  the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
+  `#octo-lane-record-example`. Set `pr` when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
   only `pane`, `ticket`, and `role`. On every
   goal state change, the lane owner updates `goal_state` to `"active"`,

@@ -57,6 +57,13 @@ class LaneRecordTests(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, text)
 
+    def test_orchestrator_hook_edits_in_place_with_quoted_handoff_time(self) -> None:
+        text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        for term in ("in place", "never creates or rewrites",
+                     "quoted UTC string", "#octo-lane-record-example"):
+            with self.subTest(term=term):
+                self.assertIn(term, text)
+
     def test_no_unrelated_file_instructs_lane_record_writes(self) -> None:
         allowed = {
             SPEC,
