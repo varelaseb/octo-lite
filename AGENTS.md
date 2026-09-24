@@ -61,8 +61,8 @@ worklane state together, then stop the lane.
 ## Target Spec Format Capability
 
 - Spec format: spec-chat
-- Canonical spec paths: spec/domains/operating-model.spec.html, spec/domains/delivery-lifecycle.spec.html, spec/domains/role-runtime.spec.html, spec/domains/operator-control.spec.html
-- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html, spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0003-drop-loop-trust-root.spec.html, spec/adr/0004-derive-delivery-entry.spec.html, spec/adr/0005-herdr-ticket-graph-delivery.spec.html
+- Canonical spec paths: spec/domains/octo-lite.spec.html
+- Canonical ADR paths: spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0005-herdr-ticket-graph-delivery.spec.html (0001, 0003, 0004 are superseded history)
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact

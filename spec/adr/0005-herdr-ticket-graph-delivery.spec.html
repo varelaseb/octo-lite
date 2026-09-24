@@ -11,7 +11,7 @@
 <article class="spec" data-spec-version="1">
 <header data-anchor="header" id="header">
 <h1>ADR 0005: Herdr ticket-graph delivery</h1>
-<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/delivery-lifecycle.spec.html">delivery lifecycle</a> / ADR 0005</nav>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/octo-lite.spec.html">octo-lite</a> / ADR 0005</nav>
 <p>Decision from <a href="https://github.com/varelaseb/octo-lite/issues/95">GitHub issue 95</a>, 2026-09-01.</p>
 </header>
 
@@ -36,7 +36,8 @@
 <h2>Decision</h2>
 <p data-anchor="decision-shaping-output" id="decision-shaping-output"><code>spec-chat-shape</code> finishes with a reviewed spec, its issue, and dependency-linked implementation tickets.</p>
 <p data-anchor="decision-explicit-skill" id="decision-explicit-skill"><code>implement-spec</code> is explicit-only and owns post-shaping delivery.</p>
-<p data-anchor="decision-direct-workers" id="decision-direct-workers">It launches temporary Herdr explorer, implementer, merger, and reviewer agents directly, outside <code>roles.toml</code>, role contracts, and the legacy Workflow loop.</p>
+<p data-anchor="decision-direct-workers" id="decision-direct-workers">It launches temporary Herdr explorer, implementer, merger, and reviewer agents directly, outside <code>roles.toml</code> and the legacy Workflow loop.</p>
+<p data-anchor="decision-contracts-amended" id="decision-contracts-amended">Amended 2026-09-24 (ANN-71): implementer and reviewer workers load their hand-written role contracts.</p>
 <p data-anchor="decision-frontier" id="decision-frontier">Implementers fill the ready ticket frontier in isolated worktrees and branches while one merger at a time integrates completed commits onto one PR branch.</p>
 <p data-anchor="decision-linear" id="decision-linear">Linear records the actual ticket graph and live work state, with Done reserved for integrated and pushed work.</p>
 <p data-anchor="decision-review" id="decision-review">After full integration, independent review runs on the integration head, one implementation agent fixes the findings, and one merger integrates each consolidated fix batch before review of the changed head.</p>

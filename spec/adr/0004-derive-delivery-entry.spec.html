@@ -11,7 +11,7 @@
 <article class="spec" data-spec-version="1">
 <header data-anchor="header" id="header">
 <h1>ADR 0004: delete the readiness envelope, derive delivery entry from (issue, pr, head)</h1>
-<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/delivery-lifecycle.spec.html">delivery lifecycle</a> / ADR 0004</nav>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/octo-lite.spec.html">octo-lite</a> / ADR 0004</nav>
 <p>Decisions closing the operator grill on octo-lite issue 34, 2026-07-27.</p>
 </header>
 
@@ -22,7 +22,7 @@
 
 <section data-anchor="status" id="status">
 <h2>Status</h2>
-<p data-anchor="status-value" id="status-value">Superseded for post-shaping delivery by ADR 0005.</p>
+<p data-anchor="status-value" id="status-value">Superseded by ADR 0005: the readiness envelope and delivery loop it describes are deleted.</p>
 </section>
 
 <section data-anchor="context" id="context">
@@ -71,7 +71,7 @@
 <h2>Related</h2>
 <p data-anchor="related-issue" id="related-issue">Origin: octo-lite issue 34. Supersedes: issue 33.</p>
 <p data-anchor="related-amended-by" id="related-amended-by">Amended by octo-lite issue 55, which relaxed the strict four-head equality to shaping-verdict ancestor-descent so a slice delivers seam by seam.</p>
-<p data-anchor="related-specs" id="related-specs">Amended: <a href="../domains/delivery-lifecycle.spec.html#delivery-entry-gate">delivery-lifecycle delivery entry gate</a>, <a href="../domains/role-runtime.spec.html#launch-stream-envelope-builder">role-runtime launch stream envelope</a>.</p>
+<p data-anchor="related-specs" id="related-specs">Amended domain specs were deleted in ANN-71 and remain in git history; see <a href="../domains/octo-lite.spec.html">octo-lite current state</a>.</p>
 <p data-anchor="related-foundation" id="related-foundation">Builds on: <a href="0003-drop-loop-trust-root.spec.html">ADR 0003</a>, which dropped the loop trust root and the independent observer and left the loop deriving its worktree from cwd and branch from git.</p>
 </section>
 </article>
