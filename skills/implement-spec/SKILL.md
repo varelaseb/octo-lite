@@ -24,6 +24,10 @@ temporary worker starts one narrow goal for its ticket and returns its result to
 the owning orchestrator. Goals point to Linear, the canonical spec, and status
 artifacts; they do not duplicate them or replace human gates. Do not mark a
 goal blocked for a normal human gate or one transient failure.
+Before idling, a worker that is blocked, stalled, interrupted, or unable to
+finish messages its owner or operator with current state, evidence, blocker,
+and concrete next need. It does not report completion or go idle without that
+handoff. The owner consumes the handoff and records the next action.
 
 ## Inputs
 

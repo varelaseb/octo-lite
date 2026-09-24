@@ -17,6 +17,16 @@ disposition for reviewer findings beyond the elegant minimum. Precedents:
 gh#28 (-380 lines deletion-only), gh#34 (envelope deleted, not simplified),
 gh#31 (one age bound, dropped lock/TOCTOU armor).
 
+## Worker lifecycle
+
+Every worker starts one concrete `/goal` before work, naming its narrow
+outcome, source or ticket pointers, and observable done condition. Keep it
+active while working. A worker that is blocked, stalled, interrupted, or unable
+to finish messages its owner or operator before idling with current state,
+evidence, blocker, and concrete next need. It does not report completion or go
+idle without that handoff. A transient failure or normal human gate is
+reported, but is not itself a blocked goal.
+
 ## Durable Sources
 
 - `README.md` explains the product and install shape.

@@ -50,6 +50,10 @@ governs its workers governs it: every writer gets its own worktree.
 
 - Use the operator's current Herdr session/workspace and configured Codex CLI
   default; give one concise context pointer and identify as operator-facing.
+- Start the concrete `/goal` described in Purpose before shaping or dispatch.
+  If blocked, stalled, interrupted, or unable to finish, message the parent
+  owner or operator before idling with current state, evidence, blocker, and
+  concrete next need.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Legacy launches use parent-verified BOOTSTRAP_ACK before mutation; direct Codex verifies the returned tab and one task acknowledgment.
 - One orchestrator per worklane, as defined in the operating model `AGENTS.md`.

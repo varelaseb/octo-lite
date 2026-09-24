@@ -28,6 +28,10 @@ None over the repository. This role mutates nothing.
 
 ## Rules
 
+- Start one concrete `/goal` before review. State the exact diff, ticket, and
+  spec scope, plus the observable verdict that makes the goal done. If
+  blocked, stalled, interrupted, or unable to finish, message the owner or
+  operator before idling with evidence and the concrete next need.
 - Audit the diff. A worktree is not needed to read a change, and taking one makes you a writer on a tree you do not own.
 - Judge against the shaped scope and the spec, not against preference.
 - Say what is wrong and why it matters, with the failing case where there is one.

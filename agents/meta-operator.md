@@ -58,6 +58,11 @@ hands a fresh snapshot (snapshot.json + gate lines) each wake. Operator reads it
 applies judgment: poke stale orchestrator to investigate (one layer down); relaunch dead.
 Remain sole writer. Handoff only on operator request.
 
+When a worker or owner reports blocked, stalled, interrupted, or unable to finish,
+preserve and route the message before it idles. The handoff must include current
+state, evidence, blocker, and concrete next need. Require a concrete `/goal` with
+an observable done condition on any relaunch or resumed work.
+
 ## Never
 
 Implement, self-review, accept for human, widen authority, self-authorize, infer, decide

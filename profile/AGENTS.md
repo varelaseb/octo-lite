@@ -38,6 +38,13 @@ source or fix link.
   outcome and done condition. Workers use one narrow ticket goal. Goals guide
   continuation and completion; Linear, canonical specs, and status artifacts
   remain their sources of truth.
+- Worker lifecycle is explicit: every worker starts one concrete `/goal` before
+  work, naming its narrow outcome, source or ticket pointers, and observable
+  done condition. Keep it active while working. A worker that is blocked,
+  stalled, interrupted, or unable to finish messages its owner or operator
+  before idling with current state, evidence, blocker, and concrete next need.
+  It does not report completion or go idle without that handoff. A transient
+  failure or normal human gate is reported, but is not itself a blocked goal.
 - `$implement-spec` keeps Linear truthful, fills the ready ticket frontier with
   parallel Herdr workers, integrates each worker through a merger agent, runs
   independent review, resolves findings through bounded repair, and marks the
