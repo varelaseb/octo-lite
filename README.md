@@ -45,8 +45,9 @@ scripts/install-octo-lite --check
 ```
 
 `agents/*.md` are hand-written role contracts. Workers load them: Claude
-through `--agent ROLE`, Codex as the first prompt from `herdr-spawn --role
-ROLE`. The meta-operator is a persistent Herdr pane started with `herdr-spawn
+through `--agent ROLE`, Codex as developer instructions from `herdr-spawn
+--role ROLE`. `herdr-close TAB` tears a worker down, detached processes
+included. The meta-operator is a persistent Herdr pane started with `herdr-spawn
 --role meta-operator`; there is no supervised sweep.
 
 ## Workflow

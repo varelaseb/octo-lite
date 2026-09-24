@@ -13,17 +13,25 @@ live Herdr 0.9.0:
   * a failed spawn must not leave an orphan tab behind
   * `herdr-say` must map a blocked target to exit 75, which is the contract
     spec-chat's `wake-herdr.py` adapter relies on
+  * a Codex contract sent as a prompt is worked as a task, and a Codex thread
+    on the shared daemon outlives its tab
+  * a detached child outlives its closed tab unless `herdr-close` reaps it
 """
 
 import os
+import signal
 import subprocess
 import tempfile
+import time
+import tomllib
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
+CLOSE = ROOT / "skills/herdr-comms/assets/herdr-close"
 
 # A stand-in for the `herdr` binary. Behaviour is driven entirely by environment
 # variables so each test can pose one exact failure without a live server.
@@ -43,6 +51,7 @@ case "$sub" in
     n=0
     [[ -f "$FAKE_START_COUNT" ]] && n="$(cat "$FAKE_START_COUNT")"
     n=$((n + 1)); echo "$n" >"$FAKE_START_COUNT"
+    printf '%s\0' "$@" >"$FAKE_START_ARGV"
     if [[ -n "${FAKE_START_FAIL_OTHER:-}" ]]; then
       echo '{"error":{"code":"agent_pane_not_found","message":"no pane"},"id":"cli:agent:start"}' >&2; exit 1
     fi
@@ -130,10 +139,11 @@ class HerdrWrapperTest(unittest.TestCase):
         fake = bindir / "herdr"
         fake.write_text(FAKE_HERDR)
         fake.chmod(0o755)
-        # herdr-spawn runs `codex remote-control start` for Codex tabs. The real
-        # binary starts a daemon under this temp HOME that outlives the test.
+        # A real codex must never run here. The stub records any call, so a
+        # spawn that invokes codex itself (e.g. to start its daemon) is visible.
+        self.codex_calls = d / "codex.log"
         stub = bindir / "codex"
-        stub.write_text("#!/usr/bin/env bash\nexit 0\n")
+        stub.write_text(f'#!/usr/bin/env bash\necho "$*" >>"{self.codex_calls}"\n')
         stub.chmod(0o755)
         self.cwd = d / "worktree"
         self.cwd.mkdir()
@@ -149,6 +159,7 @@ class HerdrWrapperTest(unittest.TestCase):
             "FAKE_WRONG": str(self.wrong),
             "FAKE_DIALOG": str(self.dialog),
             "FAKE_START_COUNT": str(d / "count"),
+            "FAKE_START_ARGV": str(d / "start.argv"),
             "HOME": str(d),
         }
 
@@ -255,20 +266,35 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("not ready for prompts", r.stderr)
         self.assertTrue(self.closed.exists())
 
-    def test_delivers_the_role_contract_to_a_codex_agent(self):
-        # Codex has no custom-agent file, so an undelivered contract is an agent
-        # that never read where it may write.
+    def start_argv(self):
+        return (Path(self.env["FAKE_START_ARGV"]).read_text().split("\0"))[:-1]
+
+    def test_codex_contract_is_developer_instructions_not_a_prompt(self):
+        # Regression: a contract sent as the first prompt was worked as a task.
         self.dialog.write_text("none\n")
         agents = Path(self.env["HOME"]) / ".claude/agents"
         agents.mkdir(parents=True, exist_ok=True)
-        (agents / "r.md").write_text("# Role\nWrite only in your worktree.\n")
+        contract = '# Role\nWrite only in your "worktree".\\ Tab\there.\n'
+        (agents / "r.md").write_text(contract)
         r = self.spawn_codex()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("contract=delivered", r.stdout)
-        # the fake logs the whole invocation, and the prompt spans lines
-        log = self.log.read_text()
-        self.assertIn("agent prompt", log)
-        self.assertIn("Write only in your worktree", log)
+        self.assertIn("contract=developer-instructions", r.stdout)
+        self.assertNotIn("agent prompt", self.log.read_text())
+        argv = self.start_argv()
+        value = [a for a in argv if a.startswith("developer_instructions=")]
+        self.assertEqual(len(value), 1, argv)
+        self.assertEqual(argv[argv.index(value[0]) - 1], "-c")
+        self.assertEqual(tomllib.loads(value[0])["developer_instructions"], contract)
+
+    def test_codex_spawn_never_starts_a_daemon(self):
+        # Regression: a thread on the shared app-server outlived its tab.
+        self.dialog.write_text("none\n")
+        r = self.spawn_codex()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.codex_calls.exists(), self.codex_calls.read_text()
+                         if self.codex_calls.exists() else "")
+        self.assertIn("--no-daemon", self.start_argv())
+        self.assertIn("contract=not-found", r.stdout)
 
     def test_a_claude_agent_loads_its_own_contract(self):
         self.dialog.write_text("none\n")
@@ -287,6 +313,43 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.spawn(FAKE_NO_SESSION="1")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("provider_session_id=herdr:a1", r.stdout)
+
+    # --- close -----------------------------------------------------------
+
+    def tagged(self, tab):
+        # setsid, like a detached command child that survives its tab
+        p = subprocess.Popen(["sleep", "600"], start_new_session=True,
+                             env={**self.env, "HERDR_TAB_ID": tab})
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        return p
+
+    def gone(self, p):
+        for _ in range(50):
+            if p.poll() is not None:
+                return True
+            time.sleep(0.1)
+        return False
+
+    def test_close_ends_every_process_tagged_with_the_tab(self):
+        tab = f"t-{uuid.uuid4()}"
+        mine, other = self.tagged(tab), self.tagged(f"t-{uuid.uuid4()}")
+        r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"tab close {tab}", self.log.read_text())
+        self.assertTrue(self.gone(mine), "a tab-tagged process survived herdr-close")
+        self.assertEqual(mine.returncode, -signal.SIGTERM)
+        self.assertIsNone(other.poll(), "killed a process from another tab")
+        self.assertIn("killed=1", r.stdout)
+
+    def test_close_never_kills_itself_or_its_caller(self):
+        # A caller inside the tab carries the tag too; it must survive to report.
+        tab = f"t-{uuid.uuid4()}"
+        r = subprocess.run(["bash", "-c", f'"{CLOSE}" "{tab}"; echo caller-alive'],
+                           capture_output=True, text=True,
+                           env={**self.env, "HERDR_TAB_ID": tab})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("killed=0", r.stdout)
+        self.assertIn("caller-alive", r.stdout)
 
     # --- say -------------------------------------------------------------
 

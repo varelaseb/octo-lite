@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Close one Herdr tab and end everything it ran.
+#
+# Closing a tab kills its pane, but a detached command child (setsid) survives,
+# reparented. Every process started in the tab carries HERDR_TAB_ID=<tab> in its
+# environ, so that tag, not the process tree, finds them. This script's own
+# process and its ancestors are never signalled, so a caller inside the tab
+# survives to report.
+set -uo pipefail
+
+tab="${1:-}"
+[[ -n "$tab" && $# -eq 1 ]] || { echo "usage: herdr-close TAB" >&2; exit 64; }
+
+rc=0
+herdr tab close "$tab" >/dev/null 2>&1 || rc=$?
+
+skip=" "; p=$$
+while [[ -n "$p" && "$p" != 0 ]]; do
+  skip+="$p "
+  [[ "$p" == 1 ]] && break
+  p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+done
+
+killed=0
+for env in /proc/[0-9]*/environ; do
+  pid="${env#/proc/}"; pid="${pid%/environ}"
+  [[ "$skip" == *" $pid "* ]] && continue
+  tr '\0' '\n' <"$env" 2>/dev/null | grep -qxF "HERDR_TAB_ID=$tab" || continue
+  kill -TERM "$pid" 2>/dev/null && killed=$((killed + 1))
+done
+
+echo "tab=$tab tab_close_rc=$rc killed=$killed"
+exit "$rc"

@@ -5,7 +5,7 @@ description: Spawn Herdr agents and send them messages, over native Herdr.
 
 # herdr-comms
 
-Two thin wrappers over native Herdr. Herdr itself owns the transport; these
+Three thin wrappers over native Herdr. Herdr itself owns the transport; these
 exist only for the failure modes it leaves to the caller.
 
 ## Spawn an agent
@@ -20,18 +20,21 @@ herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
 One tab, one pane, one agent, at an explicit worktree. Prints:
 
 ```
-name= role= tab= pane= cwd= remote_control= provider_session_id=
+name= role= tab= pane= cwd= contract= provider_session_id=
 ```
 
 The runtime comes from the agent definition and each CLI's own defaults. This
 pins no model, effort, or service tier.
 
 `--role` is not just a label. A Claude agent loads its own contract through
-`--agent ROLE`, but Codex has no custom-agent file, so the contract is delivered
-as the agent's first prompt, looked up at `~/.claude/agents/ROLE.md` in the
-installed profile. Without it a Codex agent runs having read the operating model
-but never the contract that bounds it, which is where its write surface is
-stated. The output reports `contract=` so a silent miss is visible.
+`--agent ROLE`. Codex has no custom-agent file, so the contract at
+`~/.claude/agents/ROLE.md` is passed as `-c developer_instructions=...`. It
+binds at the developer layer and the agent waits for its brief; a contract sent
+as a prompt is worked as a task. The output reports `contract=` so a silent miss
+is visible.
+
+Codex runs with `--no-daemon`, so its thread and commands live in the tab's own
+process tree, not the shared app-server that outlives the tab.
 
 It wraps `herdr tab create` and `herdr agent start`, and handles three things
 those leave to the caller:
@@ -71,6 +74,17 @@ relaunch with no sandbox flag. Codex then runs under the configured
 `sandbox_mode`, often `danger-full-access`, so only the read-only contract
 binds; the caller verifies one real source-read result before accepting the
 verdict.
+
+## Close an agent
+
+```
+herdr-close TAB
+```
+
+The teardown step. Closes the tab, then sends TERM to every process whose
+environ carries `HERDR_TAB_ID=TAB`, which catches detached children that tab
+close alone leaves running. Never signals itself or its ancestors. Prints
+`tab= tab_close_rc= killed=` and exits with the tab close status.
 
 ## Send a message
 
