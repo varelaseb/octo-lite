@@ -67,8 +67,8 @@ role-runtime map, not additions to the model-free role contract. Pass no
 sandbox flag: on hosts where bwrap cannot configure loopback, `--sandbox
 read-only` and `workspace-write` both fail before any command runs. Codex then
 uses the configured `sandbox_mode` (here `danger-full-access`), the read-only
-contract still binds, and the
-caller verifies one real source-read result before accepting the verdict.
+contract still binds, and the caller verifies one real source-read result
+before accepting the verdict.
 
 ## Send a message
 
