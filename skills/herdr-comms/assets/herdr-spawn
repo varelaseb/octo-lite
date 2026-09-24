@@ -22,7 +22,7 @@ usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
     -- codex [CODEX_ARGS...]
 
-Prints: name= role= tab= pane= cwd= remote_control= provider_session_id=
+Prints: name= role= tab= pane= cwd= contract= provider_session_id=
 EOF
 }
 
@@ -49,22 +49,29 @@ case "$runtime" in
   *) echo "herdr-spawn: persistent tabs require claude or codex, got $runtime" >&2; exit 65 ;;
 esac
 
-remote_control="disabled"
-if [[ "$kind" == codex ]]; then
-  # Shared app-server capability, and optional: it powers Codex's own mobile
-  # approvals, which a spawned agent does not need in order to run. A system
-  # Codex has no standalone package to start it from, so a failure here is
-  # reported and the spawn continues. Done before the tab exists either way, so
-  # it can never leave an orphan.
-  if "$1" remote-control start --json >/dev/null 2>&1; then
-    remote_control="enabled"
-  else
-    remote_control="unavailable"
-    echo "herdr-spawn: Codex Remote Control unavailable; continuing without it" >&2
-  fi
-  launch_argv=("${@:2}")   # `agent start --kind codex` supplies the executable
+# The role contract. A Claude agent loads it itself through `--agent ROLE`,
+# which the caller passes. Codex has no custom-agent file, so the contract goes
+# in at the developer layer as one TOML string argv. Delivered as a prompt
+# instead, Codex treats it as a task and starts working it.
+#
+# The installed profile is the lookup, so a contract owned by any peer
+# repository resolves without this script knowing which one.
+contract_file="$HOME/.claude/agents/$role.md"
+contract="not-found"
+launch_argv=("${@:2}")   # `agent start --kind` supplies the executable
+if [[ "$kind" == claude ]]; then
+  contract="loaded-by-agent-flag"
 else
-  launch_argv=("${@:2}")
+  # --no-daemon keeps the thread and its commands in this tab's process tree,
+  # tagged with HERDR_TAB_ID, so herdr-close can end all of it. The shared
+  # app-server daemon would outlive the tab.
+  launch_argv=(--no-daemon "${launch_argv[@]}")
+  if [[ -f "$contract_file" ]]; then
+    launch_argv=(-c "developer_instructions=$(jq -Rs . <"$contract_file")" "${launch_argv[@]}")
+    contract="developer-instructions"
+  else
+    echo "herdr-spawn: no $role contract at $contract_file; the agent does not know its bounds" >&2
+  fi
 fi
 
 out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"
@@ -197,30 +204,4 @@ if [[ -z "$agent_status" ]]; then
 fi
 [[ -n "$provider_session_id" ]] || provider_session_id="herdr:$name"
 
-# Deliver the role contract.
-#
-# A Claude agent loads its contract itself, through `--agent ROLE`, which the
-# caller passes. Codex has no custom-agent file, so without this the role is
-# only a label and the agent runs having read the operating model but never the
-# contract that bounds it. That is not a detail: a role's write surface lives in
-# its contract, so an undelivered contract is an agent that does not know where
-# it may write.
-#
-# The installed profile is the lookup, so a contract owned by any peer
-# repository resolves without this script knowing which one.
-contract_file="$HOME/.claude/agents/$role.md"
-contract="not-found"
-if [[ "$kind" == claude ]]; then
-  contract="loaded-by-agent-flag"
-elif [[ -f "$contract_file" ]]; then
-  if herdr agent prompt "$name" "Your role contract follows. It governs this session, including where you may write. Follow it.
-
-$(cat "$contract_file")" --wait --until working --until idle >/dev/null 2>&1; then
-    contract="delivered"
-  else
-    contract="undelivered"
-    echo "herdr-spawn: could not deliver the $role contract; the agent does not know its bounds" >&2
-  fi
-fi
-
-echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd remote_control=$remote_control contract=$contract provider_session_id=$provider_session_id"
+echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd contract=$contract provider_session_id=$provider_session_id"
