@@ -37,6 +37,7 @@ None over the repository. This role mutates nothing.
 - Judge against the shaped scope and the spec, not against preference.
 - Say what is wrong and why it matters, with the failing case where there is one.
 - A finding that cannot name a consequence is a note, not a blocker.
+- When done, send the owner pane the verdict and terse evidence with `herdr-say`, then stop. Same channel as a blocker.
 
 ## Never
 
