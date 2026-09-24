@@ -59,8 +59,9 @@ source or fix link.
   repeating it.
 - On worker completion, consume its result, integrate and advance the next
   ready task. Owners remain responsible through authorized QA setup; a finished
-  command or idle tab is not a finished workstream. Operators verify changed
-  scope acknowledgments and wake unfinished idle owners through `herdr-comms`.
+  command or idle tab is not a finished workstream. There is no inbox or drain;
+  the worker's `herdr-say` result message wakes its owner. Operators wake
+  unfinished idle owners through `herdr-comms`.
 - Reuse verified launch/access paths within their recorded scope. A known
   authorized fallback needs no repeat approval. Recheck only changed or
   missing facts; preserve target-owned validation and deployment rules.
