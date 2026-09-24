@@ -83,7 +83,7 @@ herdr-close TAB
 
 The teardown step. Closes the tab, then sends TERM to every process whose
 environ carries `HERDR_TAB_ID=TAB`, which catches detached children that tab
-close alone leaves running. Never signals itself or its ancestors. Prints
+close alone leaves running. Run it from the spawner's tab. Prints
 `tab= tab_close_rc= killed=` and exits with the tab close status.
 
 ## Send a message

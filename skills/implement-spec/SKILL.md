@@ -213,8 +213,8 @@ After every ticket is integrated:
    automation closes it.
 5. Close each consumed worker with `herdr-close TAB`, which also ends its
    detached processes. Remove every temporary worker worktree only after it is
-   clean and its commits are reachable from the integration branch. Never force-remove a
-   worktree with uncommitted or unmerged work.
+   clean and its commits are reachable from the integration branch. Never
+   force-remove a worktree with uncommitted or unmerged work.
 
 Continue any authorized deployment/seeding/manual-QA handoff after code review
 readiness; report its actual state separately. Human acceptance, preproduction

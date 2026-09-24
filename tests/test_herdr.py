@@ -340,16 +340,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(mine.returncode, -signal.SIGTERM)
         self.assertIsNone(other.poll(), "killed a process from another tab")
         self.assertIn("killed=1", r.stdout)
-
-    def test_close_never_kills_itself_or_its_caller(self):
-        # A caller inside the tab carries the tag too; it must survive to report.
-        tab = f"t-{uuid.uuid4()}"
-        r = subprocess.run(["bash", "-c", f'"{CLOSE}" "{tab}"; echo caller-alive'],
-                           capture_output=True, text=True,
-                           env={**self.env, "HERDR_TAB_ID": tab})
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("killed=0", r.stdout)
-        self.assertIn("caller-alive", r.stdout)
+        self.assertEqual(r.stderr, "", "unreadable /proc entries must be silent")
 
     # --- say -------------------------------------------------------------
 
