@@ -14,8 +14,8 @@ Use octo-lite for Linear-first product and development work.
   architecture, validation, deployment, fixtures, and conventions.
 - `agents/*.md` own the role contracts. They are hand-written and pin no
   model, so each CLI applies its own default.
-- `$implement-spec` owns post-shaping delivery. Its Herdr workers use relevant
-  octo-lite skills but do not load role contracts.
+- `$implement-spec` owns post-shaping delivery. Its Herdr workers run under the
+  `implementer` and `code-reviewer` contracts, which declare their skills.
 
 Stop on source conflict. Conversation and memory never silently override these
 sources. Memory may retain only dated, evidence-backed gotchas with a durable
@@ -53,8 +53,8 @@ source or fix link.
   parallel Herdr workers, integrates each worker through a merger agent, runs
   independent review, resolves findings through bounded repair, and marks the
   PR ready for human review only with clear review and required checks passed.
-- Implementation workers follow target `AGENTS.md` and relevant octo-lite
-  skills. They do not follow the octo-lite delivery contract or ceremony.
+- Implementation workers follow their role contract, target `AGENTS.md`, and
+  relevant octo-lite skills. They do not follow the delivery ceremony.
 - Keep communication sparse and point agents to durable context instead of
   repeating it.
 - On worker completion, consume its result, integrate and advance the next

@@ -10,10 +10,9 @@ Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
 Implement the complete spec on one branch and leave one PR ready for human
-review. Use octo-lite skills as useful implementation guidance. Do not use the
-octo-lite role resolver, worker contracts, loop workflow, legacy launch/workflow
-receipts, journals,
-exact-role gates, or lifecycle ceremony.
+review. Workers load their `agents/*.md` role contracts and use octo-lite
+skills as guidance. There is no role resolver, loop workflow, receipt, journal,
+exact-role gate, or lifecycle ceremony.
 
 ## Goal
 
@@ -192,7 +191,8 @@ independent work and report the exact remaining dependency.
 
 After every ticket is integrated:
 
-1. Run `/code-review` on the integration branch. If unsupported in this runtime,
+1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
+   and have it run `/code-review` on the integration branch. If unsupported,
    use the available independent review mechanism with the same exact head,
    base, spec and scope. Verify acknowledgment and actual review work once;
    do not retry an unrecognized slash command or count pasted text as review.
