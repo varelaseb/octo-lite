@@ -11,6 +11,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec/domains/octo-lite.spec.html"
+OWNER_SETS_ISSUE = (
+    r"[Tt]he\s+lane\s+owner\s+sets\s+`issue`\s+when\s+shaping\s+creates\s+the\s+issue,"
+    r"\s+if\s+the\s+operator\s+did\s+not,\s+no\s+later\s+than\s+`pr`"
+)
 
 
 class LaneRecordTests(unittest.TestCase):
@@ -53,12 +57,12 @@ class LaneRecordTests(unittest.TestCase):
         for field in (
             "`owner` pane",
             "`repository`",
-            "`issue`",
             "`goal`",
             '`goal_state = "active"`',
         ):
             with self.subTest(field=field):
                 self.assertIn(field, hook)
+        self.assertRegex(hook, r"`issue`[^;]*\s+when\s+known")
         self.assertRegex(
             hook,
             r"at\s+teardown\s+of\s+the\s+finished\s+lane\s+and\s+its\s+children,\s+delete\s+it",
@@ -86,6 +90,7 @@ class LaneRecordTests(unittest.TestCase):
             text,
             r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"spec review\"`\s+or\s+`\"QA review\"`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"\"`",
         )
+        self.assertRegex(text, OWNER_SETS_ISSUE)
         self.assertIn("Only the owner updates the lane record", text)
 
     def test_implement_spec_points_at_each_owner_update(self) -> None:
@@ -130,6 +135,7 @@ class LaneRecordTests(unittest.TestCase):
             paragraph,
             r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"spec review\"`\s+or\s+`\"QA review\"`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"\"`",
         )
+        self.assertRegex(paragraph, OWNER_SETS_ISSUE)
 
     def test_no_unrelated_file_instructs_lane_record_writes(self) -> None:
         allowed = {

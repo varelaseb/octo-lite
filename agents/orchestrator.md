@@ -33,6 +33,8 @@ after the same blocker repeats with no meaningful progress.
   review or QA review) to the human, the lane owner sets `waiting_on` to
   `"spec review"` or `"QA review"`; when the gate resolves, the lane owner
   sets `waiting_on` to `""`.
+  The lane owner sets `issue` when shaping creates the issue, if the operator
+  did not, no later than `pr`.
   Only the owner updates the lane record.
 
 ## Write surface

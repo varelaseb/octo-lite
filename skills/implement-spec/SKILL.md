@@ -55,14 +55,16 @@ Do not copy ticket or spec prose into agent messages. Send essential absolute
 source paths in the message body; artifact metadata alone is insufficient.
 
 Implement-spec lane record pointers: the lane owner updates
-`${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`: at
-draft PR open, the lane owner updates `pr`; at worker spawn, the lane owner
-updates `[[workers]]`; at worker close, the lane owner updates `[[workers]]`; at
-handoff consumed, the lane owner updates `last_handoff_at`; at goal
-blocked/complete, the lane owner updates `goal_state`; when the lane owner
-hands a human gate (spec review or QA review) to the human, the lane owner sets
-`waiting_on` to `"spec review"` or `"QA review"`; when the gate resolves, the
-lane owner sets `waiting_on` to `""`. The canonical record is
+`${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`: the
+lane owner sets `issue` when shaping creates the issue, if the operator did not,
+no later than `pr`; at draft PR open, the lane owner updates `pr`; at worker
+spawn, the lane owner updates `[[workers]]`; at worker close, the lane owner
+updates `[[workers]]`; at handoff consumed, the lane owner updates
+`last_handoff_at`; at goal blocked/complete, the lane owner updates
+`goal_state`; when the lane owner hands a human gate (spec review or QA review)
+to the human, the lane owner sets `waiting_on` to `"spec review"` or
+`"QA review"`; when the gate resolves, the lane owner sets `waiting_on` to
+`""`. The canonical record is
 `spec/domains/octo-lite.spec.html#lane-record`. The lane owner writes or edits
 the TOML file directly; no helper or service writes it.
 
