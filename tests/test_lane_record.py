@@ -26,6 +26,7 @@ class LaneRecordTests(unittest.TestCase):
 
         self.assertIsInstance(record["owner"], str)
         self.assertIsInstance(record["repository"], str)
+        self.assertIsInstance(record["issue"], str)
         self.assertIsInstance(record["pr"], int)
         self.assertIsInstance(record["goal"], str)
         self.assertIn(record["goal_state"], {"active", "blocked", "complete"})
@@ -49,7 +50,13 @@ class LaneRecordTests(unittest.TestCase):
             hook,
             r"[Aa]fter\s+spawning\s+a\s+lane\s+orchestrator,\s+create\s+the\s+TOML\s+file\s+directly\s+at\s+`\$\{XDG_STATE_HOME:-~/.local/state\}/octo-lite/lanes/<owner agent name>\.toml`",
         )
-        for field in ("`owner` pane", "`repository`", "`goal`", '`goal_state = "active"`'):
+        for field in (
+            "`owner` pane",
+            "`repository`",
+            "`issue`",
+            "`goal`",
+            '`goal_state = "active"`',
+        ):
             with self.subTest(field=field):
                 self.assertIn(field, hook)
         self.assertRegex(

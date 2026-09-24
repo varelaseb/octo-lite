@@ -52,12 +52,13 @@
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">Octo-lite declares each lane owner's lane, goal and goal state, workers, last handoff, and the human gate it waits on in one TOML file, read by the annotateanything worklane provider.</p>
+<p data-anchor="lane-record-intent">Octo-lite declares each lane owner's lane, primary Linear issue, goal and goal state, workers, last handoff, and the human gate it waits on in one TOML file, read by the annotateanything worklane provider.</p>
 <figure data-anchor="octo-lane-record">
 <h3 data-anchor="octo-lane-record-heading">The lane record: one TOML file per lane owner</h3>
 <pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
 owner = "w5:pB2"                 # lane owner pane; file named by its agent name
 repository = "varelaseb/annotateanything"
+issue = "ANN-45"                 # primary Linear issue, set by the operator at launch
 pr = 30                          # set when shaping opens the draft PR
 goal = "Shape ANN-45 and ANN-44 through Finish review"
 goal_state = "active"            # active, blocked, or complete
@@ -70,14 +71,18 @@ ticket = "ANN-64"
 role = "implementer"</code></pre>
 <figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Illustrative values.</figcaption>
 </figure>
-<p data-anchor="octo-lane-record-writer">The record follows the lane owner's life. The operator who launches an owner creates it and removes it at teardown, since the spawner owns teardown. In between, only the owner updates it.</p>
+<p data-anchor="octo-lane-record-writer">
+The record follows the lane owner's life.
+The operator who launches an owner creates it and removes it at teardown, since the spawner owns teardown.
+In between, only the owner updates it.
+</p>
 <figure data-anchor="octo-lane-record-life">
 <h3 data-anchor="octo-lane-record-life-heading">Who touches the lane record, and when</h3>
 <div class="table-scroll" data-anchor="octo-lane-record-life-wrap">
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it: owner, repository, goal, goal state active.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it: owner, repository, issue, goal, goal state active.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>pr</code>. From here the lane appears on the board.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates workers and last handoff time.</td></tr>
 <tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to spec review or QA review; clears it when the gate resolves.</td></tr>
