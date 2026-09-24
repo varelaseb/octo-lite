@@ -50,6 +50,44 @@
 <p data-anchor="transport-no-ack" id="transport-no-ack">There is no acknowledgement step, inbox, or drain.</p>
 </section>
 
+<section data-anchor="lane-record" id="lane-record">
+<h2>Lane record</h2>
+<p data-anchor="lane-record-intent">Octo-lite declares each lane owner's lane, goal and goal state, workers, and last handoff in one TOML file, read by the annotateanything worklane provider.</p>
+<figure data-anchor="octo-lane-record">
+<h3 data-anchor="octo-lane-record-heading">The lane record: one TOML file per lane owner</h3>
+<pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
+owner = "w5:pB2"                 # lane owner pane; file named by its agent name
+repository = "varelaseb/annotateanything"
+pr = 30                          # set when shaping opens the draft PR
+goal = "Shape ANN-45 and ANN-44 through Finish review"
+goal_state = "active"            # active, blocked, or complete
+last_handoff_at = "2026-09-24T18:24:09Z"
+
+[[workers]]
+pane = "w5:pC1"
+ticket = "ANN-64"
+role = "implementer"</code></pre>
+<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Illustrative values.</figcaption>
+</figure>
+<p data-anchor="octo-lane-record-writer">The record follows the lane owner's life. The operator who launches an owner creates it and removes it at teardown, since the spawner owns teardown. In between, only the owner updates it.</p>
+<figure data-anchor="octo-lane-record-life">
+<h3 data-anchor="octo-lane-record-life-heading">Who touches the lane record, and when</h3>
+<div class="table-scroll" data-anchor="octo-lane-record-life-wrap">
+<table data-anchor="octo-lane-record-life-table">
+<thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
+<tbody>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it: owner, repository, goal, goal state active.</td></tr>
+<tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>pr</code>. From here the lane appears on the board.</td></tr>
+<tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates workers and last handoff time.</td></tr>
+<tr data-anchor="octo-lane-record-life-goal"><td>Goal becomes blocked or complete</td><td>Owner</td><td>Updates goal state.</td></tr>
+<tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it. History keeps the lane.</td></tr>
+</tbody>
+</table>
+</div>
+<figcaption data-anchor="octo-lane-record-life-caption">Shaping, not implement-spec, is where a lane starts. The operator bounds its life; the owner fills in its work.</figcaption>
+</figure>
+</section>
+
 <section data-anchor="gates" id="gates">
 <h2>Human gates</h2>
 <p data-anchor="gates-list" id="gates-list">Spec review, acceptance of delivered work, merge of unaccepted work, preproduction promotion, and live traffic shifts require explicit human instruction.</p>
@@ -57,7 +95,8 @@
 
 <section data-anchor="absent" id="absent">
 <h2>Not present</h2>
-<p data-anchor="absent-list" id="absent-list">There is no sweep or host timer, loop workflow, role resolver or <code>roles.toml</code>, control CLI, owner file, readiness envelope, trust root, or conformance checker; do not rebuild them.</p>
+<p data-anchor="absent-list" id="absent-list">There is no sweep or host timer, loop workflow, role resolver or <code>roles.toml</code>, control CLI, owner file, readiness envelope, trust root, or conformance checker; do not rebuild them.
+The removed owner file was coordination and control state; the <a href="#lane-record">lane record</a> is a read-only declaration for observation that nothing gates on.</p>
 </section>
 </article>
 </body>
