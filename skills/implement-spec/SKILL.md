@@ -98,7 +98,7 @@ concrete_tools: Read, Grep, Glob, Bash, Skill (read only)
 launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast --sandbox read-only
 ```
 
-The shaping-reviewer contract is delivered as the first prompt. The explicit
+The shaping-reviewer contract is passed as Codex developer instructions. The explicit
 model, effort, and service tier are launcher inputs; the hand-written role
 contract remains model-free. The worker may inspect source, GitHub, tracker
 context, and session evidence, but never edits, commits, pushes, or mutates
@@ -128,8 +128,8 @@ For each ready ticket:
    optional research notes, integration branch, and relevant prior commits.
 4. The contract declares the skills available to it and the bounds it works in,
    so neither has to be restated here or kept in step by hand. A Claude worker
-   loads it with `--agent implementer`; a Codex worker has no custom-agent file,
-   so point it at `agents/implementer.md` as its first instruction.
+   loads it with `--agent implementer`; a Codex worker gets it as developer
+   instructions from `herdr-spawn --role implementer`.
 
 The worker owns only that ticket, validates it, commits it, and returns the
 commit plus terse evidence. It does not merge, push, or update unrelated
@@ -213,9 +213,10 @@ After every ticket is integrated:
    required validation succeeds. Otherwise keep it draft and report the
    blocker. Keep the spec issue open until human review or repository
    automation closes it.
-5. Remove every temporary worker worktree only after it is clean and its
-   commits are reachable from the integration branch. Never force-remove a
-   worktree with uncommitted or unmerged work.
+5. Close each consumed worker with `herdr-close TAB`, which also ends its
+   detached processes. Remove every temporary worker worktree only after it is
+   clean and its commits are reachable from the integration branch. Never
+   force-remove a worktree with uncommitted or unmerged work.
 
 Continue any authorized deployment/seeding/manual-QA handoff after code review
 readiness; report its actual state separately. Human acceptance, preproduction
