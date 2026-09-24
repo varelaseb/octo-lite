@@ -97,7 +97,7 @@ launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c mod
 ```
 
 The shaping-reviewer contract is delivered as the first prompt. The explicit
-model, effort, and service tier reuse the canonical role-runtime map; the hand-written role
+model, effort, and service tier are launcher inputs; the hand-written role
 contract remains model-free. The worker may inspect source, GitHub, tracker
 context, and session evidence, but never edits, commits, pushes, or mutates
 issue or PR state. The launcher must not substitute an implementer, code

@@ -32,7 +32,7 @@
 <section data-anchor="roles" id="roles">
 <h2>Roles</h2>
 <p data-anchor="roles-contracts" id="roles-contracts"><code>agents/*.md</code> are the hand-written role contracts: orchestrator, implementer, code-reviewer, and meta-operator; none pins a model.</p>
-<p data-anchor="roles-loaded" id="roles-loaded">Every spawned worker loads its role contract: Claude through <code>--agent ROLE</code>, Codex as its first prompt via <code>herdr-spawn --role ROLE</code>.</p>
+<p data-anchor="roles-loaded" id="roles-loaded">Every spawned worker with a role contract (implementer, code-reviewer, shaping-reviewer) loads it: Claude through <code>--agent ROLE</code>, Codex as its first prompt via <code>herdr-spawn --role ROLE</code>.</p>
 </section>
 
 <section data-anchor="delivery" id="delivery">

@@ -49,7 +49,8 @@ worklane state together, then stop the lane.
   bundled templates.
 - `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` are the skillfile
   (eljulians/skillfile) manifest, lockfile, and pinned patches that manage
-  skills per ADR 0002: they pin tdd at an exact SHA and carry the single tdd seam-gate patch across upstream updates.
+  skills per ADR 0002: they pin tdd at an exact SHA and carry the single tdd
+  seam-gate patch across upstream updates.
 - `agents/` contains the hand-written Claude role contracts plus the managed
   skillfile install target `agents/skills/`. Never hand-edit `agents/skills/`; it is
   materialized by skillfile from the `Skillfile`, and `scripts/install-octo-lite
