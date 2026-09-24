@@ -52,7 +52,7 @@
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">Octo-lite declares each lane owner's lane, primary Linear issue, goal and goal state, workers, last handoff, and the human gate it waits on in one TOML file, read by the annotateanything worklane provider.</p>
+<p data-anchor="lane-record-intent">Octo-lite declares each lane owner's lane, primary Linear issue, goal and goal state, display-only phase, workers, last handoff, and the human gate it waits on in one TOML file, read by the annotateanything worklane provider.</p>
 <figure data-anchor="octo-lane-record">
 <h3 data-anchor="octo-lane-record-heading">The lane record: one TOML file per lane owner</h3>
 <pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
@@ -64,6 +64,7 @@ goal = "Shape ANN-45 and ANN-44 through Finish review"
 goal_state = "active"            # active, blocked, or complete
 last_handoff_at = "2026-09-24T18:24:09Z"
 waiting_on = ""                  # "", "spec review", or "QA review"
+phase = "implementing"           # display only: "shaping", "shaping review", "implementing", "merging", "code review", "QA", "waiting on human", or "closing"
 
 [[workers]]
 pane = "w5:pC1"
@@ -82,11 +83,12 @@ In between, only the owner updates it.
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it: owner, repository, goal, goal state active, and issue when known.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it: owner, repository, goal, goal state active, phase shaping, and issue when known.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code>, if the operator did not, and <code>pr</code>. From here the lane appears on the board.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates workers and last handoff time.</td></tr>
 <tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to spec review or QA review; clears it when the gate resolves.</td></tr>
 <tr data-anchor="octo-lane-record-life-goal"><td>Goal state changes (active, blocked, or complete)</td><td>Owner</td><td>Updates goal state.</td></tr>
+<tr data-anchor="octo-lane-record-life-phase"><td>Owner moves the lane to another phase</td><td>Owner</td><td>Updates phase to one of the listed values.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
 </tbody>
 </table>

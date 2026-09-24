@@ -12,6 +12,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec/domains/octo-lite.spec.html"
 LANES = "octo-lite/lanes/<owner agent name>.toml"
+PHASES = ("shaping", "shaping review", "implementing", "merging", "code review",
+          "QA", "waiting on human", "closing")
 
 
 class LaneRecordTests(unittest.TestCase):
@@ -33,6 +35,7 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIn(record["goal_state"], {"active", "blocked", "complete"})
         self.assertIsInstance(record["last_handoff_at"], str)
         self.assertIn(record["waiting_on"], {"", "spec review", "QA review"})
+        self.assertIn(record["phase"], PHASES)
         self.assertIsInstance(record["workers"], list)
         self.assertEqual(record["workers"][0]["pane"], "w5:pC1")
         self.assertEqual(record["workers"][0]["ticket"], "ANN-64")
@@ -41,7 +44,7 @@ class LaneRecordTests(unittest.TestCase):
     def test_meta_operator_hook_names_create_and_delete_fields(self) -> None:
         text = (ROOT / "agents/meta-operator.md").read_text(encoding="utf-8")
         for term in (LANES, "`owner`", "`repository`", "`issue`", "`goal`",
-                     '`goal_state = "active"`', "delete it"):
+                     '`goal_state = "active"`', '`phase = "shaping"`', "delete it"):
             with self.subTest(term=term):
                 self.assertIn(term, text)
 
@@ -49,7 +52,8 @@ class LaneRecordTests(unittest.TestCase):
         text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         for term in (LANES, "`issue`", "`pr`", "`[[workers]]`", "`last_handoff_at`",
                      "`goal_state`", "`waiting_on`", '`"spec review"`',
-                     '`"QA review"`', '`""`'):
+                     '`"QA review"`', '`""`', "`phase`", "`pane`", "`ticket`",
+                     "`role`", *(f'`"{p}"`' for p in PHASES)):
             with self.subTest(term=term):
                 self.assertIn(term, text)
 
