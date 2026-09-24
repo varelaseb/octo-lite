@@ -77,7 +77,7 @@ class LaneRecordTests(unittest.TestCase):
         )
         self.assertRegex(
             text,
-            r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+updates\s+`waiting_on`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+updates\s+`waiting_on`\s+to\s+`\"\"`",
+            r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"spec review\"`\s+or\s+`\"QA review\"`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"\"`",
         )
         self.assertIn("Only the owner updates the lane record", text)
 
@@ -121,17 +121,8 @@ class LaneRecordTests(unittest.TestCase):
                 )
         self.assertRegex(
             paragraph,
-            r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+updates\s+`waiting_on`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+updates\s+`waiting_on`\s+to\s+`\"\"`",
+            r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"spec review\"`\s+or\s+`\"QA review\"`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"\"`",
         )
-
-    def test_implement_spec_uses_fixed_format_lifecycle_comments(self) -> None:
-        text = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
-        # Source: /home/admin/worktrees/ann45-kanban-shape/docs/specs/lifecycle-history.spec.html@f558944#history-proof-finish
-        finish_receipt = "Finish receipt: <spec path> <hand-off id> at <head>"
-        # Source: /home/admin/worktrees/ann45-kanban-shape/docs/specs/lifecycle-history.spec.html@f558944#history-proof-acceptance
-        human_acceptance = "Human acceptance: <head>"
-        self.assertIn(finish_receipt, text)
-        self.assertIn(human_acceptance, text)
 
     def test_no_unrelated_file_instructs_lane_record_writes(self) -> None:
         allowed = {

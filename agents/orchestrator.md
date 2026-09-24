@@ -30,8 +30,9 @@ after the same blocker repeats with no meaningful progress.
   Set `pr` when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. On goal blocked or
   complete, update `goal_state`; when the lane owner hands a human gate (spec
-  review or QA review) to the human, the lane owner updates `waiting_on`; when
-  the gate resolves, the lane owner updates `waiting_on` to `""`.
+  review or QA review) to the human, the lane owner sets `waiting_on` to
+  `"spec review"` or `"QA review"`; when the gate resolves, the lane owner
+  sets `waiting_on` to `""`.
   Only the owner updates the lane record.
 
 ## Write surface
