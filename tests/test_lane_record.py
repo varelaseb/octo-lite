@@ -37,26 +37,43 @@ class LaneRecordTests(unittest.TestCase):
 
     def test_meta_operator_owns_create_and_teardown(self) -> None:
         text = (ROOT / "agents/meta-operator.md").read_text(encoding="utf-8")
-        self.assertRegex(
+        match = re.search(
+            r"This role writes no repository files\.(.*?)\n\n- Mutate no repository\.",
             text,
-            r"Meta-operator: after spawning a lane orchestrator, create the TOML file directly at `\$\{XDG_STATE_HOME:-~/.local/state\}/octo-lite/lanes/<owner agent name>\.toml`",
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match, "meta-operator lane-record hook is missing")
+        hook = match.group(1)
+        self.assertRegex(
+            hook,
+            r"[Aa]fter\s+spawning\s+a\s+lane\s+orchestrator,\s+create\s+the\s+TOML\s+file\s+directly\s+at\s+`\$\{XDG_STATE_HOME:-~/.local/state\}/octo-lite/lanes/<owner agent name>\.toml`",
         )
         for field in ("`owner` pane", "`repository`", "`goal`", '`goal_state = "active"`'):
             with self.subTest(field=field):
-                self.assertIn(field, text)
+                self.assertIn(field, hook)
         self.assertRegex(
-            text,
-            r"at teardown of the finished lane and its children, delete it",
+            hook,
+            r"at\s+teardown\s+of\s+the\s+finished\s+lane\s+and\s+its\s+children,\s+delete\s+it",
         )
 
     def test_orchestrator_owns_record_updates(self) -> None:
         text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
-        self.assertRegex(text, r"Orchestrator: as lane owner, set `pr` when a draft PR opens")
         self.assertRegex(
             text,
-            r"worker spawn or close or handoff consumption.*`\[\[workers\]\]`.*`last_handoff_at`",
+            r"Orchestrator:\s+as lane owner,\s+use\s+`\$\{XDG_STATE_HOME:-~/.local/state\}/octo-lite/lanes/<owner agent name>\.toml`",
         )
-        self.assertRegex(text, r"goal blocked or complete.*`goal_state`")
+        self.assertRegex(text, r"Set\s+`pr`\s+when a draft PR opens")
+        self.assertRegex(
+            text,
+            re.compile(
+                r"worker\s+spawn\s+or\s+close\s+or\s+handoff\s+consumption.*`\[\[workers\]\]`.*`last_handoff_at`",
+                flags=re.DOTALL,
+            ),
+        )
+        self.assertRegex(
+            text,
+            re.compile(r"goal\s+blocked\s+or\s+complete.*`goal_state`", flags=re.DOTALL),
+        )
         self.assertIn("Only the owner updates the lane record", text)
 
     def test_implement_spec_points_at_each_owner_update(self) -> None:
@@ -65,20 +82,38 @@ class LaneRecordTests(unittest.TestCase):
             "Implement-spec lane record pointers",
             text,
         )
+        match = re.search(
+            r"Implement-spec lane record pointers:.*?no helper or service writes it\.",
+            text,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match, "implement-spec lane-record paragraph is missing")
+        paragraph = match.group(0)
+        self.assertIn(
+            "the lane owner updates",
+            paragraph,
+        )
+        self.assertIn(
+            "`${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`",
+            paragraph,
+        )
         self.assertIn(
             "spec/domains/octo-lite.spec.html#lane-record",
-            text,
+            paragraph,
         )
-        self.assertIn("no helper or service writes it", text)
-        for event in (
-            "draft PR open",
-            "worker spawn",
-            "worker close",
-            "handoff consumed",
-            "goal blocked/complete",
+        for event, field in (
+            ("draft PR open", "`pr`"),
+            ("worker spawn", "`[[workers]]`"),
+            ("worker close", "`[[workers]]`"),
+            ("handoff consumed", "`last_handoff_at`"),
+            ("goal blocked/complete", "`goal_state`"),
         ):
             with self.subTest(event=event):
-                self.assertIn(event, text)
+                event_pattern = re.escape(event).replace("\\ ", r"\s+")
+                self.assertRegex(
+                    paragraph,
+                    rf"{event_pattern},\s+the\s+lane\s+owner\s+updates\s+{re.escape(field)}",
+                )
 
     def test_no_unrelated_file_instructs_lane_record_writes(self) -> None:
         allowed = {

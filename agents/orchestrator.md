@@ -25,7 +25,11 @@ after the same blocker repeats with no meaningful progress.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
 - For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer` and `code-reviewer` role contracts.
 - Notify the parent after meaningful gate or risk change.
-- Orchestrator: as lane owner, set `pr` when a draft PR opens. On worker spawn or close or handoff consumption, update `[[workers]]` and `last_handoff_at`. On goal blocked or complete, update `goal_state`. Only the owner updates the lane record.
+- Orchestrator: as lane owner, use
+  `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
+  Set `pr` when a draft PR opens. On worker spawn or close or handoff
+  consumption, update `[[workers]]` and `last_handoff_at`. On goal blocked or
+  complete, update `goal_state`. Only the owner updates the lane record.
 
 ## Write surface
 

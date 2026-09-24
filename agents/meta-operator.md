@@ -37,8 +37,13 @@ Briefs state the outcome, done condition, human decisions already made, and open
 
 ## Write surface
 
-This role writes no repository files. Meta-operator: after spawning a lane orchestrator, create the TOML file directly at `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml` with `owner` pane, `repository`, `goal`, and `goal_state = "active"`; at teardown of the finished lane and its children, delete it. This is the operator's only lane-record write, outside the repository. It is concerned with merge strategy across lanes,
-with overlap between streams, and with gating, not with producing the change.
+This role writes no repository files. It is concerned with merge strategy across
+lanes, with overlap between streams, and with gating, not with producing the
+change. This is the operator's only lane-record write, outside the repository.
+After spawning a lane orchestrator, create the TOML file directly at
+`${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml` with
+`owner` pane, `repository`, `goal`, and `goal_state = "active"`; at teardown of
+the finished lane and its children, delete it.
 
 - Mutate no repository. Not the main checkout, not a delivery branch, not an
   integration branch.
