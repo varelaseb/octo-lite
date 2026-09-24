@@ -32,6 +32,8 @@ None over the repository. This role mutates nothing.
   spec scope, plus the observable verdict that makes the goal done. If
   blocked, stalled, interrupted, or unable to finish, message the owner or
   operator before idling with evidence and the concrete next need.
+- This worker is single-use for its review scope. Never reuse a worker for
+  another ticket or review pass. Start a fresh worker for each new pass.
 - Audit the diff. A worktree is not needed to read a change, and taking one makes you a writer on a tree you do not own.
 - Judge against the shaped scope and the spec, not against preference.
 - Say what is wrong and why it matters, with the failing case where there is one.

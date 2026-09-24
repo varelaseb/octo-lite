@@ -24,6 +24,9 @@ temporary worker starts one narrow goal for its ticket and returns its result to
 the owning orchestrator. Goals point to Linear, the canonical spec, and status
 artifacts; they do not duplicate them or replace human gates. Do not mark a
 goal blocked for a normal human gate or one transient failure.
+Each worker is single-ticket and single-use. Never reuse a worker for another
+ticket. Start a fresh worker for every ticket or repair pass.
+One orchestrator owns one coherent worklane and its single integration PR.
 Before idling, a worker that is blocked, stalled, interrupted, or unable to
 finish messages its owner or operator with current state, evidence, blocker,
 and concrete next need. It does not report completion or go idle without that
@@ -159,8 +162,9 @@ the same checkout is not isolation. Read-only explorers may share source only
 when they do not install dependencies, change branches or generate files there.
 
 Consume completed results at the next owner wake, before optional status work,
-and continue integration or the next ready task in that turn. Reuse an available
-merger instead of creating another. An owner waiting on workers drains their
+and continue integration or the next ready task in that turn. Keep one merger
+owner for the lane's integration branch. Ticket workers remain single-use and
+are never reused for another ticket. An owner waiting on workers drains their
 inboxes once per check and verifies acknowledgment plus the named result through
 `herdr-comms`. Record one truthful current state, next action and dependency.
 Do not end delivery at startup, dispatch, worker completion or review forwarding.
@@ -234,8 +238,9 @@ messages. A human statement that this worklane owns the action is sufficient.
 Failed required checks still block merge until fixed or durably waived through
 a repository-approved path.
 
-The merge completes the worklane: reconcile the primary Linear issue to Done,
-complete the goal, remove clean worker worktrees, and stop. Residual QA gaps
+The merge completes the worklane: close the orchestrator goal and reconcile the
+PR and worklane state together, reconcile the primary Linear issue to Done,
+remove clean worker worktrees, and stop. Residual QA gaps
 are historical notes only; never infer, create, reopen, or drive follow-up work
 from them. Follow-up exists only under an explicit new ticket or explicit
 operator instruction.

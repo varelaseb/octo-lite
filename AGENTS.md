@@ -27,6 +27,15 @@ evidence, blocker, and concrete next need. It does not report completion or go
 idle without that handoff. A transient failure or normal human gate is
 reported, but is not itself a blocked goal.
 
+Each worker is single-ticket and single-use. Never reuse a worker for another
+ticket. Start a fresh worker for each ticket or repair pass while preserving
+the blocked, stalled, interrupted, and unable-to-finish handoff above.
+
+One orchestrator owns one coherent worklane and its single integration PR.
+Do not split a lane across orchestrators or create competing integration PRs.
+When a lane finishes, close the orchestrator goal and reconcile the PR and
+worklane state together, then stop the lane.
+
 ## Durable Sources
 
 - `README.md` explains the product and install shape.

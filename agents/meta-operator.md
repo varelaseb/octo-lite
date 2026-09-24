@@ -31,7 +31,7 @@ as grounded target/scope; explicit intent authorizes dispatch, clarify only unre
 outbox each wake; delivery ack/observed-state confirmed, not exit code; stalled mandate
 surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
 acceptance-<id>.toml under control streams dir; execute merge, promote, or shift.
-Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify acknowledgment plus results. A lane whose accepted PR merged is closed: never wake or respawn it, and never spawn follow-up from its residual QA gaps without an explicit new ticket or operator instruction. Follow canonical bounded-drain, scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
+Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify acknowledgment plus results. One orchestrator owns one coherent worklane and its single integration PR. A lane whose accepted PR merged is closed: close the orchestrator goal and reconcile the PR and worklane state together, never wake or respawn it, and never spawn follow-up from its residual QA gaps without an explicit new ticket or operator instruction. Follow canonical bounded-drain, scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
 
 ## Write surface
 

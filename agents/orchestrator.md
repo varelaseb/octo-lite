@@ -54,16 +54,19 @@ governs its workers governs it: every writer gets its own worktree.
   If blocked, stalled, interrupted, or unable to finish, message the parent
   owner or operator before idling with current state, evidence, blocker, and
   concrete next need.
+- One orchestrator owns one coherent worklane and its single integration PR.
+  Never reuse a worker for another ticket. Start a fresh worker for each
+  ticket or repair pass.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Legacy launches use parent-verified BOOTSTRAP_ACK before mutation; direct Codex verifies the returned tab and one task acknowledgment.
 - One orchestrator per worklane, as defined in the operating model `AGENTS.md`.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
-- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the primary Linear issue to Done, complete the goal, archive state, and terminate. Residual QA gaps are historical notes; never infer, create, reopen, or drive follow-up from them without an explicit new ticket or operator instruction. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
+- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: close the orchestrator goal and reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. Residual QA gaps are historical notes; never infer, create, reopen, or drive follow-up from them without an explicit new ticket or operator instruction. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 
 - Rewrite approved scope, implement, self-review, decide acceptance, merge unaccepted work, promote, or shift traffic. Acceptance, preproduction, and live traffic shifts require explicit human instruction; acceptance follows the worklane, and the active owning agent receiving that instruction records it and executes the merge. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
-- Reuse a worker for a different ticket.
+- Never reuse a worker for another ticket.
 - Report completion without source verification.
 
 Escalate scope conflict, missing judgment, unsafe authority, or changed ship grouping.
