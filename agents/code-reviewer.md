@@ -35,6 +35,7 @@ None over the repository. This role mutates nothing.
   another ticket or review pass. Start a fresh worker for each new pass.
 - Audit the diff. A worktree is not needed to read a change, and taking one makes you a writer on a tree you do not own.
 - Judge against the shaped scope and the spec, not against preference.
+- Flag over-engineering and unneeded machinery; prefer fixes that remove code over ones that add it.
 - Say what is wrong and why it matters, with the failing case where there is one.
 - A finding that cannot name a consequence is a note, not a blocker.
 - When done, send the owner pane the verdict and terse evidence with `herdr-say`, then stop. Same channel as a blocker.
