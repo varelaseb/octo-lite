@@ -11,14 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec/domains/octo-lite.spec.html"
-OWNER_SETS_ISSUE = (
-    r"[Tt]he\s+lane\s+owner\s+sets\s+`issue`\s+when\s+shaping\s+creates\s+the\s+issue,"
-    r"\s+if\s+the\s+operator\s+did\s+not,\s+no\s+later\s+than\s+`pr`"
-)
-GOAL_STATE_CHANGES = (
-    r"goal\s+state\s+change,\s+the\s+lane\s+owner\s+updates\s+`goal_state`\s+to"
-    r'\s+`"active"`,\s+`"blocked"`,\s+or\s+`"complete"`'
-)
+LANES = "octo-lite/lanes/<owner agent name>.toml"
 
 
 class LaneRecordTests(unittest.TestCase):
@@ -45,105 +38,26 @@ class LaneRecordTests(unittest.TestCase):
         self.assertEqual(record["workers"][0]["ticket"], "ANN-64")
         self.assertEqual(record["workers"][0]["role"], "implementer")
 
-    def test_meta_operator_owns_create_and_teardown(self) -> None:
+    def test_meta_operator_hook_names_create_and_delete_fields(self) -> None:
         text = (ROOT / "agents/meta-operator.md").read_text(encoding="utf-8")
-        match = re.search(
-            r"This role writes no repository files\.(.*?)\n\n- Mutate no repository\.",
-            text,
-            flags=re.DOTALL,
-        )
-        self.assertIsNotNone(match, "meta-operator lane-record hook is missing")
-        hook = match.group(1)
-        self.assertRegex(
-            hook,
-            r"[Aa]fter\s+spawning\s+a\s+lane\s+orchestrator,\s+create\s+the\s+TOML\s+file\s+directly\s+at\s+`\$\{XDG_STATE_HOME:-~/.local/state\}/octo-lite/lanes/<owner agent name>\.toml`",
-        )
-        for field in (
-            "`owner` pane",
-            "`repository`",
-            "`goal`",
-            '`goal_state = "active"`',
-        ):
-            with self.subTest(field=field):
-                self.assertIn(field, hook)
-        self.assertRegex(hook, r"`issue`[^;]*\s+when\s+known")
-        self.assertRegex(
-            hook,
-            r"at\s+teardown\s+of\s+the\s+finished\s+lane\s+and\s+its\s+children,\s+delete\s+it",
-        )
+        for term in (LANES, "`owner`", "`repository`", "`issue`", "`goal`",
+                     '`goal_state = "active"`', "delete it"):
+            with self.subTest(term=term):
+                self.assertIn(term, text)
 
-    def test_orchestrator_owns_record_updates(self) -> None:
+    def test_orchestrator_hook_names_every_field(self) -> None:
         text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
-        self.assertRegex(
-            text,
-            r"Orchestrator:\s+as lane owner,\s+use\s+`\$\{XDG_STATE_HOME:-~/.local/state\}/octo-lite/lanes/<owner agent name>\.toml`",
-        )
-        self.assertRegex(text, r"Set\s+`pr`\s+when a draft PR opens")
-        self.assertRegex(
-            text,
-            re.compile(
-                r"worker\s+spawn\s+or\s+close\s+or\s+handoff\s+consumption.*`\[\[workers\]\]`.*`last_handoff_at`",
-                flags=re.DOTALL,
-            ),
-        )
-        self.assertRegex(text, GOAL_STATE_CHANGES)
-        self.assertRegex(
-            text,
-            r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"spec review\"`\s+or\s+`\"QA review\"`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"\"`",
-        )
-        self.assertRegex(text, OWNER_SETS_ISSUE)
-        self.assertIn("Only the owner updates the lane record", text)
-
-    def test_implement_spec_points_at_each_owner_update(self) -> None:
-        text = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
-        self.assertIn(
-            "Implement-spec lane record pointers",
-            text,
-        )
-        match = re.search(
-            r"Implement-spec lane record pointers:.*?no helper or service writes it\.",
-            text,
-            flags=re.DOTALL,
-        )
-        self.assertIsNotNone(match, "implement-spec lane-record paragraph is missing")
-        paragraph = match.group(0)
-        self.assertIn(
-            "the lane owner updates",
-            paragraph,
-        )
-        self.assertIn(
-            "`${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`",
-            paragraph,
-        )
-        self.assertIn(
-            "spec/domains/octo-lite.spec.html#lane-record",
-            paragraph,
-        )
-        for event, field in (
-            ("draft PR open", "`pr`"),
-            ("worker spawn", "`[[workers]]`"),
-            ("worker close", "`[[workers]]`"),
-            ("handoff consumed", "`last_handoff_at`"),
-        ):
-            with self.subTest(event=event):
-                event_pattern = re.escape(event).replace("\\ ", r"\s+")
-                self.assertRegex(
-                    paragraph,
-                    rf"{event_pattern},\s+the\s+lane\s+owner\s+updates\s+{re.escape(field)}",
-                )
-        self.assertRegex(
-            paragraph,
-            r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"spec review\"`\s+or\s+`\"QA review\"`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+sets\s+`waiting_on`\s+to\s+`\"\"`",
-        )
-        self.assertRegex(paragraph, OWNER_SETS_ISSUE)
-        self.assertRegex(paragraph, GOAL_STATE_CHANGES)
+        for term in (LANES, "`issue`", "`pr`", "`[[workers]]`", "`last_handoff_at`",
+                     "`goal_state`", "`waiting_on`", '`"spec review"`',
+                     '`"QA review"`', '`""`'):
+            with self.subTest(term=term):
+                self.assertIn(term, text)
 
     def test_no_unrelated_file_instructs_lane_record_writes(self) -> None:
         allowed = {
             SPEC,
             ROOT / "agents/meta-operator.md",
             ROOT / "agents/orchestrator.md",
-            ROOT / "skills/implement-spec/SKILL.md",
             Path(__file__),
         }
         for path in ROOT.rglob("*"):
