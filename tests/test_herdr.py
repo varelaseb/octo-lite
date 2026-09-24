@@ -60,6 +60,8 @@ case "$sub" in
       stuck) printf ' Quick safety check: Is this a project you created or one you trust?\n   No, exit\n ❯ Yes, I trust this folder\n' ;;
       codexno)  printf ' Do you trust the contents of this directory?\n   1. Yes, continue\n \xe2\x80\xba 2. No, quit\n' ;;
       codexyes) printf ' Do you trust the contents of this directory?\n \xe2\x80\xba 1. Yes, continue\n   2. No, quit\n' ;;
+      codexquit)  printf ' Do you trust the contents of this directory?\n   1. Trust and continue\n \xe2\x80\xba 2. Quit\n' ;;
+      codextrust) printf ' Do you trust the contents of this directory?\n \xe2\x80\xba 1. Trust and continue\n   2. Quit\n' ;;
       theme)    printf ' Choose the text style\n   1. Auto\n \xe2\x9d\xaf 2. Dark mode\n   3. Light mode\n' ;;
       *)   printf 'root@box:/tmp# \n' ;;
     esac ;;
@@ -71,6 +73,12 @@ case "$sub" in
         [[ "$key" == Enter ]] && echo "CONFIRMED_NO_EXIT" >>"$FAKE_WRONG"
         [[ "$key" == Up ]] && echo codexyes >"$FAKE_DIALOG"
         [[ "$key" == Down ]] && echo codexyes >"$FAKE_DIALOG" ;;
+      codexquit)
+        # confirming here picks "Quit" and kills the agent
+        [[ "$key" == Enter ]] && echo "CONFIRMED_NO_EXIT" >>"$FAKE_WRONG"
+        [[ "$key" == Up || "$key" == Down ]] && echo codextrust >"$FAKE_DIALOG" ;;
+      codextrust)
+        [[ "$key" == Enter ]] && echo none >"$FAKE_DIALOG" ;;
       codexyes)
         [[ "$key" == Enter ]] && echo none >"$FAKE_DIALOG" ;;
       theme)
@@ -205,6 +213,15 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.spawn_codex()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.wrong.exists(), "confirmed while 'No, quit' was selected")
+        self.assertEqual(self.dialog.read_text().strip(), "none")
+
+    def test_answers_the_trust_and_continue_codex_dialog(self):
+        # Codex reworded its affirmative to "1. Trust and continue" beside
+        # "2. Quit"; the old matcher never confirmed it and spawn failed closed.
+        self.dialog.write_text("codexquit\n")
+        r = self.spawn_codex()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.wrong.exists(), "confirmed while 'Quit' was selected")
         self.assertEqual(self.dialog.read_text().strip(), "none")
 
     def test_confirms_the_appearance_wizard(self):
