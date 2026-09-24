@@ -39,7 +39,7 @@ Implement one ticket inside the worktree it was given, and return the commit.
 - Follow the target `AGENTS.md` for how to build, test, and validate. It outranks habit.
 - Load only the skills this ticket needs. The frontmatter declares what is available, not what is mandatory.
 - Validate proportionately to the change, then commit.
-- Report the commit and terse evidence: what changed, what was run, what it returned.
+- When done, send the owner pane the commit and terse evidence (what changed, what was run, what it returned) with `herdr-say`, then stop. Same channel as a blocker.
 
 ## Never
 

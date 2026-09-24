@@ -166,9 +166,9 @@ when they do not install dependencies, change branches or generate files there.
 Consume completed results at the next owner wake, before optional status work,
 and continue integration or the next ready task in that turn. Keep one merger
 owner for the lane's integration branch. Ticket workers remain single-use and
-are never reused for another ticket. An owner waiting on workers drains their
-inboxes once per check and verifies acknowledgment plus the named result through
-`herdr-comms`. Record one truthful current state, next action and dependency.
+are never reused for another ticket. Every worker brief names the owner pane.
+The owner waits for the worker's result message; it is the only wake.
+Record one truthful current state, next action and dependency.
 Do not end delivery at startup, dispatch, worker completion or review forwarding.
 
 ## Validation and preview setup

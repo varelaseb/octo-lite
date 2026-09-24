@@ -27,11 +27,13 @@ or surface its open needs. Monitoring (rulings 6+10+5+7): ORCHESTRATORS only, on
 down; strand = belief vs observable; stale (missed sweep cycle, minutes), cheap all-ok,
 idle mandate: poke to investigate (cascades); dead: relaunch fresh; surface modal + phone,
 non-blocking; escalation post-dialogue silence, lean, tune. Intake: echo paraphrased intake
-as grounded target/scope; explicit intent authorizes dispatch, clarify only unresolved scope/access. Transport (herdr-comms): drain
-outbox each wake; delivery ack/observed-state confirmed, not exit code; stalled mandate
+as grounded target/scope; explicit intent authorizes dispatch, clarify only unresolved scope/access. Transport (herdr-comms): no
+inbox or drain; owners wake on the worker's herdr-say result message; stalled mandate
 surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
 acceptance-<id>.toml under control streams dir; execute merge, promote, or shift.
-Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify acknowledgment plus results. One orchestrator owns one coherent worklane and its single integration PR. A lane whose accepted PR merged is closed: close the orchestrator goal and reconcile the PR and worklane state together, never wake or respawn it, and never spawn follow-up from its residual QA gaps without an explicit new ticket or operator instruction. Follow canonical bounded-drain, scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
+Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify results. One orchestrator owns one coherent worklane and its single integration PR. A lane whose accepted PR merged is closed: close the orchestrator goal and reconcile the PR and worklane state together, never wake or respawn it, and never spawn follow-up from its residual QA gaps without an explicit new ticket or operator instruction. Follow canonical scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
+
+Briefs state the outcome, done condition, human decisions already made, and open questions; the owning skill decides which artifact holds each answer.
 
 ## Write surface
 
