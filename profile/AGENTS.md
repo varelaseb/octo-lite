@@ -26,7 +26,8 @@ source or fix link.
 - A worklane is one coherent outcome owned by one orchestrator, tracked by one
   primary Linear issue, and delivered through one integration head and PR. Its
   child tickets, workers, reviewers, and QA artifacts belong to that lane. They
-  advance through the owner and do not create competing lanes.
+  advance through the owner and do not create competing lanes or PRs. One
+  orchestrator owns one coherent worklane and its single integration PR.
 - Use `$spec-chat-shape` to produce the reviewed spec, spec issue, and
   dependency-linked implementation tickets.
 - A processed human **Finish review** hand-off is acceptance of the reviewed
@@ -38,6 +39,16 @@ source or fix link.
   outcome and done condition. Workers use one narrow ticket goal. Goals guide
   continuation and completion; Linear, canonical specs, and status artifacts
   remain their sources of truth.
+- Worker lifecycle is explicit: every worker starts one concrete `/goal` before
+  work, naming its narrow outcome, source or ticket pointers, and observable
+  done condition. Keep it active while working. A worker that is blocked,
+  stalled, interrupted, or unable to finish messages its owner or operator
+  before idling with current state, evidence, blocker, and concrete next need.
+  It does not report completion or go idle without that handoff. A transient
+  failure or normal human gate is reported, but is not itself a blocked goal.
+- Each worker is single-ticket and single-use. Never reuse a worker for another
+  ticket. Start a fresh worker for each ticket or repair pass while preserving
+  the blocked, stalled, interrupted, and unable-to-finish handoff above.
 - `$implement-spec` keeps Linear truthful, fills the ready ticket frontier with
   parallel Herdr workers, integrates each worker through a merger agent, runs
   independent review, resolves findings through bounded repair, and marks the
@@ -70,12 +81,14 @@ source or fix link.
   `operator-owner.toml`, which only routes meta-operator handoffs and messages.
   Required failed checks remain blockers until fixed or durably waived through
   a repository-approved path.
-- An accepted PR merged into target main completes its worklane. The owner
-  reconciles the primary Linear issue to Done and stops the lane. Residual QA
-  gaps are historical notes only: never infer, create, reopen, or drive
-  follow-up work from them. Follow-up exists only under an explicit new ticket
-  or explicit operator instruction. Explicit human gates for spec review, QA
-  evidence review, acceptance, promotion, and traffic shifts are unchanged.
+- An accepted PR merged into target main completes its worklane. When the lane
+  finishes, the owner closes the orchestrator goal and reconciles the PR and
+  worklane state together, then reconciles the primary Linear issue to Done and
+  stops the lane. Residual QA gaps are historical notes only: never infer,
+  create, reopen, or drive follow-up work from them. Follow-up exists only
+  under an explicit new ticket or explicit operator instruction. Explicit human
+  gates for spec review, QA evidence review, acceptance, promotion, and traffic
+  shifts are unchanged.
 
 ## Artifacts
 
