@@ -15,7 +15,7 @@ client, product, or engagement.
 - Spec Chat shaping that produces a reviewed canonical spec, its issue, and a
   dependency-linked implementation ticket graph.
 - Explicit `$implement-spec` delivery that fills the ready ticket frontier with
-  parallel Herdr workers, integrates onto one branch, runs `/code-review`, and
+  parallel Herdr workers, integrates onto one branch, runs review, and
   leaves one PR ready for human review.
 - A cross-client meta-operator launcher for consolidating and supervising
   long-running Herdr workstreams.
@@ -26,36 +26,16 @@ client, product, or engagement.
 
 ## Installed Surfaces
 
-Source-controlled files live in this repo. The local Codex profile should point
-at them with symlinks:
+Source-controlled files live in this repo. `scripts/install-octo-lite` links
+them into the Claude and Codex profiles:
 
 ```text
-~/.codex/AGENTS.md -> profile/AGENTS.md
-~/.codex/octo-lite/roles.toml -> roles.toml
-~/.codex/octo-lite/roles/<role>.md -> roles/<role>.md
-~/.codex/skills/<skill> -> skills/<skill>
-~/.agents/skills/<skill> -> skills/<skill>
+~/.codex/AGENTS.md, ~/.claude/CLAUDE.md -> profile/AGENTS.md (unless a peer owns it)
+~/.{codex,claude}/agents/<role>.md      -> agents/<role>.md
+~/.{codex,claude,agents}/skills/<skill> -> skills/<skill>, agents/skills/tdd
+~/.{codex,claude}/skills/spec-chat-*    -> sibling spec-chat clone
+~/.local/bin/<helper>                   -> scripts/*, skills/herdr-comms/assets/*
 ```
-
-`implement-spec` workers are direct Herdr Codex sessions. They use the target
-instructions and applicable skills, not generated role adapters or the legacy
-delivery contract.
-
-The Claude Code surface reuses the same source repo. Skills share the SKILL.md
-format and symlink directly. Claude uses generated Markdown + YAML frontmatter
-subagent adapters, which install the same way:
-
-```text
-~/.claude/CLAUDE.md -> profile/AGENTS.md
-~/.claude/octo-lite/roles.toml -> roles.toml
-~/.claude/octo-lite/roles/<role>.md -> roles/<role>.md
-~/.claude/octo-lite/adapters/<role>.md -> agents/<role>.md
-~/.claude/skills/<skill> -> skills/<skill>
-~/.claude/workflows/octo-loop-qa.js -> workflows/octo-loop-qa.js
-```
-
-`workflows/octo-loop-qa.js` remains installed for legacy compatibility only.
-The old `$octo-lite-loop` skill redirects to `$implement-spec`.
 
 Install or verify all links:
 
@@ -64,24 +44,10 @@ scripts/install-octo-lite
 scripts/install-octo-lite --check
 ```
 
-`~/.codex/skills` is supported by the current local profile. `$HOME/.agents/skills`
-is the documented user-skill location in the current Codex manual, so both are
-installed.
-
-Install every directory under `skills/`. `roles.toml`, `roles/`, and generated
-adapters remain for persistent coordination and legacy workflows.
-
-Validate or regenerate after role changes:
-
-```bash
-python3 workflows/lib/role_resolver.py check
-python3 workflows/lib/role_resolver.py generate
-python3 -m unittest tests/test_role_resolver.py
-```
-
-The meta-operator is a persistent Herdr pane. Start it with `herdr-spawn
---role meta-operator` from the operator's own Herdr session; there is no
-separate launcher skill and no supervised sweep.
+`agents/*.md` are hand-written role contracts. Workers load them: Claude
+through `--agent ROLE`, Codex as the first prompt from `herdr-spawn --role
+ROLE`. The meta-operator is a persistent Herdr pane started with `herdr-spawn
+--role meta-operator`; there is no supervised sweep.
 
 ## Workflow
 
@@ -121,7 +87,7 @@ repo-specific conventions that can diverge from the initial octo-lite scaffold.
 
 ### Spec format capability
 
-octo-lite itself declares `Spec format: spec-chat`; its canonical domain specs
+octo-lite itself declares `Spec format: spec-chat`; its canonical spec
 and ADRs live under `spec/` as `*.spec.html`.
 
 Target repos declare their canonical spec format in `AGENTS.md` with the exact
@@ -147,8 +113,8 @@ Linear is the default source of truth for issue identity, product/dev scope,
 status, and dependencies. GitHub issues are used only for GitHub-first repos or
 explicit operator requests.
 
-octo-lite uses the GitHub CLI for pull requests and code review. Issue Shaper or
-Implementer verifies GitHub auth and repo identity when GitHub operations are
+octo-lite uses the GitHub CLI for pull requests and code review. The shaper or
+implementer verifies GitHub auth and repo identity when GitHub operations are
 needed:
 
 ```bash

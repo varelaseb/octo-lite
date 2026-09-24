@@ -10,7 +10,7 @@ description: Run a docs-backed grilling session for octo-lite issue shaping; str
 Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
-Use this skill from `$octo-lite-issue-shaper` when a new idea, rough Linear or
+Use this skill from `$spec-chat-shape` when a new idea, rough Linear or
 GitHub issue, or issue draft needs clarification before it can be marked ready.
 
 This skill keeps issue shaping grounded in the target repo's durable context:
@@ -30,7 +30,7 @@ drafts, specs, ADRs, repo docs, code, and configuration.
 - Update the active draft and any affected spec, ADR, README, or AGENTS.md as
   decisions crystallize.
 - Do not batch durable terminology or behavior updates until the end.
-- Do not mutate Linear or GitHub tracker state unless Issue Shaper has reached
+- Do not mutate Linear or GitHub tracker state unless shaping has reached
   its approved final mutation step. In Linear-first repos, do not mutate GitHub
   issues unless the operator explicitly requested a GitHub issue operation.
 
