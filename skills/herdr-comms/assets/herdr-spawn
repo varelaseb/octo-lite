@@ -104,8 +104,9 @@ done
 #
 # Two agents, two shapes. Claude marks the selected row with U+276F and offers
 # "Yes, I trust this folder"; Codex marks it with U+203A and offers
-# "1. Yes, continue". Codex also asks, separately, to trust each hook before it
-# will run, which is a single keypress rather than a menu.
+# "1. Yes, continue" or, since 2026-09, "1. Trust and continue". Codex also
+# asks, separately, to trust each hook before it will run, which is a single
+# keypress rather than a menu.
 #
 # Never confirm blindly. The highlighted row is whatever the CLI last left
 # selected, and for a previously declined directory it is the refusal, so a bare
@@ -120,7 +121,7 @@ pane_text() { herdr pane read "$pane" --source visible --lines 60 2>/dev/null; }
 dialog_state() {
   local text
   text="$(pane_text)" || return 2
-  grep -qiE 'Quick safety check|trust this folder|trust the contents of this directory|Press t to trust' <<<"$text" && return 0
+  grep -qiE 'Quick safety check|trust this folder|trust the contents of this directory|Trust and continue|Press t to trust' <<<"$text" && return 0
   is_appearance_wizard <<<"$text" && return 0
   return 1
 }
@@ -153,7 +154,7 @@ for _ in $(seq 1 "${HERDR_SPAWN_TRUST_RETRIES:-14}"); do
       herdr pane send-text "$pane" "t" >/dev/null 2>&1 || send_key t
     elif pane_text | is_appearance_wizard; then
       send_key Enter
-    elif selected_row | grep -qiE 'trust (this folder|the contents)|Yes, continue|^[^A-Za-z]*[0-9]+\. *Yes'; then
+    elif selected_row | grep -qiE 'trust (this folder|the contents)|Yes, continue|Trust and continue|^[^A-Za-z]*[0-9]+\. *Yes'; then
       send_key Enter
     else
       send_key Down
