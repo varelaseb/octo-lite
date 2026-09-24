@@ -16,7 +16,6 @@ SPEC_CHAT = Path(os.environ.get("SPEC_CHAT_ROOT", "/root/spec-chat"))
 REVIEW = SPEC_CHAT / "skill/review-spec"
 SHAPE = SPEC_CHAT / "skill/shape-spec"
 PREFLIGHT = REVIEW / "scripts/preflight.py"
-WATCH = REVIEW / "scripts/watch.sh"
 
 
 def _spec_chat_available() -> bool:
@@ -88,47 +87,6 @@ class SpecChatSkillTests(unittest.TestCase):
             self.assertEqual(2, result.returncode)
             self.assertFalse((spec_dir / "runtime.js").exists())
 
-    @unittest.skipUnless(SPEC_CHAT_AVAILABLE, f"no spec-chat clone at {SPEC_CHAT}")
-    def test_single_page_watch_stops_at_the_newest_handoff(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            review = Path(td) / "example.spec.html.review"
-            human = review / "human"
-            human.mkdir(parents=True)
-            (review / "agent").mkdir()
-            names = [
-                "001-comment-a.json",
-                "002-handoff-h.json",
-                "003-comment-not-handed-off.json",
-            ]
-            for name in names:
-                (human / name).write_text("{}")
-            cursor = review / ".cursor-test"
-            result = subprocess.run(
-                [str(WATCH), str(review), str(cursor), "1", "1"],
-                capture_output=True,
-                text=True,
-                env={**os.environ, "SPEC_CHAT_WATCH_OWNER": "turn-yielded"},
-            )
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(names[:2], result.stdout.splitlines())
-
-    @unittest.skipUnless(SPEC_CHAT_AVAILABLE, f"no spec-chat clone at {SPEC_CHAT}")
-    def test_single_page_watch_times_out_while_draft_is_unhanded(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            review = Path(td) / "example.spec.html.review"
-            human = review / "human"
-            human.mkdir(parents=True)
-            (review / "agent").mkdir()
-            (human / "001-comment-a.json").write_text("{}")
-            cursor = review / ".cursor-test"
-            result = subprocess.run(
-                [str(WATCH), str(review), str(cursor), "1", "1"],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                env={**os.environ, "SPEC_CHAT_WATCH_OWNER": "turn-yielded"},
-            )
-            self.assertEqual(3, result.returncode, result.stderr)
 
 if __name__ == "__main__":
     unittest.main()

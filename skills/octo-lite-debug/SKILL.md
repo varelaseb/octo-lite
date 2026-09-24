@@ -45,7 +45,7 @@ Then inspect:
 Return one of:
 
 - `resolved`: the blocker was diagnosed and the next action is clear.
-- `ambiguous`: Issue Shaper/operator clarification is required.
+- `ambiguous`: shaping/operator clarification is required.
 - `blocked`: auth, permissions, env/config, or unavailable tooling prevents
   progress.
 

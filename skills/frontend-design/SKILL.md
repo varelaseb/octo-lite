@@ -32,7 +32,7 @@ language; this skill supplies the general frontend practice.
 - Do not redesign unrelated surfaces.
 - Do not introduce a new design system unless the issue explicitly asks.
 - Do not hide incomplete behavior behind decorative UI.
-- Stop for Issue Shaper/operator clarification when visual requirements,
+- Stop for shaping/operator clarification when visual requirements,
   brand constraints, or acceptance evidence are ambiguous.
 - Treat design guidance as agent judgment. Do not turn it into product code,
   lint gates, or new enforcement machinery unless the issue explicitly asks.

@@ -14,8 +14,8 @@ Use octo-lite for Linear-first product and development work.
   architecture, validation, deployment, fixtures, and conventions.
 - `agents/*.md` own the role contracts. They are hand-written and pin no
   model, so each CLI applies its own default.
-- `$implement-spec` owns post-shaping delivery. Its Herdr workers use relevant
-  octo-lite skills but do not load role contracts.
+- `$implement-spec` owns post-shaping delivery. Its Herdr workers run under the
+  `implementer` and `code-reviewer` contracts, which declare their skills.
 
 Stop on source conflict. Conversation and memory never silently override these
 sources. Memory may retain only dated, evidence-backed gotchas with a durable
@@ -53,8 +53,8 @@ source or fix link.
   parallel Herdr workers, integrates each worker through a merger agent, runs
   independent review, resolves findings through bounded repair, and marks the
   PR ready for human review only with clear review and required checks passed.
-- Implementation workers follow target `AGENTS.md` and relevant octo-lite
-  skills. They do not follow the octo-lite delivery contract or ceremony.
+- Implementation workers follow their role contract, target `AGENTS.md`, and
+  relevant octo-lite skills. They do not follow the delivery ceremony.
 - Keep communication sparse and point agents to durable context instead of
   repeating it.
 - On worker completion, consume its result, integrate and advance the next
@@ -77,8 +77,7 @@ source or fix link.
   otherwise. Mechanical rebases onto accepted main do not require renewed
   acceptance when behavior and scope are unchanged. The
   active owning agent receiving that instruction records acceptance and
-  executes the merge. It does not consult
-  `operator-owner.toml`, which only routes meta-operator handoffs and messages.
+  executes the merge.
   Required failed checks remain blockers until fixed or durably waived through
   a repository-approved path.
 - An accepted PR merged into target main completes its worklane. When the lane
@@ -106,8 +105,8 @@ source or fix link.
 
 - octo-lite is installed foreground tooling, never a target dependency or
   service.
-- Generic skills, roles, workflows, and profile files install by symlink from
-  the octo-lite source repo.
+- Generic skills, role contracts, helpers, and profile files install by symlink
+  from the octo-lite source repo.
 - Target instructions remain versioned inside each target worktree.
 - Unless launch context explicitly confirms operator loopback access, never
   present localhost as usable operator access.

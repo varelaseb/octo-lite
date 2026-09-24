@@ -44,7 +44,7 @@ Read target repo `AGENTS.md`, its declared canonical index (`spec/index.md` or
 `spec/index.spec.html`), relevant specs, ADRs, and repo docs before changing
 durable workflow artifacts.
 
-## Issue Shaper Mutations
+## Shaping Mutations
 
 For Linear-first work, do not create, update, close, label, or comment on GitHub
 issues unless the operator explicitly asks for that exact GitHub issue mutation.
@@ -93,9 +93,7 @@ Do not create extra workflow labels unless the operator explicitly asks.
   unless the human says otherwise. Mechanical rebases onto accepted main do not
   require renewed acceptance when behavior and scope are unchanged. A
   human statement assigning the current lane ownership is sufficient for this
-  action. Record acceptance, verify required checks, then merge. Do not consult
-  `operator-owner.toml`; it scopes only meta-operator handoff and message
-  routing. No worker merges, no agent decides acceptance, and no agent merges
+  action. Record acceptance, verify required checks, then merge. No worker merges, no agent decides acceptance, and no agent merges
   unaccepted work. Required failed checks remain blockers until fixed or
   durably waived through a repository-approved path.
 - The merge completes the worklane. Move the primary Linear issue to Done, the

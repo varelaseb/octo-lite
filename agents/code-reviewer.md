@@ -1,9 +1,8 @@
 ---
 name: code-reviewer
 description: "Judge one diff against its ticket and the canonical spec, and return a verdict."
-permissionMode: never
 tools: ["Read", "Grep", "Glob", "Bash", "Skill"]
-skills: ["octo-lite-debug", "octo-lite-github", "pull"]
+skills: ["octo-lite-debug", "octo-lite-github"]
 ---
 
 <!-- Hand-written. No model pin: each CLI applies its own default. -->

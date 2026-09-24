@@ -23,4 +23,4 @@ Vitest/MSW files, or TypeScript lint/test config.
 - Record exact validation commands and failures in the PR or handoff.
 
 If TypeScript configuration changes affect durable repo behavior, update specs
-or route back to Issue Shaper when the issue did not authorize that change.
+or route back to shaping when the issue did not authorize that change.

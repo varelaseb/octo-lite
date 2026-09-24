@@ -11,7 +11,7 @@
 <article class="spec" data-spec-version="1">
 <header data-anchor="header">
 <h1>ADR 0001: operating model boundaries</h1>
-<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/operating-model.spec.html">operating model</a> / ADR 0001</nav>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/octo-lite.spec.html">octo-lite</a> / ADR 0001</nav>
 <p>Boundary decisions closing the fresh exact-head review at PR 6 head <code>3a2c90edff3be3b8f2a71c82b7956aa1fc1a244e</code>.</p>
 </header>
 
@@ -23,7 +23,7 @@
 
 <section data-anchor="status">
 <h2>Status</h2>
-<p data-anchor="status-value">Accepted.</p>
+<p data-anchor="status-value">Superseded: the apparatus it bounds (drain, owner records, generated Codex agents) is deleted; see <a href="../domains/octo-lite.spec.html">octo-lite current state</a>.</p>
 </section>
 
 <section data-anchor="context">
@@ -113,7 +113,7 @@ Amended 2026-07-22 (TUR-505 phase-1): honesty extends to duplication and loss, b
 
 <section data-anchor="links">
 <h2>Links</h2>
-<p data-anchor="link-spec">Canonical specs: <a href="../domains/role-runtime.spec.html">role-runtime.spec.html</a>, sections Role and model topology and Role launch; <a href="../domains/operator-control.spec.html">operator-control.spec.html</a>, sections Messaging and Operator handoff.</p>
+<p data-anchor="link-spec">Amended domain specs were deleted in ANN-71 and remain in git history; see <a href="../domains/octo-lite.spec.html">octo-lite current state</a>.</p>
 <p data-anchor="link-review">Closes the findings in the PR 6 fresh exact-head review posted 2026-07-19T05:30:19Z.</p>
 <p data-anchor="link-code">Implementing surfaces: <code>workflows/lib/role_resolver.py</code>, <code>octo_lite/launch.py</code>, <code>skills/herdr-comms/assets/herdr-say</code>, <code>skills/herdr-comms/assets/herdr-drain</code>, <code>skills/herdr-comms/assets/herdr-ack</code>, <code>octo_lite/runtime.py</code>, <code>scripts/octo-control</code>, <code>scripts/install-octo-lite</code>.</p>
 </section>

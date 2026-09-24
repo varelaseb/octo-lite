@@ -23,5 +23,5 @@ as `.py` files, `pyproject.toml`, requirements files, `uv.lock`,
 - Keep dependency changes scoped and update lockfiles when required by the repo.
 - Record validation commands and failures in the PR or handoff.
 
-Stop for Issue Shaper/operator clarification when Python packaging or runtime
+Stop for shaping/operator clarification when Python packaging or runtime
 behavior needs a durable decision not present in specs or repo docs.

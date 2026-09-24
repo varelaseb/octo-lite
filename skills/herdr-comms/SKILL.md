@@ -63,8 +63,8 @@ herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
 ```
 
 The contract is read-only and forbids edits, commits, pushes, and issue or PR
-mutations. The model, effort, and service tier are explicit launcher inputs from the canonical
-role-runtime map, not additions to the model-free role contract. Launch with
+mutations. The model, effort, and service tier are explicit launcher inputs,
+not additions to the model-free role contract. Launch with
 `--sandbox read-only`. If the host sandbox fails before any command runs (bwrap
 `loopback: Failed RTM_NEWADDR` fails `read-only` and `workspace-write` alike),
 relaunch with no sandbox flag. Codex then runs under the configured

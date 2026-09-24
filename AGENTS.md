@@ -49,8 +49,8 @@ worklane state together, then stop the lane.
   bundled templates.
 - `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` are the skillfile
   (eljulians/skillfile) manifest, lockfile, and pinned patches that manage
-  skills per ADR 0002: they pin tdd and authoritative Spec Chat skills at exact
-  SHAs and carry the single tdd seam-gate patch across upstream updates.
+  skills per ADR 0002: they pin tdd at an exact SHA and carry the single tdd
+  seam-gate patch across upstream updates.
 - `agents/` contains the hand-written Claude role contracts plus the managed
   skillfile install target `agents/skills/`. Never hand-edit `agents/skills/`; it is
   materialized by skillfile from the `Skillfile`, and `scripts/install-octo-lite
@@ -61,8 +61,8 @@ worklane state together, then stop the lane.
 ## Target Spec Format Capability
 
 - Spec format: spec-chat
-- Canonical spec paths: spec/domains/operating-model.spec.html, spec/domains/delivery-lifecycle.spec.html, spec/domains/role-runtime.spec.html, spec/domains/operator-control.spec.html
-- Canonical ADR paths: spec/adr/0001-operating-model-boundaries.spec.html, spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0003-drop-loop-trust-root.spec.html, spec/adr/0004-derive-delivery-entry.spec.html, spec/adr/0005-herdr-ticket-graph-delivery.spec.html
+- Canonical spec paths: spec/domains/octo-lite.spec.html
+- Canonical ADR paths: spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0005-herdr-ticket-graph-delivery.spec.html (0001, 0003, 0004 are superseded history)
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact

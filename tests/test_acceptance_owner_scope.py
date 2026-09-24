@@ -10,30 +10,18 @@ class AcceptanceOwnerScopeTests(unittest.TestCase):
         text = (ROOT / "profile/AGENTS.md").read_text()
         self.assertIn("instruction to merge a named PR accepts that exact head", text)
         self.assertIn("active owning agent receiving that instruction", text)
-        self.assertIn("does not consult\n  `operator-owner.toml`", text)
         self.assertIn("Required failed checks remain blockers", text)
 
     def test_github_skill_does_not_import_meta_operator_ownership(self) -> None:
         text = (ROOT / "skills/octo-lite-github/SKILL.md").read_text()
         self.assertIn("active owning agent's mechanical execution", text)
         self.assertIn("human statement assigning the current lane ownership is sufficient", text)
-        self.assertIn("Do not consult\n  `operator-owner.toml`", text)
         self.assertIn("Required failed checks remain blockers", text)
 
     def test_implement_spec_handles_acceptance_callback(self) -> None:
         text = (ROOT / "skills/implement-spec/SKILL.md").read_text()
         self.assertIn("## Human acceptance callback", text)
         self.assertIn("record acceptance, execute the merge", text)
-        self.assertIn("Do not consult `operator-owner.toml`", text)
-
-    def test_canonical_specs_scope_the_pointer_to_meta_operator_control(self) -> None:
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        operator = (ROOT / "spec/domains/operator-control.spec.html").read_text()
-        self.assertIn('id="linear-acceptance-owner-pointer"', delivery)
-        self.assertIn("Ordinary PR acceptance and merge never read or mutate", delivery)
-        self.assertIn('id="handoff-owner-scope"', operator)
-        self.assertIn("never an acceptance or merge authority gate", operator)
-        self.assertIn('id="stream-mutation-not-merge"', operator)
 
     def test_merge_completes_worklane_without_follow_up_from_qa_gaps(self) -> None:
         for path in ("profile/AGENTS.md", "skills/implement-spec/SKILL.md",
@@ -41,8 +29,8 @@ class AcceptanceOwnerScopeTests(unittest.TestCase):
             text = " ".join((ROOT / path).read_text().split())
             self.assertIn("Done", text, path)
             self.assertIn("never infer, create, reopen, or drive follow-up", text, path)
-        delivery = (ROOT / "spec/domains/delivery-lifecycle.spec.html").read_text()
-        self.assertIn('id="linear-merge-completes-worklane"', delivery)
+        spec = (ROOT / "spec/domains/octo-lite.spec.html").read_text()
+        self.assertIn('id="delivery-linear"', spec)
 
 
 if __name__ == "__main__":

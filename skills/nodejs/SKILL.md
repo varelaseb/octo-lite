@@ -24,4 +24,4 @@ validation docs.
 - Record validation commands and failures in the PR or handoff.
 
 If the issue needs a runtime policy decision that is not already specified,
-route back to Issue Shaper before implementing.
+route back to shaping before implementing.

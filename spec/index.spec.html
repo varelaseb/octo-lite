@@ -15,31 +15,27 @@
 </header>
 <section data-anchor="user-stories">
 <h2>User stories</h2>
-<p data-user-story data-anchor="user-story-find-canonical-source" data-user-facing="true" data-guided-journey="no">As an operator or agent, I can open one index and reach every canonical octo-lite domain spec and decision record.</p>
+<p data-user-story data-anchor="user-story-find-canonical-source" data-user-facing="true" data-guided-journey="no">As an operator or agent, I can open one index and reach the canonical octo-lite spec and decision records.</p>
 </section>
 <section data-anchor="domains">
 <h2>Domain specifications</h2>
 <ul>
-<li data-anchor="domain-operating-model"><a href="./domains/operating-model.spec.html">Operating model</a> defines shared authority, invariants, navigation, and signed decisions.</li>
-<li data-anchor="domain-delivery-lifecycle"><a href="./domains/delivery-lifecycle.spec.html">Delivery lifecycle</a> defines shaping, TDD, delivery, Linear, stories, QA, acceptance, and release topology.</li>
-<li data-anchor="domain-role-runtime"><a href="./domains/role-runtime.spec.html">Role and runtime</a> defines role identity, model policy, launch, workspaces, retries, and reconciliation.</li>
-<li data-anchor="domain-operator-control"><a href="./domains/operator-control.spec.html">Operator control</a> defines messaging, supervision, handoff, stream files, Herdr labels, tracing, and the optional dashboard.</li>
+<li data-anchor="domain-octo-lite"><a href="./domains/octo-lite.spec.html">octo-lite current state</a> describes install, roles, delivery, transport, and human gates as they exist now.</li>
 </ul>
 </section>
 <section data-anchor="decisions">
 <h2>Decision records</h2>
 <ul>
-<li data-anchor="adr-0001"><a href="./adr/0001-operating-model-boundaries.spec.html">ADR 0001</a> signs the Codex adapter, OpenAI relay identity, Herdr delivery, and dead-owner boundaries.</li>
+<li data-anchor="adr-0001"><a href="./adr/0001-operating-model-boundaries.spec.html">ADR 0001</a> signed the Codex adapter, OpenAI relay identity, Herdr delivery, and dead-owner boundaries. Superseded.</li>
 <li data-anchor="adr-0002"><a href="./adr/0002-tdd-skill-vendoring.spec.html">ADR 0002</a> signs the vendored TDD skill, the spec-confirmed seam gate, refactor-out-of-loop, and skillfile-owned skill management.</li>
-<li data-anchor="adr-0003"><a href="./adr/0003-drop-loop-trust-root.spec.html">ADR 0003</a> signs dropping the loop trust-root ceremony and the independent observer, keeping provisioning and cleanup, and relocating the delivery-TDD guard to the adversarial code-reviewer.</li>
-<li data-anchor="adr-0004"><a href="./adr/0004-derive-delivery-entry.spec.html">ADR 0004</a> signs deleting the readiness envelope, deriving delivery entry from issue, PR, and head, one orchestrator per issue, and fresh spawn replacing re-pin.</li>
+<li data-anchor="adr-0003"><a href="./adr/0003-drop-loop-trust-root.spec.html">ADR 0003</a> (superseded) signed dropping the loop trust-root ceremony and the independent observer, keeping provisioning and cleanup, and relocating the delivery-TDD guard to the adversarial code-reviewer.</li>
+<li data-anchor="adr-0004"><a href="./adr/0004-derive-delivery-entry.spec.html">ADR 0004</a> (superseded) signed deleting the readiness envelope, deriving delivery entry from issue, PR, and head, one orchestrator per issue, and fresh spawn replacing re-pin.</li>
 <li data-anchor="adr-0005"><a href="./adr/0005-herdr-ticket-graph-delivery.spec.html">ADR 0005</a> replaces post-shaping loop ceremony with explicit Herdr ticket-graph delivery on one PR branch.</li>
 </ul>
 </section>
 <section data-anchor="source-boundary">
 <h2>Source boundary</h2>
 <p>These HTML documents are canonical specifications.</p>
-<p>Markdown under <code>docs/operating-model-audit-2026-07-17/</code> remains audit evidence, chronology, and working context.</p>
 <p>No Markdown twin is generated from a spec-chat document.</p>
 </section>
 </article>
