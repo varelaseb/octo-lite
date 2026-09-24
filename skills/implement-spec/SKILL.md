@@ -94,7 +94,7 @@ effort: xhigh
 service_tier: fast
 tools: repo-read, linear-read, github-read, session-log-read
 concrete_tools: Read, Grep, Glob, Bash, Skill (read only)
-launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast
+launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast --sandbox read-only
 ```
 
 The shaping-reviewer contract is delivered as the first prompt. The explicit
@@ -102,10 +102,8 @@ model, effort, and service tier reuse the canonical role-runtime map; the hand-w
 contract remains model-free. The worker may inspect source, GitHub, tracker
 context, and session evidence, but never edits, commits, pushes, or mutates
 issue or PR state. The launcher must not substitute an implementer, code
-reviewer, or resumed session. The launcher passes no sandbox flag, because
-Codex sandboxes fail before any command runs on hosts where bwrap cannot
-configure loopback; the read-only contract still binds, and the caller verifies
-a real read-only command result before accepting the review.
+reviewer, or resumed session. Sandbox handling and its verified fallback live
+in `herdr-comms` under Shaping-review launcher mapping.
 
 ## Herdr workers
 

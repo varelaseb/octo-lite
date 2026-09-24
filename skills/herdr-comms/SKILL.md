@@ -58,17 +58,19 @@ mutations. Launch it as:
 
 ```sh
 herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
-  --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast
+  --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast \
+  --sandbox read-only
 ```
 
 The contract is read-only and forbids edits, commits, pushes, and issue or PR
 mutations. The model, effort, and service tier are explicit launcher inputs from the canonical
-role-runtime map, not additions to the model-free role contract. Pass no
-sandbox flag: on hosts where bwrap cannot configure loopback, `--sandbox
-read-only` and `workspace-write` both fail before any command runs. Codex then
-uses the configured `sandbox_mode` (here `danger-full-access`), the read-only
-contract still binds, and the caller verifies one real source-read result
-before accepting the verdict.
+role-runtime map, not additions to the model-free role contract. Launch with
+`--sandbox read-only`. If the host sandbox fails before any command runs (bwrap
+`loopback: Failed RTM_NEWADDR` fails `read-only` and `workspace-write` alike),
+relaunch with no sandbox flag. Codex then runs under the configured
+`sandbox_mode`, often `danger-full-access`, so only the read-only contract
+binds; the caller verifies one real source-read result before accepting the
+verdict.
 
 ## Send a message
 
