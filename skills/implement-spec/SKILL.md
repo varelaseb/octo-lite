@@ -59,7 +59,10 @@ Implement-spec lane record pointers: the lane owner updates
 draft PR open, the lane owner updates `pr`; at worker spawn, the lane owner
 updates `[[workers]]`; at worker close, the lane owner updates `[[workers]]`; at
 handoff consumed, the lane owner updates `last_handoff_at`; at goal
-blocked/complete, the lane owner updates `goal_state`. The canonical record is
+blocked/complete, the lane owner updates `goal_state`; when the lane owner
+hands a human gate (spec review or QA review) to the human, the lane owner
+updates `waiting_on`; when the gate resolves, the lane owner updates
+`waiting_on` to `""`. The canonical record is
 `spec/domains/octo-lite.spec.html#lane-record`. The lane owner writes or edits
 the TOML file directly; no helper or service writes it.
 
@@ -239,6 +242,7 @@ acceptance of that exact head unless the human says otherwise. Mechanical
 rebases onto accepted main do not require renewed acceptance when behavior and
 scope are unchanged. Load `octo-lite-github`, verify required checks and exact
 head, record acceptance, execute the merge, and verify post-merge Linear sync.
+On the lane PR, the owner posts a comment with first line exactly `Finish receipt: <spec path> <hand-off id> at <head>` after each processed Finish review, and a comment with first line exactly `Human acceptance: <head>` when recording acceptance.
 A human statement that this worklane owns the action is sufficient.
 Failed required checks still block merge until fixed or durably waived through
 a repository-approved path.

@@ -29,7 +29,10 @@ after the same blocker repeats with no meaningful progress.
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
   Set `pr` when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. On goal blocked or
-  complete, update `goal_state`. Only the owner updates the lane record.
+  complete, update `goal_state`; when the lane owner hands a human gate (spec
+  review or QA review) to the human, the lane owner updates `waiting_on`; when
+  the gate resolves, the lane owner updates `waiting_on` to `""`.
+  Only the owner updates the lane record.
 
 ## Write surface
 

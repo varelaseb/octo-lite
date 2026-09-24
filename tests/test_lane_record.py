@@ -30,6 +30,7 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIsInstance(record["goal"], str)
         self.assertIn(record["goal_state"], {"active", "blocked", "complete"})
         self.assertIsInstance(record["last_handoff_at"], str)
+        self.assertIn(record["waiting_on"], {"", "spec review", "QA review"})
         self.assertIsInstance(record["workers"], list)
         self.assertEqual(record["workers"][0]["pane"], "w5:pC1")
         self.assertEqual(record["workers"][0]["ticket"], "ANN-64")
@@ -74,6 +75,10 @@ class LaneRecordTests(unittest.TestCase):
             text,
             re.compile(r"goal\s+blocked\s+or\s+complete.*`goal_state`", flags=re.DOTALL),
         )
+        self.assertRegex(
+            text,
+            r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+updates\s+`waiting_on`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+updates\s+`waiting_on`\s+to\s+`\"\"`",
+        )
         self.assertIn("Only the owner updates the lane record", text)
 
     def test_implement_spec_points_at_each_owner_update(self) -> None:
@@ -114,6 +119,19 @@ class LaneRecordTests(unittest.TestCase):
                     paragraph,
                     rf"{event_pattern},\s+the\s+lane\s+owner\s+updates\s+{re.escape(field)}",
                 )
+        self.assertRegex(
+            paragraph,
+            r"when\s+the\s+lane\s+owner\s+hands\s+a\s+human\s+gate\s+\(spec\s+review\s+or\s+QA\s+review\)\s+to\s+the\s+human,\s+the\s+lane\s+owner\s+updates\s+`waiting_on`;\s+when\s+the\s+gate\s+resolves,\s+the\s+lane\s+owner\s+updates\s+`waiting_on`\s+to\s+`\"\"`",
+        )
+
+    def test_implement_spec_uses_fixed_format_lifecycle_comments(self) -> None:
+        text = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
+        # Source: /home/admin/worktrees/ann45-kanban-shape/docs/specs/lifecycle-history.spec.html@f558944#history-proof-finish
+        finish_receipt = "Finish receipt: <spec path> <hand-off id> at <head>"
+        # Source: /home/admin/worktrees/ann45-kanban-shape/docs/specs/lifecycle-history.spec.html@f558944#history-proof-acceptance
+        human_acceptance = "Human acceptance: <head>"
+        self.assertIn(finish_receipt, text)
+        self.assertIn(human_acceptance, text)
 
     def test_no_unrelated_file_instructs_lane_record_writes(self) -> None:
         allowed = {
