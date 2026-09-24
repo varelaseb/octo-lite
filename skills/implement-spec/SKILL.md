@@ -54,6 +54,12 @@ descriptions, relations, assignees, and states aligned with reality throughout.
 Do not copy ticket or spec prose into agent messages. Send essential absolute
 source paths in the message body; artifact metadata alone is insufficient.
 
+Implement-spec lane record pointers: at draft PR open, point to `pr`; at worker spawn, point
+to `[[workers]]`; at worker close, point to `[[workers]]`; at handoff consumed,
+point to `last_handoff_at`; at goal blocked/complete, point to `goal_state`.
+The canonical record is `spec/domains/octo-lite.spec.html#lane-record`. Acting
+agents write or edit the TOML file directly; no helper or service writes it.
+
 Record the requested handoff in the existing brief. Manual QA readiness means
 a usable feature deployment, required dependencies, working account roles and
 starting scenarios, with a secure credential pointer and stated limitations.
