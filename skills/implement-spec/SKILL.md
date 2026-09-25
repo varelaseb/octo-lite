@@ -24,8 +24,8 @@ Require:
 - explicit blocking relations between tickets
 - target root `AGENTS.md`
 
-A processed human **Finish review** hand-off accepts the reviewed canonical
-spec and permits implementation dispatch. Follow `spec-chat/skill/review-spec/SKILL.md`
+A processed human **spec acceptance** (the **Accept spec** hand-off) accepts
+the reviewed canonical spec and permits implementation dispatch. Follow `spec-chat/skill/review-spec/SKILL.md`
 under `## Remote hosting lifecycle` for review resource lifetime. It does not
 accept the implementation PR, approve a merge, promote to preproduction, or
 approve live traffic.
@@ -57,8 +57,8 @@ evidence still applies; human QA, code readiness and acceptance are separate.
    implementation ticket.
 4. Before dispatch, run the spec validator, backslash-artifact scan, and
    tag-balance scan. Run one short cross-source conflict check: does the spec
-   contradict another canonical spec, merged main, or an open PR? Human Finish
-   review is the spec acceptance.
+   contradict another canonical spec, merged main, or an open PR? Processed human
+   spec acceptance is the dispatch gate.
 
 ## Herdr workers
 

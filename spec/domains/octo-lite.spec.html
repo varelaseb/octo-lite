@@ -37,7 +37,7 @@
 
 <section data-anchor="delivery" id="delivery">
 <h2>Delivery</h2>
-<p data-anchor="delivery-shape" id="delivery-shape"><code>spec-chat-shape</code> produces the reviewed canonical spec, its Linear issue, and dependency-linked implementation tickets; a processed human Finish review accepts the spec.</p>
+<p data-anchor="delivery-shape" id="delivery-shape"><code>spec-chat-shape</code> produces the reviewed canonical spec, its Linear issue, and dependency-linked implementation tickets; a processed human spec acceptance, the Accept spec hand-off, accepts the spec.</p>
 <p data-anchor="delivery-implement" id="delivery-implement"><code>implement-spec</code> runs its pre-dispatch mechanical checks, then fills the ready ticket frontier with implementer workers, each in its own worktree.</p>
 <p data-anchor="delivery-merge" id="delivery-merge">One merger at a time integrates finished commits onto the single integration branch and PR.</p>
 <p data-anchor="delivery-review" id="delivery-review">A code-reviewer judges the integration head, and findings get bounded repair until review is clear and required checks pass.</p>
@@ -59,7 +59,7 @@
 owner = "w5:pB2"                 # owner pane id: herdr-spawn pane=, never agent name or tab; file named by agent name
 repository = "varelaseb/annotateanything"
 issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
-goal = "Shape ANN-45 and ANN-44 through Finish review"
+goal = "Shape ANN-45 and ANN-44 through spec acceptance"
 pr = 30                          # set when shaping opens the draft PR
 last_handoff_at = "2026-09-24T18:24:09Z"
 waiting_on = ""                  # "", "spec review", "QA review", or "blocked"
@@ -90,7 +90,7 @@ role = "implementer"</code></pre>
 
 <section data-anchor="gates" id="gates">
 <h2>Human gates</h2>
-<p data-anchor="gates-list" id="gates-list">Spec review, acceptance of delivered work, merge of unaccepted work, preproduction promotion, and live traffic shifts require explicit human instruction.</p>
+<p data-anchor="gates-list" id="gates-list">Spec acceptance, acceptance of delivered work, merge of unaccepted work, preproduction promotion, and live traffic shifts require explicit human instruction.</p>
 </section>
 
 <section data-anchor="absent" id="absent">
