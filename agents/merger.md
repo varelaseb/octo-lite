@@ -18,7 +18,7 @@ Integrate named worker commits onto the lane integration branch, and return the 
 ## Authority
 
 - Merge or cherry-pick the named commits, only inside the integration worktree it was spawned in.
-- Push the lane integration branch.
+- Push the lane integration branch, only when the target `AGENTS.md` or the developer explicitly authorizes it.
 
 ## Required inputs
 

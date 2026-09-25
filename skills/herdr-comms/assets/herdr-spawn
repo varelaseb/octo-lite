@@ -12,15 +12,15 @@
 # CLI's own defaults. This script pins none of it.
 set -euo pipefail
 
-workspace=""; name=""; label=""; cwd="$PWD"; role=""
+workspace=""; name=""; label=""; cwd="$PWD"; role=""; model=""
 
 usage() {
   cat <<'EOF'
 usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-    -- claude --agent ROLE [CLAUDE_ARGS...]
+    [--operating-model FILE] -- claude --agent ROLE [CLAUDE_ARGS...]
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-    -- codex [CODEX_ARGS...]
+    [--operating-model FILE] -- codex [CODEX_ARGS...]
 
 Prints: name= role= tab= pane= cwd= contract= provider_session_id=
 EOF
@@ -34,6 +34,7 @@ while (($#)); do
     --label) label="${2:?}"; shift 2 ;;
     --cwd) cwd="${2:?}"; shift 2 ;;
     --role) role="${2:?}"; shift 2 ;;
+    --operating-model) model="${2:?}"; shift 2 ;;
     --direct) shift ;;                 # accepted and ignored; kept for callers
     --) shift; break ;;
     *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
@@ -42,6 +43,10 @@ done
 [[ -n "$workspace" && -n "$name" && -n "$role" && $# -gt 0 ]] || { usage >&2; exit 64; }
 [[ -d "$cwd" ]] || { echo "herdr-spawn: no such worktree: $cwd" >&2; exit 66; }
 cwd="$(cd "$cwd" && pwd -P)"
+if [[ -n "$model" ]]; then
+  [[ -f "$model" ]] || { echo "herdr-spawn: no such operating model: $model" >&2; exit 66; }
+  model="$(cd "$(dirname "$model")" && pwd -P)/$(basename "$model")"
+fi
 
 runtime="$(basename "$1")"
 case "$runtime" in
@@ -67,11 +72,20 @@ else
   # app-server daemon would outlive the tab.
   launch_argv=(--no-daemon "${launch_argv[@]}")
   if [[ -f "$contract_file" ]]; then
-    launch_argv=(-c "developer_instructions=$(jq -Rs . <"$contract_file")" "${launch_argv[@]}")
     contract="developer-instructions"
   else
     echo "herdr-spawn: no $role contract at $contract_file; the agent does not know its bounds" >&2
   fi
+fi
+
+# An optional operating model, handed over at start so the agent needs no global
+# instruction file. Claude appends it to its system prompt. Codex takes it ahead
+# of the contract in the one developer_instructions string.
+if [[ "$kind" == claude ]]; then
+  [[ -z "$model" ]] || launch_argv=(--append-system-prompt-file "$model" "${launch_argv[@]}")
+elif [[ -n "$model" || -f "$contract_file" ]]; then
+  instructions="$({ [[ -z "$model" ]] || { cat "$model"; echo; }; [[ ! -f "$contract_file" ]] || cat "$contract_file"; } | jq -Rs .)"
+  launch_argv=(-c "developer_instructions=$instructions" "${launch_argv[@]}")
 fi
 
 out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"

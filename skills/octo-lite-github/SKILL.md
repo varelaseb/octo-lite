@@ -13,6 +13,11 @@ No em-dashes or en-dashes. Ever.
 Use this skill whenever an octo-lite role needs branch, PR, review, comment, or
 explicit GitHub issue context.
 
+## Consent
+
+Push, open a PR, or file an issue (GitHub or Linear) only when the target `AGENTS.md` or the developer explicitly authorizes it.
+Otherwise keep work in local commits and report where it is.
+
 ## Source Of Truth
 
 - In Linear-first target repos, Linear is the source of truth for product/dev

@@ -163,17 +163,17 @@ class HerdrWrapperTest(unittest.TestCase):
             "HOME": str(d),
         }
 
-    def spawn(self, **env):
+    def spawn(self, extra=(), **env):
         return subprocess.run(
             [str(SPAWN), "--workspace", "w1", "--name", "a1", "--label", "L",
-             "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
+             "--cwd", str(self.cwd), "--role", "r", *extra, "--", "claude"],
             capture_output=True, text=True, env={**self.env, **env},
         )
 
-    def spawn_codex(self, **env):
+    def spawn_codex(self, extra=(), **env):
         return subprocess.run(
             [str(SPAWN), "--workspace", "w1", "--name", "a1", "--label", "L",
-             "--cwd", str(self.cwd), "--role", "r", "--", "codex"],
+             "--cwd", str(self.cwd), "--role", "r", *extra, "--", "codex"],
             capture_output=True, text=True, env={**self.env, **env},
         )
 
@@ -285,6 +285,41 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(len(value), 1, argv)
         self.assertEqual(argv[argv.index(value[0]) - 1], "-c")
         self.assertEqual(tomllib.loads(value[0])["developer_instructions"], contract)
+
+    def test_codex_takes_the_operating_model_ahead_of_its_contract(self):
+        self.dialog.write_text("none\n")
+        agents = Path(self.env["HOME"]) / ".claude/agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / "r.md").write_text("# Role\n")
+        model = self.cwd / "AGENTS.md"
+        model.write_text("# Model\n")
+        r = self.spawn_codex(extra=["--operating-model", str(model)])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        value = [a for a in self.start_argv() if a.startswith("developer_instructions=")]
+        self.assertEqual(len(value), 1, value)
+        self.assertEqual(tomllib.loads(value[0])["developer_instructions"],
+                         "# Model\n\n# Role\n")
+
+    def test_claude_appends_the_operating_model_to_its_system_prompt(self):
+        self.dialog.write_text("none\n")
+        model = self.cwd / "AGENTS.md"
+        model.write_text("# Model\n")
+        r = self.spawn(extra=["--operating-model", str(model)])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = self.start_argv()
+        i = argv.index("--append-system-prompt-file")
+        self.assertEqual(argv[i + 1], str(model.resolve()))
+
+    def test_no_operating_model_changes_nothing(self):
+        self.dialog.write_text("none\n")
+        r = self.spawn()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("--append-system-prompt-file", self.start_argv())
+
+    def test_a_missing_operating_model_stops_before_any_tab(self):
+        r = self.spawn(extra=["--operating-model", str(self.cwd / "nope.md")])
+        self.assertEqual(r.returncode, 66)
+        self.assertFalse(self.log.exists())
 
     def test_codex_spawn_never_starts_a_daemon(self):
         # Regression: a thread on the shared app-server outlived its tab.

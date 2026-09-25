@@ -33,6 +33,11 @@ binds at the developer layer and the agent waits for its brief; a contract sent
 as a prompt is worked as a task. The output reports `contract=` so a silent miss
 is visible.
 
+`--operating-model FILE` is optional. It hands that file to the agent at start,
+so no global instruction file is needed: Claude gets
+`--append-system-prompt-file FILE`, Codex gets it ahead of the contract in
+`developer_instructions`. Without it, nothing changes.
+
 Codex runs with `--no-daemon`, so its thread and commands live in the tab's own
 process tree, not the shared app-server that outlives the tab.
 

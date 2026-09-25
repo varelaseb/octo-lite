@@ -54,6 +54,8 @@ evidence still applies; human QA, code readiness and acceptance are separate.
    to a shared directory outside the repo. Its deliverable is concise Markdown
    notes linked from the relevant tickets.
 3. Create the integration branch from the target base and open one draft PR.
+   Push, open PRs, and file issues only when the target `AGENTS.md` or the developer explicitly authorizes it; otherwise the lane stays on local
+   branches and ends at a local integration head.
    Put `Closes <issue-key>` lines in the PR body for the spec issue and every
    implementation ticket.
 4. Before dispatch, run the spec validator, backslash-artifact scan, and
