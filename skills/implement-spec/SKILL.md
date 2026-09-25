@@ -105,11 +105,12 @@ When an implementer completes:
    integration worktree.
 2. Give it the ticket, worker commit, integration branch, and spec pointers.
 3. Have it merge or cherry-pick the worker commit, resolve only integration
-   conflicts, run proportionate validation, push the integration branch, and
-   report the resulting commit.
-4. Mark the ticket Done only after its change is integrated and pushed. If the
-   merge fails or validation is red, reflect that truth in Linear and return
-   the ticket to active work.
+   conflicts, run proportionate validation, push the integration branch as
+   [consent](../octo-lite-github/SKILL.md#consent) allows, and report the
+   resulting commit.
+4. Mark the ticket Done only after its change is integrated (and pushed when
+   consent allows). If the merge fails or validation is red, reflect that
+   truth in Linear and return the ticket to active work.
 5. Recompute the frontier and immediately fill newly available capacity.
 
 One merger writes the integration branch at a time. Implementers may continue
