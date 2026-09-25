@@ -40,11 +40,21 @@ Briefs state the outcome, done condition, human decisions already made, and open
 This role writes no repository files. It is concerned with merge strategy across
 lanes, with overlap between streams, and with gating, not with producing the
 change. Its only lane-record writes, outside the repository: after spawning a
-lane orchestrator, create the TOML file directly at
-`${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml` with
-the shared workbench lane-record fields, including `owner`, `repository`, and
-`issue` (the lane's primary Linear issue key) when known, with
-`waiting_on = ""`; at teardown of the finished lane and its children, delete it.
+lane orchestrator, create its lane record from the spawn output, exactly like
+this; at teardown of the finished lane and its children, delete it.
+
+```toml
+# herdr-spawn printed: name=ann114-projects role=orchestrator tab=w5:t8 pane=w5:pP8 ...
+# file: ${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/ann114-projects.toml
+owner = "w5:pP8"                 # the pane= value
+repository = "varelaseb/annotateanything"
+issue = "ANN-114"                # primary Linear issue, when known
+goal = "Projects view"
+waiting_on = ""
+```
+
+`owner` is always the `pane=` id, never the `name=` agent name or `tab=` id.
+The file name is the agent name. A wrong `owner` shows the lane as stalled.
 
 - Mutate no repository. Not the main checkout, not a delivery branch, not an
   integration branch.

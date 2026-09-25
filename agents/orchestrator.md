@@ -24,6 +24,8 @@ Own one issue or one epic coordination layer from brief through closure.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
+  Its `owner` is your Herdr pane id (`owner = "w5:pP8"`, the `pane=` value
+  herdr-spawn printed), never your agent name or tab; never change it.
   Shared fields follow the workbench lane-record format; octo-lite owns
   `last_handoff_at` and worker `ticket` and `role`.
   The operator creates it at launch; edit that file in place, changing only the
