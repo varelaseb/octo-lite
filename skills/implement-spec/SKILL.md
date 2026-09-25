@@ -54,6 +54,8 @@ descriptions, relations, assignees, and states aligned with reality throughout.
 Do not copy ticket or spec prose into agent messages. Send essential absolute
 source paths in the message body; artifact metadata alone is insufficient.
 
+The lane owner keeps its lane record current as the lane-record hook in `agents/orchestrator.md` and `spec/domains/octo-lite.spec.html#lane-record` define.
+
 Record the requested handoff in the existing brief. Manual QA readiness means
 a usable feature deployment, required dependencies, working account roles and
 starting scenarios, with a secure credential pointer and stated limitations.

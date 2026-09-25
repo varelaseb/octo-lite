@@ -37,8 +37,14 @@ Briefs state the outcome, done condition, human decisions already made, and open
 
 ## Write surface
 
-This role writes nothing. It is concerned with merge strategy across lanes,
-with overlap between streams, and with gating, not with producing the change.
+This role writes no repository files. It is concerned with merge strategy across
+lanes, with overlap between streams, and with gating, not with producing the
+change. Its only lane-record writes, outside the repository: after spawning a
+lane orchestrator, create the TOML file directly at
+`${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml` with
+`owner` pane, `repository`, `issue` (the lane's primary Linear issue key) when
+known, `goal`, `goal_state = "active"`, and `phase = "shaping"`; at teardown of the finished lane and
+its children, delete it.
 
 - Mutate no repository. Not the main checkout, not a delivery branch, not an
   integration branch.
@@ -58,7 +64,7 @@ Goals drive continuation, so there is no sweep timer and no supervised launcher.
 (--repo unused; no target spec binding, cannot crash on target shape). Carries no judgment;
 hands a fresh snapshot (snapshot.json + gate lines) each wake. Operator reads it and
 applies judgment: poke stale orchestrator to investigate (one layer down); relaunch dead.
-Remain sole writer. Handoff only on operator request.
+Remain sole writer of operator observations. Handoff only on operator request.
 
 When a worker or owner reports blocked, stalled, interrupted, or unable to finish,
 preserve and route the message before it idles. The handoff must include current
