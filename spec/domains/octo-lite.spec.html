@@ -52,13 +52,14 @@
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">Octo-lite records each lane owner's owner, repository, issue, pull request, workers, last handoff, and wait reason in one TOML file for observation.</p>
+<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only <code>last_handoff_at</code> and worker <code>ticket</code> and <code>role</code>, and writes those keys at the moments below.</p>
 <figure data-anchor="octo-lane-record">
-<h3 data-anchor="octo-lane-record-heading">The lane record: one TOML file per lane owner</h3>
+<h3 data-anchor="octo-lane-record-heading">The lane record: workbench fields and octo-lite keys</h3>
 <pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
 owner = "w5:pB2"                 # lane owner pane; file named by its agent name
 repository = "varelaseb/annotateanything"
 issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
+goal = "Shape ANN-45 and ANN-44 through Finish review"
 pr = 30                          # set when shaping opens the draft PR
 last_handoff_at = "2026-09-24T18:24:09Z"
 waiting_on = ""                  # "", "spec review", "QA review", or "blocked"
@@ -67,9 +68,24 @@ waiting_on = ""                  # "", "spec review", "QA review", or "blocked"
 pane = "w5:pC1"
 ticket = "ANN-64"
 role = "implementer"</code></pre>
-<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Illustrative values.</figcaption>
+<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Shared keys and the worker pane come from the workbench format.</figcaption>
 </figure>
-<p data-anchor="octo-lane-record-writer">The operator creates and removes the record. The owner updates it in place as issue, pull request, workers, handoffs, and wait reasons change.</p>
+<figure data-anchor="octo-lane-record-life">
+<h3 data-anchor="octo-lane-record-life-heading">Who touches the lane record, and when</h3>
+<div class="table-scroll" data-anchor="octo-lane-record-life-wrap">
+<table data-anchor="octo-lane-record-life-table">
+<thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
+<tbody>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with the shared workbench fields, including owner, repository, goal, and issue when known, plus <code>waiting_on</code> set to <code>""</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates worker <code>ticket</code> and <code>role</code>, and <code>last_handoff_at</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to spec review or QA review; clears it when the gate resolves.</td></tr>
+<tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
+</tbody>
+</table>
+</div>
+<figcaption data-anchor="octo-lane-record-life-caption">The operator creates and removes the record. In between, only the owner updates it in place.</figcaption>
+</figure>
 </section>
 
 <section data-anchor="gates" id="gates">
