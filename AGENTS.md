@@ -62,7 +62,7 @@ worklane state together, then stop the lane.
 
 - Spec format: spec-chat
 - Canonical spec paths: spec/domains/octo-lite.spec.html
-- Canonical ADR paths: spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0005-herdr-ticket-graph-delivery.spec.html (0001, 0003, 0004 are superseded history)
+- Canonical ADR paths: spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0005-herdr-ticket-graph-delivery.spec.html
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact

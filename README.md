@@ -17,12 +17,8 @@ client, product, or engagement.
 - Explicit `$implement-spec` delivery that fills the ready ticket frontier with
   parallel Herdr workers, integrates onto one branch, runs review, and
   leaves one PR ready for human review.
-- A cross-client meta-operator launcher for consolidating and supervising
-  long-running Herdr workstreams.
 - Templates bundled inside skills, not copied as top-level target repo
   template files.
-- Minimal target repo initialization for `README.md`, `AGENTS.md`, `spec/`,
-  and `.octo-lite/drafts/` gitignore coverage.
 
 ## Installed Surfaces
 
