@@ -27,15 +27,17 @@ after the same blocker repeats with no meaningful progress.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
+  Shared fields follow the workbench lane-record format; octo-lite owns
+  `goal_state`, `phase`, `last_handoff_at`, and worker `ticket` and `role`.
   The operator creates it at launch; edit that file in place, changing only the
   fields a moment names and keeping every other field;
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
-  `#octo-lane-record-example`. Set `pr` when a draft PR opens. On worker spawn or close or handoff
+  `#octo-lane-record-example`. Set shared `pr` when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
-  only `pane`, `ticket`, and `role`. On every
+  the shared `pane` plus octo-lite's `ticket` and `role`. On every
   goal state change, the lane owner updates `goal_state` to `"active"`,
   `"blocked"`, or `"complete"`; when the lane owner hands a human gate (spec
-  review or QA review) to the human, the lane owner sets `waiting_on` to
+  review or QA review) to the human, the lane owner sets shared `waiting_on` to
   `"spec review"` or `"QA review"`; when the gate resolves, the lane owner
   sets `waiting_on` to `""`. On every phase transition, the lane owner sets
   `phase` to exactly one of `"shaping"`, `"shaping review"`,

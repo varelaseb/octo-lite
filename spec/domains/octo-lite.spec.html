@@ -52,48 +52,34 @@
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">Octo-lite declares each lane owner's lane, primary Linear issue, goal and goal state, display-only phase, workers, last handoff, and the human gate it waits on in one TOML file, read by the annotateanything worklane provider.</p>
+<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/ann/machinery-contract/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only its delivery state and writes those keys at the moments below.</p>
 <figure data-anchor="octo-lane-record">
-<h3 data-anchor="octo-lane-record-heading">The lane record: one TOML file per lane owner</h3>
-<pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
-owner = "w5:pB2"                 # lane owner pane; file named by its agent name
-repository = "varelaseb/annotateanything"
-issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
-pr = 30                          # set when shaping opens the draft PR
-goal = "Shape ANN-45 and ANN-44 through Finish review"
+<h3 data-anchor="octo-lane-record-heading">Octo-lite's lane record keys</h3>
+<pre data-anchor="octo-lane-record-example"><code># Octo-lite additions to the workbench lane record
 goal_state = "active"            # active, blocked, or complete
-last_handoff_at = "2026-09-24T18:24:09Z"
-waiting_on = ""                  # "", "spec review", or "QA review"
 phase = "implementing"           # display only: "shaping", "shaping review", "implementing", "merging", "code review", "QA", "waiting on human", or "closing"
+last_handoff_at = "2026-09-24T18:24:09Z"
 
 [[workers]]
-pane = "w5:pC1"
 ticket = "ANN-64"
 role = "implementer"</code></pre>
-<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Illustrative values.</figcaption>
+<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Shared keys and the worker pane come from the workbench format.</figcaption>
 </figure>
-<p data-anchor="octo-lane-record-writer">
-The record follows the lane owner's life.
-The operator who launches an owner creates it and removes it at teardown, since the spawner owns teardown.
-In between, only the owner updates it.
-</p>
 <figure data-anchor="octo-lane-record-life">
 <h3 data-anchor="octo-lane-record-life-heading">Who touches the lane record, and when</h3>
 <div class="table-scroll" data-anchor="octo-lane-record-life-wrap">
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it: owner, repository, goal, goal state active, phase shaping, and issue when known.</td></tr>
-<tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code>, if the operator did not, and <code>pr</code>. From here the lane appears on the board.</td></tr>
-<tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates workers and last handoff time.</td></tr>
-<tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to spec review or QA review; clears it when the gate resolves.</td></tr>
-<tr data-anchor="octo-lane-record-life-goal"><td>Goal state changes (active, blocked, or complete)</td><td>Owner</td><td>Updates goal state.</td></tr>
-<tr data-anchor="octo-lane-record-life-phase"><td>Owner moves the lane to another phase</td><td>Owner</td><td>Updates phase to one of the listed values.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates the octo-lite additions with <code>goal_state</code> active and <code>phase</code> shaping.</td></tr>
+<tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates worker <code>ticket</code> and <code>role</code>, and <code>last_handoff_at</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-goal"><td>Goal state changes</td><td>Owner</td><td>Updates <code>goal_state</code> to active, blocked, or complete.</td></tr>
+<tr data-anchor="octo-lane-record-life-phase"><td>Owner moves the lane to another phase</td><td>Owner</td><td>Updates <code>phase</code> to one of the listed values.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
 </tbody>
 </table>
 </div>
-<figcaption data-anchor="octo-lane-record-life-caption">Shaping, not implement-spec, is where a lane starts. The operator bounds its life; the owner fills in its work.</figcaption>
+<figcaption data-anchor="octo-lane-record-life-caption">The operator creates and removes the record. In between, only the owner updates it in place.</figcaption>
 </figure>
 </section>
 

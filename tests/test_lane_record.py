@@ -1,4 +1,4 @@
-"""ANN-72 lane-record contract checks."""
+"""ANN-99 lane-record format checks."""
 
 from __future__ import annotations
 
@@ -27,23 +27,36 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIsNotNone(match, "lane record example is missing")
         record = tomllib.loads(unescape(match.group(1)))
 
-        self.assertIsInstance(record["owner"], str)
-        self.assertIsInstance(record["repository"], str)
-        self.assertIsInstance(record["issue"], str)
-        self.assertIsInstance(record["pr"], int)
-        self.assertIsInstance(record["goal"], str)
         self.assertIn(record["goal_state"], {"active", "blocked", "complete"})
         self.assertIsInstance(record["last_handoff_at"], str)
-        self.assertIn(record["waiting_on"], {"", "spec review", "QA review"})
         self.assertIn(record["phase"], PHASES)
         self.assertIsInstance(record["workers"], list)
-        self.assertEqual(record["workers"][0]["pane"], "w5:pC1")
         self.assertEqual(record["workers"][0]["ticket"], "ANN-64")
         self.assertEqual(record["workers"][0]["role"], "implementer")
+        self.assertEqual(
+            set(record), {"goal_state", "phase", "last_handoff_at", "workers"}
+        )
+
+    def test_spec_links_workbench_format_and_declares_only_octo_keys(self) -> None:
+        html = SPEC.read_text(encoding="utf-8")
+        match = re.search(
+            r'<section data-anchor="lane-record".*?</section>',
+            html,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match, "lane record section is missing")
+        section = match.group(0)
+        self.assertIn("worklane-provider.spec.html#lane-record", section)
+        for key in ("goal_state", "phase", "last_handoff_at", "ticket", "role"):
+            with self.subTest(key=key):
+                self.assertIn(f"<code>{key}</code>", section)
+        for key in ("issue", "repository", "goal", "pr", "owner", "waiting_on"):
+            with self.subTest(key=key):
+                self.assertNotIn(f"<code>{key}</code>", section)
 
     def test_meta_operator_hook_names_create_and_delete_fields(self) -> None:
         text = (ROOT / "agents/meta-operator.md").read_text(encoding="utf-8")
-        for term in (LANES, "`owner`", "`repository`", "`issue`", "`goal`",
+        for term in (LANES, "shared workbench lane-record fields",
                      '`goal_state = "active"`', '`phase = "shaping"`', "delete it"):
             with self.subTest(term=term):
                 self.assertIn(term, text)

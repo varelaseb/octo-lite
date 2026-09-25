@@ -42,9 +42,9 @@ lanes, with overlap between streams, and with gating, not with producing the
 change. Its only lane-record writes, outside the repository: after spawning a
 lane orchestrator, create the TOML file directly at
 `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml` with
-`owner` pane, `repository`, `issue` (the lane's primary Linear issue key) when
-known, `goal`, `goal_state = "active"`, and `phase = "shaping"`; at teardown of the finished lane and
-its children, delete it.
+the shared workbench lane-record fields and octo-lite's `goal_state = "active"`
+and `phase = "shaping"`; at teardown of the finished lane and its children,
+delete it.
 
 - Mutate no repository. Not the main checkout, not a delivery branch, not an
   integration branch.
