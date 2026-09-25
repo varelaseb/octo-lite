@@ -1,5 +1,5 @@
 // spec-chat runtime v0.1 — hydrates semantic islands and mounts the annotation layer.
-// spec-chat-capabilities: changed-root-focus custom-style-focus diff-visibility-control finish-review git-focus manual-resume-status mobile-pre-wrap mobile-review reopen-thread semantic-islands shared-style-ownership
+// spec-chat-capabilities: changed-root-focus custom-style-focus diff-visibility-control finish-review git-focus manual-resume-status mobile-pre-wrap mobile-review reopen-thread semantic-islands shared-style-ownership spec-acceptance tbd-later
 // Transports: FSA (file://, primary) | HTTP review-serve (http(s)://, secondary).
 // Same spools, same event schema either way. See DESIGN.md.
 // Classic script, NOT a module: browsers CORS-block module scripts on file:// pages,
@@ -55,6 +55,8 @@ const state = {
   loopsStarted: false,
   eventsRendered: false,
   handoffPosting: false,
+  lastTbd: null,         // open TBD marker focused by the last TBD open activation
+  range: { baseline: null, loading: false, pickerOpen: false },
 };
 
 /* ---------------- transports ---------------- */
@@ -65,7 +67,7 @@ function httpTransport() {
     ready: Promise.resolve(true),
     async listEvents() {
       const r = await fetch('/api/events?dir=' + encodeURIComponent(dir));
-      return r.json();
+      return { events: await r.json(), wake: r.headers.get('X-Spec-Chat-Wake') || null };
     },
     async postEvent(body) {
       await fetch('/api/events?dir=' + encodeURIComponent(dir) + '&actor=human', { method: 'POST', body: JSON.stringify(body) });
@@ -109,46 +111,222 @@ function anchorSignatures(doc) {
   return result;
 }
 
+function shortCommit(id) {
+  return id ? String(id).slice(0, 7) : 'unknown';
+}
+
+function commitDate(value) {
+  const date = String(value || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : '';
+}
+
+function rangeBarText(baseline) {
+  const base = baseline && baseline.base;
+  const head = baseline && baseline.head;
+  const short = id => id ? String(id).slice(0, 7) : 'unknown';
+  const date = value => {
+    const text = String(value || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : '';
+  };
+  const baseDate = date(baseline && baseline.baseDate);
+  const headDate = date(baseline && baseline.headDate);
+  const headLabel = (baseline && baseline.dirty ? 'working copy of ' : '') + short(head);
+  return 'Changes from ' + short(base) + (baseDate ? ' ' + baseDate : '') + ' to ' + headLabel + (headDate ? ' ' + headDate : '');
+}
+
+function baselineParams(base) {
+  const params = new URLSearchParams({ path: location.pathname.replace(/^\//, '') });
+  if (base) params.set('base', base);
+  return params;
+}
+
+function markIssueFocus(currentText, baseline) {
+  const parser = new DOMParser();
+  const current = anchorSignatures(parser.parseFromString(currentText, 'text/html'));
+  const prior = baseline.html === null ? null : anchorSignatures(parser.parseFromString(baseline.html, 'text/html'));
+  const classification = classifyAnchorSignatures(current, prior);
+  const focused = [...document.querySelectorAll('[data-anchor]')];
+  for (const element of focused) {
+    delete element.dataset.hxFocus;
+    delete element.dataset.hxFocusRoot;
+    element.dataset.hxFocus = classification.get(element.dataset.anchor) || 'changed';
+  }
+  const parents = new Map(focused.map(element => [
+    element.dataset.anchor,
+    element.parentElement?.closest('[data-anchor]')?.dataset.anchor || null,
+  ]));
+  const changedRoots = changedRootAnchors(parents, classification);
+  for (const element of focused) {
+    if (changedRoots.has(element.dataset.anchor)) element.dataset.hxFocusRoot = 'changed';
+  }
+  document.body.classList.toggle('hx-focus-active', focused.some(element => element.dataset.hxFocus === 'changed'));
+}
+
+async function fetchBaseline(base, includeCurrent = false, signal) {
+  const params = baselineParams(base);
+  const requests = [fetch('/api/baseline?' + params, { signal })];
+  if (includeCurrent) requests.push(fetch(location.pathname, { cache: 'no-store', signal }));
+  const responses = await Promise.all(requests);
+  const baselineResponse = responses[0];
+  if (!baselineResponse.ok || (includeCurrent && !responses[1].ok)) throw new Error('Git baseline unavailable');
+  const baseline = await baselineResponse.json();
+  if (includeCurrent) return { baseline, currentText: await responses[1].text() };
+  return { baseline };
+}
+
 async function applyIssueFocus() {
-  if (EMBED_REVIEW_DIR || location.protocol === 'file:' || new URLSearchParams(location.search).get('focus') !== 'changes') return;
+  if (EMBED_REVIEW_DIR || location.protocol === 'file:') return;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const params = new URLSearchParams({ path: location.pathname.replace(/^\//, '') });
     const requestedBase = new URLSearchParams(location.search).get('base');
-    if (requestedBase) params.set('base', requestedBase);
-    const [currentResponse, baselineResponse] = await Promise.all([
-      fetch(location.pathname, { cache: 'no-store', signal: controller.signal }),
-      fetch('/api/baseline?' + params, { signal: controller.signal }),
-    ]);
-    if (!currentResponse.ok || !baselineResponse.ok) throw new Error('Git baseline unavailable');
-    const currentText = await currentResponse.text();
-    const baseline = await baselineResponse.json();
-    const parser = new DOMParser();
-    const current = anchorSignatures(parser.parseFromString(currentText, 'text/html'));
-    const prior = baseline.html === null ? null : anchorSignatures(parser.parseFromString(baseline.html, 'text/html'));
-    const classification = classifyAnchorSignatures(current, prior);
-    const focused = [...document.querySelectorAll('[data-anchor]')];
-    for (const element of focused) {
-      element.dataset.hxFocus = classification.get(element.dataset.anchor) || 'changed';
-    }
-    const parents = new Map(focused.map(element => [
-      element.dataset.anchor,
-      element.parentElement?.closest('[data-anchor]')?.dataset.anchor || null,
-    ]));
-    const changedRoots = changedRootAnchors(parents, classification);
-    for (const element of focused) {
-      if (changedRoots.has(element.dataset.anchor)) element.dataset.hxFocusRoot = 'changed';
-    }
-    document.body.classList.add('hx-focus-active');
+    const result = await fetchBaseline(requestedBase, true, controller.signal);
+    state.range.baseline = result.baseline;
+    renderRangeBar(result.baseline);
+    markIssueFocus(result.currentText, result.baseline);
   } catch (error) {
-    const notice = document.createElement('div');
-    notice.className = 'hx-focus-error';
-    notice.textContent = 'Issue focus unavailable. Showing the complete current spec.';
-    document.body.appendChild(notice);
+    const copy = document.getElementById('hx-range-copy');
+    if (copy) copy.textContent = 'Compared range unavailable.';
+    if (new URLSearchParams(location.search).get('focus') === 'changes') showFocusError();
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function showFocusError() {
+  document.querySelectorAll('.hx-focus-error').forEach(el => el.remove());
+  const notice = document.createElement('div');
+  notice.className = 'hx-focus-error';
+  notice.textContent = 'Issue focus unavailable. Showing the complete current spec.';
+  document.body.appendChild(notice);
+}
+
+function setRangeError(message) {
+  const error = document.getElementById('hx-range-error');
+  if (!error) return;
+  error.textContent = message || '';
+  error.hidden = !message;
+}
+
+function renderRangePicker(baseline) {
+  const list = document.getElementById('hx-range-commits');
+  if (!list) return;
+  list.replaceChildren();
+  const commits = Array.isArray(baseline && baseline.commits) ? baseline.commits.slice(0, 20) : [];
+  if (!commits.length) {
+    const empty = document.createElement('p');
+    empty.className = 'hx-range-empty';
+    empty.textContent = 'No committed versions of this spec were found.';
+    list.appendChild(empty);
+    return;
+  }
+  const selected = baseline.base;
+  for (const commit of commits) {
+    if (!commit || !commit.id) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'hx-range-commit';
+    button.dataset.base = commit.id;
+    button.title = commit.id;
+    if (commit.id === selected) button.dataset.selected = 'true';
+    const id = document.createElement('strong');
+    id.textContent = shortCommit(commit.id);
+    const date = document.createElement('time');
+    date.textContent = commitDate(commit.date);
+    const subject = document.createElement('span');
+    subject.textContent = commit.subject || '';
+    button.append(id, date, subject);
+    button.addEventListener('click', () => selectRangeBase(commit.id));
+    list.appendChild(button);
+  }
+}
+
+function renderRangeBar(baseline) {
+  const bar = document.getElementById('hx-range-bar');
+  const copy = document.getElementById('hx-range-copy');
+  if (!bar || !copy || !baseline) return;
+  const base = baseline.base;
+  const head = baseline.head;
+  const baseId = document.createElement('span');
+  baseId.className = 'hx-range-id';
+  baseId.title = base || '';
+  baseId.textContent = shortCommit(base);
+  const headId = document.createElement('span');
+  headId.className = 'hx-range-id';
+  headId.title = head || '';
+  headId.textContent = shortCommit(head);
+  copy.setAttribute('aria-label', rangeBarText(baseline));
+  copy.replaceChildren(document.createTextNode('Changes from '));
+  copy.append(baseId);
+  const baseDate = commitDate(baseline.baseDate);
+  if (baseDate) copy.append(document.createTextNode(' ' + baseDate));
+  copy.append(document.createTextNode(' to '));
+  if (baseline.dirty) copy.append(document.createTextNode('working copy of '));
+  copy.append(headId);
+  const headDate = commitDate(baseline.headDate);
+  if (headDate) copy.append(document.createTextNode(' ' + headDate));
+  renderRangePicker(baseline);
+}
+
+function openRangePicker(open) {
+  state.range.pickerOpen = Boolean(open);
+  const picker = document.getElementById('hx-range-picker');
+  const button = document.getElementById('hx-range-change');
+  if (!picker || !button) return;
+  picker.hidden = !state.range.pickerOpen;
+  button.setAttribute('aria-expanded', String(state.range.pickerOpen));
+  if (state.range.pickerOpen) setTimeout(() => document.getElementById('hx-range-input')?.focus(), 0);
+}
+
+async function selectRangeBase(value) {
+  const requested = String(value || '').trim();
+  if (!requested) return setRangeError('Enter a commit id.');
+  if (requested.startsWith('-')) return setRangeError('Commit ids cannot begin with “-”.');
+  if (state.range.loading) return;
+  state.range.loading = true;
+  setRangeError('');
+  const apply = document.getElementById('hx-range-apply');
+  if (apply) apply.disabled = true;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const result = await fetchBaseline(requested, true, controller.signal);
+    const baseline = result.baseline;
+    state.range.baseline = baseline;
+    markIssueFocus(result.currentText, baseline);
+    renderRangeBar(baseline);
+    const url = new URL(location.href);
+    url.searchParams.set('focus', 'changes');
+    url.searchParams.set('base', baseline.base || requested);
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+    openRangePicker(false);
+  } catch (error) {
+    setRangeError(error.name === 'AbortError' ? 'Commit lookup timed out.' : 'That commit could not be resolved locally.');
+  } finally {
+    clearTimeout(timeout);
+    state.range.loading = false;
+    if (apply) apply.disabled = false;
+  }
+}
+
+function mountRangeBar() {
+  if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(location.protocol) || document.getElementById('hx-range-bar')) return;
+  const bar = document.createElement('section');
+  bar.className = 'hx-range-bar';
+  bar.id = 'hx-range-bar';
+  bar.setAttribute('aria-label', 'Compared commit range');
+  bar.innerHTML = '<div class="hx-range-row"><p id="hx-range-copy" class="hx-range-copy">Loading compared range…</p><button id="hx-range-change" class="hx-range-change" type="button" aria-expanded="false" aria-controls="hx-range-picker">Change base</button></div><div id="hx-range-picker" class="hx-range-picker" hidden><div id="hx-range-commits" class="hx-range-commits"></div><form id="hx-range-form" class="hx-range-form"><label for="hx-range-input">Paste a commit id</label><div><input id="hx-range-input" name="base" autocomplete="off" spellcheck="false"><button id="hx-range-apply" type="submit">Apply</button></div><p id="hx-range-error" class="hx-range-error" role="alert" hidden></p></form></div>';
+  const article = document.querySelector('article.spec');
+  if (article) article.parentNode.insertBefore(bar, article);
+  else document.body.insertBefore(bar, document.body.firstChild);
+  bar.querySelector('#hx-range-change').addEventListener('click', () => openRangePicker(!state.range.pickerOpen));
+  bar.querySelector('#hx-range-form').addEventListener('submit', event => {
+    event.preventDefault();
+    selectRangeBase(bar.querySelector('#hx-range-input').value);
+  });
+  bar.addEventListener('keydown', event => {
+    if (event.key === 'Escape') openRangePicker(false);
+  });
 }
 
 // Name the folder the user should grant: the first ancestor Chromium will accept
@@ -576,7 +754,7 @@ function resolveSvgPath(holder, key) {
 }
 
 function onDocClick(e) {
-  if (!state.commentMode || e.target.closest('.hx-pin,.hx-panel,.hx-toolbar,#hx-errors')) return;
+  if (!state.commentMode || e.target.closest('.hx-pin,.hx-panel,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
   const holder = holderOf(e.target);
   if (!holder) return;
   if (e.target.tagName === 'CANVAS') return; // canvas clicks are the chart's business: marks via chart events, blanks via zrender
@@ -680,8 +858,41 @@ function acknowledgedReplyCount(threads) {
 function reviewHandoffState(threads, hasTbd = false) {
   const values = [...threads.values()];
   const drafts = values.filter(thread => thread.status === 'draft').length;
-  const finish = !hasTbd && drafts === 0 && values.every(thread => thread.status === 'resolved');
-  return { drafts, finish, enabled: drafts > 0 || finish };
+  const settled = drafts === 0 && values.every(thread => thread.status === 'resolved');
+  const finish = !hasTbd && settled;
+  const tbd = hasTbd && settled;
+  return { drafts, finish, tbd, enabled: drafts > 0 || finish || tbd };
+}
+
+function isOpenTbd(value) {
+  return value !== 'later';
+}
+
+function openTbdMarkers(markers) {
+  return [...markers].filter(el => isOpenTbd(el.getAttribute('data-spec-tbd')));
+}
+
+function nextOpenTbd(open, last) {
+  if (!open.length) return null;
+  return open[(open.indexOf(last) + 1) % open.length];
+}
+
+function tbdBlock(el) {
+  return el.closest('[data-anchor]') || el;
+}
+
+function tbdHighlightBlocks(handoffState, open) {
+  return handoffState.tbd ? [...new Set(open.map(tbdBlock))] : [];
+}
+
+function advanceTbd(st, open) {
+  return st.lastTbd = nextOpenTbd(open, st.lastTbd);
+}
+
+function renderTbdHighlight(root, blocks) {
+  const keep = new Set(blocks);
+  root.querySelectorAll('.hx-tbd-open').forEach(el => { if (!keep.has(el)) el.classList.remove('hx-tbd-open'); });
+  keep.forEach(el => el.classList.add('hx-tbd-open'));
 }
 
 function handoffObservation(events, nowMs) {
@@ -691,6 +902,13 @@ function handoffObservation(events, nowMs) {
   if (events.some(event => event.actor === 'agent' && event.name > handoff.name)) return null;
   const createdAt = Date.parse(handoff.body.createdAt || '');
   return Number.isFinite(createdAt) && nowMs - createdAt >= 30000 ? 'queued' : 'waiting';
+}
+
+function handoffAgentText(observation, wake, last) {
+  if (observation && wake === 'failed') return '· wake failed; send a new chat message to resume';
+  if (observation === 'waiting' || (observation === 'queued' && wake === 'deferred')) return '· handed off, waiting for agent';
+  if (observation === 'queued') return '· automatic wake did not occur; send a new chat message to resume';
+  return last ? '· agent last event ' + new Date(last.body.createdAt).toLocaleTimeString() : '· no agent events yet';
 }
 
 function ingest(events) {
@@ -747,6 +965,8 @@ body.hx-focus-active [data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])
 body.hx-focus-active [data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])):not([data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])) *):not(tr):not(td):not(th):not(script):not(style)::after{content:"";position:absolute;inset:-3px;background:rgba(0,0,0,calc(.5*var(--hx-veil,1)));border-radius:inherit;pointer-events:none;z-index:2;-webkit-backdrop-filter:blur(calc(2.5px*var(--hx-veil,1)));backdrop-filter:blur(calc(2.5px*var(--hx-veil,1)))}
 body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])) *) > :is(td,th){position:relative}
 body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])) *) > :is(td,th)::after{content:"";position:absolute;inset:0;background:rgba(0,0,0,calc(.5*var(--hx-veil,1)));pointer-events:none;z-index:2;-webkit-backdrop-filter:blur(calc(2.5px*var(--hx-veil,1)));backdrop-filter:blur(calc(2.5px*var(--hx-veil,1)))}
+body.hx-focus-active .hx-tbd-open{position:relative;z-index:3}
+body.hx-focus-active .hx-tbd-open[data-hx-focus=unchanged]::after,body.hx-focus-active tr.hx-tbd-open[data-hx-focus=unchanged] > :is(td,th)::after{display:none!important}
 body.hx-focus-active [data-hx-focus=unchanged] .hx-pin,body.hx-focus-active [data-hx-focus=unchanged] .hx-badge{opacity:1;filter:none;z-index:700}
 .hx-focus-error{position:fixed;top:calc(12px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);max-width:calc(100vw - 24px);box-sizing:border-box;padding:8px 12px;border-radius:8px;background:#8b1a1a;color:#fff;font:600 12px system-ui;z-index:970;box-shadow:0 6px 20px rgba(30,30,40,.25)}
 @media(prefers-color-scheme:dark){
@@ -755,12 +975,63 @@ body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:n
 }
 `;
 const CSS = `
+.hx-range-bar{box-sizing:border-box;max-width:720px;margin:12px auto 0;padding:8px 10px;border:1px solid #cbd5ee;border-radius:8px;background:#e8edf9;color:#171719;font:13px/1.4 system-ui,sans-serif}
+.hx-range-row{display:flex;align-items:center;gap:10px;min-width:0}
+.hx-range-copy{flex:1 1 auto;min-width:0;margin:0;overflow-wrap:anywhere}
+.hx-range-id{font-weight:750;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.hx-range-change{flex:0 0 auto;min-height:32px;padding:6px 10px;border:1px solid #2947c7;border-radius:6px;background:#fff;color:#2947c7;font:700 12px system-ui,sans-serif;cursor:pointer}
+.hx-range-change:hover{background:#f4f6ff}
+.hx-range-change:focus-visible,.hx-range-commit:focus-visible,.hx-range-form input:focus-visible,.hx-range-form button:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
+.hx-range-picker{margin-top:8px;padding-top:8px;border-top:1px solid #cbd5ee}
+.hx-range-commits{display:grid;gap:3px;max-height:270px;overflow:auto}
+.hx-range-commit{display:grid;grid-template-columns:5.5em 6.5em minmax(0,1fr);gap:8px;align-items:baseline;width:100%;padding:6px 8px;border:1px solid transparent;border-radius:4px;background:transparent;color:#171719;text-align:left;font:12px/1.35 system-ui,sans-serif;cursor:pointer}
+.hx-range-commit:hover,.hx-range-commit[data-selected=true]{border-color:#167b68;background:#e7f3ef}
+.hx-range-commit strong{font:700 12px ui-monospace,SFMono-Regular,Menlo,monospace}
+.hx-range-commit time{color:#5a5a63;font-variant-numeric:tabular-nums}
+.hx-range-commit span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hx-range-empty{margin:0;padding:6px 8px;color:#5a5a63}
+.hx-range-form{margin-top:8px;padding-top:8px;border-top:1px solid #cbd5ee}
+.hx-range-form label{display:block;margin-bottom:4px;font-size:11px;font-weight:700;color:#303036}
+.hx-range-form>div{display:flex;gap:6px}
+.hx-range-form input{box-sizing:border-box;min-width:0;flex:1 1 auto;padding:7px 8px;border:1px solid #aaa;border-radius:5px;background:#fff;color:#171719;font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
+.hx-range-form button{flex:0 0 auto;padding:7px 12px;border:1px solid #2947c7;border-radius:5px;background:#2947c7;color:#fff;font:700 12px system-ui,sans-serif;cursor:pointer}
+.hx-range-form button:disabled{cursor:wait;opacity:.5}
+.hx-range-error{margin:6px 0 0;color:#8b1a1a;font-size:12px}
+@media(prefers-color-scheme:dark){
+.hx-range-bar{border-color:#46547f;background:#242b45;color:#f3f4fa}
+.hx-range-change{background:#17191d;color:#aebcff;border-color:#7d91ff}
+.hx-range-change:hover{background:#303752}
+.hx-range-picker,.hx-range-form{border-color:#46547f}
+.hx-range-commit{color:#f3f4fa}
+.hx-range-commit:hover,.hx-range-commit[data-selected=true]{border-color:#53b9a9;background:#1d433d}
+.hx-range-commit time,.hx-range-empty{color:#b8bbc5}
+.hx-range-form label{color:#e8e7e2}
+.hx-range-form input{border-color:#666b78;background:#17191d;color:#f3f4fa}
+.hx-range-error{color:#ff9a9a}
+}
+@media(max-width:640px){
+.hx-range-bar{margin:8px 16px 0;padding:8px}
+.hx-range-row{align-items:flex-start;flex-wrap:wrap;gap:6px}
+.hx-range-copy{flex:1 1 100%}
+.hx-range-change{min-height:44px}
+.hx-range-picker{margin-top:6px}
+.hx-range-commits{max-height:none}
+.hx-range-commit{grid-template-columns:5.5em 6.5em minmax(0,1fr);padding:8px 6px;min-height:44px}
+.hx-range-form input,.hx-range-form button{min-height:44px}
+.hx-range-form input{font-size:16px}
+}
+@media(max-width:800px){
+.hx-range-bar{margin-top:64px}
+}
 .hx-toolbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:4px;align-items:center;background:#fff;border:1px solid #ddd;border-radius:12px;box-shadow:0 8px 28px rgba(30,30,40,.14);padding:6px;z-index:900;font:13px system-ui}
 .hx-toolbar button{font:600 12.5px system-ui;border:none;background:transparent;border-radius:8px;padding:8px 14px;cursor:pointer}
 .hx-toolbar button:disabled{cursor:default;opacity:.45}
 .hx-mobile-handoff{display:none}
 .hx-toolbar button[aria-pressed=true]{background:#fbf3e2;color:#b47308}
 .hx-toolbar .hx-status{color:#888;font-size:11.5px;padding:0 10px}
+.hx-service-index-link{position:fixed;top:12px;left:12px;z-index:1000;display:inline-flex;align-items:center;min-height:44px;box-sizing:border-box;padding:8px 12px;border:1px solid #d9d8d3;border-radius:8px;background:rgba(255,255,255,.96);box-shadow:0 5px 18px rgba(30,30,40,.13);color:#087f73;font:650 12px/1 system-ui;text-decoration:none;backdrop-filter:blur(8px)}
+.hx-service-index-link:hover{background:#f4f3ef;border-color:#aaa;color:#075f57}
+.hx-service-index-link:focus-visible{outline:3px solid #f59e0b;outline-offset:3px}
 .hx-panel{position:fixed;top:0;right:0;width:330px;height:100vh;background:#f4f3ef;border-left:1px solid #ddd;z-index:800;display:none;flex-direction:column;font:13px system-ui;box-shadow:none}
 .hx-panel.open{display:flex;box-shadow:-8px 0 30px rgba(30,30,40,.12)}
 body.hx-panel-open{padding-right:330px}
@@ -831,6 +1102,7 @@ body.hx-comment [data-anchor] :is(button,input,select,textarea,label,a,summary){
 .hx-thread-ring{position:fixed;border:2px solid #d98e04;border-radius:5px;pointer-events:none;z-index:750;box-shadow:0 0 0 3px rgba(217,142,4,.18);transition:left .12s,top .12s,width .12s,height .12s}
 body.hx-comment [data-render-target]:hover{border:1.5px dashed #d98e04}
 body.hx-comment [data-render-target] canvas{cursor:copy!important}
+.hx-tbd-open{outline:2px solid #d98e04;outline-offset:4px}
 .hx-badge{font:600 9.5px system-ui;text-transform:uppercase;letter-spacing:.04em;color:#0e7264;background:#e3f2f0;border-radius:4px;padding:2px 7px;margin-left:8px;vertical-align:middle}
 .hx-banner{position:fixed;top:0;left:0;right:0;background:#12897c;color:#fff;font:600 13px system-ui;padding:8px 16px;z-index:950;display:flex;gap:14px;align-items:center;justify-content:center}
 .hx-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:#22242a;color:#faf9f6;font:600 12.5px system-ui;border-radius:8px;padding:9px 16px;box-shadow:0 8px 28px rgba(30,30,40,.3);z-index:960;opacity:0;transition:opacity .25s;pointer-events:none}
@@ -847,6 +1119,7 @@ body.hx-panel-open{padding-right:0;overflow:hidden}
 .hx-panel-toggle{top:6px;left:6px;width:44px;height:44px;touch-action:manipulation}
 .hx-panel-gear{top:6px;right:8px;width:44px;height:44px;touch-action:manipulation}
 .hx-thread-dock{top:calc(8px + env(safe-area-inset-top));right:8px;padding:4px}
+.hx-service-index-link{top:calc(8px + env(safe-area-inset-top));left:8px;max-width:calc(100vw - 68px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hx-dock-open,.hx-dock-thread{width:44px;height:44px;touch-action:manipulation}
 .hx-dock-threads{max-height:calc(100dvh - 68px)}
 .hx-threads{padding:12px;overscroll-behavior:contain}
@@ -935,6 +1208,18 @@ function mountUI() {
   style.textContent = (EMBED_REVIEW_DIR || sharedDocumentStyle ? '' : DOC_CSS) + FOCUS_CSS + CSS;
   document.head.appendChild(style);
 
+  mountRangeBar();
+
+  if (location.protocol === 'http:' || location.protocol === 'https:') {
+    const indexLink = document.createElement('a');
+    indexLink.className = 'hx-service-index-link';
+    indexLink.href = new URL('/', location.href).href;
+    indexLink.textContent = 'Back to Spec Chat index';
+    indexLink.setAttribute('aria-label', 'Back to Spec Chat index');
+    indexLink.dataset.specChatNavigation = 'index';
+    document.body.insertBefore(indexLink, document.body.firstChild);
+  }
+
   const bar = document.createElement('div');
   bar.className = 'hx-toolbar';
   bar.innerHTML = '<button id="hx-mode" aria-pressed="false">✛ Comment (C)</button><button class="hx-mobile-handoff" id="hx-mobile-handoff" type="button" disabled>Hand off</button><button id="hx-connect" hidden>Connect review folder</button><button id="hx-repick" hidden>Choose different folder</button><span class="hx-status" id="hx-status">starting…</span>';
@@ -967,7 +1252,7 @@ function mountUI() {
   const INTERACTIVE = 'button, input, select, textarea, label, a, summary, [role="button"], [role="link"]';
   const suspend = e => {
     if (!state.commentMode) return;
-    if (e.target.closest && e.target.closest('.hx-pin,.hx-panel,.hx-thread-dock,.hx-toolbar,#hx-errors')) return;
+    if (e.target.closest && e.target.closest('.hx-pin,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
     if (e.target.tagName === 'CANVAS') return;
     if (!holderOf(e.target)) return;
     // native drag/toggle on controls dies here; elsewhere only spec-script handlers die (selection survives)
@@ -991,7 +1276,7 @@ function mountUI() {
   document.addEventListener('pointermove', e => {
     const t = e.target;
     let box = null;
-    if (state.commentMode && t instanceof Element && !t.closest('.hx-pin,.hx-panel,.hx-thread-dock,.hx-toolbar')) {
+    if (state.commentMode && t instanceof Element && !t.closest('.hx-pin,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-range-bar')) {
       const svg = t.closest && t.closest('[data-anchor] svg');
       if (svg && t !== svg) box = t.getBoundingClientRect();
       else if (!svg && t.closest && t.closest(INTERACTIVE) && holderOf(t)) box = t.closest(INTERACTIVE).getBoundingClientRect();
@@ -1205,15 +1490,17 @@ function renderPanel() {
     });
     wrap.appendChild(d);
   }
-  const handoffState = reviewHandoffState(state.threads, Boolean(document.querySelector('[data-spec-tbd]')));
+  const openTbds = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
+  const handoffState = reviewHandoffState(state.threads, openTbds.length > 0);
   const drafts = handoffState.drafts;
-  document.getElementById('hx-drafts').textContent = handoffState.finish ? 'Review complete' : drafts + ' draft' + (drafts === 1 ? '' : 's');
+  renderTbdHighlight(document, tbdHighlightBlocks(handoffState, openTbds));
+  document.getElementById('hx-drafts').textContent = handoffState.finish ? 'Ready to accept' : drafts + ' draft' + (drafts === 1 ? '' : 's');
   const desktopHandoff = document.getElementById('hx-handoff');
   desktopHandoff.disabled = !handoffState.enabled;
-  desktopHandoff.textContent = handoffState.finish ? 'Finish review' : 'Hand off to agent →';
+  desktopHandoff.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? 'TBD open' : 'Hand off to agent →';
   const mobileHandoff = document.getElementById('hx-mobile-handoff');
   mobileHandoff.disabled = !handoffState.enabled;
-  mobileHandoff.textContent = handoffState.finish ? 'Finish review' : drafts ? 'Hand off (' + drafts + ')' : 'Hand off';
+  mobileHandoff.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? 'TBD open' : drafts ? 'Hand off (' + drafts + ')' : 'Hand off';
   renderThreadDock();
   renderThreadHighlight();
 }
@@ -1443,16 +1730,24 @@ function renderBadges() {
 }
 
 async function handoff() {
-  const action = reviewHandoffState(state.threads, Boolean(document.querySelector('[data-spec-tbd]')));
+  const openTbds = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
+  const action = reviewHandoffState(state.threads, openTbds.length > 0);
+  if (action.tbd) return jumpToTbd(advanceTbd(state, openTbds));
   if (state.handoffPosting || !action.enabled) return;
   state.handoffPosting = true;
   try {
     await state.transport.postEvent({ id: 'h' + Date.now().toString(36), event: 'handoff', anchorId: '', target: null, quote: null, text: 'batch from ' + state.transport.mode, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 });
-    toast(action.finish ? 'Review finished' : 'Handed off ' + action.drafts + ' comment' + (action.drafts === 1 ? '' : 's') + ' — agent notified');
+    toast(action.finish ? 'Spec accepted' : 'Handed off ' + action.drafts + ' comment' + (action.drafts === 1 ? '' : 's') + ', agent notified');
     refresh();
   } finally {
     state.handoffPosting = false;
   }
+}
+
+function jumpToTbd(el) {
+  if (!el.matches('a[href],button,input,select,textarea,[tabindex]')) el.setAttribute('tabindex', '-1');
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.focus({ preventScroll: true });
 }
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -1475,17 +1770,12 @@ function toast(msg) {
 /* ---------------- loops ---------------- */
 async function refresh() {
   try {
-    ingest(await state.transport.listEvents());
+    const listed = await state.transport.listEvents();
+    const wake = Array.isArray(listed) ? null : listed.wake;
+    ingest(Array.isArray(listed) ? listed : listed.events);
     const agentEvents = state.events.filter(e => e.actor === 'agent');
-    const last = agentEvents[agentEvents.length - 1];
     const observation = handoffObservation(state.events, Date.now());
-    document.getElementById('hx-agent').textContent = observation === 'waiting'
-      ? '· handed off, waiting for agent'
-      : observation === 'queued'
-        ? '· automatic wake did not occur; send a new chat message to resume'
-        : last
-          ? '· agent last event ' + new Date(last.body.createdAt).toLocaleTimeString()
-          : '· no agent events yet';
+    document.getElementById('hx-agent').textContent = handoffAgentText(observation, wake, agentEvents[agentEvents.length - 1]);
     status('connected · ' + state.transport.label + ' · ' + state.threads.size + ' threads');
     if (location.hash.includes('hxdebug') && !state._beaconed) {
       state._beaconed = true;
@@ -1510,7 +1800,8 @@ async function watchSpec() {
 /* ---------------- boot ---------------- */
 (async function boot() {
   mountUI();
-  applyIssueFocus();
+  const httpPage = !EMBED_REVIEW_DIR && ['http:', 'https:'].includes(location.protocol);
+  if (httpPage) applyIssueFocus();
   await hydrateIslands();
   adoptForeignCharts();
   // spec scripts can create/recreate charts at any time; rescan when canvases appear
