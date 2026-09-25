@@ -27,7 +27,7 @@ Own one issue or one epic coordination layer from brief through closure.
   The operator creates it at launch; edit that file in place, changing only the
   fields a moment names and keeping every other field;
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
-  `#octo-lane-record-example`. Set `pr` when a draft PR opens. On worker spawn or close or handoff
+  `#octo-lane-record-example`. Set `pr` to the PR number (e.g. `pr = 30`) when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
   only `pane`, `ticket`, and `role`. Set `waiting_on` to `"spec review"`,
   `"QA review"`, or `"blocked"` while waiting, and clear it to `""` when
