@@ -12,9 +12,9 @@ exist only for the failure modes it leaves to the caller.
 
 ```
 herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-  -- claude --agent ROLE
+  -- claude --agent ROLE    # default
 herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-  -- codex
+  -- codex                  # non-default alternative
 ```
 
 One tab, one pane, one agent, at an explicit worktree. Prints:

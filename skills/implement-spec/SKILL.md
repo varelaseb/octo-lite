@@ -68,10 +68,10 @@ implementation, merge, review-fix worker through Herdr. Prefer background tabs
 and fill available capacity from the current frontier.
 
 Use the same current Herdr session and workspace routing as the owning
-orchestrator. Herdr owns session selection. Use the configured Codex CLI
-default model unless the operator explicitly selects another runtime. Keep the
-worker-specific nuance: every writer still gets its own worktree, and only one
-merger writes the integration branch.
+orchestrator. Herdr owns session selection. Spawn Claude workers
+(`-- claude --agent ROLE`, CLI default model); Codex only when the operator
+explicitly selects it. Keep the worker-specific nuance: every writer still
+gets its own worktree, and only one merger writes the integration branch.
 
 For each ready ticket:
 
@@ -97,7 +97,8 @@ messages sparse. A status pointer or commit is better than a recap.
 
 When an implementer completes:
 
-1. Spawn a merger agent through `herdr-comms` in a clean integration worktree.
+1. Spawn a merger through `herdr-comms` with `--role merger` in a clean
+   integration worktree.
 2. Give it the ticket, worker commit, integration branch, and spec pointers.
 3. Have it merge or cherry-pick the worker commit, resolve only integration
    conflicts, run proportionate validation, push the integration branch, and
