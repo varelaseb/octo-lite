@@ -22,7 +22,7 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIsNotNone(match, "lane record example is missing")
         record = tomllib.loads(unescape(match.group(1)))
 
-        self.assertIsInstance(record["owner"], str)
+        self.assertRegex(record["owner"], r"^w\d+:p")
         self.assertIsInstance(record["repository"], str)
         self.assertIsInstance(record["issue"], str)
         self.assertIsInstance(record["pr"], int)
