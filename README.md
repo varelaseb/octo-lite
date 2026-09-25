@@ -12,7 +12,7 @@ client, product, or engagement.
 
 ## What It Provides
 
-- Spec Chat shaping that produces a reviewed canonical spec, its issue, and a
+- Spec Chat shaping that produces an accepted canonical spec, its issue, and a
   dependency-linked implementation ticket graph.
 - Explicit `$implement-spec` delivery that fills the ready ticket frontier with
   parallel Herdr workers, integrates onto one branch, runs review, and
@@ -53,7 +53,7 @@ Shape first, then implement the ticket graph.
 ```text
 idea or rough Linear/GitHub issue
   -> $spec-chat-shape
-  -> reviewed spec + spec issue + blocking-linked tickets
+  -> accepted spec + spec issue + blocking-linked tickets
   -> $implement-spec
   -> parallel Herdr implementers on ready tickets
   -> serialized Herdr mergers onto one PR branch

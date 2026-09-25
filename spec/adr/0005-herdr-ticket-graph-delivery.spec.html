@@ -17,7 +17,7 @@
 
 <section data-anchor="user-stories" id="user-stories">
 <h2>User stories</h2>
-<p data-user-story data-anchor="user-story-parallel-ticket-delivery" id="user-story-parallel-ticket-delivery" data-user-facing="true" data-guided-journey="no">As an operator, I can invoke implement-spec on a reviewed spec and have its ready tickets delivered in parallel onto one PR branch.</p>
+<p data-user-story data-anchor="user-story-parallel-ticket-delivery" id="user-story-parallel-ticket-delivery" data-user-facing="true" data-guided-journey="no">As an operator, I can invoke implement-spec on an accepted spec and have its ready tickets delivered in parallel onto one PR branch.</p>
 <p data-user-story data-anchor="user-story-truthful-linear" id="user-story-truthful-linear" data-user-facing="true" data-guided-journey="no">As an operator, I can read Linear to see which tickets are actually in progress and which are integrated and pushed.</p>
 </section>
 
@@ -29,12 +29,12 @@
 <section data-anchor="context" id="context">
 <h2>Context</h2>
 <p data-anchor="context-old-loop" id="context-old-loop">The post-shaping loop accumulated role resolution, receipts, journals, exact-model gates, verdict publication, QA gates, and lifecycle transitions around ordinary implementation.</p>
-<p data-anchor="context-natural-unit" id="context-natural-unit">A reviewed spec already has implementation tickets whose blocking relations expose the work that can safely run in parallel.</p>
+<p data-anchor="context-natural-unit" id="context-natural-unit">An accepted spec already has implementation tickets whose blocking relations expose the work that can safely run in parallel.</p>
 </section>
 
 <section data-anchor="decision" id="decision">
 <h2>Decision</h2>
-<p data-anchor="decision-shaping-output" id="decision-shaping-output"><code>spec-chat-shape</code> finishes with a reviewed spec, its issue, and dependency-linked implementation tickets.</p>
+<p data-anchor="decision-shaping-output" id="decision-shaping-output"><code>spec-chat-shape</code> finishes with an accepted spec, its issue, and dependency-linked implementation tickets.</p>
 <p data-anchor="decision-explicit-skill" id="decision-explicit-skill"><code>implement-spec</code> is explicit-only and owns post-shaping delivery.</p>
 <p data-anchor="decision-direct-workers" id="decision-direct-workers">It launches temporary Herdr explorer, implementer, merger, and reviewer agents directly, outside <code>roles.toml</code> and the legacy Workflow loop.</p>
 <p data-anchor="decision-contracts-amended" id="decision-contracts-amended">Amended 2026-09-24 (ANN-71): implementer and reviewer workers load their hand-written role contracts.</p>

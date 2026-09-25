@@ -18,7 +18,7 @@
 
 <section data-anchor="user-stories" id="user-stories">
 <h2>User stories</h2>
-<p data-user-story data-anchor="user-story-deliver-spec" id="user-story-deliver-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can shape an idea into a reviewed spec and ticket graph, then have it delivered on one PR ready for my review.</p>
+<p data-user-story data-anchor="user-story-deliver-spec" id="user-story-deliver-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can shape an idea into an accepted spec and ticket graph, then have it delivered on one PR ready for my review.</p>
 <p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script and a plain git pull keeps it current.</p>
 </section>
 
@@ -37,7 +37,7 @@
 
 <section data-anchor="delivery" id="delivery">
 <h2>Delivery</h2>
-<p data-anchor="delivery-shape" id="delivery-shape"><code>spec-chat-shape</code> produces the reviewed canonical spec, its Linear issue, and dependency-linked implementation tickets; a processed human Finish review accepts the spec.</p>
+<p data-anchor="delivery-shape" id="delivery-shape"><code>spec-chat-shape</code> produces the reviewed canonical spec, its Linear issue, and dependency-linked implementation tickets; a processed human spec acceptance (page action Accept spec, formerly called Finish review) permits implementation dispatch under the reviewed canonical spec.</p>
 <p data-anchor="delivery-implement" id="delivery-implement"><code>implement-spec</code> runs its pre-dispatch mechanical checks, then fills the ready ticket frontier with implementer workers, each in its own worktree.</p>
 <p data-anchor="delivery-merge" id="delivery-merge">One merger at a time integrates finished commits onto the single integration branch and PR.</p>
 <p data-anchor="delivery-review" id="delivery-review">A code-reviewer judges the integration head, and findings get bounded repair until review is clear and required checks pass.</p>
@@ -59,7 +59,7 @@
 owner = "w5:pB2"                 # owner pane id: herdr-spawn pane=, never agent name or tab; file named by agent name
 repository = "varelaseb/annotateanything"
 issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
-goal = "Shape ANN-45 and ANN-44 through Finish review"
+goal = "Shape ANN-45 and ANN-44 through spec acceptance"
 pr = 30                          # set when shaping opens the draft PR
 last_handoff_at = "2026-09-24T18:24:09Z"
 waiting_on = ""                  # "", "spec review", "QA review", or "blocked"
@@ -79,7 +79,7 @@ role = "implementer"</code></pre>
 <tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with the shared workbench fields, including owner, repository, goal, and issue when known, plus <code>waiting_on</code> set to <code>""</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates worker <code>ticket</code> and <code>role</code>, and <code>last_handoff_at</code>.</td></tr>
-<tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to spec review or QA review; clears it when the gate resolves.</td></tr>
+<tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"spec review"</code> while spec acceptance waits on human spec review, or <code>"QA review"</code>; clears it when the gate resolves.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
 </tbody>
 </table>
@@ -90,7 +90,7 @@ role = "implementer"</code></pre>
 
 <section data-anchor="gates" id="gates">
 <h2>Human gates</h2>
-<p data-anchor="gates-list" id="gates-list">Spec review, acceptance of delivered work, merge of unaccepted work, preproduction promotion, and live traffic shifts require explicit human instruction.</p>
+<p data-anchor="gates-list" id="gates-list">Spec acceptance, acceptance of delivered work, merge of unaccepted work, preproduction promotion, and live traffic shifts require explicit human instruction.</p>
 </section>
 
 <section data-anchor="absent" id="absent">

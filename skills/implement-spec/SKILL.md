@@ -24,11 +24,12 @@ Require:
 - explicit blocking relations between tickets
 - target root `AGENTS.md`
 
-A processed human **Finish review** hand-off accepts the reviewed canonical
-spec and permits implementation dispatch. Follow `spec-chat/skill/review-spec/SKILL.md`
-under `## Remote hosting lifecycle` for review resource lifetime. It does not
-accept the implementation PR, approve a merge, promote to preproduction, or
-approve live traffic.
+A processed human **spec acceptance** (page action **Accept spec**, formerly
+called Finish review) permits implementation dispatch under the reviewed
+canonical spec. Follow `spec-chat/skill/review-spec/SKILL.md` under
+`## Remote hosting lifecycle` for review resource lifetime. It does not accept
+the implementation PR, approve a merge, promote to preproduction, or approve
+live traffic.
 
 The tickets are a task graph, not ordered steps. The ready frontier contains
 every incomplete ticket whose blockers are complete. Keep Linear titles,
@@ -57,8 +58,7 @@ evidence still applies; human QA, code readiness and acceptance are separate.
    implementation ticket.
 4. Before dispatch, run the spec validator, backslash-artifact scan, and
    tag-balance scan. Run one short cross-source conflict check: does the spec
-   contradict another canonical spec, merged main, or an open PR? Human Finish
-   review is the spec acceptance.
+   contradict another canonical spec, merged main, or an open PR?
 
 ## Herdr workers
 
