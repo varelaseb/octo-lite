@@ -32,16 +32,9 @@ after the same blocker repeats with no meaningful progress.
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
   `#octo-lane-record-example`. Set `pr` when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
-  only `pane`, `ticket`, and `role`. On every
-  goal state change, the lane owner updates `goal_state` to `"active"`,
-  `"blocked"`, or `"complete"`; when the lane owner hands a human gate (spec
-  review or QA review) to the human, the lane owner sets `waiting_on` to
-  `"spec review"` or `"QA review"`; when the gate resolves, the lane owner
-  sets `waiting_on` to `""`. On every phase transition, the lane owner sets
-  `phase` to exactly one of `"shaping"`, `"shaping review"`,
-  `"implementing"`, `"merging"`, `"code review"`, `"QA"`,
-  `"waiting on human"`, or `"closing"`. `phase` is display only;
-  `waiting_on` stays the only gate source.
+  only `pane`, `ticket`, and `role`. Set `waiting_on` to `"spec review"`,
+  `"QA review"`, or `"blocked"` while waiting, and clear it to `""` when
+  work resumes.
   The lane owner sets `issue` when shaping creates the issue, if the operator
   did not, no later than `pr`.
   Only the owner updates the lane record.

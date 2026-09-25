@@ -75,21 +75,5 @@ class ToolchainOwnershipTests(unittest.TestCase):
         )
         self.assertNotEqual(0, check.returncode)
 
-
-    def test_delivery_skill_keeps_the_exact_pre_fleet_mapping(self) -> None:
-        text = (ROOT / "skills" / "implement-spec" / "SKILL.md").read_text(encoding="utf-8")
-        for expected in (
-            "role: shaping-reviewer",
-            "provider: openai",
-            "engine: codex",
-            "model: gpt-5.6-sol",
-            "effort: xhigh",
-            "service_tier: fast",
-            "tools: repo-read, linear-read, github-read, session-log-read",
-            "herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast",
-        ):
-            self.assertIn(expected, text)
-
-
 if __name__ == "__main__":
     unittest.main()

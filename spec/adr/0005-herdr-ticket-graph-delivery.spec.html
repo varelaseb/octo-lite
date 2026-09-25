@@ -43,7 +43,6 @@
 <p data-anchor="decision-review" id="decision-review">After full integration, independent review runs on the integration head, one implementation agent fixes the findings, and one merger integrates each consolidated fix batch before review of the changed head.</p>
 <p data-anchor="decision-review-continuation" id="decision-review-continuation">The September 8 operator amendment replaces the one-rereview lifetime cap: a confirmed remaining defect receives bounded repair or concrete repository-approved blocker handling, while failed required checks and human acceptance gates remain intact.</p>
 <p data-anchor="decision-review-runtime" id="decision-review-runtime">When <code>/code-review</code> is unsupported, an available independent review mechanism receives the same head, base, spec and scope; its actual start and result must be verified instead of retrying an unrecognized command.</p>
-<p data-anchor="decision-compatibility" id="decision-compatibility"><code>octo-lite-loop</code> remains only as a compatibility redirect to <code>implement-spec</code>.</p>
 </section>
 
 <section data-anchor="consequences" id="consequences">
@@ -51,7 +50,7 @@
 <p data-anchor="consequence-throughput" id="consequence-throughput">Independent tickets run concurrently and task dependencies, not a fixed phase sequence, control throughput.</p>
 <p data-anchor="consequence-sparse-context" id="consequence-sparse-context">Agents communicate through durable pointers and commits instead of copied briefs and machine receipts.</p>
 <p data-anchor="consequence-tradeoff" id="consequence-tradeoff">The workflow gives up deterministic role and verdict gates in exchange for simpler execution, direct observability, and Linear state that reflects actual work.</p>
-<p data-anchor="consequence-supersedes" id="consequence-supersedes">This decision supersedes ADR 0002 through ADR 0004 only where they prescribe post-shaping implementation-loop ceremony; their skill-vendoring, historical, and non-delivery decisions remain.</p>
+<p data-anchor="consequence-supersedes" id="consequence-supersedes">This decision supersedes prior post-shaping implementation-loop ceremony; ADR 0002 remains authoritative for TDD skill vendoring.</p>
 </section>
 </article>
 </body>
