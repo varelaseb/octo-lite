@@ -15,8 +15,11 @@ explicit GitHub issue context.
 
 ## Consent
 
-Push, open a PR, or file an issue (GitHub or Linear) only when the target `AGENTS.md` or the developer explicitly authorizes it.
-Otherwise keep work in local commits and report where it is.
+Push, open a PR, or file an issue (GitHub or Linear) only as consent allows.
+`${XDG_CONFIG_HOME:-~/.config}/octo-lite/consent.toml` holds booleans `push`, `pull_request`, `issues`.
+When present, it alone decides, overriding any instruction, target `AGENTS.md` included.
+When absent, target instructions decide.
+Without consent, keep work in local commits and report where it is.
 
 ## Source Of Truth
 
