@@ -12,8 +12,6 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec/domains/octo-lite.spec.html"
 LANES = "octo-lite/lanes/<owner agent name>.toml"
-PHASES = ("shaping", "shaping review", "implementing", "merging", "code review",
-          "QA", "waiting on human", "closing")
 
 
 class LaneRecordTests(unittest.TestCase):
@@ -27,15 +25,31 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIsNotNone(match, "lane record example is missing")
         record = tomllib.loads(unescape(match.group(1)))
 
-        self.assertIn(record["goal_state"], {"active", "blocked", "complete"})
+        self.assertIsInstance(record["owner"], str)
+        self.assertIsInstance(record["repository"], str)
+        self.assertIsInstance(record["issue"], str)
+        self.assertIsInstance(record["goal"], str)
+        self.assertIsInstance(record["pr"], int)
         self.assertIsInstance(record["last_handoff_at"], str)
-        self.assertIn(record["phase"], PHASES)
+        self.assertIn(record["waiting_on"], {"", "spec review", "QA review", "blocked"})
         self.assertIsInstance(record["workers"], list)
+        self.assertEqual(record["workers"][0]["pane"], "w5:pC1")
         self.assertEqual(record["workers"][0]["ticket"], "ANN-64")
         self.assertEqual(record["workers"][0]["role"], "implementer")
         self.assertEqual(
-            set(record), {"goal_state", "phase", "last_handoff_at", "workers"}
+            set(record),
+            {
+                "owner",
+                "repository",
+                "issue",
+                "goal",
+                "pr",
+                "last_handoff_at",
+                "waiting_on",
+                "workers",
+            },
         )
+        self.assertEqual(set(record["workers"][0]), {"pane", "ticket", "role"})
 
     def test_spec_links_workbench_format_and_declares_write_moments(self) -> None:
         html = SPEC.read_text(encoding="utf-8")
@@ -46,20 +60,22 @@ class LaneRecordTests(unittest.TestCase):
         )
         self.assertIsNotNone(match, "lane record section is missing")
         section = match.group(0)
+        self.assertNotIn("goal_state", section)
+        self.assertNotIn("phase", section)
         self.assertIn(
             "https://github.com/varelaseb/annotateanything/blob/main/"
             "docs/specs/worklane-provider.spec.html#lane-record",
             section,
         )
-        for key in ("goal_state", "phase", "last_handoff_at", "ticket", "role"):
+        for key in ("last_handoff_at", "ticket", "role"):
             with self.subTest(key=key):
                 self.assertIn(f"<code>{key}</code>", section)
         for key in ("issue", "pr", "waiting_on"):
             with self.subTest(key=key):
                 self.assertIn(f"<code>{key}</code>", section)
         self.assertIn(
-            "Sets owner, repository, goal, and issue when known, plus the"
-            " octo-lite additions",
+            "Creates it with the shared workbench fields, including owner, "
+            "repository, goal, and issue when known",
             section,
         )
         self.assertIn(
@@ -75,17 +91,32 @@ class LaneRecordTests(unittest.TestCase):
 
     def test_meta_operator_hook_names_create_and_delete_fields(self) -> None:
         text = (ROOT / "agents/meta-operator.md").read_text(encoding="utf-8")
-        for term in (LANES, "shared workbench lane-record fields",
-                     '`goal_state = "active"`', '`phase = "shaping"`', "delete it"):
+        for term in (
+            LANES,
+            "shared workbench lane-record fields",
+            "waiting_on",
+            "delete it",
+        ):
             with self.subTest(term=term):
                 self.assertIn(term, text)
 
     def test_orchestrator_hook_names_every_field(self) -> None:
         text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
-        for term in (LANES, "`issue`", "`pr`", "`[[workers]]`", "`last_handoff_at`",
-                     "`goal_state`", "`waiting_on`", '`"spec review"`',
-                     '`"QA review"`', '`""`', "`phase`", "`pane`", "`ticket`",
-                     "`role`", *(f'`"{p}"`' for p in PHASES)):
+        for term in (
+            LANES,
+            "last_handoff_at",
+            "`issue`",
+            "`pr`",
+            "`[[workers]]`",
+            "`waiting_on`",
+            '`"spec review"`',
+            '`"QA review"`',
+            '`"blocked"`',
+            '`""`',
+            "`pane`",
+            "`ticket`",
+            "`role`",
+        ):
             with self.subTest(term=term):
                 self.assertIn(term, text)
 

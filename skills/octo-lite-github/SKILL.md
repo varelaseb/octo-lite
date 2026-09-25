@@ -78,10 +78,10 @@ Do not create extra workflow labels unless the operator explicitly asks.
 
 ## Verdict Mutations
 
-- The reviewer returns a clear or blocking finding set bound to exact HEAD.
+- The reviewer returns a clear or blocking finding set for the diff.
 - A deterministic helper creates or updates one machine-readable PR verdict
-  comment for shaping review and one for code review.
-- The comment binds HEAD, inputs, findings, and reviewer receipt.
+  comment for code review.
+- The comment records inputs, findings, and reviewer receipt.
 - Do not depend on the formal Review API, reviewer identity, checks, or labels.
 - Never merge or approve as the human reviewer.
 
@@ -98,10 +98,7 @@ Do not create extra workflow labels unless the operator explicitly asks.
   durably waived through a repository-approved path.
 - The merge completes the worklane. Move the primary Linear issue to Done, the
   team's completed state, and stop the lane. Do not assume deployment-named
-  states exist. Residual QA gaps are historical notes only and never keep the
-  issue open: never infer, create, reopen, or drive follow-up work from them.
-  Follow-up exists only under an explicit new ticket or explicit operator
-  instruction.
+  states exist.
 - Verify the state change landed, whether performed by repository automation
   or by the owning agent. Do not claim a hook succeeded without readback.
 - Record merge and deployment evidence separately. A completion state does

@@ -68,8 +68,7 @@ Use these shaping patterns:
 - Record durable product or system behavior in specs, not only in chat.
 - Surface ADR-worthy decisions before readiness.
 - Propose follow-up issues only when the work is independently valuable or a
-  real prerequisite. Create one only on explicit operator instruction; never
-  derive one from residual QA gaps of merged work.
+  real prerequisite. Create one only on explicit operator instruction.
 - Treat the final ready gate as a quality bar, not a formatting step.
 
 ## Spec Updates

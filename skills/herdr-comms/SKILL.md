@@ -51,30 +51,6 @@ those leave to the caller:
 
 Any failure closes the tab, so a failed spawn never leaves an orphan.
 
-## Shaping-review launcher mapping
-
-The pre-fleet shaping-review pass uses one fresh Codex worker with the
-`shaping-reviewer` contract. Its tools are Read, Grep, Glob, Bash, and Skill,
-used read only: `repo-read` and `session-log-read` are Read, Grep, Glob;
-`github-read` is read-only `gh`; `linear-read` is Linear GraphQL queries, never
-mutations. Launch it as:
-
-```sh
-herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR \
-  --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast \
-  --sandbox read-only
-```
-
-The contract is read-only and forbids edits, commits, pushes, and issue or PR
-mutations. The model, effort, and service tier are explicit launcher inputs,
-not additions to the model-free role contract. Launch with
-`--sandbox read-only`. If the host sandbox fails before any command runs (bwrap
-`loopback: Failed RTM_NEWADDR` fails `read-only` and `workspace-write` alike),
-relaunch with no sandbox flag. Codex then runs under the configured
-`sandbox_mode`, often `danger-full-access`, so only the read-only contract
-binds; the caller verifies one real source-read result before accepting the
-verdict.
-
 ## Close an agent
 
 ```

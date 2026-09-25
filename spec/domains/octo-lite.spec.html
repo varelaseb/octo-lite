@@ -24,21 +24,21 @@
 
 <section data-anchor="install" id="install">
 <h2>Install</h2>
-<p data-anchor="install-symlink" id="install-symlink"><code>scripts/install-octo-lite</code> symlinks <code>skills/*</code>, <code>agents/*.md</code>, <code>profile/AGENTS.md</code>, and executable helpers into the Claude and Codex profiles and <code>~/.local/bin</code>; <code>--check</code> verifies the links.</p>
-<p data-anchor="install-yield" id="install-yield">A path already linked by a peer repository is left to that peer, and dangling links are pruned.</p>
+<p data-anchor="install-symlink" id="install-symlink"><code>scripts/install-octo-lite</code> symlinks <code>skills/*</code>, <code>agents/*.md</code>, and executable helpers into the Claude and Codex profiles and <code>~/.local/bin</code>; <code>--check</code> verifies the links.</p>
+<p data-anchor="install-collision" id="install-collision">A target collision fails without overwrite, and dangling links are pruned.</p>
 <p data-anchor="install-peers" id="install-peers">Spec Chat skills link straight from a sibling spec-chat clone; only the third-party tdd skill is pinned, by <code>Skillfile</code> into <code>agents/skills</code> (ADR 0002).</p>
 </section>
 
 <section data-anchor="roles" id="roles">
 <h2>Roles</h2>
 <p data-anchor="roles-contracts" id="roles-contracts"><code>agents/*.md</code> are the hand-written role contracts: orchestrator, implementer, code-reviewer, and meta-operator; none pins a model.</p>
-<p data-anchor="roles-loaded" id="roles-loaded">Every spawned worker with a role contract (implementer, code-reviewer, shaping-reviewer) loads it: Claude through <code>--agent ROLE</code>, Codex as developer instructions via <code>herdr-spawn --role ROLE</code>.</p>
+<p data-anchor="roles-loaded" id="roles-loaded">Every spawned worker with a role contract (implementer or code-reviewer) loads it: Claude through <code>--agent ROLE</code>, Codex as developer instructions via <code>herdr-spawn --role ROLE</code>.</p>
 </section>
 
 <section data-anchor="delivery" id="delivery">
 <h2>Delivery</h2>
 <p data-anchor="delivery-shape" id="delivery-shape"><code>spec-chat-shape</code> produces the reviewed canonical spec, its Linear issue, and dependency-linked implementation tickets; a processed human Finish review accepts the spec.</p>
-<p data-anchor="delivery-implement" id="delivery-implement"><code>implement-spec</code> runs one shaping-review worker, then fills the ready ticket frontier with implementer workers, each in its own worktree.</p>
+<p data-anchor="delivery-implement" id="delivery-implement"><code>implement-spec</code> runs its pre-dispatch mechanical checks, then fills the ready ticket frontier with implementer workers, each in its own worktree.</p>
 <p data-anchor="delivery-merge" id="delivery-merge">One merger at a time integrates finished commits onto the single integration branch and PR.</p>
 <p data-anchor="delivery-review" id="delivery-review">A code-reviewer judges the integration head, and findings get bounded repair until review is clear and required checks pass.</p>
 <p data-anchor="delivery-linear" id="delivery-linear">Linear stays truthful: a ticket is Done only once integrated and pushed, and a merged accepted PR completes the worklane.</p>
@@ -52,15 +52,20 @@
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only its delivery state and writes those keys at the moments below.</p>
+<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only <code>last_handoff_at</code> and worker <code>ticket</code> and <code>role</code>, and writes those keys at the moments below.</p>
 <figure data-anchor="octo-lane-record">
-<h3 data-anchor="octo-lane-record-heading">Octo-lite's lane record keys</h3>
-<pre data-anchor="octo-lane-record-example"><code># Octo-lite additions to the workbench lane record
-goal_state = "active"            # active, blocked, or complete
-phase = "implementing"           # display only: "shaping", "shaping review", "implementing", "merging", "code review", "QA", "waiting on human", or "closing"
+<h3 data-anchor="octo-lane-record-heading">The lane record: workbench fields and octo-lite keys</h3>
+<pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
+owner = "w5:pB2"                 # lane owner pane; file named by its agent name
+repository = "varelaseb/annotateanything"
+issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
+goal = "Shape ANN-45 and ANN-44 through Finish review"
+pr = 30                          # set when shaping opens the draft PR
 last_handoff_at = "2026-09-24T18:24:09Z"
+waiting_on = ""                  # "", "spec review", "QA review", or "blocked"
 
 [[workers]]
+pane = "w5:pC1"
 ticket = "ANN-64"
 role = "implementer"</code></pre>
 <figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Shared keys and the worker pane come from the workbench format.</figcaption>
@@ -71,12 +76,10 @@ role = "implementer"</code></pre>
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Sets owner, repository, goal, and issue when known, plus the octo-lite additions with <code>goal_state</code> active and <code>phase</code> shaping.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with the shared workbench fields, including owner, repository, goal, and issue when known, plus <code>waiting_on</code> set to <code>""</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates worker <code>ticket</code> and <code>role</code>, and <code>last_handoff_at</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to spec review or QA review; clears it when the gate resolves.</td></tr>
-<tr data-anchor="octo-lane-record-life-goal"><td>Goal state changes</td><td>Owner</td><td>Updates <code>goal_state</code> to active, blocked, or complete.</td></tr>
-<tr data-anchor="octo-lane-record-life-phase"><td>Owner moves the lane to another phase</td><td>Owner</td><td>Updates <code>phase</code> to one of the listed values.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
 </tbody>
 </table>
