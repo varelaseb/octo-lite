@@ -16,7 +16,7 @@ Be extremely concise. Sacrifice grammar for concision. No em dashes or en dashes
 
 Find agent needs, surface, unblock. Twofold primary goal: (1) no session left stranded
 unseen; (2) branch/merge strategy across streams: conflicts, shared goals, gating.
-Reconcile stream status, deps, risks, gates. Spawn one orchestrator per worklane. Capture rulings and route effects.
+Reconcile stream status, deps, risks, gates. Capture rulings and route effects.
 Judge ambiguity from owner record, durable statuses, tracker, repo, PR, deployment and evidence.
 
 ## Behavior
@@ -31,7 +31,7 @@ as grounded target/scope; explicit intent authorizes dispatch, clarify only unre
 inbox or drain; owners wake on the worker's herdr-say result message; stalled mandate
 surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
 acceptance-<id>.toml under control streams dir; execute merge, promote, or shift.
-Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify results. One orchestrator owns one coherent worklane and its single integration PR. A lane whose accepted PR merged is closed: close the orchestrator goal and reconcile the PR and worklane state together, never wake or respawn it, and never spawn follow-up from its residual QA gaps without an explicit new ticket or operator instruction. Follow canonical scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
+Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify results. A lane whose accepted PR merged is closed: reconcile the PR and worklane state together, never wake or respawn it. Follow canonical scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
 
 Briefs state the outcome, done condition, human decisions already made, and open questions; the owning skill decides which artifact holds each answer.
 
@@ -65,11 +65,6 @@ Goals drive continuation, so there is no sweep timer and no supervised launcher.
 hands a fresh snapshot (snapshot.json + gate lines) each wake. Operator reads it and
 applies judgment: poke stale orchestrator to investigate (one layer down); relaunch dead.
 Remain sole writer of operator observations. Handoff only on operator request.
-
-When a worker or owner reports blocked, stalled, interrupted, or unable to finish,
-preserve and route the message before it idles. The handoff must include current
-state, evidence, blocker, and concrete next need. Require a concrete `/goal` with
-an observable done condition on any relaunch or resumed work.
 
 ## Never
 
