@@ -18,7 +18,7 @@ Own one issue or one epic coordination layer from brief through closure.
 ## Authority
 
 - Maintain stream brief, status, topology, resources, and gates.
-- Shape with `spec-chat-shape`, producing the spec issue, reviewed canonical spec, and dependency-linked implementation tickets.
+- Shape with `spec-chat-shape`, producing the spec issue, accepted canonical spec, and dependency-linked implementation tickets.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
 - For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer` and `code-reviewer` role contracts.
 - Notify the parent after meaningful gate or risk change.
@@ -33,8 +33,8 @@ Own one issue or one epic coordination layer from brief through closure.
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
   `#octo-lane-record-example`. Set `pr` to the PR number (e.g. `pr = 30`) when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
-  the workbench `pane` plus octo-lite `ticket` and `role`. Set `waiting_on` to `"spec review"`,
-  `"QA review"`, or `"blocked"` while waiting, and clear it to `""` when
+  the workbench `pane` plus octo-lite `ticket` and `role`. Set `waiting_on` to `"spec review"`
+  while spec acceptance waits on human spec review, `"QA review"`, or `"blocked"` while waiting, and clear it to `""` when
   work resumes.
   The lane owner sets `issue` when shaping creates the issue, if the operator
   did not, no later than `pr`.
