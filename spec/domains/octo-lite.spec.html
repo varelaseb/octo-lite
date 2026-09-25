@@ -52,7 +52,7 @@
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/ann/machinery-contract/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only its delivery state and writes those keys at the moments below.</p>
+<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only its delivery state and writes those keys at the moments below.</p>
 <figure data-anchor="octo-lane-record">
 <h3 data-anchor="octo-lane-record-heading">Octo-lite's lane record keys</h3>
 <pre data-anchor="octo-lane-record-example"><code># Octo-lite additions to the workbench lane record
@@ -71,8 +71,10 @@ role = "implementer"</code></pre>
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates the octo-lite additions with <code>goal_state</code> active and <code>phase</code> shaping.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Sets owner, repository, goal, and issue when known, plus the octo-lite additions with <code>goal_state</code> active and <code>phase</code> shaping.</td></tr>
+<tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates worker <code>ticket</code> and <code>role</code>, and <code>last_handoff_at</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to spec review or QA review; clears it when the gate resolves.</td></tr>
 <tr data-anchor="octo-lane-record-life-goal"><td>Goal state changes</td><td>Owner</td><td>Updates <code>goal_state</code> to active, blocked, or complete.</td></tr>
 <tr data-anchor="octo-lane-record-life-phase"><td>Owner moves the lane to another phase</td><td>Owner</td><td>Updates <code>phase</code> to one of the listed values.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>

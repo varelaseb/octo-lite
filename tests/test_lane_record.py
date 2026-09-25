@@ -37,7 +37,7 @@ class LaneRecordTests(unittest.TestCase):
             set(record), {"goal_state", "phase", "last_handoff_at", "workers"}
         )
 
-    def test_spec_links_workbench_format_and_declares_only_octo_keys(self) -> None:
+    def test_spec_links_workbench_format_and_declares_write_moments(self) -> None:
         html = SPEC.read_text(encoding="utf-8")
         match = re.search(
             r'<section data-anchor="lane-record".*?</section>',
@@ -46,13 +46,32 @@ class LaneRecordTests(unittest.TestCase):
         )
         self.assertIsNotNone(match, "lane record section is missing")
         section = match.group(0)
-        self.assertIn("worklane-provider.spec.html#lane-record", section)
+        self.assertIn(
+            "https://github.com/varelaseb/annotateanything/blob/main/"
+            "docs/specs/worklane-provider.spec.html#lane-record",
+            section,
+        )
         for key in ("goal_state", "phase", "last_handoff_at", "ticket", "role"):
             with self.subTest(key=key):
                 self.assertIn(f"<code>{key}</code>", section)
-        for key in ("issue", "repository", "goal", "pr", "owner", "waiting_on"):
+        for key in ("issue", "pr", "waiting_on"):
             with self.subTest(key=key):
-                self.assertNotIn(f"<code>{key}</code>", section)
+                self.assertIn(f"<code>{key}</code>", section)
+        self.assertIn(
+            "Sets owner, repository, goal, and issue when known, plus the"
+            " octo-lite additions",
+            section,
+        )
+        self.assertIn(
+            "Shaping opens the draft pull request</td><td>Owner</td><td>"
+            "Sets <code>issue</code> if missing and <code>pr</code>.",
+            section,
+        )
+        self.assertIn(
+            "Sets <code>waiting_on</code> to spec review or QA review; clears it"
+            " when the gate resolves.",
+            section,
+        )
 
     def test_meta_operator_hook_names_create_and_delete_fields(self) -> None:
         text = (ROOT / "agents/meta-operator.md").read_text(encoding="utf-8")
