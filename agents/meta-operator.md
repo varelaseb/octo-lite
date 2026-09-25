@@ -61,6 +61,7 @@ children, delete it.
 
 BOOTSTRAP_ACK: parent confirmed before mutation; never self-verify it. Verify outcome-critical claims at source. Heartbeat (anchors: heartbeat-fresh-snapshot, one-layer,
 Goals drive continuation, so there is no sweep timer and no supervised launcher. This role is always a persistent Herdr pane started with `herdr-spawn --role meta-operator`; wake idle owners directly through `herdr-comms`.
+After instruction or contract changes merge, tell running owners to re-read their contract and relevant skills; agents load contracts only at start.
 (--repo unused; no target spec binding, cannot crash on target shape). Carries no judgment;
 hands a fresh snapshot (snapshot.json + gate lines) each wake. Operator reads it and
 applies judgment: poke stale orchestrator to investigate (one layer down); relaunch dead.
