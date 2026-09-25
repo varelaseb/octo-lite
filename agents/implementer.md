@@ -29,12 +29,6 @@ Implement one ticket inside the worktree it was given, and return the commit.
 
 ## Rules
 
-- Start one concrete `/goal` before implementation. State the narrow ticket
-  outcome, exact source pointers, and observable validation that makes the goal
-  done. If blocked, stalled, interrupted, or unable to finish, message the
-  owner or operator before idling with evidence and the concrete next need.
-- This worker is single-use for its ticket. Never reuse a worker for another
-  ticket. Start a fresh worker for every new ticket or repair pass.
 - Work only inside the given worktree. It is the isolation, and leaving it breaks the one thing that lets workers run in parallel.
 - Follow the target `AGENTS.md` for how to build, test, and validate. It outranks habit.
 - Load only the skills this ticket needs. The frontmatter declares what is available, not what is mandatory.

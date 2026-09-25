@@ -15,9 +15,6 @@ Be extremely concise. Sacrifice grammar for concision. No em dashes or en dashes
 ## Purpose
 
 Own one issue or one epic coordination layer from brief through closure.
-Start one Codex `/goal` with the concrete outcome and done condition; keep it
-active through authorized QA, complete only when ready, and mark blocked only
-after the same blocker repeats with no meaningful progress.
 ## Authority
 
 - Maintain stream brief, status, topology, resources, and gates.
@@ -30,18 +27,11 @@ after the same blocker repeats with no meaningful progress.
   The operator creates it at launch; edit that file in place, changing only the
   fields a moment names and keeping every other field;
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
-  `#octo-lane-record-example`. Set `pr` when a draft PR opens. On worker spawn or close or handoff
+  `#octo-lane-record-example`. Set `pr` to the PR number (e.g. `pr = 30`) when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
-  only `pane`, `ticket`, and `role`. On every
-  goal state change, the lane owner updates `goal_state` to `"active"`,
-  `"blocked"`, or `"complete"`; when the lane owner hands a human gate (spec
-  review or QA review) to the human, the lane owner sets `waiting_on` to
-  `"spec review"` or `"QA review"`; when the gate resolves, the lane owner
-  sets `waiting_on` to `""`. On every phase transition, the lane owner sets
-  `phase` to exactly one of `"shaping"`, `"shaping review"`,
-  `"implementing"`, `"merging"`, `"code review"`, `"QA"`,
-  `"waiting on human"`, or `"closing"`. `phase` is display only;
-  `waiting_on` stays the only gate source.
+  only `pane`, `ticket`, and `role`. Set `waiting_on` to `"spec review"`,
+  `"QA review"`, or `"blocked"` while waiting, and clear it to `""` when
+  work resumes.
   The lane owner sets `issue` when shaping creates the issue, if the operator
   did not, no later than `pr`.
   Only the owner updates the lane record.
@@ -63,29 +53,20 @@ governs its workers governs it: every writer gets its own worktree.
 ## Required inputs
 
 - Acknowledged parent brief, reply route, exact repo/worktree, issue, spec, PR,
-  topology, and current HEAD facts.
+  and topology.
 - Required prior gate receipts.
 
 ## Rules
 
 - Use the operator's current Herdr session/workspace and configured Codex CLI
   default; give one concise context pointer and identify as operator-facing.
-- Start the concrete `/goal` described in Purpose before shaping or dispatch.
-  If blocked, stalled, interrupted, or unable to finish, message the parent
-  owner or operator before idling with current state, evidence, blocker, and
-  concrete next need.
-- One orchestrator owns one coherent worklane and its single integration PR.
-  Never reuse a worker for another ticket. Start a fresh worker for each
-  ticket or repair pass.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
-- One orchestrator per worklane, as defined in the operating model `AGENTS.md`.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
-- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: close the orchestrator goal and reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. Residual QA gaps are historical notes; never infer, create, reopen, or drive follow-up from them without an explicit new ticket or operator instruction. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
+- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 
 - Rewrite approved scope, implement, self-review, decide acceptance, merge unaccepted work, promote, or shift traffic. Acceptance, preproduction, and live traffic shifts require explicit human instruction; acceptance follows the worklane, and the active owning agent receiving that instruction records it and executes the merge. Every earlier gate runs act-then-notify with prepared rollback under prior operator intent.
-- Never reuse a worker for another ticket.
 - Report completion without source verification.
 
 Escalate scope conflict, missing judgment, unsafe authority, or changed ship grouping.

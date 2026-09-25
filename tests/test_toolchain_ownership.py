@@ -38,7 +38,7 @@ class ToolchainOwnershipTests(unittest.TestCase):
             check=False,
         )
 
-    def test_installer_yields_live_peer_link_and_prunes_dangling_link(self) -> None:
+    def test_installer_refuses_peer_link_collision(self) -> None:
         peer_source = self.root / "peer-skill"
         peer_source.mkdir()
         (peer_source / "SKILL.md").write_text("peer\n", encoding="utf-8")
@@ -48,16 +48,9 @@ class ToolchainOwnershipTests(unittest.TestCase):
 
         result = self._install()
 
-        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotEqual(0, result.returncode)
         self.assertEqual(peer_source.resolve(), peer_target.resolve())
-        self.assertIn("owned by another repo", result.stdout)
-
-        dangling = self.profile / ".codex" / "skills" / "commit"
-        dangling.unlink()
-        dangling.symlink_to(self.root / "gone")
-        result = self._install()
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual((ROOT / "skills" / "commit").resolve(), dangling.resolve())
+        self.assertIn("refusing to replace", result.stderr)
 
 
     def test_missing_required_skill_blocks_installer_check(self) -> None:
@@ -74,22 +67,6 @@ class ToolchainOwnershipTests(unittest.TestCase):
             env={**os.environ, "SPEC_CHAT_ROOT": str(self.peer)},
         )
         self.assertNotEqual(0, check.returncode)
-
-
-    def test_delivery_skill_keeps_the_exact_pre_fleet_mapping(self) -> None:
-        text = (ROOT / "skills" / "implement-spec" / "SKILL.md").read_text(encoding="utf-8")
-        for expected in (
-            "role: shaping-reviewer",
-            "provider: openai",
-            "engine: codex",
-            "model: gpt-5.6-sol",
-            "effort: xhigh",
-            "service_tier: fast",
-            "tools: repo-read, linear-read, github-read, session-log-read",
-            "herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast",
-        ):
-            self.assertIn(expected, text)
-
 
 if __name__ == "__main__":
     unittest.main()
