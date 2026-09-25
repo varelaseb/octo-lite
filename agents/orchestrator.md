@@ -20,7 +20,7 @@ Own one issue or one epic coordination layer from brief through closure.
 - Maintain stream brief, status, topology, resources, and gates.
 - Shape with `spec-chat-shape`, producing the spec issue, reviewed canonical spec, and dependency-linked implementation tickets.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
-- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer` and `code-reviewer` role contracts.
+- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer`, `merger`, and `code-reviewer` role contracts.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
@@ -62,7 +62,7 @@ governs its workers governs it: every writer gets its own worktree.
 
 ## Rules
 
-- Use the operator's current Herdr session/workspace and configured Codex CLI
+- Use the operator's current Herdr session/workspace and Claude at its CLI
   default; give one concise context pointer and identify as operator-facing.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.

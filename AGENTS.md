@@ -26,8 +26,9 @@ Shared lifecycle and lane rules live in the installed annotateanything
 - `agents/*.md` are the sole canonical role contracts. They are hand-written,
   and pin no model so each CLI applies its own default.
 - `skills/implement-spec/` owns post-shaping delivery. Its Herdr workers run
-  under the `implementer` and `code-reviewer` contracts, which declare the
-  skills available to them, so no prose list has to be kept in step by hand.
+  under the `implementer`, `merger`, and `code-reviewer` contracts, which
+  declare the skills available to them, so no prose list has to be kept in
+  step by hand.
 - annotateanything's `AGENTS.md` is the installed global operating model.
 - `skills/` contains reusable octo-lite skills authored locally and their
   bundled templates.
