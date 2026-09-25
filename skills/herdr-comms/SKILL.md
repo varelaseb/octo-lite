@@ -36,7 +36,9 @@ is visible.
 `--operating-model FILE` is optional. It hands that file to the agent at start,
 so no global instruction file is needed: Claude gets
 `--append-system-prompt-file FILE`, Codex gets it ahead of the contract in
-`developer_instructions`. Without it, nothing changes.
+`developer_instructions`. It defaults to `$OCTO_LITE_OPERATING_MODEL`, and the
+spawn exports that path into the new tab, so every child inherits the model
+without passing the flag. Without either, nothing changes.
 
 Codex runs with `--no-daemon`, so its thread and commands live in the tab's own
 process tree, not the shared app-server that outlives the tab.

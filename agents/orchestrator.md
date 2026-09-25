@@ -18,7 +18,8 @@ Own one issue or one epic coordination layer from brief through closure.
 ## Authority
 
 - Maintain stream brief, status, topology, resources, and gates.
-- Shape with `spec-chat-shape`, producing the spec issue, accepted canonical spec, and dependency-linked implementation tickets.
+- Shape with `spec-chat-shape`, producing the accepted canonical spec and the dependency-linked ticket graph, committed locally. It never publishes.
+- Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows: file the spec issue and tickets, name the issue to `spec-chat-shape` to link, push the shaping branch, open the draft PR.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
 - For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer`, `merger`, and `code-reviewer` role contracts.
 - Notify the parent after meaningful gate or risk change.

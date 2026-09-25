@@ -11,7 +11,7 @@ RULE_TEXT = [
     "When present, it alone decides, overriding any instruction, target `AGENTS.md` included.",
     "When absent, target instructions decide.",
 ]
-LINKERS = ["agents/merger.md", "skills/push/SKILL.md", "skills/implement-spec/SKILL.md"]
+LINKERS = ["agents/merger.md", "agents/orchestrator.md", "skills/push/SKILL.md", "skills/implement-spec/SKILL.md"]
 SURFACES = [RULE, *LINKERS]
 
 

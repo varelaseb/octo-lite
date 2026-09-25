@@ -162,6 +162,7 @@ class HerdrWrapperTest(unittest.TestCase):
             "FAKE_START_ARGV": str(d / "start.argv"),
             "HOME": str(d),
         }
+        self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
 
     def spawn(self, extra=(), **env):
         return subprocess.run(
@@ -310,11 +311,30 @@ class HerdrWrapperTest(unittest.TestCase):
         i = argv.index("--append-system-prompt-file")
         self.assertEqual(argv[i + 1], str(model.resolve()))
 
+    def test_the_operating_model_is_inherited_by_every_child(self):
+        # The tab gets the model path in its env, and a spawn from inside that
+        # tab defaults to it, so no caller has to remember the flag.
+        self.dialog.write_text("none\n")
+        model = self.cwd / "AGENTS.md"
+        model.write_text("# Model\n")
+        r = self.spawn(extra=["--operating-model", str(model)])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        exported = f"--env OCTO_LITE_OPERATING_MODEL={model.resolve()}"
+        self.assertIn(exported, self.log.read_text())
+        self.log.unlink()
+        r = self.spawn(OCTO_LITE_OPERATING_MODEL=str(model.resolve()))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = self.start_argv()
+        self.assertEqual(argv[argv.index("--append-system-prompt-file") + 1],
+                         str(model.resolve()))
+        self.assertIn(exported, self.log.read_text())
+
     def test_no_operating_model_changes_nothing(self):
         self.dialog.write_text("none\n")
         r = self.spawn()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("--append-system-prompt-file", self.start_argv())
+        self.assertNotIn("--env", self.log.read_text())
 
     def test_a_missing_operating_model_stops_before_any_tab(self):
         r = self.spawn(extra=["--operating-model", str(self.cwd / "nope.md")])

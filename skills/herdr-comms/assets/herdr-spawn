@@ -12,7 +12,10 @@
 # CLI's own defaults. This script pins none of it.
 set -euo pipefail
 
-workspace=""; name=""; label=""; cwd="$PWD"; role=""; model=""
+workspace=""; name=""; label=""; cwd="$PWD"; role=""
+# The operating model is inherited: each spawn exports it into the tab it creates,
+# so every child spawned from there defaults to the same file.
+model="${OCTO_LITE_OPERATING_MODEL:-}"
 
 usage() {
   cat <<'EOF'
@@ -88,7 +91,9 @@ elif [[ -n "$model" || -f "$contract_file" ]]; then
   launch_argv=(-c "developer_instructions=$instructions" "${launch_argv[@]}")
 fi
 
-out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" --no-focus)"
+tab_env=()
+[[ -z "$model" ]] || tab_env=(--env "OCTO_LITE_OPERATING_MODEL=$model")
+out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" "${tab_env[@]}" --no-focus)"
 tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
 pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
 [[ -n "$tab" && -n "$pane" ]] || { echo "herdr-spawn: tab create returned no tab or pane" >&2; exit 1; }

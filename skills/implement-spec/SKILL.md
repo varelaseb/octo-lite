@@ -53,7 +53,8 @@ evidence still applies; human QA, code readiness and acceptance are separate.
    optional exploration agent through `herdr-comms`. Give it write access only
    to a shared directory outside the repo. Its deliverable is concise Markdown
    notes linked from the relevant tickets.
-3. Create the integration branch from the target base and open one draft PR.
+3. Continue the draft PR the orchestrator opened while shaping, else create the
+   integration branch from the target base and open one draft PR.
    Push, open PRs, and file issues only as
    [consent](../octo-lite-github/SKILL.md#consent) allows; otherwise the lane stays on local
    branches and ends at a local integration head.
