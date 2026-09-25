@@ -62,8 +62,7 @@ issue = "ANN-45"                 # primary issue; operator at launch if known, e
 goal = "Shape ANN-45 and ANN-44 through spec acceptance"
 pr = 30                          # set when shaping opens the draft PR
 last_handoff_at = "2026-09-24T18:24:09Z"
-waiting_on = ""                  # "", "spec review", "QA review", or "blocked"
-blocked_by = ["ANN-44"]          # optional; lanes this lane is parked on
+waiting_on = ""                  # "", "spec review", "QA review", "blocked", or a lane key "ANN-44"
 
 [[workers]]
 pane = "w5:pC1"
@@ -81,7 +80,7 @@ role = "implementer"</code></pre>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates worker <code>ticket</code> and <code>role</code>, and <code>last_handoff_at</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"spec review"</code> while spec acceptance waits on human spec review, or <code>"QA review"</code>; clears it when the gate resolves.</td></tr>
-<tr data-anchor="octo-lane-record-life-blocked-by"><td>Owner parks the lane on another lane, or resumes</td><td>Owner</td><td>Sets <code>blocked_by</code> to the issue keys it waits on; clears it to <code>[]</code> on resume.</td></tr>
+<tr data-anchor="octo-lane-record-life-waiting-lane"><td>Owner parks the lane on another lane, such as its merge, or resumes</td><td>Owner</td><td>Sets <code>waiting_on</code> to that lane's issue key; clears it to <code>""</code> on resume. One lane at a time.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
 </tbody>
 </table>
