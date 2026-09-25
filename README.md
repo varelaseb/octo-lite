@@ -26,7 +26,7 @@ Source-controlled files live in this repo. `scripts/install-octo-lite` links
 them into the Claude and Codex profiles:
 
 ```text
-~/.codex/AGENTS.md, ~/.claude/CLAUDE.md -> profile/AGENTS.md (unless a peer owns it)
+~/.codex/AGENTS.md, ~/.claude/CLAUDE.md -> annotateanything/AGENTS.md
 ~/.{codex,claude}/agents/<role>.md      -> agents/<role>.md
 ~/.{codex,claude,agents}/skills/<skill> -> skills/<skill>, agents/skills/tdd
 ~/.{codex,claude}/skills/spec-chat-*    -> sibling spec-chat clone

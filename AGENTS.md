@@ -17,24 +17,8 @@ disposition for reviewer findings beyond the elegant minimum. Precedents:
 gh#28 (-380 lines deletion-only), gh#34 (envelope deleted, not simplified),
 gh#31 (one age bound, dropped lock/TOCTOU armor).
 
-## Worker lifecycle
-
-Every worker starts one concrete `/goal` before work, naming its narrow
-outcome, source or ticket pointers, and observable done condition. Keep it
-active while working. A worker that is blocked, stalled, interrupted, or unable
-to finish messages its owner or operator before idling with current state,
-evidence, blocker, and concrete next need. It does not report completion or go
-idle without that handoff. A transient failure or normal human gate is
-reported, but is not itself a blocked goal.
-
-Each worker is single-ticket and single-use. Never reuse a worker for another
-ticket. Start a fresh worker for each ticket or repair pass while preserving
-the blocked, stalled, interrupted, and unable-to-finish handoff above.
-
-One orchestrator owns one coherent worklane and its single integration PR.
-Do not split a lane across orchestrators or create competing integration PRs.
-When a lane finishes, close the orchestrator goal and reconcile the PR and
-worklane state together, then stop the lane.
+Shared lifecycle and lane rules live in the installed annotateanything
+`AGENTS.md`.
 
 ## Durable Sources
 
@@ -44,7 +28,7 @@ worklane state together, then stop the lane.
 - `skills/implement-spec/` owns post-shaping delivery. Its Herdr workers run
   under the `implementer` and `code-reviewer` contracts, which declare the
   skills available to them, so no prose list has to be kept in step by hand.
-- `profile/AGENTS.md` is the global user-profile guidance to install.
+- annotateanything's `AGENTS.md` is the installed global operating model.
 - `skills/` contains reusable octo-lite skills authored locally and their
   bundled templates.
 - `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` are the skillfile
@@ -83,7 +67,6 @@ worklane state together, then stop the lane.
 
 - Do not add a CLI, daemon, polling service, or runtime stack for v1.
 - Keep templates inside the relevant skill `assets/` directory.
-- Keep always-loaded guidance in `profile/AGENTS.md` short.
 - Do not copy octo-lite skills, agents, or templates into target repos.
 - Install profile, role contracts, skills, and helpers by symlink.
 

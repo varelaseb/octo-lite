@@ -14,23 +14,6 @@ review. Workers load their `agents/*.md` role contracts and use octo-lite
 skills as guidance. There is no role resolver, loop workflow, receipt, journal,
 exact-role gate, or lifecycle ceremony.
 
-## Goal
-
-The owning orchestrator starts one Codex `/goal` for the requested outcome and
-done condition. Keep it active through shaping, implementation, review, and
-authorized QA. Complete it only when the requested handoff is ready. Each
-temporary worker starts one narrow goal for its ticket and returns its result to
-the owning orchestrator. Goals point to Linear, the canonical spec, and status
-artifacts; they do not duplicate them or replace human gates. Do not mark a
-goal blocked for a normal human gate or one transient failure.
-Each worker is single-ticket and single-use. Never reuse a worker for another
-ticket. Start a fresh worker for every ticket or repair pass.
-One orchestrator owns one coherent worklane and its single integration PR.
-Before idling, a worker that is blocked, stalled, interrupted, or unable to
-finish messages its owner or operator with current state, evidence, blocker,
-and concrete next need. It does not report completion or go idle without that
-handoff. The owner consumes the handoff and records the next action.
-
 ## Inputs
 
 Require:
@@ -41,12 +24,11 @@ Require:
 - explicit blocking relations between tickets
 - target root `AGENTS.md`
 
-A processed human **Finish review** hand-off is acceptance of the reviewed
-canonical spec and closes the browser review loop. It permits implementation
-dispatch under that accepted spec. It does not accept the implementation PR,
-approve a merge, promote to preproduction, or approve live traffic; those
-gates remain explicit. The hand-off must retain the exact baseline, cursor,
-Finish receipt, and source/head binding.
+A processed human **Finish review** hand-off accepts the reviewed canonical
+spec and permits implementation dispatch. Follow `spec-chat/skill/review-spec/SKILL.md`
+under `## Remote hosting lifecycle` for review resource lifetime. It does not
+accept the implementation PR, approve a merge, promote to preproduction, or
+approve live traffic.
 
 The tickets are a task graph, not ordered steps. The ready frontier contains
 every incomplete ticket whose blockers are complete. Keep Linear titles,
@@ -73,38 +55,10 @@ evidence still applies; human QA, code readiness and acceptance are separate.
 3. Create the integration branch from the target base and open one draft PR.
    Put `Closes <issue-key>` lines in the PR body for the spec issue and every
    implementation ticket.
-4. Before any implementer starts, run exactly one fresh shaping-review worker
-   against the integration branch. Use the launcher mapping below and bind the
-   worker to the current GitHub issue, PR, base, head, canonical specs, target
-   instructions, and review cutoff.
-5. Continue to the ready ticket frontier only after that worker returns a clear
-   verdict. A blocking verdict stops delivery and returns the stream to shaping.
-
-## Pre-fleet shaping-review mapping
-
-The pre-fleet pass is one fresh, read-only shaping-review worker. Its provider
-and logical tool mapping are fixed here so the delivery skill and launcher use
-the same contract:
-
-```text
-role: shaping-reviewer
-provider: openai
-engine: codex
-model: gpt-5.6-sol
-effort: xhigh
-service_tier: fast
-tools: repo-read, linear-read, github-read, session-log-read
-concrete_tools: Read, Grep, Glob, Bash, Skill (read only)
-launcher: herdr-spawn ... --role shaping-reviewer -- codex -m gpt-5.6-sol -c model_reasoning_effort=xhigh -c service_tier=fast --sandbox read-only
-```
-
-The shaping-reviewer contract is passed as Codex developer instructions. The explicit
-model, effort, and service tier are launcher inputs; the hand-written role
-contract remains model-free. The worker may inspect source, GitHub, tracker
-context, and session evidence, but never edits, commits, pushes, or mutates
-issue or PR state. The launcher must not substitute an implementer, code
-reviewer, or resumed session. Sandbox handling and its verified fallback live
-in `herdr-comms` under Shaping-review launcher mapping.
+4. Before dispatch, run the spec validator, backslash-artifact scan, and
+   tag-balance scan. Run one short cross-source conflict check: does the spec
+   contradict another canonical spec, merged main, or an open PR? Human Finish
+   review is the spec acceptance.
 
 ## Herdr workers
 
@@ -161,8 +115,7 @@ when they do not install dependencies, change branches or generate files there.
 
 Consume completed results at the next owner wake, before optional status work,
 and continue integration or the next ready task in that turn. Keep one merger
-owner for the lane's integration branch. Ticket workers remain single-use and
-are never reused for another ticket. Every worker brief names the owner pane.
+owner for the lane's integration branch. Every worker brief names the owner pane.
 The owner waits for the worker's result message; it is the only wake.
 Record one truthful current state, next action and dependency.
 Do not end delivery at startup, dispatch, worker completion or review forwarding.
@@ -173,7 +126,7 @@ Read target `AGENTS.md` and applicable CI commands before broad validation,
 including DB isolation, shard/file concurrency, schema and dependencies.
 Do not run parallel destructive suites on one shared DB when CI isolates them.
 On topology failures, stop the owned invalid run and diagnose before retrying.
-Reuse passing evidence only for unchanged code/head and compatible environment
+Reuse passing evidence only for unchanged code and compatible environment
 when target rules permit; final-head required checks and integration-sensitive
 tests remain required. Repeat or broaden tests only for a change, failure,
 unresolved risk or explicit required check, not because a handoff occurred.
@@ -194,9 +147,10 @@ independent work and report the exact remaining dependency.
 After every ticket is integrated:
 
 1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
-   and have it run `/code-review` on the integration branch. If unsupported,
-   use the available independent review mechanism with the same exact head,
-   base, spec and scope. Verify acknowledgment and actual review work once;
+   and have it run `/code-review` on the integration branch. The verdict policy
+   is the `agents/code-reviewer.md` contract. If unsupported,
+   use the available independent review mechanism with the provided diff, base,
+   spec and scope. Verify acknowledgment and actual review work once;
    do not retry an unrecognized slash command or count pasted text as review.
 2. If review reports issues, create one fix branch and worktree and spawn one
    implementer through `herdr-comms` to fix all findings. Merge it through one
@@ -237,9 +191,6 @@ A human statement that this worklane owns the action is sufficient.
 Failed required checks still block merge until fixed or durably waived through
 a repository-approved path.
 
-The merge completes the worklane: close the orchestrator goal and reconcile the
-PR and worklane state together, reconcile the primary Linear issue to Done,
-remove clean worker worktrees, and stop. Residual QA gaps
-are historical notes only; never infer, create, reopen, or drive follow-up work
-from them. Follow-up exists only under an explicit new ticket or explicit
-operator instruction.
+The merge completes the worklane: reconcile the PR and worklane state together,
+reconcile the primary Linear issue to Done, remove clean worker worktrees, and
+stop.

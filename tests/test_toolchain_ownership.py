@@ -38,7 +38,7 @@ class ToolchainOwnershipTests(unittest.TestCase):
             check=False,
         )
 
-    def test_installer_yields_live_peer_link_and_prunes_dangling_link(self) -> None:
+    def test_installer_refuses_peer_link_collision(self) -> None:
         peer_source = self.root / "peer-skill"
         peer_source.mkdir()
         (peer_source / "SKILL.md").write_text("peer\n", encoding="utf-8")
@@ -48,16 +48,9 @@ class ToolchainOwnershipTests(unittest.TestCase):
 
         result = self._install()
 
-        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotEqual(0, result.returncode)
         self.assertEqual(peer_source.resolve(), peer_target.resolve())
-        self.assertIn("owned by another repo", result.stdout)
-
-        dangling = self.profile / ".codex" / "skills" / "commit"
-        dangling.unlink()
-        dangling.symlink_to(self.root / "gone")
-        result = self._install()
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual((ROOT / "skills" / "commit").resolve(), dangling.resolve())
+        self.assertIn("refusing to replace", result.stderr)
 
 
     def test_missing_required_skill_blocks_installer_check(self) -> None:
