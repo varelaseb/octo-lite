@@ -27,8 +27,7 @@ Own one issue or one epic coordination layer from brief through closure.
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
   Its `owner` is your Herdr pane id (`owner = "w5:pP8"`, the `pane=` value
   herdr-spawn printed), never your agent name or tab; never change it.
-  Keys follow the workbench lane-record format; octo-lite adds only
-  `last_handoff_at`.
+  Keys follow octo-lite's lane record format, spec `#lane-record`.
   The operator creates it at launch; edit that file in place, changing only the
   fields a moment names and keeping every other field;
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
@@ -47,7 +46,7 @@ Own one issue or one epic coordination layer from brief through closure.
   did not, no later than `pr`.
   Only the owner updates the lane record.
   At each hand-off moment, append one line to `<lane record name>.handoffs.jsonl`
-  beside it, per the annotateanything lane-handoffs spec `#handoff-fields`.
+  beside it, per spec `#handoff-fields`.
 
 ## Write surface
 

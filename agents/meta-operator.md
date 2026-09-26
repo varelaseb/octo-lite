@@ -51,14 +51,14 @@ lane and its children, delete it.
 # herdr-spawn printed: name=ann114-projects role=orchestrator tab=w5:t8 pane=w5:pP8 ...
 # file: ${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/ann114-projects.toml
 owner = "w5:pP8"                 # the pane= value
-repository = "varelaseb/annotateanything"
+repository = "varelaseb/octo-lite"
 issue = "ANN-114"                # primary Linear issue, when known
-goal = "Projects view"   # Kanban card title: a short plain feature name, not a done condition
+goal = "Projects view"   # lane title: a short plain feature name, not a done condition
 started_at = "2026-09-26T01:05:00Z"   # UTC now, once, at launch
 waiting_on = ""
 ```
 
-When you fold new scope into an open lane, update its goal (the Kanban title) in the same step.
+When you fold new scope into an open lane, update its goal (the lane title) in the same step.
 
 `owner` is always the `pane=` id, never the `name=` agent name or `tab=` id.
 The file name is the agent name. A wrong `owner` shows the lane as stalled.
