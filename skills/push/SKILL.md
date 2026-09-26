@@ -27,7 +27,8 @@ update the PR for shaped Linear-first work or an explicitly GitHub-first issue.
    prefer the repo's existing branch convention or
    `octo-lite/<linear-key-lower>-<slug>`; for GitHub-first work, use
    `octo-lite/<issue-number>-<slug>`.
-3. Push with upstream tracking: `git push -u origin HEAD`.
+3. Push with upstream tracking, naming the branch, as its own command (never
+   `HEAD`, never chained): `git push -u origin <branch>`.
 4. If push is rejected because the branch is stale, use the `pull` skill, rerun
    validation, then push again.
 5. Use `--force-with-lease` only when history was deliberately rewritten.
