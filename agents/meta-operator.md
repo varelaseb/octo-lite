@@ -53,6 +53,8 @@ goal = "Projects view"   # Kanban card title: a short plain feature name, not a 
 waiting_on = ""
 ```
 
+When you fold new scope into an open lane, update its goal (the Kanban title) in the same step.
+
 `owner` is always the `pane=` id, never the `name=` agent name or `tab=` id.
 The file name is the agent name. A wrong `owner` shows the lane as stalled.
 
