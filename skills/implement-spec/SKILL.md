@@ -46,7 +46,9 @@ evidence still applies; human QA, code readiness and acceptance are separate.
 ## Start
 
 1. After spec acceptance, file the dependency-linked tickets under the spec
-   issue: one outcome each, spec anchors, real blockers only.
+   issue as [consent](../octo-lite-github/SKILL.md#consent) allows, else keep
+   the graph in the local brief: one outcome each, spec anchors, real blockers
+   only.
 2. Read the spec, issue, and enough of the graph to identify the first
    frontier.
 3. When exploration would remove duplicated implementation work, spawn one
