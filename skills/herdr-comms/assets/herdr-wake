@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Spec Chat's `wake` provider over Herdr. install-octo-lite registers it in
+# Spec Chat's providers/wake.toml; Spec Chat owns that format and names no
+# pane tool. Exit codes are Spec Chat's wake protocol:
+#   herdr-wake check OWNER                  0 owner pane resolves, 1 not
+#   herdr-wake send OWNER ARTIFACT MESSAGE  0 sent, 75 deferred, other failed
+# send keeps host-wake's states: a working owner defers; a prompt Herdr typed
+# but did not see land (agent_prompt_stalled, or the timeout after sending)
+# counts as sent so the same batch is never retyped.
+set -uo pipefail
+
+usage() { echo "usage: herdr-wake check OWNER | send OWNER ARTIFACT MESSAGE" >&2; exit 64; }
+
+# Print the owner's agent_status; fail when the pane does not resolve.
+status() {
+  local out
+  out="$(timeout -k 1 5 herdr agent get "$1" 2>/dev/null)" || return 1
+  jq -er --arg p "$1" '.result.agent | select(.pane_id == $p) | .agent_status // "unknown"' <<<"$out" 2>/dev/null || return 1
+}
+
+case "${1:-}" in
+  check)
+    (($# == 2)) || usage
+    status "$2" >/dev/null ;;
+  send)
+    (($# == 4)) || usage
+    s="$(status "$2")" || exit 1
+    [[ "$s" == working ]] && exit 75
+    say="$(dirname "$(readlink -f "$0")")/herdr-say"
+    err="$(timeout -k 1 "${HERDR_WAKE_TIMEOUT:-10}" "$say" --kind command --artifact "$3" "$2" "$4" 2>&1 >/dev/null)"
+    rc=$?
+    ((rc == 0 || rc == 75)) && exit "$rc"
+    ((rc == 124)) && exit 0
+    grep -q '"code": *"agent_prompt_stalled"' <<<"$err" && exit 0
+    printf '%s\n' "$err" >&2
+    exit "$rc" ;;
+  *) usage ;;
+esac

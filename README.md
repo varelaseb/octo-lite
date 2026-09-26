@@ -58,6 +58,13 @@ again; delete the file to answer afresh. Every install publishes
 tab at the worktree. It is the published start command; callers never use
 `herdr-spawn` inside the clone.
 
+With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
+`wake` provider by writing
+`${XDG_STATE_HOME:-~/.local/state}/spec-chat/hosting/default/providers/wake.toml`
+atomically, in the format Spec Chat owns. `herdr-wake check OWNER` exits 0 when
+the pane resolves; `herdr-wake send OWNER ARTIFACT MESSAGE` exits 0 sent, 75
+deferred, other failed. `--undo` deletes that file while it is unchanged.
+
 `agents/*.md` are hand-written role contracts. Workers load them: Claude
 through `--agent ROLE`, Codex as developer instructions from `herdr-spawn
 --role ROLE`. `herdr-close TAB` tears a worker down, detached processes

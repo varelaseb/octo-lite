@@ -56,6 +56,41 @@ class OnboardingTest(unittest.TestCase):
         start = self.prefix / ".local/bin/octo-lite-start"
         self.assertEqual(start.resolve(), (ROOT / "scripts/octo-lite-start").resolve())
 
+    # --- Spec Chat wake provider ------------------------------------------
+
+    def with_herdr(self):
+        bindir = self.prefix / "fakebin"
+        bindir.mkdir()
+        (bindir / "herdr").write_text("#!/bin/sh\n")
+        (bindir / "herdr").chmod(0o755)
+        self.env["PATH"] = f"{bindir}:{self.env['PATH']}"
+
+    wake = property(lambda self: self.prefix / ".local/state/spec-chat/hosting/default/providers/wake.toml")
+
+    def test_herdr_box_registers_the_waker_and_undo_removes_it(self):
+        self.with_herdr()
+        self.install()
+        waker = str(self.prefix / ".local/bin/herdr-wake")
+        self.assertEqual(tomllib.loads(self.wake.read_text()), {
+            "check": [waker, "check", "{owner}"],
+            "send": [waker, "send", "{owner}", "{artifact}", "{message}"],
+        })
+        self.assertEqual(Path(waker).resolve(), (ROOT / "skills/herdr-comms/assets/herdr-wake").resolve())
+        self.install("--undo")
+        self.assertFalse(self.wake.exists())
+
+    def test_undo_keeps_a_changed_wake_file(self):
+        self.with_herdr()
+        self.install()
+        self.wake.write_text('check = ["other"]\n')
+        self.install("--undo")
+        self.assertTrue(self.wake.exists())
+
+    def test_no_herdr_no_wake_file(self):
+        self.env["PATH"] = "/usr/bin:/bin"
+        self.install()
+        self.assertFalse(self.wake.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
