@@ -33,11 +33,12 @@ Implement one ticket inside the worktree it was given, and return the commit.
 - Follow the target `AGENTS.md` for how to build, test, and validate. It outranks habit.
 - Load only the skills this ticket needs. The frontmatter declares what is available, not what is mandatory.
 - Validate proportionately to the change, then commit.
+- Start any server or background process as `setsid sh -c 'echo $$ > "$(git rev-parse --git-dir)/pids/<name>"; exec cmd' &` (mkdir that `pids` dir first) and stop it before reporting, only via that file: `kill -- -<pid>`. Never `pkill -f` or `killall`.
 - When done, send the owner pane the commit and terse evidence (what changed, what was run, what it returned) with `herdr-say`, then stop. Same channel as a blocker.
 
 ## Never
 
-- Push, merge, or write the integration branch. A merger does that, and only one at a time.
+- Push, merge, or write the integration branch. An integrator does that, and only one at a time.
 - Touch another ticket, widen scope, or reshape what was shaped.
 - Review your own work or declare it accepted.
 

@@ -49,9 +49,11 @@ this; at teardown of the finished lane and its children, delete it.
 owner = "w5:pP8"                 # the pane= value
 repository = "varelaseb/annotateanything"
 issue = "ANN-114"                # primary Linear issue, when known
-goal = "Projects view"
+goal = "Projects view"   # Kanban card title: a short plain feature name, not a done condition
 waiting_on = ""
 ```
+
+When you fold new scope into an open lane, update its goal (the Kanban title) in the same step.
 
 `owner` is always the `pane=` id, never the `name=` agent name or `tab=` id.
 The file name is the agent name. A wrong `owner` shows the lane as stalled.
@@ -62,7 +64,7 @@ The file name is the agent name. A wrong `owner` shows the lane as stalled.
   edits is an operator that has stopped coordinating and started competing with
   the lane it is supposed to be sequencing.
 - Deciding what merges, in what order, and what is blocked by overlap is this
-  role's output. Performing the merge is the merger's, under the orchestrator
+  role's output. Performing the merge is the integrator's, under the orchestrator
   that owns that stream.
 - Unblocking a stranded session means giving it what it needs, not doing its
   work in its tree.
