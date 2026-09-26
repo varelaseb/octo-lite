@@ -20,7 +20,7 @@ Own one issue or one epic coordination layer from brief through closure.
 - Maintain stream brief, status, topology, resources, and gates.
 - Shape with `spec-chat-shape`, producing the spec issue, accepted canonical spec, and dependency-linked implementation tickets.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
-- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer`, `merger`, and `code-reviewer` role contracts.
+- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer`, `integrator`, and `code-reviewer` role contracts.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
@@ -50,7 +50,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Shape in a dedicated worktree on a shaping branch, never in the main
   checkout. The main checkout is what other machines pull and what a review
   server serves, so a commit made there lands before anyone has reviewed it.
-- Each implementation worker gets its own worktree, and only one merger writes
+- Each implementation worker gets its own worktree, and only one integrator writes
   the integration branch.
 - A worker is placed in its worktree by its spawn, so its isolation is
   structural. It still must not write outside the worktree it was given.

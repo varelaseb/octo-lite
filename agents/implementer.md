@@ -37,7 +37,7 @@ Implement one ticket inside the worktree it was given, and return the commit.
 
 ## Never
 
-- Push, merge, or write the integration branch. A merger does that, and only one at a time.
+- Push, merge, or write the integration branch. An integrator does that, and only one at a time.
 - Touch another ticket, widen scope, or reshape what was shaped.
 - Review your own work or declare it accepted.
 

@@ -36,11 +36,11 @@
 <h2>Decision</h2>
 <p data-anchor="decision-shaping-output" id="decision-shaping-output"><code>spec-chat-shape</code> finishes with an accepted spec, its issue, and dependency-linked implementation tickets.</p>
 <p data-anchor="decision-explicit-skill" id="decision-explicit-skill"><code>implement-spec</code> is explicit-only and owns post-shaping delivery.</p>
-<p data-anchor="decision-direct-workers" id="decision-direct-workers">It launches temporary Herdr explorer, implementer, merger, and reviewer agents directly, outside <code>roles.toml</code> and the legacy Workflow loop.</p>
+<p data-anchor="decision-direct-workers" id="decision-direct-workers">It launches temporary Herdr explorer, implementer, integrator, and reviewer agents directly, outside <code>roles.toml</code> and the legacy Workflow loop.</p>
 <p data-anchor="decision-contracts-amended" id="decision-contracts-amended">Amended 2026-09-24 (ANN-71): implementer and reviewer workers load their hand-written role contracts.</p>
-<p data-anchor="decision-frontier" id="decision-frontier">Implementers fill the ready ticket frontier in isolated worktrees and branches while one merger at a time integrates completed commits onto one PR branch.</p>
+<p data-anchor="decision-frontier" id="decision-frontier">Implementers fill the ready ticket frontier in isolated worktrees and branches while one integrator at a time integrates completed commits onto one PR branch.</p>
 <p data-anchor="decision-linear" id="decision-linear">Linear records the actual ticket graph and live work state, with Done reserved for integrated and pushed work.</p>
-<p data-anchor="decision-review" id="decision-review">After full integration, independent review runs on the integration head, one implementation agent fixes the findings, and one merger integrates each consolidated fix batch before review of the changed head.</p>
+<p data-anchor="decision-review" id="decision-review">After full integration, independent review runs on the integration head, one implementation agent fixes the findings, and one integrator integrates each consolidated fix batch before review of the changed head.</p>
 <p data-anchor="decision-review-continuation" id="decision-review-continuation">The September 8 operator amendment replaces the one-rereview lifetime cap: a confirmed remaining defect receives bounded repair or concrete repository-approved blocker handling, while failed required checks and human acceptance gates remain intact.</p>
 <p data-anchor="decision-review-runtime" id="decision-review-runtime">When <code>/code-review</code> is unsupported, an available independent review mechanism receives the same head, base, spec and scope; its actual start and result must be verified instead of retrying an unrecognized command.</p>
 </section>
