@@ -52,7 +52,7 @@
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only <code>last_handoff_at</code> and worker <code>ticket</code> and <code>role</code>, and writes those keys at the moments below.</p>
+<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only <code>last_handoff_at</code>, and writes it and the workbench keys at the moments below.</p>
 <figure data-anchor="octo-lane-record">
 <h3 data-anchor="octo-lane-record-heading">The lane record: workbench fields and octo-lite keys</h3>
 <pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
@@ -61,14 +61,27 @@ repository = "varelaseb/annotateanything"
 issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
 goal = "Shape ANN-45 and ANN-44 through spec acceptance"
 pr = 30                          # set when shaping opens the draft PR
+started_at = "2026-09-24T17:02:00Z"   # operator, once, at launch
 last_handoff_at = "2026-09-24T18:24:09Z"
-waiting_on = ""                  # "", "spec review", "QA review", "merge", "blocked", or a lane key "ANN-44"
+waiting_on = ""                  # "", "spec review", "QA review", "merge", "blocked", "operator", or a lane key "ANN-44"
 
 [[workers]]
 pane = "w5:pC1"
 ticket = "ANN-64"
-role = "implementer"</code></pre>
-<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Shared keys and the worker pane come from the workbench format.</figcaption>
+role = "implementer"
+
+[[tickets]]
+key = "ANN-64"
+state = "active"                 # "waiting", "ready", "active", or "done"
+passes = 0                       # repair passes
+since = "2026-09-24T18:24:09Z"   # entered this state and holder
+
+[[tickets]]
+key = "ANN-65"
+state = "waiting"
+passes = 0
+since = "2026-09-24T17:40:00Z"</code></pre>
+<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Every key but <code>last_handoff_at</code> comes from the workbench format.</figcaption>
 </figure>
 <figure data-anchor="octo-lane-record-life">
 <h3 data-anchor="octo-lane-record-life-heading">Who touches the lane record, and when</h3>
@@ -76,11 +89,13 @@ role = "implementer"</code></pre>
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with the shared workbench fields, including owner, repository, goal, and issue when known, plus <code>waiting_on</code> set to <code>""</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with the shared workbench fields, including owner, repository, goal, and issue when known, plus <code>started_at</code> set to now and <code>waiting_on</code> set to <code>""</code>. Writes <code>operator.toml</code> with its own <code>pane</code> beside the lanes directory at its own launch.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
-<tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates worker <code>ticket</code> and <code>role</code>, and <code>last_handoff_at</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates <code>[[workers]]</code> <code>pane</code>, <code>role</code>, and <code>ticket</code>, and <code>last_handoff_at</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-tickets"><td>Tickets are created, or a ticket moves state or holder</td><td>Owner</td><td>Rewrites its <code>[[tickets]]</code> entry: <code>state</code> <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, <code>since</code> set to now; a repair pass adds one to <code>passes</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"spec review"</code> while spec acceptance waits on human spec review, <code>"QA review"</code> while QA evidence waits on the human, or <code>"merge"</code> when only the human's merge instruction remains; clears it when the gate resolves.</td></tr>
 <tr data-anchor="octo-lane-record-life-waiting-lane"><td>Owner parks the lane on another lane, such as its merge, or resumes</td><td>Owner</td><td>Sets <code>waiting_on</code> to that lane's issue key; clears it to <code>""</code> on resume. One lane at a time.</td></tr>
+<tr data-anchor="octo-lane-record-life-operator"><td>Owner escalates to the fleet operator, or the operator answers</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"operator"</code>; clears it to <code>""</code> on answer.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
 </tbody>
 </table>

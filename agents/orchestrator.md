@@ -26,16 +26,20 @@ Own one issue or one epic coordination layer from brief through closure.
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
   Its `owner` is your Herdr pane id (`owner = "w5:pP8"`, the `pane=` value
   herdr-spawn printed), never your agent name or tab; never change it.
-  Shared fields follow the workbench lane-record format; octo-lite owns
-  `last_handoff_at` and worker `ticket` and `role`.
+  Keys follow the workbench lane-record format; octo-lite adds only
+  `last_handoff_at`.
   The operator creates it at launch; edit that file in place, changing only the
   fields a moment names and keeping every other field;
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
   `#octo-lane-record-example`. Set `pr` to the PR number (e.g. `pr = 30`) when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
-  the workbench `pane` plus octo-lite `ticket` and `role`. Set `waiting_on` to `"spec review"`
+  `pane`, `role` (its contract), and `ticket`. When tickets are created or one
+  moves state or holder, rewrite its `[[tickets]]` entry: `key`, `state`
+  (`"waiting"`, `"ready"`, `"active"`, `"done"`), `passes` (repair passes, +1 per
+  repair), `since` (quoted UTC now). Set `waiting_on` to `"spec review"`
   while spec acceptance waits on human spec review, `"QA review"` while QA evidence waits on the human,
-  `"merge"` when only the human's merge instruction remains, or `"blocked"` while waiting, or to
+  `"merge"` when only the human's merge instruction remains, `"operator"` while escalated to the
+  fleet operator, or `"blocked"` while waiting, or to
   another lane's issue key (one lane at a time) while parked on another lane, and clear it to `""` when
   work resumes.
   The lane owner sets `issue` when shaping creates the issue, if the operator
