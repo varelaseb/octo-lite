@@ -1,0 +1,12 @@
+# Full suite in a clean runner: no spec-chat, annotateanything, or Herdr
+# installed (ADR-004 Enforcement). Seam contract tests: tests/test_onboarding.py
+# (wake provider present with Herdr, absent without; fresh-install onboarding)
+# and tests/test_lane_record.py (lane record and acceptance receipt formats).
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tests -v
