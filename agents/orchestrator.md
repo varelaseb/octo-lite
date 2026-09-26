@@ -46,6 +46,8 @@ Own one issue or one epic coordination layer from brief through closure.
   The lane owner sets `issue` when shaping creates the issue, if the operator
   did not, no later than `pr`.
   Only the owner updates the lane record.
+  At each hand-off moment, append one line to `<lane record name>.handoffs.jsonl`
+  beside it, per the annotateanything lane-handoffs spec `#handoff-fields`.
 
 ## Write surface
 
