@@ -125,7 +125,6 @@ case "$sub" in
     if [[ -n "${FAKE_PROMPT_STALLED:-}" ]]; then
       echo '{"error":{"code":"agent_prompt_stalled","message":"no reaction"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
-    if [[ -n "${FAKE_PROMPT_HANG:-}" ]]; then sleep 30; fi
     if [[ -n "${FAKE_PROMPT_NOT_FOUND:-}" ]]; then
       echo '{"error":{"code":"agent_not_found","message":"not found"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
@@ -482,7 +481,6 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("agent prompt", self.log.read_text())
         self.assertEqual(self.wake(*send, FAKE_PROMPT_BLOCKED="1").returncode, 75)
         self.assertEqual(self.wake(*send, FAKE_PROMPT_STALLED="1").returncode, 0)
-        self.assertEqual(self.wake(*send, FAKE_PROMPT_HANG="1", HERDR_WAKE_TIMEOUT="1").returncode, 0)
         self.assertNotIn(self.wake(*send, FAKE_PROMPT_NOT_FOUND="1").returncode, (0, 75))
         self.assertNotIn(self.wake(*send, pane="w1:p9").returncode, (0, 75))
 

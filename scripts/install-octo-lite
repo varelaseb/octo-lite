@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-prefix="$HOME"
+prefix=""
 check=false
 onboard=false
 undo=false
@@ -16,12 +16,20 @@ while (($#)); do
 done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-prefix="$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)"
+# One root: --prefix owns every path it writes, state and config included;
+# without it, XDG decides under $HOME.
+if [[ -n "$prefix" ]]; then
+  prefix="$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)"
+  state_home="$prefix/.local/state" config_home="$prefix/.config"
+else
+  prefix="$HOME"
+  state_home="${XDG_STATE_HOME:-$HOME/.local/state}" config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+fi
 
 # octo-lite registers herdr-wake as Spec Chat's `wake` provider (Spec Chat owns
 # the format: review-service.spec.html#providers). Written only with Herdr on
-# the box; --undo deletes it only while it is still exactly what we wrote.
-wake_file="${XDG_STATE_HOME:-$prefix/.local/state}/spec-chat/hosting/default/providers/wake.toml"
+# the box; install and --undo touch it only while absent or exactly ours.
+wake_file="$state_home/spec-chat/hosting/default/providers/wake.toml"
 waker="$prefix/.local/bin/herdr-wake"
 wake_toml="check = [\"$waker\", \"check\", \"{owner}\"]
 send = [\"$waker\", \"send\", \"{owner}\", \"{artifact}\", \"{message}\"]"
@@ -226,7 +234,9 @@ done
 echo "octo-lite links ${check:+checked} at $prefix"
 [[ "$check" == true ]] && exit 0
 
-if command -v herdr >/dev/null; then
+if [[ -e "$wake_file" && "$(cat "$wake_file")" != "$wake_toml" ]]; then
+  echo "keeping foreign wake provider: $wake_file" >&2
+elif command -v herdr >/dev/null; then
   mkdir -p "$(dirname "$wake_file")"
   printf '%s\n' "$wake_toml" >"$wake_file.tmp.$$"
   mv -f "$wake_file.tmp.$$" "$wake_file"
@@ -236,7 +246,7 @@ fi
 # Onboarding: octo-lite asks its own consent questions and keeps the answers,
 # then publishes its status in its own state for any reader. Answers already
 # kept are not asked again; delete the file to be asked afresh.
-consent="${XDG_CONFIG_HOME:-$prefix/.config}/octo-lite/consent.toml"
+consent="$config_home/octo-lite/consent.toml"
 if [[ "$onboard" == true && ! -e "$consent" ]]; then
   body=""
   for pair in "push:push branches" "pull_request:open pull requests" "issues:file issues"; do
@@ -250,7 +260,7 @@ if [[ "$onboard" == true && ! -e "$consent" ]]; then
 fi
 status=pending
 [[ -e "$consent" ]] && status=done
-state="${XDG_STATE_HOME:-$prefix/.local/state}/octo-lite"
+state="$state_home/octo-lite"
 mkdir -p "$state"
 printf 'status = "%s"\ndoc = "%s"\n' "$status" \
   "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" >"$state/onboarding.toml"

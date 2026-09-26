@@ -17,8 +17,12 @@ class OnboardingTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.prefix = Path(tmp.name)
-        self.env = {k: v for k, v in os.environ.items() if k not in ("XDG_CONFIG_HOME", "XDG_STATE_HOME")}
+        self.prefix = Path(tmp.name) / "prefix"
+        # --prefix is the one root: an exported XDG home must stay untouched.
+        self.sentinel = Path(tmp.name) / "xdg"
+        self.sentinel.mkdir()
+        self.env = {**os.environ, "XDG_STATE_HOME": str(self.sentinel / "state"),
+                    "XDG_CONFIG_HOME": str(self.sentinel / "config")}
         self.consent = self.prefix / ".config/octo-lite/consent.toml"
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
 
@@ -60,7 +64,7 @@ class OnboardingTest(unittest.TestCase):
 
     def with_herdr(self):
         bindir = self.prefix / "fakebin"
-        bindir.mkdir()
+        bindir.mkdir(parents=True)
         (bindir / "herdr").write_text("#!/bin/sh\n")
         (bindir / "herdr").chmod(0o755)
         self.env["PATH"] = f"{bindir}:{self.env['PATH']}"
@@ -78,6 +82,19 @@ class OnboardingTest(unittest.TestCase):
         self.assertEqual(Path(waker).resolve(), (ROOT / "skills/herdr-comms/assets/herdr-wake").resolve())
         self.install("--undo")
         self.assertFalse(self.wake.exists())
+
+    def test_prefix_writes_nothing_under_exported_xdg(self):
+        self.with_herdr()
+        self.install("--onboard", answers="y\ny\ny\n")
+        self.assertTrue(self.wake.exists())
+        self.assertEqual(list(self.sentinel.iterdir()), [])
+
+    def test_install_keeps_a_foreign_wake_file(self):
+        self.with_herdr()
+        self.wake.parent.mkdir(parents=True)
+        self.wake.write_text('check = ["other"]\n')
+        self.install()
+        self.assertEqual(self.wake.read_text(), 'check = ["other"]\n')
 
     def test_undo_keeps_a_changed_wake_file(self):
         self.with_herdr()

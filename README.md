@@ -63,7 +63,12 @@ With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
 `${XDG_STATE_HOME:-~/.local/state}/spec-chat/hosting/default/providers/wake.toml`
 atomically, in the format Spec Chat owns. `herdr-wake check OWNER` exits 0 when
 the pane resolves; `herdr-wake send OWNER ARTIFACT MESSAGE` exits 0 sent, 75
-deferred, other failed. `--undo` deletes that file while it is unchanged.
+deferred, other failed. Install never replaces a `wake.toml` it did not
+write, and `--undo` deletes that file only while it is unchanged.
+
+`--prefix PATH` is the one root for everything install writes: links, and the
+state and config above under `PATH/.local/state` and `PATH/.config`, ignoring
+`XDG_*`.
 
 `agents/*.md` are hand-written role contracts. Workers load them: Claude
 through `--agent ROLE`, Codex as developer instructions from `herdr-spawn
