@@ -150,6 +150,22 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 <section data-anchor="gates" id="gates">
 <h2>Human gates</h2>
 <p data-anchor="gates-list" id="gates-list">Spec acceptance, acceptance of delivered work, merge of unaccepted work, preproduction promotion, and live traffic shifts require explicit human instruction.</p>
+<p data-anchor="acceptance-receipt" id="acceptance-receipt">The owner receiving acceptance of delivered work records it before merging in one TOML file per PR, <code>$XDG_STATE_HOME/octo-lite/acceptance/acceptance-&lt;owner&gt;-&lt;repo&gt;-&lt;pr&gt;.toml</code>, named and keyed by repository and PR.
+It names no ticket; the ticket stays machinery metadata.
+Earlier receipts keyed by issue stay as history.</p>
+<figure data-anchor="acceptance-receipt-figure">
+<h3 data-anchor="acceptance-receipt-heading">The acceptance receipt</h3>
+<pre data-anchor="acceptance-receipt-example"><code># $XDG_STATE_HOME/octo-lite/acceptance/acceptance-varelaseb-annotateanything-74.toml
+repository = "varelaseb/annotateanything"
+pr = 74
+head = "9be60f696a9e32c936935314f023188181445b15"   # exact accepted head
+accepted_at = "2026-09-26T18:05:39Z"
+instruction = "merge #74. Accepts head 9be60f6."   # the human's words
+relayed_by = "human"
+qa_bundle = "ann255-pr74-9be60f6"   # when a QA bundle backed the ask
+merge = "ef33c01f88d6f7cf8ff91ea6b63977643c6b85dd"   # added after merge</code></pre>
+<figcaption data-anchor="acceptance-receipt-caption">A durable gate record, so TOML.</figcaption>
+</figure>
 </section>
 
 <section data-anchor="absent" id="absent">

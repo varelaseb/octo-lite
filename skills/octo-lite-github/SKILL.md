@@ -101,7 +101,8 @@ Do not create extra workflow labels unless the operator explicitly asks.
   unless the human says otherwise. Mechanical rebases onto accepted main do not
   require renewed acceptance when behavior and scope are unchanged. A
   human statement assigning the current lane ownership is sufficient for this
-  action. Record acceptance, verify required checks, then merge. No worker merges, no agent decides acceptance, and no agent merges
+  action. Record acceptance as the receipt keyed by repository and PR
+  (octo-lite spec `#acceptance-receipt`), verify required checks, then merge. No worker merges, no agent decides acceptance, and no agent merges
   unaccepted work. Required failed checks remain blockers until fixed or
   durably waived through a repository-approved path.
 - The merge completes the worklane. Move the primary Linear issue to Done, the

@@ -30,7 +30,7 @@ non-blocking; escalation post-dialogue silence, lean, tune. Intake: echo paraphr
 as grounded target/scope; explicit intent authorizes dispatch, clarify only unresolved scope/access. Transport (herdr-comms): no
 inbox or drain; owners wake on the worker's herdr-say result message; stalled mandate
 surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
-acceptance-<id>.toml under control streams dir; execute merge, promote, or shift.
+the receipt keyed by repository and PR (octo-lite spec #acceptance-receipt); execute merge, promote, or shift.
 Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify results. A lane whose accepted PR merged is closed: reconcile the PR and worklane state together, never wake or respawn it. Follow canonical scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
 
 Briefs state the outcome, done condition, human decisions already made, exact source pointers (files and anchors), and open questions; the owning skill decides which artifact holds each answer.
