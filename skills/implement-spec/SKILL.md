@@ -20,8 +20,6 @@ Require:
 
 - canonical spec
 - spec issue
-- implementation tickets linked to that issue
-- explicit blocking relations between tickets
 - target root `AGENTS.md`
 
 A processed human **spec acceptance** (page action **Accept spec**, formerly
@@ -47,21 +45,23 @@ evidence still applies; human QA, code readiness and acceptance are separate.
 
 ## Start
 
-1. Read the spec, issue, tickets, and enough of the graph to identify the first
+1. After spec acceptance, file the dependency-linked tickets under the spec
+   issue: one outcome each, spec anchors, real blockers only.
+2. Read the spec, issue, and enough of the graph to identify the first
    frontier.
-2. When exploration would remove duplicated implementation work, spawn one
+3. When exploration would remove duplicated implementation work, spawn one
    optional exploration agent through `herdr-comms`. Give it write access only
    to a shared directory outside the repo. Its deliverable is concise Markdown
    notes linked from the relevant tickets.
-3. Continue the draft PR the orchestrator opened while shaping, else create the
+4. Continue the draft PR the orchestrator opened while shaping, else create the
    integration branch from the target base and open one draft PR.
    Push, open PRs, and file issues only as
    [consent](../octo-lite-github/SKILL.md#consent) allows; otherwise the lane stays on local
    branches and ends at a local integration head.
    Put `Closes <issue-key>` lines in the PR body for the spec issue and every
    implementation ticket.
-4. Before dispatch, run the spec validator, backslash-artifact scan, and
-   tag-balance scan. Run one short cross-source conflict check: does the spec
+5. Before dispatch, run the spec validator, backslash-artifact scan, and
+   tag-balance scan. Repo tests run in delivery, never during shaping. Run one short cross-source conflict check: does the spec
    contradict another canonical spec, merged main, or an open PR?
 
 ## Herdr workers
