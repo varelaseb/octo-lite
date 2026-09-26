@@ -12,7 +12,7 @@
 # CLI's own defaults. This script pins none of it.
 set -euo pipefail
 
-workspace=""; name=""; label=""; cwd="$PWD"; role=""; tab_env=()
+workspace=""; name=""; label=""; cwd="$PWD"; role=""
 # The operating model is inherited: each spawn exports it into the tab it creates,
 # so every child spawned from there defaults to the same file.
 model="${OCTO_LITE_OPERATING_MODEL:-}"
@@ -21,9 +21,9 @@ usage() {
   cat <<'EOF'
 usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-    [--operating-model FILE] [--env KEY=VALUE]... -- claude --agent ROLE [CLAUDE_ARGS...]
+    [--operating-model FILE] -- claude --agent ROLE [CLAUDE_ARGS...]
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-    [--operating-model FILE] [--env KEY=VALUE]... -- codex [CODEX_ARGS...]
+    [--operating-model FILE] -- codex [CODEX_ARGS...]
 
 Prints: name= role= tab= pane= cwd= contract= provider_session_id=
 EOF
@@ -38,8 +38,6 @@ while (($#)); do
     --cwd) cwd="${2:?}"; shift 2 ;;
     --role) role="${2:?}"; shift 2 ;;
     --operating-model) model="${2:?}"; shift 2 ;;
-    --env) [[ "${2:-}" == ?*=* ]] || { echo "herdr-spawn: --env needs KEY=VALUE" >&2; exit 64; }
-           tab_env+=(--env "$2"); shift 2 ;;
     --direct) shift ;;                 # accepted and ignored; kept for callers
     --) shift; break ;;
     *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
@@ -93,7 +91,11 @@ elif [[ -n "$model" || -f "$contract_file" ]]; then
   launch_argv=(-c "developer_instructions=$instructions" "${launch_argv[@]}")
 fi
 
-[[ -z "$model" ]] || tab_env=(--env "OCTO_LITE_OPERATING_MODEL=$model" "${tab_env[@]}")
+# A tab starts with the Herdr server's environment, not the caller's. HOME is
+# forwarded so the agent and every descendant keep the caller's git identity,
+# consent, and sessions; the model path likewise.
+tab_env=(--env "HOME=$HOME")
+[[ -z "$model" ]] || tab_env+=(--env "OCTO_LITE_OPERATING_MODEL=$model")
 out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" "${tab_env[@]}" --no-focus)"
 tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
 pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"

@@ -334,26 +334,34 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.spawn()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("--append-system-prompt-file", self.start_argv())
-        self.assertNotIn("--env", self.log.read_text())
+        self.assertNotIn("OCTO_LITE_OPERATING_MODEL", self.log.read_text())
 
-    def test_env_pairs_are_forwarded_to_the_tab(self):
-        # Repeatable, beside the model export, on both runtimes.
+    def test_the_callers_home_is_forwarded_to_the_tab(self):
+        # A tab starts with the Herdr server's env; the caller's HOME goes with
+        # it, on both runtimes.
         self.dialog.write_text("none\n")
-        model = self.cwd / "AGENTS.md"
-        model.write_text("# Model\n")
         for run in (self.spawn, self.spawn_codex):
-            r = run(extra=["--operating-model", str(model),
-                           "--env", "A=1", "--env", "B=x y"])
+            r = run()
             self.assertEqual(r.returncode, 0, r.stderr)
-            log = self.log.read_text()
-            self.assertIn(f"--env OCTO_LITE_OPERATING_MODEL={model.resolve()}", log)
-            self.assertIn("--env A=1 --env B=x y", log)
+            self.assertIn(f"--env HOME={self.env['HOME']}", self.log.read_text())
             self.log.unlink()
 
-    def test_env_without_a_key_is_a_usage_error(self):
-        r = self.spawn(extra=["--env", "novalue"])
-        self.assertEqual(r.returncode, 64)
-        self.assertFalse(self.log.exists())
+    def test_the_home_is_inherited_by_every_child(self):
+        # A spawn from inside that tab runs with the forwarded HOME and so
+        # forwards the same one again.
+        self.dialog.write_text("none\n")
+        home = self.cwd / "lane-home"
+        home.mkdir()
+        r = self.spawn(HOME=str(home))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        exported = f"--env HOME={home}"
+        log = self.log.read_text()
+        self.assertIn(exported, log)
+        self.log.unlink()
+        forwarded = log.split("--env HOME=", 1)[1].split(" --", 1)[0]
+        r = self.spawn(HOME=forwarded)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(exported, self.log.read_text())
 
     def test_a_missing_operating_model_stops_before_any_tab(self):
         r = self.spawn(extra=["--operating-model", str(self.cwd / "nope.md")])
