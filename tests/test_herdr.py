@@ -334,7 +334,34 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.spawn()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("--append-system-prompt-file", self.start_argv())
-        self.assertNotIn("--env", self.log.read_text())
+        self.assertNotIn("OCTO_LITE_OPERATING_MODEL", self.log.read_text())
+
+    def test_the_callers_home_is_forwarded_to_the_tab(self):
+        # A tab starts with the Herdr server's env; the caller's HOME goes with
+        # it, on both runtimes.
+        self.dialog.write_text("none\n")
+        for run in (self.spawn, self.spawn_codex):
+            r = run()
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"--env HOME={self.env['HOME']}", self.log.read_text())
+            self.log.unlink()
+
+    def test_the_home_is_inherited_by_every_child(self):
+        # A spawn from inside that tab runs with the forwarded HOME and so
+        # forwards the same one again.
+        self.dialog.write_text("none\n")
+        home = self.cwd / "lane-home"
+        home.mkdir()
+        r = self.spawn(HOME=str(home))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        exported = f"--env HOME={home}"
+        log = self.log.read_text()
+        self.assertIn(exported, log)
+        self.log.unlink()
+        forwarded = log.split("--env HOME=", 1)[1].split(" --", 1)[0]
+        r = self.spawn(HOME=forwarded)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(exported, self.log.read_text())
 
     def test_a_missing_operating_model_stops_before_any_tab(self):
         r = self.spawn(extra=["--operating-model", str(self.cwd / "nope.md")])
@@ -396,6 +423,12 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIsNone(other.poll(), "killed a process from another tab")
         self.assertIn("killed=1", r.stdout)
         self.assertEqual(r.stderr, "", "unreadable /proc entries must be silent")
+
+    def test_close_rejects_an_option_as_a_tab(self):
+        for arg in ("--help", "-h"):
+            r = subprocess.run([str(CLOSE), arg], capture_output=True, text=True, env=self.env)
+            self.assertEqual(r.returncode, 64, r.stdout)
+            self.assertFalse(self.log.exists(), "an option reached herdr tab close")
 
     # --- say -------------------------------------------------------------
 

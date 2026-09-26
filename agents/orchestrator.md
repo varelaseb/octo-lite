@@ -21,7 +21,7 @@ Own one issue or one epic coordination layer from brief through closure.
 - Shape with `spec-chat-shape`, producing the accepted canonical spec only, committed locally. It never publishes. Tickets are filed by `implement-spec` after acceptance.
 - Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows, in parallel with the review link and never before it: file the spec issue, name it to `spec-chat-shape` to link, push the shaping branch, open the draft PR.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
-- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer`, `merger`, and `code-reviewer` role contracts.
+- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer`, `integrator`, and `code-reviewer` role contracts.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
@@ -35,7 +35,8 @@ Own one issue or one epic coordination layer from brief through closure.
   `#octo-lane-record-example`. Set `pr` to the PR number (e.g. `pr = 30`) when a draft PR opens. On worker spawn or close or handoff
   consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
   the workbench `pane` plus octo-lite `ticket` and `role`. Set `waiting_on` to `"spec review"`
-  while spec acceptance waits on human spec review, `"QA review"`, or `"blocked"` while waiting, or to
+  while spec acceptance waits on human spec review, `"QA review"` while QA evidence waits on the human,
+  `"merge"` when only the human's merge instruction remains, or `"blocked"` while waiting, or to
   another lane's issue key (one lane at a time) while parked on another lane, and clear it to `""` when
   work resumes.
   The lane owner sets `issue` when shaping creates the issue, if the operator
@@ -50,7 +51,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Shape in a dedicated worktree on a shaping branch, never in the main
   checkout. The main checkout is what other machines pull and what a review
   server serves, so a commit made there lands before anyone has reviewed it.
-- Each implementation worker gets its own worktree, and only one merger writes
+- Each implementation worker gets its own worktree, and only one integrator writes
   the integration branch.
 - A worker is placed in its worktree by its spawn, so its isolation is
   structural. It still must not write outside the worktree it was given.

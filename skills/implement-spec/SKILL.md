@@ -77,7 +77,7 @@ Use the same current Herdr session and workspace routing as the owning
 orchestrator. Herdr owns session selection. Spawn Claude workers
 (`-- claude --agent ROLE`, CLI default model); Codex only when the operator
 explicitly selects it. Keep the worker-specific nuance: every writer still
-gets its own worktree, and only one merger writes the integration branch.
+gets its own worktree, and only one integrator writes the integration branch.
 
 For each ready ticket:
 
@@ -103,7 +103,7 @@ messages sparse. A status pointer or commit is better than a recap.
 
 When an implementer completes:
 
-1. Spawn a merger through `herdr-comms` with `--role merger` in a clean
+1. Spawn an integrator through `herdr-comms` with `--role integrator` in a clean
    integration worktree.
 2. Give it the ticket, worker commit, integration branch, and spec pointers.
 3. Have it merge or cherry-pick the worker commit, resolve only integration
@@ -115,14 +115,14 @@ When an implementer completes:
    truth in Linear and return the ticket to active work.
 5. Recompute the frontier and immediately fill newly available capacity.
 
-One merger writes the integration branch at a time. Implementers may continue
+One integrator writes the integration branch at a time. Implementers may continue
 in parallel on independent frontier tickets.
-Each writer has a distinct worktree, including the merger; a separate tab in
+Each writer has a distinct worktree, including the integrator; a separate tab in
 the same checkout is not isolation. Read-only explorers may share source only
 when they do not install dependencies, change branches or generate files there.
 
 Consume completed results at the next owner wake, before optional status work,
-and continue integration or the next ready task in that turn. Keep one merger
+and continue integration or the next ready task in that turn. Keep one integrator
 owner for the lane's integration branch. Every worker brief names the owner pane.
 The owner waits for the worker's result message; it is the only wake.
 Record one truthful current state, next action and dependency.
@@ -162,7 +162,7 @@ After every ticket is integrated:
    do not retry an unrecognized slash command or count pasted text as review.
 2. If review reports issues, create one fix branch and worktree and spawn one
    implementer through `herdr-comms` to fix all findings. Merge it through one
-   Herdr merger, then
+   Herdr integrator, then
    review the new integration head. One consolidated batch is the default,
    not a lifetime repair cap. If a confirmed defect remains, continue a bounded
    repair of that finding and changed surface. If the same attempt makes no

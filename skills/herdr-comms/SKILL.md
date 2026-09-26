@@ -40,6 +40,10 @@ so no global instruction file is needed: Claude gets
 spawn exports that path into the new tab, so every child inherits the model
 without passing the flag. Without either, nothing changes.
 
+A new tab gets the Herdr server's environment, so the spawn always exports the
+caller's `HOME` into it. The agent and every child it spawns keep the caller's
+home: git identity, consent, and sessions.
+
 Codex runs with `--no-daemon`, so its thread and commands live in the tab's own
 process tree, not the shared app-server that outlives the tab.
 
