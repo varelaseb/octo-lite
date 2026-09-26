@@ -33,6 +33,17 @@ binds at the developer layer and the agent waits for its brief; a contract sent
 as a prompt is worked as a task. The output reports `contract=` so a silent miss
 is visible.
 
+`--operating-model FILE` is optional. It hands that file to the agent at start,
+so no global instruction file is needed: Claude gets
+`--append-system-prompt-file FILE`, Codex gets it ahead of the contract in
+`developer_instructions`. It defaults to `$OCTO_LITE_OPERATING_MODEL`, and the
+spawn exports that path into the new tab, so every child inherits the model
+without passing the flag. Without either, nothing changes.
+
+A new tab gets the Herdr server's environment, so the spawn always exports the
+caller's `HOME` into it. The agent and every child it spawns keep the caller's
+home: git identity, consent, and sessions.
+
 Codex runs with `--no-daemon`, so its thread and commands live in the tab's own
 process tree, not the shared app-server that outlives the tab.
 

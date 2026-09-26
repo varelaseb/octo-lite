@@ -15,6 +15,7 @@ update the PR for shaped Linear-first work or an explicitly GitHub-first issue.
 
 ## Prerequisites
 
+- Push and open a PR only as [consent](../octo-lite-github/SKILL.md#consent) allows. Otherwise stop at local commits and report.
 - `gh auth status` succeeds.
 - `git remote -v` shows the intended target repo.
 - Target repo validation has run or the failure is recorded with rationale.
