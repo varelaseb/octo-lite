@@ -49,7 +49,7 @@ this; at teardown of the finished lane and its children, delete it.
 owner = "w5:pP8"                 # the pane= value
 repository = "varelaseb/annotateanything"
 issue = "ANN-114"                # primary Linear issue, when known
-goal = "Projects view"
+goal = "Projects view"   # Kanban card title: a short plain feature name, not a done condition
 waiting_on = ""
 ```
 
