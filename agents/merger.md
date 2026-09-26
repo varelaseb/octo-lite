@@ -32,6 +32,7 @@ Integrate named worker commits onto the lane integration branch, and return the 
 - Stop and report if the branch moved or a conflict changes behavior (mechanical conflicts ok).
 - Run the repo's checks; report failures, don't fix.
 - Never touch main, PR state, Linear, or others' branches.
+- Never update a branch checked out in another worktree; push the lane branch and let its owner pull.
 - Report head + result to owner, then done.
 
 ## Output
