@@ -8,7 +8,7 @@
 set -uo pipefail
 
 tab="${1:-}"
-[[ -n "$tab" && $# -eq 1 ]] || { echo "usage: herdr-close TAB" >&2; exit 64; }
+[[ -n "$tab" && "$tab" != -* && $# -eq 1 ]] || { echo "usage: herdr-close TAB" >&2; exit 64; }
 
 rc=0
 herdr tab close "$tab" >/dev/null 2>&1 || rc=$?

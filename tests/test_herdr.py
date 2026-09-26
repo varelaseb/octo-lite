@@ -336,6 +336,25 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("--append-system-prompt-file", self.start_argv())
         self.assertNotIn("--env", self.log.read_text())
 
+    def test_env_pairs_are_forwarded_to_the_tab(self):
+        # Repeatable, beside the model export, on both runtimes.
+        self.dialog.write_text("none\n")
+        model = self.cwd / "AGENTS.md"
+        model.write_text("# Model\n")
+        for run in (self.spawn, self.spawn_codex):
+            r = run(extra=["--operating-model", str(model),
+                           "--env", "A=1", "--env", "B=x y"])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            log = self.log.read_text()
+            self.assertIn(f"--env OCTO_LITE_OPERATING_MODEL={model.resolve()}", log)
+            self.assertIn("--env A=1 --env B=x y", log)
+            self.log.unlink()
+
+    def test_env_without_a_key_is_a_usage_error(self):
+        r = self.spawn(extra=["--env", "novalue"])
+        self.assertEqual(r.returncode, 64)
+        self.assertFalse(self.log.exists())
+
     def test_a_missing_operating_model_stops_before_any_tab(self):
         r = self.spawn(extra=["--operating-model", str(self.cwd / "nope.md")])
         self.assertEqual(r.returncode, 66)
@@ -396,6 +415,12 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIsNone(other.poll(), "killed a process from another tab")
         self.assertIn("killed=1", r.stdout)
         self.assertEqual(r.stderr, "", "unreadable /proc entries must be silent")
+
+    def test_close_rejects_an_option_as_a_tab(self):
+        for arg in ("--help", "-h"):
+            r = subprocess.run([str(CLOSE), arg], capture_output=True, text=True, env=self.env)
+            self.assertEqual(r.returncode, 64, r.stdout)
+            self.assertFalse(self.log.exists(), "an option reached herdr tab close")
 
     # --- say -------------------------------------------------------------
 
