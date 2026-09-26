@@ -3,11 +3,13 @@ set -euo pipefail
 
 prefix="$HOME"
 check=false
+onboard=false
 while (($#)); do
   case "$1" in
     --prefix) prefix="${2:?}"; shift 2 ;;
     --check) check=true; shift ;;
-    *) echo "usage: install-octo-lite [--prefix PATH] [--check]" >&2; exit 64 ;;
+    --onboard) onboard=true; shift ;;
+    *) echo "usage: install-octo-lite [--prefix PATH] [--check | --onboard]" >&2; exit 64 ;;
   esac
 done
 
@@ -208,3 +210,27 @@ for source in "$root"/skills/herdr-comms/assets/*; do
 done
 
 echo "octo-lite links ${check:+checked} at $prefix"
+[[ "$check" == true ]] && exit 0
+
+# Onboarding: octo-lite asks its own consent questions and keeps the answers,
+# then publishes its status in its own state for any reader. Answers already
+# kept are not asked again; delete the file to be asked afresh.
+consent="${XDG_CONFIG_HOME:-$prefix/.config}/octo-lite/consent.toml"
+if [[ "$onboard" == true && ! -e "$consent" ]]; then
+  body=""
+  for pair in "push:push branches" "pull_request:open pull requests" "issues:file issues"; do
+    read -r -p "May octo-lite agents ${pair#*:}? [y/N] " answer || answer=""
+    [[ "$answer" == [yY]* ]] && value=true || value=false
+    body+="${pair%%:*} = $value"$'\n'
+  done
+  mkdir -p "$(dirname "$consent")"
+  printf '%s' "$body" >"$consent"
+  echo "consent kept at $consent"
+fi
+status=pending
+[[ -e "$consent" ]] && status=done
+state="${XDG_STATE_HOME:-$prefix/.local/state}/octo-lite"
+mkdir -p "$state"
+printf 'status = "%s"\ndoc = "%s"\n' "$status" \
+  "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" >"$state/onboarding.toml"
+echo "onboarding $status: $state/onboarding.toml"

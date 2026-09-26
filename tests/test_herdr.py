@@ -454,5 +454,31 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+    # --- start command ---------------------------------------------------
+
+    def start(self, *extra):
+        return subprocess.run(
+            [str(ROOT / "scripts/octo-lite-start"), "--workspace", "w1", "--cwd", str(self.cwd), *extra],
+            capture_output=True, text=True, env=self.env,
+        )
+
+    def test_start_spawns_an_orchestrator(self):
+        self.dialog.write_text("none\n")
+        r = self.start()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = self.start_argv()
+        self.assertEqual(argv[:3], ["agent", "start", "orchestrator-worktree"])
+        self.assertEqual(argv[-2:], ["--agent", "orchestrator"])
+
+    def test_start_codex_takes_the_orchestrator_contract(self):
+        self.dialog.write_text("none\n")
+        contract = Path(self.env["HOME"]) / ".claude/agents/orchestrator.md"
+        contract.parent.mkdir(parents=True)
+        contract.write_text("# Orchestrator\n")
+        r = self.start("--runtime", "codex", "--name", "n1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("developer_instructions=", " ".join(self.start_argv()))
+
+
 if __name__ == "__main__":
     unittest.main()

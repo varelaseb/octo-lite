@@ -40,6 +40,25 @@ scripts/install-octo-lite
 scripts/install-octo-lite --check
 ```
 
+## Onboarding
+
+```bash
+scripts/install-octo-lite --onboard
+octo-lite-start --workspace ID --cwd WORKTREE [--runtime claude|codex] [--operating-model FILE]
+```
+
+`--onboard` installs the links, then asks whether agents may push, open pull
+requests, and file issues, each defaulting to no, and keeps the answers in
+`${XDG_CONFIG_HOME:-~/.config}/octo-lite/consent.toml` (see
+[consent](skills/octo-lite-github/SKILL.md#consent)). Kept answers are not asked
+again; delete the file to answer afresh. Every install publishes
+`${XDG_STATE_HOME:-~/.local/state}/octo-lite/onboarding.toml`: `status`
+(`pending` until consent is kept, then `done`) and `doc`, a link here.
+
+`octo-lite-start`, installed on `PATH`, starts one orchestrator in its own Herdr
+tab at the worktree. It is the published start command; callers never use
+`herdr-spawn` inside the clone.
+
 `agents/*.md` are hand-written role contracts. Workers load them: Claude
 through `--agent ROLE`, Codex as developer instructions from `herdr-spawn
 --role ROLE`. `herdr-close TAB` tears a worker down, detached processes
