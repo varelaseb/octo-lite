@@ -56,7 +56,7 @@ idea or rough Linear/GitHub issue
   -> accepted spec + spec issue + blocking-linked tickets
   -> $implement-spec
   -> parallel Herdr implementers on ready tickets
-  -> serialized Herdr mergers onto one PR branch
+  -> serialized Herdr integrators onto one PR branch
   -> independent review + consolidated fixes; bounded repair of remaining defects
   -> PR ready for human review
 ```

@@ -31,15 +31,15 @@
 
 <section data-anchor="roles" id="roles">
 <h2>Roles</h2>
-<p data-anchor="roles-contracts" id="roles-contracts"><code>agents/*.md</code> are the hand-written role contracts: orchestrator, implementer, merger, code-reviewer, and meta-operator; none pins a model.</p>
-<p data-anchor="roles-loaded" id="roles-loaded">Every spawned worker with a role contract (implementer, merger, or code-reviewer) loads it: Claude through <code>--agent ROLE</code>, Codex as developer instructions via <code>herdr-spawn --role ROLE</code>.</p>
+<p data-anchor="roles-contracts" id="roles-contracts"><code>agents/*.md</code> are the hand-written role contracts: orchestrator, implementer, integrator, code-reviewer, and meta-operator; none pins a model.</p>
+<p data-anchor="roles-loaded" id="roles-loaded">Every spawned worker with a role contract (implementer, integrator, or code-reviewer) loads it: Claude through <code>--agent ROLE</code>, Codex as developer instructions via <code>herdr-spawn --role ROLE</code>.</p>
 </section>
 
 <section data-anchor="delivery" id="delivery">
 <h2>Delivery</h2>
 <p data-anchor="delivery-shape" id="delivery-shape"><code>spec-chat-shape</code> produces the reviewed canonical spec, its Linear issue, and dependency-linked implementation tickets; a processed human spec acceptance (page action Accept spec, formerly called Finish review) permits implementation dispatch under the reviewed canonical spec.</p>
 <p data-anchor="delivery-implement" id="delivery-implement"><code>implement-spec</code> runs its pre-dispatch mechanical checks, then fills the ready ticket frontier with implementer workers, each in its own worktree.</p>
-<p data-anchor="delivery-merge" id="delivery-merge">One merger at a time integrates finished commits onto the single integration branch and PR.</p>
+<p data-anchor="delivery-merge" id="delivery-merge">One integrator at a time integrates finished commits onto the single integration branch and PR.</p>
 <p data-anchor="delivery-review" id="delivery-review">A code-reviewer judges the integration head, and findings get bounded repair until review is clear and required checks pass.</p>
 <p data-anchor="delivery-linear" id="delivery-linear">Linear stays truthful: a ticket is Done only once integrated and pushed, and a merged accepted PR completes the worklane.</p>
 </section>
