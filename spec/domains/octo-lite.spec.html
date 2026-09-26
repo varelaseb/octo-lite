@@ -18,7 +18,7 @@
 
 <section data-anchor="user-stories" id="user-stories">
 <h2>User stories</h2>
-<p data-user-story data-anchor="user-story-deliver-spec" id="user-story-deliver-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can shape an idea into an accepted spec and ticket graph, then have it delivered on one PR ready for my review.</p>
+<p data-user-story data-anchor="user-story-deliver-spec" id="user-story-deliver-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can shape an idea into an accepted spec, then have it filed as a ticket graph and delivered on one PR ready for my review.</p>
 <p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script and a plain git pull keeps it current.</p>
 </section>
 
@@ -37,8 +37,9 @@
 
 <section data-anchor="delivery" id="delivery">
 <h2>Delivery</h2>
-<p data-anchor="delivery-shape" id="delivery-shape"><code>spec-chat-shape</code> produces the reviewed canonical spec and its dependency-linked ticket graph, committed locally, and never publishes; the orchestrator files the Linear issue and tickets, pushes, and opens the draft PR, only as consent allows; a processed human spec acceptance (page action Accept spec, formerly called Finish review) permits implementation dispatch under the reviewed canonical spec.</p>
-<p data-anchor="delivery-implement" id="delivery-implement"><code>implement-spec</code> runs its pre-dispatch mechanical checks, then fills the ready ticket frontier with implementer workers, each in its own worktree.</p>
+<p data-anchor="delivery-shape" id="delivery-shape"><code>spec-chat-shape</code> produces the reviewed canonical spec, committed locally, and never publishes; it sends the review link as soon as the draft validates and is hosted, with no agent browser pass. In parallel, never before that link, the orchestrator files the Linear issue, pushes, and opens the draft PR, only as consent allows. A processed human spec acceptance (page action Accept spec, formerly called Finish review) permits implementation dispatch under the reviewed canonical spec.</p>
+<p data-anchor="delivery-brief" id="delivery-brief">Operator briefs carry the human decisions already made and exact source pointers (files and anchors), so shaping reads only those before drafting.</p>
+<p data-anchor="delivery-implement" id="delivery-implement"><code>implement-spec</code> first files the dependency-linked ticket graph from the accepted spec, runs its pre-dispatch mechanical checks, then fills the ready ticket frontier with implementer workers, each in its own worktree; repository tests run in delivery, never during shaping.</p>
 <p data-anchor="delivery-merge" id="delivery-merge">One integrator at a time integrates finished commits onto the single integration branch and PR.</p>
 <p data-anchor="delivery-review" id="delivery-review">A code-reviewer judges the integration head, and findings get bounded repair until review is clear and required checks pass.</p>
 <p data-anchor="delivery-linear" id="delivery-linear">Linear stays truthful: a ticket is Done only once integrated and pushed, and a merged accepted PR completes the worklane.</p>

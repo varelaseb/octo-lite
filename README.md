@@ -12,9 +12,9 @@ client, product, or engagement.
 
 ## What It Provides
 
-- Spec Chat shaping that produces an accepted canonical spec, its issue, and a
-  dependency-linked implementation ticket graph.
-- Explicit `$implement-spec` delivery that fills the ready ticket frontier with
+- Spec Chat shaping that produces an accepted canonical spec and its issue.
+- Explicit `$implement-spec` delivery that files the dependency-linked ticket
+  graph after acceptance, fills the ready ticket frontier with
   parallel Herdr workers, integrates onto one branch, runs review, and
   leaves one PR ready for human review.
 - Templates bundled inside skills, not copied as top-level target repo
@@ -48,13 +48,13 @@ included. The meta-operator is a persistent Herdr pane started with `herdr-spawn
 
 ## Workflow
 
-Shape first, then implement the ticket graph.
+Shape first, then implement the accepted spec.
 
 ```text
 idea or rough Linear/GitHub issue
   -> $spec-chat-shape
-  -> accepted spec + spec issue + blocking-linked tickets
-  -> $implement-spec
+  -> accepted spec + spec issue
+  -> $implement-spec files blocking-linked tickets
   -> parallel Herdr implementers on ready tickets
   -> serialized Herdr integrators onto one PR branch
   -> independent review + consolidated fixes; bounded repair of remaining defects

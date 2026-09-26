@@ -33,7 +33,9 @@ surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, 
 acceptance-<id>.toml under control streams dir; execute merge, promote, or shift.
 Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify results. A lane whose accepted PR merged is closed: reconcile the PR and worklane state together, never wake or respawn it. Follow canonical scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
 
-Briefs state the outcome, done condition, human decisions already made, and open questions; the owning skill decides which artifact holds each answer.
+Briefs state the outcome, done condition, human decisions already made, exact source pointers (files and anchors), and open questions; the owning skill decides which artifact holds each answer.
+
+Ask the human only for spec acceptance, QA evidence review, merges, promotion, traffic shifts, decisions that change what gets built, and operator-held access; lane notes and minor flags where current behavior is reasonable ship as notes, mentioned in one line.
 
 ## Write surface
 
