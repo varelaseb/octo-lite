@@ -28,9 +28,11 @@ them into the Claude and Codex profiles:
 ```text
 ~/.{codex,claude}/agents/<role>.md      -> agents/<role>.md
 ~/.{codex,claude,agents}/skills/<skill> -> skills/<skill>, agents/skills/tdd
-~/.{codex,claude}/skills/spec-chat-*    -> sibling spec-chat clone
 ~/.local/bin/<helper>                   -> scripts/*, skills/herdr-comms/assets/*
 ```
+
+Each peer links only what it owns (ADR-004); Spec Chat's installer links its
+own skills.
 
 Install or verify all links:
 
@@ -38,6 +40,10 @@ Install or verify all links:
 scripts/install-octo-lite
 scripts/install-octo-lite --check
 ```
+
+`--check` also reports version floors for each tool octo-lite uses at runtime
+(git, herdr, jq, gh, and at least one of claude or codex), printing ok,
+missing, or too old with the upgrade source.
 
 ## Onboarding
 

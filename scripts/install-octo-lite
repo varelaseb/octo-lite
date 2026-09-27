@@ -131,42 +131,33 @@ for legacy in "${legacy_links[@]}"; do
   fi
 done
 
-# Anything deleted from a peer repository leaves a dangling link behind, which
-# no installer would otherwise heal. A broken link is nobody's, so prune it;
-# the owner recreates it.
+# A dangling link whose target was inside this repository is a known legacy
+# path: prune it. Any other dangling link is reported and left untouched.
 prune_dangling_skills() {
-  local d f pruned=0
+  local d f target pruned=0
   for d in "$prefix/.claude/skills" "$prefix/.codex/skills" \
            "$prefix/.claude/agents" "$prefix/.codex/agents" "$prefix/.local/bin"; do
     [[ -d "$d" ]] || continue
     for f in "$d"/*; do
       [[ -L "$f" && ! -e "$f" ]] || continue
+      target="$(readlink "$f")"
+      case "$target" in
+        "$root"/*) ;;
+        *) echo "dangling link (not ours): $f -> $target" >&2; continue ;;
+      esac
       if [[ "$check" == true ]]; then
-        echo "dangling skill link: $f" >&2; exit 1
+        echo "dangling legacy link: $f" >&2; exit 1
       fi
       rm -f "$f"; pruned=$((pruned + 1))
     done
   done
-  (( pruned )) && echo "pruned $pruned dangling skill link(s)"
+  (( pruned )) && echo "pruned $pruned dangling legacy link(s)"
   return 0
 }
 prune_dangling_skills
 
-# spec-chat is a peer repository, not a vendored dependency. Its skills link
-# straight from a clone, so a pull there is live and there is no pin to bump.
-# Override the location with SPEC_CHAT_ROOT.
-# Default to a sibling checkout, so the stack works under any home.
-spec_chat_root="${SPEC_CHAT_ROOT:-$(dirname "$root")/spec-chat}"
-if [[ -d "$spec_chat_root/skill" ]]; then
-  for pair in "shape-spec:spec-chat-shape" "review-spec:spec-chat-review"; do
-    src="$spec_chat_root/skill/${pair%%:*}"; name="${pair##*:}"
-    [[ -d "$src" ]] || continue
-    link_one "$src" "$prefix/.claude/skills/$name"
-    link_one "$src" "$prefix/.codex/skills/$name"
-  done
-elif [[ "$check" != true ]]; then
-  echo "spec-chat clone not found at $spec_chat_root; its skills are not installed" >&2
-fi
+# Each peer links only what it owns (ADR-004). Spec Chat's installer links its
+# own skills; octo-lite does not link them.
 
 for base in "$prefix/.codex/octo-lite" "$prefix/.claude/octo-lite"; do
   link_one "$root/agents" "$base/adapters"
@@ -231,8 +222,82 @@ for source in "$root"/skills/herdr-comms/assets/*; do
   link_one "$source" "$prefix/.local/bin/$(basename "$source")"
 done
 
-echo "octo-lite links ${check:+checked} at $prefix"
-[[ "$check" == true ]] && exit 0
+# Version floors: each tool octo-lite uses at runtime, with the minimum version
+# it needs and the upgrade source. --check reports each as ok, missing, or too
+# old (found vs needed). Install mode prints them as advisory; --check treats
+# missing or too old as a non-zero exit only when it is the tool that the
+# installer itself needs (herdr for wake, git for links).
+floor_tools=(
+  "git:2.25.0:https://git-scm.com/downloads"
+  "herdr:0.1.0:herdr is installed by the fleet operator"
+  "jq:1.6:https://jqlang.github.io/jq/download/"
+  "gh:2.0.0:https://cli.github.com/"
+  "claude:1.0.0:https://docs.anthropic.com/en/docs/claude-code"
+  "codex:0.1.0:https://openai.com/index/introducing-codex/"
+)
+
+version_of() {
+  local cmd="$1"
+  case "$cmd" in
+    git) git --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
+    herdr) herdr --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
+    jq) jq --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
+    gh) gh --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
+    claude) claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
+    codex) codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
+  esac
+}
+
+# Compare two dotted version strings: 0 if a>=b, 1 if a<b.
+version_ge() {
+  local a="$1" b="$2"
+  [[ "$a" == "$b" ]] && return 0
+  local IFS='.'; local -a va=($a) vb=($b)
+  local i max=$(( ${#va[@]} > ${#vb[@]} ? ${#va[@]} : ${#vb[@]} ))
+  for (( i=0; i<max; i++ )); do
+    local na="${va[i]:-0}" nb="${vb[i]:-0}"
+    (( na > nb )) && return 0
+    (( na < nb )) && return 1
+  done
+  return 0
+}
+
+check_floors() {
+  local entry cmd min_ver source found agent_ok=false
+  for entry in "${floor_tools[@]}"; do
+    IFS=: read -r cmd min_ver source <<< "$entry"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      # claude and codex: at least one must be present
+      [[ "$cmd" == claude || "$cmd" == codex ]] && continue
+      echo "  $cmd: missing (need >= $min_ver; $source)" >&2
+      continue
+    fi
+    found="$(version_of "$cmd")"
+    if [[ -z "$found" ]]; then
+      echo "  $cmd: installed (version unknown, need >= $min_ver)"
+      [[ "$cmd" == claude || "$cmd" == codex ]] && agent_ok=true
+      continue
+    fi
+    if version_ge "$found" "$min_ver"; then
+      echo "  $cmd: ok ($found)"
+      [[ "$cmd" == claude || "$cmd" == codex ]] && agent_ok=true
+    else
+      echo "  $cmd: too old ($found < $min_ver; $source)" >&2
+    fi
+  done
+  if ! $agent_ok; then
+    echo "  agent CLI: missing (need claude >= 1.0.0 or codex >= 0.1.0)" >&2
+  fi
+}
+
+if [[ "$check" == true ]]; then
+  echo "octo-lite links checked at $prefix"
+  echo "version floors:"
+  check_floors
+  exit 0
+fi
+
+echo "octo-lite links installed at $prefix"
 
 if [[ -e "$wake_file" && "$(cat "$wake_file")" != "$wake_toml" ]]; then
   echo "keeping foreign wake provider: $wake_file" >&2
