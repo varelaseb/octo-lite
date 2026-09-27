@@ -25,8 +25,12 @@
 <section data-anchor="install" id="install">
 <h2>Install</h2>
 <p data-anchor="install-symlink" id="install-symlink"><code>scripts/install-octo-lite</code> symlinks <code>skills/*</code>, <code>agents/*.md</code>, and executable helpers into the Claude and Codex profiles and <code>~/.local/bin</code>; <code>--check</code> verifies the links.</p>
-<p data-anchor="install-collision" id="install-collision">A target collision fails without overwrite, and dangling links are pruned.</p>
-<p data-anchor="install-peers" id="install-peers">Spec Chat skills link straight from a sibling spec-chat clone; only the third-party tdd skill is pinned, by <code>Skillfile</code> into <code>agents/skills</code> (ADR 0002).</p>
+<p data-anchor="install-collision" id="install-collision">A target collision fails without overwrite.
+A dangling link whose target was inside this repository is pruned as a known legacy path; any other dangling link is reported and left untouched.</p>
+<p data-anchor="install-peers" id="install-peers">Each peer links only what it owns (ADR-004); Spec Chat's installer links Spec Chat's own skills.
+Only the third-party tdd skill is pinned, by <code>Skillfile</code> into <code>agents/skills</code> (ADR 0002).</p>
+<p data-anchor="install-floors" id="install-floors"><code>--check</code> also reports version floors: for each tool octo-lite uses at runtime (git, herdr, jq, gh, and at least one of claude or codex), it prints ok, missing, or too old (found version vs minimum) with the upgrade source.
+The installer never upgrades anything without the user's explicit consent.</p>
 </section>
 
 <section data-anchor="roles" id="roles">
