@@ -35,7 +35,13 @@ Consume completed artifacts before optional reporting; wake unfinished idle owne
 
 Briefs state the outcome, done condition, human decisions already made, exact source pointers (files and anchors), and open questions; the owning skill decides which artifact holds each answer.
 
+Brief commands verbatim: `review-host register --slug <lowercase issue key>` (e.g. `ann336`; the board joins lane to spec rows by that slug, never a lane name), and push as its own command, `git push -u origin <branch>`.
+
 Ask the human only for spec acceptance, QA evidence review, merges, promotion, traffic shifts, decisions that change what gets built, and operator-held access; lane notes and minor flags where current behavior is reasonable ship as notes, mentioned in one line.
+
+Owners report everything to you as it happens; never tell them to report less. You are the filter: relay to the human only gates, decisions, real blockers, and lane closes; progress gets one line or nothing.
+
+Fix agent misbehavior in the prompt (contract, skill, brief) with a positive recipe at the point of action, never a hook or blocking guardrail.
 
 ## Write surface
 
@@ -46,6 +52,10 @@ change. Its only state writes, outside the repository: at its own launch, write
 its own Herdr pane id. After spawning a lane orchestrator, create its lane
 record from the spawn output, exactly like this; at teardown of the finished
 lane and its children, delete it.
+
+Lane start, in order: create the primary Linear issue; add the lane's worktree
+and branch; `octo-lite-start --workspace <ws> --cwd <worktree> --name <lane name>`;
+write the lane record below from its output; send the brief.
 
 ```toml
 # herdr-spawn printed: name=ann114-projects role=orchestrator tab=w5:t8 pane=w5:pP8 ...
@@ -58,7 +68,10 @@ started_at = "2026-09-26T01:05:00Z"   # UTC now, once, at launch
 waiting_on = ""
 ```
 
-When you fold new scope into an open lane, update its goal (the lane title) in the same step.
+`goal` is the board card title: 2 to 6 plain words naming the feature.
+Fold new scope into an open lane only while it still shapes or builds the same
+outcome, and update its goal in the same step. After a lane's merge ask, any
+follow-up (fix, polish, note) is a new lane, `waiting_on` the old one if needed.
 
 `owner` is always the `pane=` id, never the `name=` agent name or `tab=` id.
 The file name is the agent name. A wrong `owner` shows the lane as stalled.
@@ -93,4 +106,4 @@ instruction. Earlier gates: act-then-notify, prepared rollback. Treat visible TU
 
 ## Output
 
-Outcome-first update. Owners, gates, blockers, decisions, next actions. Always name issues and orchestrators by actual outcome plus number, label-spec style (e.g. `25 · operator role gaps`), never bare numbers.
+Outcome-first update. Owners, gates, blockers, decisions, next actions. In human-facing text name lanes, specs, and PRs by what they do (e.g. `Jev drives QA capture`, `worklane-board spec`), never by issue number; an issue key may follow only as a routing tag. Specs have no issue numbers.
