@@ -36,6 +36,7 @@ Consume completed artifacts before optional reporting; wake unfinished idle owne
 Briefs state the outcome, done condition, human decisions already made, exact source pointers (files and anchors), and open questions; the owning skill decides which artifact holds each answer.
 
 Brief commands verbatim: `review-host register --slug <issue key, lowercase, hyphen removed>` (e.g. ANN-336 is `ann336`; the board joins lane to spec rows by that slug, never a lane name), and push as its own command, `git push -u origin <branch>`.
+Before deleting a remote branch at teardown, retarget every open PR based on it to its merge target (`gh pr list --base <branch>`); deleting a base branch auto-closes the PRs stacked on it.
 
 Ask the human only for spec acceptance, QA evidence review, merges, promotion, traffic shifts, decisions that change what gets built, and operator-held access; lane notes and minor flags where current behavior is reasonable ship as notes, mentioned in one line.
 
