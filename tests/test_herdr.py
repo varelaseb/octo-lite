@@ -12,7 +12,7 @@ live Herdr 0.9.0:
     the agent being spawned
   * a failed spawn must not leave an orphan tab behind
   * `herdr-say` must map a blocked target to exit 75, which is the contract
-    spec-chat's `wake-herdr.py` adapter relies on
+    `herdr-wake`, Spec Chat's wake provider, relies on
   * a Codex contract sent as a prompt is worked as a task, and a Codex thread
     on the shared daemon outlives its tab
   * a detached child outlives its closed tab unless `herdr-close` reaps it
@@ -31,6 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
+WAKE = ROOT / "skills/herdr-comms/assets/herdr-wake"
 CLOSE = ROOT / "skills/herdr-comms/assets/herdr-close"
 
 # A stand-in for the `herdr` binary. Behaviour is driven entirely by environment
@@ -108,7 +109,9 @@ case "$sub" in
   "agent get")
     # FAKE_NEVER_READY poses an agent that starts but never reports a session,
     # which is the window in which a prompt is silently lost.
-    if [[ -n "${FAKE_NEVER_READY:-}" ]]; then
+    if [[ -n "${FAKE_AGENT_GET:-}" ]]; then
+      echo "$FAKE_AGENT_GET"
+    elif [[ -n "${FAKE_NEVER_READY:-}" ]]; then
       echo '{"result":{"agent":{}}}'
     elif [[ -n "${FAKE_NO_SESSION:-}" ]]; then
       echo '{"result":{"agent":{"agent_status":"idle"}}}'
@@ -118,6 +121,9 @@ case "$sub" in
   "agent prompt")
     if [[ -n "${FAKE_PROMPT_BLOCKED:-}" ]]; then
       echo '{"error":{"code":"agent_blocked","message":"requires interactive input"},"id":"cli:agent:prompt"}' >&2; exit 1
+    fi
+    if [[ -n "${FAKE_PROMPT_STALLED:-}" ]]; then
+      echo '{"error":{"code":"agent_prompt_stalled","message":"no reaction"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
     if [[ -n "${FAKE_PROMPT_NOT_FOUND:-}" ]]; then
       echo '{"error":{"code":"agent_not_found","message":"not found"},"id":"cli:agent:prompt"}' >&2; exit 1
@@ -440,7 +446,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("--until", line)
 
     def test_say_maps_a_blocked_target_to_exit_75(self):
-        # spec-chat's wake-herdr.py treats 75 as "retry later" and anything else
+        # herdr-wake treats 75 as "retry later" and anything else
         # as a transport failure.
         r = self.say("a1", "hello", FAKE_PROMPT_BLOCKED="1")
         self.assertEqual(r.returncode, 75, r.stderr)
@@ -452,6 +458,56 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_say_accepts_the_caller_compatibility_flags(self):
         r = self.say("--kind", "command", "--artifact", "x.spec.html", "a1", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    # --- wake provider (Spec Chat's wake protocol) -------------------------
+
+    def wake(self, *args, status="idle", pane="w1:p1", **env):
+        agent = '{"result":{"agent":{"pane_id":"%s","agent_status":"%s"}}}' % (pane, status)
+        return subprocess.run([str(WAKE), *args], capture_output=True, text=True,
+                              env={**self.env, "FAKE_AGENT_GET": agent, **env})
+
+    def test_wake_check_is_zero_only_for_a_resolving_owner(self):
+        self.assertEqual(self.wake("check", "w1:p1").returncode, 0)
+        self.assertEqual(self.wake("check", "w1:p2").returncode, 1)
+
+    def test_wake_send_prompts_the_owner_with_the_message(self):
+        r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("agent prompt w1:p1 hand-off ready", self.log.read_text())
+
+    def test_wake_send_states_match_host_wake(self):
+        send = ("send", "w1:p1", "a.spec.html", "m")
+        self.assertEqual(self.wake(*send, status="working").returncode, 75)
+        self.assertNotIn("agent prompt", self.log.read_text())
+        self.assertEqual(self.wake(*send, FAKE_PROMPT_BLOCKED="1").returncode, 75)
+        self.assertEqual(self.wake(*send, FAKE_PROMPT_STALLED="1").returncode, 0)
+        self.assertNotIn(self.wake(*send, FAKE_PROMPT_NOT_FOUND="1").returncode, (0, 75))
+        self.assertNotIn(self.wake(*send, pane="w1:p9").returncode, (0, 75))
+
+    # --- start command ---------------------------------------------------
+
+    def start(self, *extra):
+        return subprocess.run(
+            [str(ROOT / "scripts/octo-lite-start"), "--workspace", "w1", "--cwd", str(self.cwd), *extra],
+            capture_output=True, text=True, env=self.env,
+        )
+
+    def test_start_spawns_an_orchestrator(self):
+        self.dialog.write_text("none\n")
+        r = self.start()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = self.start_argv()
+        self.assertEqual(argv[:3], ["agent", "start", "orchestrator-worktree"])
+        self.assertEqual(argv[-2:], ["--agent", "orchestrator"])
+
+    def test_start_codex_takes_the_orchestrator_contract(self):
+        self.dialog.write_text("none\n")
+        contract = Path(self.env["HOME"]) / ".claude/agents/orchestrator.md"
+        contract.parent.mkdir(parents=True)
+        contract.write_text("# Orchestrator\n")
+        r = self.start("--runtime", "codex", "--name", "n1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("developer_instructions=", " ".join(self.start_argv()))
 
 
 if __name__ == "__main__":

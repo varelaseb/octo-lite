@@ -1,4 +1,5 @@
-"""Lane record example contract checks."""
+"""Contract checks: octo-lite's published lane record and acceptance receipt
+formats read back by their own spec keys."""
 
 from __future__ import annotations
 
@@ -46,6 +47,28 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIn(ticket["state"], {"waiting", "ready", "active", "done"})
             self.assertIsInstance(ticket["passes"], int)
             self.assertRegex(ticket["since"], UTC)
+
+    def test_acceptance_receipt_is_keyed_by_repository_and_pr(self) -> None:
+        html = SPEC.read_text(encoding="utf-8")
+        match = re.search(
+            r'<pre data-anchor="acceptance-receipt-example"><code># (\S+)\n(.*?)</code></pre>',
+            html,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match, "acceptance receipt example is missing")
+        path, body = match.groups()
+        receipt = tomllib.loads(unescape(body))
+        owner, repo = receipt["repository"].split("/")
+        self.assertEqual(
+            path,
+            f"$XDG_STATE_HOME/octo-lite/acceptance/acceptance-{owner}-{repo}-{receipt['pr']}.toml",
+        )
+        self.assertIsInstance(receipt["pr"], int)
+        self.assertRegex(receipt["head"], r"^[0-9a-f]{40}$")
+        self.assertRegex(receipt["accepted_at"], UTC)
+        self.assertIsInstance(receipt["instruction"], str)
+        self.assertNotIn("issue", receipt)
+        self.assertNotIn("ticket", receipt)
 
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")

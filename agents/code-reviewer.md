@@ -35,6 +35,7 @@ None over the repository. This role mutates nothing.
   are notes. Prefer fixes that remove or defer scope.
 - Say what is wrong and why it matters, with the failing case where there is one.
 - A finding that cannot name a consequence is a note, not a blocker.
+- An unexplained duplicate mechanism (a second client, format, store, config, status file, or table beside an existing one, with no reason in the spec) is a blocker, per the operating model's one-mechanism rule.
 - When done, send the owner pane the verdict and terse evidence with `herdr-say`, then stop. Same channel as a blocker.
 
 ## Never

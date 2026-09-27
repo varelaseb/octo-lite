@@ -26,7 +26,6 @@ Source-controlled files live in this repo. `scripts/install-octo-lite` links
 them into the Claude and Codex profiles:
 
 ```text
-~/.codex/AGENTS.md, ~/.claude/CLAUDE.md -> annotateanything/AGENTS.md
 ~/.{codex,claude}/agents/<role>.md      -> agents/<role>.md
 ~/.{codex,claude,agents}/skills/<skill> -> skills/<skill>, agents/skills/tdd
 ~/.{codex,claude}/skills/spec-chat-*    -> sibling spec-chat clone
@@ -39,6 +38,37 @@ Install or verify all links:
 scripts/install-octo-lite
 scripts/install-octo-lite --check
 ```
+
+## Onboarding
+
+```bash
+scripts/install-octo-lite --onboard
+octo-lite-start --workspace ID --cwd WORKTREE [--runtime claude|codex] [--operating-model FILE]
+```
+
+`--onboard` installs the links, then asks whether agents may push, open pull
+requests, and file issues, each defaulting to no, and keeps the answers in
+`${XDG_CONFIG_HOME:-~/.config}/octo-lite/consent.toml` (see
+[consent](skills/octo-lite-github/SKILL.md#consent)). Kept answers are not asked
+again; delete the file to answer afresh. Every install publishes
+`${XDG_STATE_HOME:-~/.local/state}/octo-lite/onboarding.toml`: `status`
+(`pending` until consent is kept, then `done`) and `doc`, a link here.
+
+`octo-lite-start`, installed on `PATH`, starts one orchestrator in its own Herdr
+tab at the worktree. It is the published start command; callers never use
+`herdr-spawn` inside the clone.
+
+With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
+`wake` provider by writing
+`${XDG_STATE_HOME:-~/.local/state}/spec-chat/hosting/default/providers/wake.toml`
+atomically, in the format Spec Chat owns. `herdr-wake check OWNER` exits 0 when
+the pane resolves; `herdr-wake send OWNER ARTIFACT MESSAGE` exits 0 sent, 75
+deferred, other failed. Install never replaces a `wake.toml` it did not
+write, and `--undo` deletes that file only while it is unchanged.
+
+`--prefix PATH` is the one root for everything install writes: links, and the
+state and config above under `PATH/.local/state` and `PATH/.config`, ignoring
+`XDG_*`.
 
 `agents/*.md` are hand-written role contracts. Workers load them: Claude
 through `--agent ROLE`, Codex as developer instructions from `herdr-spawn

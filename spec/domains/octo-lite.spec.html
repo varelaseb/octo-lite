@@ -53,12 +53,34 @@
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">The <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#lane-record">workbench lane record format</a> owns the shared TOML keys. Octo-lite adds only <code>last_handoff_at</code>, and writes it and the workbench keys at the moments below.</p>
+<p data-anchor="lane-record-intent">Octo-lite owns and publishes the lane record format: one TOML file per lane in <code>$XDG_STATE_HOME/octo-lite/lanes/</code>, named by the owner agent name, with the keys below, written at the moments below.
+Readers follow this format; octo-lite names no reader.</p>
+<figure data-anchor="octo-lane-record-fields">
+<h3 data-anchor="octo-lane-record-fields-heading">Lane record keys</h3>
+<div class="table-scroll" data-anchor="octo-lane-record-fields-wrap">
+<table data-anchor="octo-lane-record-fields-table">
+<thead><tr><th>Key</th><th>Value</th></tr></thead>
+<tbody>
+<tr data-anchor="octo-lane-record-key-issue"><td><code>issue</code></td><td>The lane key, the primary issue, for example <code>"ANN-45"</code>.</td></tr>
+<tr data-anchor="octo-lane-record-key-repository"><td><code>repository</code></td><td><code>"owner/name"</code> where the lane's PR lives.</td></tr>
+<tr data-anchor="octo-lane-record-key-goal"><td><code>goal</code></td><td>One line: a short plain feature name, the lane title.</td></tr>
+<tr data-anchor="octo-lane-record-key-pr"><td><code>pr</code></td><td>Pull request number; absent until one opens.</td></tr>
+<tr data-anchor="octo-lane-record-key-owner"><td><code>owner</code></td><td>The owner's Herdr pane id, the <code>pane=</code> value <code>herdr-spawn</code> printed, for example <code>"w5:pB2"</code>; never the agent name or tab.</td></tr>
+<tr data-anchor="octo-lane-record-key-workers"><td><code>[[workers]] pane</code>, <code>role</code>, <code>ticket</code></td><td>Each worker's Herdr pane, its role (the role contract it runs, for example <code>"implementer"</code>), and the ticket key it works.</td></tr>
+<tr data-anchor="octo-lane-record-key-tickets"><td><code>[[tickets]] key</code>, <code>state</code>, <code>passes</code>, <code>since</code></td><td>One entry per ticket of the lane: its key, <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, its repair pass count, and the quoted UTC instant it entered its current state and holder.</td></tr>
+<tr data-anchor="octo-lane-record-key-started"><td><code>started_at</code></td><td>Quoted UTC instant when the lane launched, for example <code>"2026-09-26T01:05:00Z"</code>, written once at launch.</td></tr>
+<tr data-anchor="octo-lane-record-key-last-handoff"><td><code>last_handoff_at</code></td><td>Quoted UTC instant of the owner's last worker spawn, close, or hand-off consumption.</td></tr>
+<tr data-anchor="octo-lane-record-key-waiting"><td><code>waiting_on</code></td><td><code>""</code>, <code>"spec review"</code>, <code>"QA review"</code>, <code>"merge"</code> (only the human's merge instruction remains), <code>"blocked"</code>, <code>"operator"</code> (the lane escalated to the fleet operator), or one other lane's issue key, for example <code>"ANN-136"</code>, while this lane waits on that lane.</td></tr>
+</tbody>
+</table>
+</div>
+<figcaption data-anchor="octo-lane-record-fields-caption">The file is rewritten when the lane moves, so its modified time is the lane's last activity.</figcaption>
+</figure>
 <figure data-anchor="octo-lane-record">
-<h3 data-anchor="octo-lane-record-heading">The lane record: workbench fields and octo-lite keys</h3>
+<h3 data-anchor="octo-lane-record-heading">The lane record</h3>
 <pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
 owner = "w5:pB2"                 # owner pane id: herdr-spawn pane=, never agent name or tab; file named by agent name
-repository = "varelaseb/annotateanything"
+repository = "varelaseb/octo-lite"
 issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
 goal = "Shape ANN-45 and ANN-44 through spec acceptance"
 pr = 30                          # set when shaping opens the draft PR
@@ -82,7 +104,7 @@ key = "ANN-65"
 state = "waiting"
 passes = 0
 since = "2026-09-24T17:40:00Z"</code></pre>
-<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML. Every key but <code>last_handoff_at</code> comes from the workbench format.</figcaption>
+<figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML.</figcaption>
 </figure>
 <figure data-anchor="octo-lane-record-life">
 <h3 data-anchor="octo-lane-record-life-heading">Who touches the lane record, and when</h3>
@@ -90,7 +112,7 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with the shared workbench fields, including owner, repository, goal, and issue when known, plus <code>started_at</code> set to now and <code>waiting_on</code> set to <code>""</code>. Writes <code>operator.toml</code> with its own <code>pane</code> beside the lanes directory at its own launch.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with owner, repository, goal, and issue when known, plus <code>started_at</code> set to now and <code>waiting_on</code> set to <code>""</code>. Writes <code>operator.toml</code> with its own <code>pane</code> beside the lanes directory at its own launch.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates <code>[[workers]]</code> <code>pane</code>, <code>role</code>, and <code>ticket</code>, and <code>last_handoff_at</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-tickets"><td>Tickets are created, or a ticket moves state or holder</td><td>Owner</td><td>Rewrites its <code>[[tickets]]</code> entry: <code>state</code> <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, <code>since</code> set to now; a repair pass adds one to <code>passes</code>.</td></tr>
@@ -103,12 +125,47 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 </div>
 <figcaption data-anchor="octo-lane-record-life-caption">The operator creates and removes the record. In between, only the owner updates it in place.</figcaption>
 </figure>
-<p data-anchor="octo-lane-record-handoffs">At each hand-off moment the owner appends one line to <code>&lt;lane record name&gt;.handoffs.jsonl</code> beside the lane record, per the <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/lane-handoffs.spec.html#handoff-fields">hand-off field list</a>.</p>
+<p data-anchor="octo-lane-record-handoffs">At each hand-off moment the owner appends one line to <code>&lt;lane record name&gt;.handoffs.jsonl</code> beside the lane record, per the <a href="#handoff-fields">hand-off field list</a>; only the owner writes the file.</p>
+<figure data-anchor="handoff-fields" id="handoff-fields">
+<h3 data-anchor="handoff-fields-heading">Hand-off field list: one line per hand-off</h3>
+<p data-anchor="handoff-fields-common">Every line has <code>at</code>, an RFC 3339 UTC instant, and <code>kind</code>; <code>ticket</code> is the ticket key where one applies.</p>
+<div class="table-scroll" data-anchor="handoff-fields-wrap">
+<table data-anchor="handoff-fields-table">
+<thead><tr><th><code>kind</code></th><th>Written when</th><th>Fields</th></tr></thead>
+<tbody>
+<tr data-anchor="handoff-kind-attempt"><td><code>attempt</code></td><td>A worker's result is consumed.</td><td><code>role</code>, <code>ticket</code>, <code>worker</code> (pane), <code>commit</code>, <code>result</code> (done, blocked, stalled, failed), <code>duration_s</code></td></tr>
+<tr data-anchor="handoff-kind-review"><td><code>review</code></td><td>A review verdict is consumed.</td><td><code>ticket</code>, <code>commit</code>, <code>verdict</code> (approve, changes), <code>blockers</code>, <code>round</code>, <code>step_back</code></td></tr>
+<tr data-anchor="handoff-kind-integration"><td><code>integration</code></td><td>The integration head moves.</td><td><code>commit</code></td></tr>
+<tr data-anchor="handoff-kind-qa"><td><code>qa</code></td><td>A QA phase ends.</td><td><code>phase</code> (capture, review), <code>started_at</code>, <code>commit</code>, <code>verdict</code> (passed, failed, empty for capture)</td></tr>
+<tr data-anchor="handoff-kind-gate"><td><code>gate</code></td><td>A human gate is asked or answered.</td><td><code>gate</code> (spec review, QA review, merge), <code>event</code> (asked, answered), <code>answer</code></td></tr>
+<tr data-anchor="handoff-kind-blocked"><td><code>blocked</code></td><td>The lane becomes blocked.</td><td><code>reason</code></td></tr>
+<tr data-anchor="handoff-kind-scope"><td><code>scope</code></td><td>Scope or ship grouping changes.</td><td><code>change</code></td></tr>
+</tbody>
+</table>
+</div>
+<figcaption data-anchor="handoff-fields-caption">Minimal append-only trace, so JSONL. The lane record keeps current state; this file keeps what happened.</figcaption>
+</figure>
 </section>
 
 <section data-anchor="gates" id="gates">
 <h2>Human gates</h2>
 <p data-anchor="gates-list" id="gates-list">Spec acceptance, acceptance of delivered work, merge of unaccepted work, preproduction promotion, and live traffic shifts require explicit human instruction.</p>
+<p data-anchor="acceptance-receipt" id="acceptance-receipt">The owner receiving acceptance of delivered work records it before merging in one TOML file per PR, <code>$XDG_STATE_HOME/octo-lite/acceptance/acceptance-&lt;owner&gt;-&lt;repo&gt;-&lt;pr&gt;.toml</code>, named and keyed by repository and PR.
+It names no ticket; the ticket stays machinery metadata.
+Earlier receipts keyed by issue stay as history.</p>
+<figure data-anchor="acceptance-receipt-figure">
+<h3 data-anchor="acceptance-receipt-heading">The acceptance receipt</h3>
+<pre data-anchor="acceptance-receipt-example"><code># $XDG_STATE_HOME/octo-lite/acceptance/acceptance-varelaseb-annotateanything-74.toml
+repository = "varelaseb/annotateanything"
+pr = 74
+head = "9be60f696a9e32c936935314f023188181445b15"   # exact accepted head
+accepted_at = "2026-09-26T18:05:39Z"
+instruction = "merge #74. Accepts head 9be60f6."   # the human's words
+relayed_by = "human"
+qa_bundle = "ann255-pr74-9be60f6"   # when a QA bundle backed the ask
+merge = "ef33c01f88d6f7cf8ff91ea6b63977643c6b85dd"   # added after merge</code></pre>
+<figcaption data-anchor="acceptance-receipt-caption">A durable gate record, so TOML.</figcaption>
+</figure>
 </section>
 
 <section data-anchor="absent" id="absent">

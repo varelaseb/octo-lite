@@ -17,8 +17,8 @@ disposition for reviewer findings beyond the elegant minimum. Precedents:
 gh#28 (-380 lines deletion-only), gh#34 (envelope deleted, not simplified),
 gh#31 (one age bound, dropped lock/TOCTOU armor).
 
-Shared lifecycle and lane rules live in the installed annotateanything
-`AGENTS.md`.
+Shared lifecycle and lane rules live in the installed global operating
+model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
 
 ## Durable Sources
 
@@ -29,7 +29,6 @@ Shared lifecycle and lane rules live in the installed annotateanything
   under the `implementer`, `integrator`, and `code-reviewer` contracts, which
   declare the skills available to them, so no prose list has to be kept in
   step by hand.
-- annotateanything's `AGENTS.md` is the installed global operating model.
 - `skills/` contains reusable octo-lite skills authored locally and their
   bundled templates.
 - `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` are the skillfile

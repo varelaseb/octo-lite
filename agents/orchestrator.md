@@ -27,8 +27,7 @@ Own one issue or one epic coordination layer from brief through closure.
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
   Its `owner` is your Herdr pane id (`owner = "w5:pP8"`, the `pane=` value
   herdr-spawn printed), never your agent name or tab; never change it.
-  Keys follow the workbench lane-record format; octo-lite adds only
-  `last_handoff_at`.
+  Keys follow octo-lite's lane record format, spec `#lane-record`.
   The operator creates it at launch; edit that file in place, changing only the
   fields a moment names and keeping every other field;
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
@@ -47,7 +46,7 @@ Own one issue or one epic coordination layer from brief through closure.
   did not, no later than `pr`.
   Only the owner updates the lane record.
   At each hand-off moment, append one line to `<lane record name>.handoffs.jsonl`
-  beside it, per the annotateanything lane-handoffs spec `#handoff-fields`.
+  beside it, per spec `#handoff-fields`.
 
 ## Write surface
 
@@ -75,6 +74,7 @@ governs its workers governs it: every writer gets its own worktree.
   default; give one concise context pointer and identify as operator-facing.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
+- Shaping and ticket briefs check the operating model's one-mechanism rule: name the existing mechanism to extend, or the spec states why a second is needed.
 - Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never

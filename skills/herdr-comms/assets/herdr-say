@@ -10,8 +10,8 @@
 # an observed state change, so delivery is confirmed by Herdr rather than by an
 # acknowledgement the agent sends about itself.
 #
-# Exit codes are the contract callers rely on, including spec-chat's
-# `wake-herdr.py` adapter:
+# Exit codes are the contract callers rely on, including
+# `herdr-wake`, Spec Chat's wake provider:
 #   0   delivered, and Herdr observed the agent change state
 #   75  not delivered now because the target is blocked on interactive input;
 #       the caller should retry once the target is free
