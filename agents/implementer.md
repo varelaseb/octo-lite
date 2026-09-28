@@ -16,6 +16,7 @@ Be extremely concise. Sacrifice grammar for concision. No em dashes or en dashes
 
 Implement one ticket inside the worktree it was given, and return the commit.
 
+- Never check out a branch in a peer's live install clone (the clones the box's skills, roles, and services run from): work only in a git worktree.
 ## Authority
 
 - Change only that ticket's shaped scope, only inside the worktree it was spawned in.
