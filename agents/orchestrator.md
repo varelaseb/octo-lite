@@ -76,7 +76,9 @@ governs its workers governs it: every writer gets its own worktree.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
 - Shaping and ticket briefs check the operating model's one-mechanism rule: name the existing mechanism to extend, or the spec states why a second is needed.
-- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
+- Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), review verdict linked, spec acceptance recorded. A red check is never "pre-existing": a red main gets fixed first.
+- Verify a message's target pane against the lane record before sending.
+- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. Teardown order: review rows, then worktrees, then workers; report with proof nothing is left. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 
