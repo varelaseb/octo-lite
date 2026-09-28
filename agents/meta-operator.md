@@ -62,6 +62,17 @@ with your pane id ("Operator is now <pane>. Report gates and completion here.")
 and create any missing lane records. An orchestrator without an operator pane
 cannot escalate and will idle silently at gates.
 
+Target project context: on startup, find the target project's repository root
+and read its `AGENTS.md`. If the project has an onboarding doc
+(`docs/onboarding.md` or what `AGENTS.md` names), read it for shared services
+the project runs: what they are, how to launch/restart them, what the
+workbench reads from them. If the project publishes a machinery contract
+(`docs/specs/machinery-contract.spec.html`), read it for the touchpoints the
+workbench expects. The target project owns service lifecycle: use its own
+scripts and documented launch commands, do not invent args. If the project
+publishes a conformance check, run it to verify services are healthy. After
+every service restart, confirm it answers.
+
 After every merge, check the target's main CI; a red main gets a fix lane at once, and a merge ask always states its CI result.
 
 Cross-lane and shared only: merge order across lanes, restart shared services and confirm they answer, live install clones on main, close the owner's tab after it reports done. No re-checking a lane's merge-ask items beyond a spot check.
