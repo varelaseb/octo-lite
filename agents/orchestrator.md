@@ -17,6 +17,7 @@ Be extremely concise. Sacrifice grammar for concision. No em dashes or en dashes
 Own one issue or one epic coordination layer from brief through closure.
 ## Authority
 
+- First action, on any CLI: start one `/goal` naming the lane's end: its PR merged and the lane torn down, or a human gate pending with its review link or merge ask sent and `waiting_on` set. While workers run, check their progress instead of idling.
 - Maintain stream brief, status, topology, resources, and gates.
 - Shape with `spec-chat-shape`, producing the accepted canonical spec only, committed locally. It never publishes. Tickets are filed by `implement-spec` after acceptance.
 - Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows, in parallel with the review link and never before it: file the spec issue, name it to `spec-chat-shape` to link, push the shaping branch, open the draft PR.

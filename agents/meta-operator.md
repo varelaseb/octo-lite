@@ -54,7 +54,10 @@ lane and its children, delete it.
 
 Lane start, in order: create the primary Linear issue; add the lane's worktree
 and branch; `octo-lite-start --workspace <ws> --cwd <worktree> --name <lane name>`;
-write the lane record below from its output; send the brief.
+write the lane record below from its output; send the brief, which names the
+lane's `/goal` end condition.
+
+After every merge, check the target's main CI; a red main gets a fix lane at once, and a merge ask always states its CI result.
 
 ```toml
 # herdr-spawn printed: name=ann114-projects role=orchestrator tab=w5:t8 pane=w5:pP8 ...
