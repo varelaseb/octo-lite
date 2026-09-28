@@ -229,7 +229,7 @@ done
 # installer itself needs (herdr for wake, git for links).
 floor_tools=(
   "git:2.25.0:https://git-scm.com/downloads"
-  "herdr:0.1.0:herdr is installed by the fleet operator"
+  "herdr:0.1.0:install herdr from https://github.com/herdrdev/herdr"
   "jq:1.6:https://jqlang.github.io/jq/download/"
   "gh:2.0.0:https://cli.github.com/"
   "claude:1.0.0:https://docs.anthropic.com/en/docs/claude-code"
