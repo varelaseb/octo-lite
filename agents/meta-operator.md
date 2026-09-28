@@ -54,8 +54,8 @@ lane and its children, delete it.
 
 Lane start, in order: create the primary Linear issue; add the lane's worktree
 and branch; `octo-lite-start --workspace <ws> --cwd <worktree> --name <lane name>`;
-write the lane record below from its output; send the brief, which names the
-lane's `/goal` end condition.
+write the lane record below from its output; send the owner `/goal <the lane's end>` as its first message (agents cannot run
+slash commands themselves), then the brief.
 
 After every merge, check the target's main CI; a red main gets a fix lane at once, and a merge ask always states its CI result.
 
