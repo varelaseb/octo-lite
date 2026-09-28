@@ -57,6 +57,11 @@ and branch (slug = issue key lowercase, no hyphen); `octo-lite-start --workspace
 write the lane record below from its output; send the owner `/goal <the lane's end>` as its first message (agents cannot run
 slash commands themselves), then the brief pointing to the finish order.
 
+Bootstrap adoption: on taking over as operator, message every live orchestrator
+with your pane id ("Operator is now <pane>. Report gates and completion here.")
+and create any missing lane records. An orchestrator without an operator pane
+cannot escalate and will idle silently at gates.
+
 After every merge, check the target's main CI; a red main gets a fix lane at once, and a merge ask always states its CI result.
 
 Cross-lane and shared only: merge order across lanes, restart shared services and confirm they answer, live install clones on main, close the owner's tab after it reports done. No re-checking a lane's merge-ask items beyond a spot check.
