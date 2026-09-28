@@ -173,10 +173,12 @@ After every ticket is integrated:
    actionable defect solely because a cycle completed, repeat unchanged
    reviews blindly, or implicitly waive a failed required check.
 3. Run the target repo's required validation.
-4. Mark the PR ready for review only when the final review is clear and every
-   required validation succeeds. Otherwise keep it draft and report the
-   blocker. Keep the spec issue open until human review or repository
-   automation closes it.
+4. Mark the PR ready for review only when the final review is clear, every
+   required validation succeeds, and any required evidence (QA bundle) is
+   published. The Human inbox derives its gate from PR draft status
+   (ANN-373): ready means the merge ask is out; draft means work is still in
+   progress. Otherwise keep it draft and report the blocker. Keep the spec
+   issue open until human review or repository automation closes it.
 5. Close each consumed worker with `herdr-close TAB`, which also ends its
    detached processes. Remove every temporary worker worktree only after it is
    clean and its commits are reachable from the integration branch. Never

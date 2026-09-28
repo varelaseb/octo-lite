@@ -74,7 +74,7 @@ Readers follow this format; octo-lite names no reader.</p>
 <tr data-anchor="octo-lane-record-key-tickets"><td><code>[[tickets]] key</code>, <code>state</code>, <code>passes</code>, <code>since</code></td><td>One entry per ticket of the lane: its key, <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, its repair pass count, and the quoted UTC instant it entered its current state and holder.</td></tr>
 <tr data-anchor="octo-lane-record-key-started"><td><code>started_at</code></td><td>Quoted UTC instant when the lane launched, for example <code>"2026-09-26T01:05:00Z"</code>, written once at launch.</td></tr>
 <tr data-anchor="octo-lane-record-key-last-handoff"><td><code>last_handoff_at</code></td><td>Quoted UTC instant of the owner's last worker spawn, close, or hand-off consumption.</td></tr>
-<tr data-anchor="octo-lane-record-key-waiting"><td><code>waiting_on</code></td><td><code>""</code>, <code>"spec review"</code>, <code>"QA review"</code>, <code>"merge"</code> (only the human's merge instruction remains), <code>"blocked"</code>, <code>"operator"</code> (the lane escalated to the fleet operator), or one other lane's issue key, for example <code>"ANN-136"</code>, while this lane waits on that lane.</td></tr>
+<tr data-anchor="octo-lane-record-key-waiting"><td><code>waiting_on</code></td><td><code>""</code>, <code>"blocked"</code>, <code>"operator"</code> (the lane escalated to the fleet operator), or one other lane's issue key, for example <code>"ANN-136"</code>, while this lane waits on that lane. The gate values <code>"spec review"</code>, <code>"QA review"</code>, and <code>"merge"</code> are derived by the <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#health">column function</a> and are no longer set here (ANN-373).</td></tr>
 </tbody>
 </table>
 </div>
@@ -90,7 +90,7 @@ goal = "Shape ANN-45 and ANN-44 through spec acceptance"
 pr = 30                          # set when shaping opens the draft PR
 started_at = "2026-09-24T17:02:00Z"   # operator, once, at launch
 last_handoff_at = "2026-09-24T18:24:09Z"
-waiting_on = ""                  # "", "spec review", "QA review", "merge", "blocked", "operator", or a lane key "ANN-44"
+waiting_on = ""                  # "", "blocked", "operator", or a lane key "ANN-44"; gate values derived (ANN-373)
 
 [[workers]]
 pane = "w5:pC1"
