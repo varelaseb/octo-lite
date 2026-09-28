@@ -77,6 +77,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
 - Shaping and ticket briefs check the operating model's one-mechanism rule: name the existing mechanism to extend, or the spec states why a second is needed.
 - Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), review verdict linked, spec acceptance recorded. A red check is never "pre-existing": a red main gets fixed first.
+- Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; the owner reports the smoke result first.
 - Verify a message's target pane against the lane record before sending.
 - Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. Teardown order: review rows, then worktrees, then workers; report with proof nothing is left. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
