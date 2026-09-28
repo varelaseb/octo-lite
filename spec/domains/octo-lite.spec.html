@@ -19,13 +19,13 @@
 <section data-anchor="user-stories" id="user-stories">
 <h2>User stories</h2>
 <p data-user-story data-anchor="user-story-deliver-spec" id="user-story-deliver-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can shape an idea into an accepted spec, then have it filed as a ticket graph and delivered on one PR ready for my review.</p>
-<p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script and a plain git pull keeps it current.</p>
+<p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script and a plain git pull keeps it current; on a box with an existing setup, the installer adopts compatible links, skips what belongs to someone else, and never overwrites or fails.</p>
 </section>
 
 <section data-anchor="install" id="install">
 <h2>Install</h2>
 <p data-anchor="install-symlink" id="install-symlink"><code>scripts/install-octo-lite</code> symlinks <code>skills/*</code>, <code>agents/*.md</code>, and executable helpers into the Claude and Codex profiles and <code>~/.local/bin</code>; <code>--check</code> verifies the links.</p>
-<p data-anchor="install-collision" id="install-collision">A target collision fails without overwrite.
+<p data-anchor="install-collision" id="install-collision">When a target path is already occupied, the installer classifies it: a symlink resolving into a different clone of this repository (matched by <code>git remote get-url origin</code>) is adopted and reported; any other existing file or symlink is skipped and reported; the installer never overwrites, never fails on an occupied path, and continues with the remaining items.
 A dangling link whose target was inside this repository is pruned as a known legacy path; any other dangling link is reported and left untouched.</p>
 <p data-anchor="install-peers" id="install-peers">Each peer links only what it owns (ADR-004); Spec Chat's installer links Spec Chat's own skills.
 Only the third-party tdd skill is pinned, by <code>Skillfile</code> into <code>agents/skills</code> (ADR 0002).</p>
