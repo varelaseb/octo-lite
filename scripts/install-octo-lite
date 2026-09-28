@@ -38,15 +38,29 @@ if [[ "$undo" == true ]]; then
   exit 0
 fi
 
+# True when resolved path lives in a different clone of this repo (same
+# git remote origin). Used to adopt links from a prior octo-lite clone.
+is_same_origin_clone() {
+  local resolved="$1"
+  [[ -e "$resolved" ]] || return 1
+  local other_root
+  other_root="$(cd "$(dirname "$resolved")" && git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [[ "$other_root" != "$root" ]] || return 1
+  local our_origin other_origin
+  our_origin="$(git -C "$root" remote get-url origin 2>/dev/null)" || return 1
+  other_origin="$(git -C "$other_root" remote get-url origin 2>/dev/null)" || return 1
+  [[ "$our_origin" == "$other_origin" ]]
+}
+
 link_one() {
   local source="$1" target="$2"
   [[ -e "$source" || -L "$source" ]] || { echo "missing source: $source" >&2; exit 66; }
   if [[ "$check" == true ]]; then
-    [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] || {
-      echo "bad link: $target" >&2
-      exit 1
-    }
-    return
+    [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
+    # A symlink from a different clone with the same origin is adoptable.
+    [[ -L "$target" ]] && is_same_origin_clone "$(readlink -f "$target")" && return
+    echo "bad link: $target" >&2
+    exit 1
   fi
   mkdir -p "$(dirname "$target")"
   # A dangling link belongs to nobody: whoever owned it stopped shipping it.
@@ -55,8 +69,22 @@ link_one() {
   [[ -L "$target" && ! -e "$target" ]] && rm -f "$target"
   if [[ -e "$target" || -L "$target" ]]; then
     [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
-    echo "refusing to replace: $target" >&2
-    exit 1
+    # Adopt: symlink from a different clone with the same origin.
+    if [[ -L "$target" ]] && is_same_origin_clone "$(readlink -f "$target")"; then
+      echo "adopted: $target -> $(readlink "$target")"
+      return
+    fi
+    # Skip: any other existing file or symlink.
+    local what
+    if [[ -L "$target" ]]; then
+      what="symlink -> $(readlink "$target")"
+    elif [[ -d "$target" ]]; then
+      what="directory"
+    else
+      what="file"
+    fi
+    echo "skipped: $target (occupied by $what)"
+    return
   fi
   ln -s "$source" "$target"
 }
