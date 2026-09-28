@@ -43,10 +43,13 @@ class SpecChatSkillTests(unittest.TestCase):
             [k for k in lock if "spec-chat" in k], "lockfile still pins spec-chat"
         )
 
-    def test_the_installer_links_spec_chat_from_a_clone(self) -> None:
+    def test_the_installer_does_not_link_spec_chat_skills(self) -> None:
+        """ADR-004: each peer links only what it owns. Spec Chat's installer
+        links its own skills; octo-lite does not link them."""
         installer = (ROOT / "scripts/install-octo-lite").read_text()
-        self.assertIn("SPEC_CHAT_ROOT", installer)
-        self.assertIn("skill/${pair%%:*}", installer)
+        self.assertNotIn("SPEC_CHAT_ROOT", installer)
+        self.assertNotIn("spec-chat-shape", installer)
+        self.assertNotIn("spec-chat-review", installer)
 
     @unittest.skipUnless(SPEC_CHAT_AVAILABLE, f"no spec-chat clone at {SPEC_CHAT}")
     def test_preflight_migrates_the_runtime_referenced_by_the_spec(self) -> None:
