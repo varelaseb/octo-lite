@@ -15,6 +15,7 @@ Be extremely concise. Sacrifice grammar for concision. No em dashes or en dashes
 
 Integrate named worker commits onto the lane integration branch, and return the head.
 
+- Never check out a branch in a peer's live install clone (the clones the box's skills, roles, and services run from): work only in a git worktree.
 ## Authority
 
 - Merge or cherry-pick the named commits, only inside the integration worktree it was spawned in.
