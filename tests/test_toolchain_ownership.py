@@ -38,7 +38,7 @@ class ToolchainOwnershipTests(unittest.TestCase):
             check=False,
         )
 
-    def test_installer_refuses_peer_link_collision(self) -> None:
+    def test_installer_skips_peer_link_collision(self) -> None:
         peer_source = self.root / "peer-skill"
         peer_source.mkdir()
         (peer_source / "SKILL.md").write_text("peer\n", encoding="utf-8")
@@ -48,9 +48,9 @@ class ToolchainOwnershipTests(unittest.TestCase):
 
         result = self._install()
 
-        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(0, result.returncode)
         self.assertEqual(peer_source.resolve(), peer_target.resolve())
-        self.assertIn("refusing to replace", result.stderr)
+        self.assertIn("skipped:", result.stdout)
 
 
     def test_missing_required_skill_blocks_installer_check(self) -> None:

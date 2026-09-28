@@ -65,15 +65,15 @@ class InstallSkillMirrorTests(unittest.TestCase):
         check = self._install("--check")
         self.assertNotEqual(0, check.returncode, "--check must flag a broken managed-skill mirror")
 
-    def test_real_file_collision_fails_without_overwrite(self) -> None:
+    def test_real_file_collision_skips_without_overwrite(self) -> None:
         target = self.prefix / ".claude" / "skills" / "commit"
         target.parent.mkdir(parents=True)
         target.write_text("operator-owned\n", encoding="utf-8")
 
         result = self._install()
 
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn("refusing to replace", result.stderr)
+        self.assertEqual(0, result.returncode)
+        self.assertIn("skipped:", result.stdout)
         self.assertEqual("operator-owned\n", target.read_text(encoding="utf-8"))
 
     def test_role_contracts_are_symlinked_for_both_clis(self) -> None:
