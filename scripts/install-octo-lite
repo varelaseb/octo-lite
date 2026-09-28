@@ -38,6 +38,26 @@ if [[ "$undo" == true ]]; then
   exit 0
 fi
 
+# Canonical owner/repo from a git remote URL so SSH and HTTPS match:
+#   git@github.com:o/r.git  ->  o/r
+#   https://github.com/o/r.git  ->  o/r
+normalize_origin() {
+  local url="$1"
+  # SSH: git@host:owner/repo(.git)
+  if [[ "$url" =~ ^git@[^:]+:(.+)(\.git)?$ ]]; then
+    local path="${BASH_REMATCH[1]}"
+    printf '%s' "${path%.git}"
+    return
+  fi
+  # HTTPS: https://host/owner/repo(.git)
+  if [[ "$url" =~ ^https?://[^/]+/(.+)$ ]]; then
+    local path="${BASH_REMATCH[1]}"
+    printf '%s' "${path%.git}"
+    return
+  fi
+  printf '%s' "$url"
+}
+
 # True when resolved path lives in a different clone of this repo (same
 # git remote origin). Used to adopt links from a prior octo-lite clone.
 is_same_origin_clone() {
@@ -46,10 +66,12 @@ is_same_origin_clone() {
   local other_root
   other_root="$(cd "$(dirname "$resolved")" && git rev-parse --show-toplevel 2>/dev/null)" || return 1
   [[ "$other_root" != "$root" ]] || return 1
-  local our_origin other_origin
+  local our_origin other_origin our_key other_key
   our_origin="$(git -C "$root" remote get-url origin 2>/dev/null)" || return 1
   other_origin="$(git -C "$other_root" remote get-url origin 2>/dev/null)" || return 1
-  [[ "$our_origin" == "$other_origin" ]]
+  our_key="$(normalize_origin "$our_origin")"
+  other_key="$(normalize_origin "$other_origin")"
+  [[ -n "$our_key" && "$our_key" == "$other_key" ]]
 }
 
 link_one() {
