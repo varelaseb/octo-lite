@@ -284,6 +284,8 @@ floor_tools=(
   "gh:2.0.0:https://cli.github.com/"
   "claude:1.0.0:https://docs.anthropic.com/en/docs/claude-code"
   "codex:0.1.0:https://openai.com/index/introducing-codex/"
+  "node:22.0.0:https://nodejs.org/en/download"
+  "python3:3.12.0:https://www.python.org/downloads/"
 )
 
 version_of() {
@@ -294,6 +296,8 @@ version_of() {
     jq) jq --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
     gh) gh --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
     claude) claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
+    node) node --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
+    python3) python3 --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
     codex) codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+[.0-9]*' | head -1 ;;
   esac
 }
