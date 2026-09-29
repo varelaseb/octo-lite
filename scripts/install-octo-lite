@@ -29,12 +29,15 @@ fi
 # octo-lite registers herdr-wake as Spec Chat's `wake` provider (Spec Chat owns
 # the format: review-service.spec.html#providers). Written only with Herdr on
 # the box; install and --undo touch it only while absent or exactly ours.
+# Undo leaves the wake provider in place: Spec Chat's review service depends on
+# it for the box's lifetime, and removing it breaks hand-off delivery while the
+# review service is still running (#430-gap6).
 wake_file="$state_home/spec-chat/hosting/default/providers/wake.toml"
 waker="$prefix/.local/bin/herdr-wake"
 wake_toml="check = [\"$waker\", \"check\", \"{owner}\"]
 send = [\"$waker\", \"send\", \"{owner}\", \"{artifact}\", \"{message}\"]"
 if [[ "$undo" == true ]]; then
-  [[ -f "$wake_file" && "$(cat "$wake_file")" == "$wake_toml" ]] && rm -f "$wake_file" && echo "removed $wake_file"
+  [[ -f "$wake_file" ]] && echo "kept wake provider: $wake_file (spec-chat depends on it)"
   exit 0
 fi
 

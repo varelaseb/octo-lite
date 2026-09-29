@@ -71,7 +71,8 @@ class OnboardingTest(unittest.TestCase):
 
     wake = property(lambda self: self.prefix / ".local/state/spec-chat/hosting/default/providers/wake.toml")
 
-    def test_herdr_box_registers_the_waker_and_undo_removes_it(self):
+    def test_herdr_box_registers_the_waker_and_undo_keeps_it(self):
+        """Gap 6: undo keeps wake.toml because spec-chat depends on it."""
         self.with_herdr()
         self.install()
         waker = str(self.prefix / ".local/bin/herdr-wake")
@@ -81,7 +82,7 @@ class OnboardingTest(unittest.TestCase):
         })
         self.assertEqual(Path(waker).resolve(), (ROOT / "skills/herdr-comms/assets/herdr-wake").resolve())
         self.install("--undo")
-        self.assertFalse(self.wake.exists())
+        self.assertTrue(self.wake.exists(), "wake.toml should survive undo")
 
     def test_prefix_writes_nothing_under_exported_xdg(self):
         self.with_herdr()
