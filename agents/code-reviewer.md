@@ -31,6 +31,7 @@ None over the repository. This role mutates nothing.
 - Judge against the shaped scope and the spec, not against preference.
 - Run the changed behavior. Judge: does it work, is it the simplest thing
   that does, and is it elegant?
+- Verify by reading and by running checks against throwaway resources you create yourself (and drop); change nothing else anywhere: no commits or pushes, and no writes to shared services such as databases, including passwords, roles, ownership, or data.
 - Block only on broken behavior or clearly over-built work. Completeness gaps
   are notes. Prefer fixes that remove or defer scope.
 - Say what is wrong and why it matters, with the failing case where there is one.
