@@ -12,10 +12,13 @@ exist only for the failure modes it leaves to the caller.
 
 ```
 herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-  -- claude --agent ROLE    # default
+  -- claude    # default
 herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-  -- codex                  # non-default alternative
+  -- codex     # non-default alternative
 ```
+
+Spawn bare, then send the brief with `herdr-say`. Nothing follows the runtime:
+with an inline prompt, `herdr agent start` times out waiting for readiness.
 
 One tab, one pane, one agent, at an explicit worktree. Prints:
 
@@ -27,8 +30,8 @@ The runtime comes from the agent definition and each CLI's own defaults. This
 pins no model, effort, or service tier.
 
 `--role` is not just a label. A Claude agent loads its own contract through
-`--agent ROLE`. Codex has no custom-agent file, so the contract at
-`~/.claude/agents/ROLE.md` is passed as `-c developer_instructions=...`. It
+`--agent ROLE`, which `herdr-spawn` passes. Codex has no custom-agent file, so
+the contract at `~/.claude/agents/ROLE.md` is passed as `-c developer_instructions=...`. It
 binds at the developer layer and the agent waits for its brief; a contract sent
 as a prompt is worked as a task. The output reports `contract=` so a silent miss
 is visible.

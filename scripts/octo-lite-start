@@ -22,8 +22,7 @@ while (($#)); do
 done
 [[ -n "$workspace" ]] || usage
 case "$runtime" in
-  claude) tail=(claude --agent orchestrator) ;;
-  codex) tail=(codex) ;;
+  claude|codex) ;;
   *) usage ;;
 esac
 # Herdr rejects '/' and the like in agent names.
@@ -31,4 +30,4 @@ esac
 
 root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd -P)"
 exec "$root/skills/herdr-comms/assets/herdr-spawn" --workspace "$workspace" --name "$name" \
-  --label "$label" --cwd "$cwd" --role orchestrator "${model[@]}" -- "${tail[@]}"
+  --label "$label" --cwd "$cwd" --role orchestrator "${model[@]}" -- "$runtime"

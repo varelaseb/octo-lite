@@ -76,11 +76,12 @@ write, and `--undo` deletes that file only while it is unchanged.
 state and config above under `PATH/.local/state` and `PATH/.config`, ignoring
 `XDG_*`.
 
-`agents/*.md` are hand-written role contracts. Workers load them: Claude
-through `--agent ROLE`, Codex as developer instructions from `herdr-spawn
---role ROLE`. `herdr-close TAB` tears a worker down, detached processes
+`agents/*.md` are hand-written role contracts. Workers load them from
+`herdr-spawn --role ROLE -- claude|codex`: Claude through `--agent ROLE`, Codex
+as developer instructions. Spawn bare; the brief follows by `herdr-say`.
+`herdr-close TAB` tears a worker down, detached processes
 included. The meta-operator is a persistent Herdr pane started with `herdr-spawn
---role meta-operator`; there is no supervised sweep.
+--role meta-operator -- claude`; there is no supervised sweep.
 
 ## Workflow
 
