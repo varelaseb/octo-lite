@@ -44,7 +44,8 @@ Own one issue or one epic coordination layer from brief through closure.
   the column function derives them from observable state (ANN-373).
   The lane owner sets `issue` when shaping creates the issue, if the operator
   did not, no later than `pr`.
-  Only the owner updates the lane record.
+  Only the owner updates the lane record, and keeps it current as things change;
+  a stale record misleads the board, the human, and cross-lane sequencing.
   At each hand-off moment, append one line to `<lane record name>.handoffs.jsonl`
   beside it, per spec `#handoff-fields`.
 

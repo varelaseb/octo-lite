@@ -94,6 +94,7 @@ waiting_on = ""
 ```
 
 `waiting_on` is the owner's field: empty, `blocked`, `operator`, or another lane's issue key, never free text. The operator writes it only at launch (`""`) or for a follow-up lane (the old lane's key); gates are derived by the board, so the operator records them nowhere in the lane record.
+Check each lane record against what you observe; when one is stale, wake its owner to fix it.
 
 `goal` is the board card title: 2 to 6 plain words naming the feature.
 When you fold new scope into an open lane, update its goal in the same step.
