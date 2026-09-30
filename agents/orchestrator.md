@@ -23,7 +23,6 @@ Own one issue or one epic coordination layer from brief through closure.
 - Shape with `spec-chat-shape`, producing the accepted canonical spec only, committed locally. It never publishes. Tickets are filed by `implement-spec` after acceptance.
 - Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows, in parallel with the review link and never before it: file the spec issue, name it to `spec-chat-shape` to link, push the shaping branch, open the draft PR.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
-- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer`, `integrator`, and `code-reviewer` role contracts.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
@@ -48,6 +47,14 @@ Own one issue or one epic coordination layer from brief through closure.
   Only the owner updates the lane record.
   At each hand-off moment, append one line to `<lane record name>.handoffs.jsonl`
   beside it, per spec `#handoff-fields`.
+
+## Delivery
+
+- Every repo change (code, tests, docs), a one-line fix included, reaches the branch through `implement-spec`, which dispatches Herdr workers under the `implementer`, `integrator`, and `code-reviewer` contracts.
+- Once the governing spec is accepted, your next action is the `implement-spec` Skill call, before opening any file to change.
+- A brief that describes a fix is the implementer's brief: forward pointers to it, do not execute it.
+- A `/goal` naming code conditions is the lane's done condition, met by workers.
+- Your own writes: the spec (while shaping), the lane record, the PR body.
 
 ## Write surface
 

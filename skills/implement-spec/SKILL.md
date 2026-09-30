@@ -1,6 +1,6 @@
 ---
 name: implement-spec
-description: Implement a specification in code.
+description: Dispatch delivery of an accepted spec, or one ticket or bug fix under an existing spec, through Herdr workers to one PR. The lane owner's route for every repo change.
 disable-model-invocation: false
 ---
 
@@ -9,8 +9,8 @@ disable-model-invocation: false
 Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
-Implement the complete spec on one branch and leave one PR ready for human
-review. Workers load their `agents/*.md` role contracts and use octo-lite
+The owner dispatches; it never edits repo files itself. Deliver the complete
+spec or ticket on one branch and leave one PR ready for human review. Workers load their `agents/*.md` role contracts and use octo-lite
 skills as guidance. There is no role resolver, loop workflow, receipt, journal,
 exact-role gate, or lifecycle ceremony.
 
@@ -21,6 +21,11 @@ Require:
 - canonical spec
 - spec issue
 - target root `AGENTS.md`
+
+A bug or small ticket governed by an existing spec on main needs no shaping
+or new acceptance: that spec is already accepted, and the ticket is the spec
+issue. With no child tickets, the primary issue is the one-node graph and
+Start step 1 files nothing.
 
 A processed human **spec acceptance** (page action **Accept spec**, formerly
 called Finish review) permits implementation dispatch under the reviewed
