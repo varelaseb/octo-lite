@@ -335,6 +335,24 @@ class HerdrWrapperTest(unittest.TestCase):
                          str(model.resolve()))
         self.assertIn(exported, self.log.read_text())
 
+    def test_claude_gets_its_role_from_role(self):
+        self.dialog.write_text("none\n")
+        r = self.spawn()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.start_argv()[-2:], ["--agent", "r"])
+
+    def test_an_inline_prompt_is_rejected_before_any_tab(self):
+        # herdr agent start times out waiting for readiness with an inline prompt.
+        for runtime in ("claude", "codex"):
+            r = subprocess.run(
+                [str(SPAWN), "--workspace", "w1", "--name", "a1", "--label", "L",
+                 "--cwd", str(self.cwd), "--role", "r", "--", runtime, "do the ticket"],
+                capture_output=True, text=True, env=self.env,
+            )
+            self.assertEqual(r.returncode, 64, r.stderr)
+            self.assertIn("herdr-say", r.stderr)
+            self.assertFalse(self.log.exists(), "no tab may be created")
+
     def test_no_operating_model_changes_nothing(self):
         self.dialog.write_text("none\n")
         r = self.spawn()

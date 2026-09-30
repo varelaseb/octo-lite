@@ -21,9 +21,10 @@ usage() {
   cat <<'EOF'
 usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-    [--operating-model FILE] -- claude --agent ROLE [CLAUDE_ARGS...]
-  herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-    [--operating-model FILE] -- codex [CODEX_ARGS...]
+    [--operating-model FILE] -- claude|codex
+
+Spawn bare, then send the brief with herdr-say. Claude gets --agent ROLE from
+--role.
 
 Prints: name= role= tab= pane= cwd= contract= provider_session_id=
 EOF
@@ -56,9 +57,12 @@ case "$runtime" in
   claude|codex) kind="$runtime" ;;
   *) echo "herdr-spawn: persistent tabs require claude or codex, got $runtime" >&2; exit 65 ;;
 esac
+# An inline prompt makes herdr agent start wait for a readiness it never sees and
+# time out, so the runtime takes no arguments.
+(($# == 1)) || { echo "herdr-spawn: no args after the runtime; spawn bare, then send the brief with herdr-say" >&2; exit 64; }
 
 # The role contract. A Claude agent loads it itself through `--agent ROLE`,
-# which the caller passes. Codex has no custom-agent file, so the contract goes
+# derived from --role. Codex has no custom-agent file, so the contract goes
 # in at the developer layer as one TOML string argv. Delivered as a prompt
 # instead, Codex treats it as a task and starts working it.
 #
@@ -66,14 +70,15 @@ esac
 # repository resolves without this script knowing which one.
 contract_file="$HOME/.claude/agents/$role.md"
 contract="not-found"
-launch_argv=("${@:2}")   # `agent start --kind` supplies the executable
+# `agent start --kind` supplies the executable.
 if [[ "$kind" == claude ]]; then
   contract="loaded-by-agent-flag"
+  launch_argv=(--agent "$role")
 else
   # --no-daemon keeps the thread and its commands in this tab's process tree,
   # tagged with HERDR_TAB_ID, so herdr-close can end all of it. The shared
   # app-server daemon would outlive the tab.
-  launch_argv=(--no-daemon "${launch_argv[@]}")
+  launch_argv=(--no-daemon)
   if [[ -f "$contract_file" ]]; then
     contract="developer-instructions"
   else

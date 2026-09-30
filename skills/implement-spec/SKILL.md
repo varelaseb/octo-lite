@@ -83,7 +83,7 @@ and fill available capacity from the current frontier.
 
 Use the same current Herdr session and workspace routing as the owning
 orchestrator. Herdr owns session selection. Spawn Claude workers
-(`-- claude --agent ROLE`, CLI default model); Codex only when the operator
+(`-- claude`, CLI default model; brief via `herdr-say`); Codex only when the operator
 explicitly selects it. Keep the worker-specific nuance: every writer still
 gets its own worktree, and only one integrator writes the integration branch.
 
