@@ -1,6 +1,6 @@
 ---
 name: implement-spec
-description: Dispatch delivery of an accepted spec, or one ticket or bug fix under an existing spec, through Herdr workers to one PR. The lane owner's route for every repo change.
+description: Dispatch delivery of an accepted spec, or one ticket the existing spec already states, through Herdr workers to one PR. The lane owner's route for every repo change.
 disable-model-invocation: false
 ---
 
@@ -11,8 +11,8 @@ No em-dashes or en-dashes. Ever.
 
 The owner dispatches; it never edits repo files itself. Deliver the complete
 spec or ticket on one branch and leave one PR ready for human review. Workers load their `agents/*.md` role contracts and use octo-lite
-skills as guidance. There is no role resolver, loop workflow, receipt, journal,
-exact-role gate, or lifecycle ceremony.
+skills as guidance. Workers are the whole mechanism: no role resolver, loop
+workflow, journal, or exact-role gate sits on top of them.
 
 ## Inputs
 
@@ -22,10 +22,12 @@ Require:
 - spec issue
 - target root `AGENTS.md`
 
-A bug or small ticket governed by an existing spec on main needs no shaping
-or new acceptance: that spec is already accepted, and the ticket is the spec
-issue. With no child tickets, the primary issue is the one-node graph and
-Start step 1 files nothing.
+A ticket whose behavior the existing spec on main already states needs no
+shaping or new acceptance: that spec's commit on main is the spec acceptance
+receipt, and the ticket is the spec issue (a spec change goes back to shaping).
+The primary issue is the one-node graph: Start step 1 files nothing, and only
+filing is skipped. Every worker step still runs: one implementer in its own
+worktree, one integrator, one reviewer. The primary issue stays open until merge.
 
 A processed human **spec acceptance** (page action **Accept spec**, formerly
 called Finish review) permits implementation dispatch under the reviewed
