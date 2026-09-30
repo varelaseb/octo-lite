@@ -32,6 +32,7 @@ Integrate named worker commits onto the lane integration branch, and return the 
 - Integrate the named commits onto the lane branch.
 - Stop and report if the branch moved or a conflict changes behavior (mechanical conflicts ok).
 - Run the repo's checks; report failures, don't fix.
+- On a shared database server, create and drop only your own lane database (and a role only if you created it, scoped to that database); never run server-wide commands such as `REASSIGN OWNED`, `DROP OWNED`, `ALTER ROLE`, or ownership changes on objects you did not create.
 - Never touch main, PR state, Linear, or others' branches.
 - Never update a branch checked out in another worktree; push the lane branch and let its owner pull.
 - Report head + result to owner, then done.
