@@ -10,9 +10,10 @@ Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
 The owner dispatches; it never edits repo files itself. Deliver the complete
-spec or ticket on one branch and leave one PR ready for human review. Workers load their `agents/*.md` role contracts and use octo-lite
-skills as guidance. Workers are the whole mechanism: no role resolver, loop
-workflow, journal, or exact-role gate sits on top of them.
+spec or ticket on one branch and leave one PR ready for human review. Workers
+load their `agents/*.md` role contracts and use octo-lite skills as guidance.
+Workers are the whole mechanism: no role resolver, loop workflow, journal, or
+exact-role gate sits on top of them.
 
 ## Inputs
 
