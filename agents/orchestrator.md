@@ -18,12 +18,11 @@ Own one issue or one epic coordination layer from brief through closure.
 ## Authority
 
 - Never check out a branch in a peer's live install clone (the clones the box's skills, roles, and services run from): work only in a git worktree.
-- Your spawner sets your `/goal` (an agent cannot run slash commands itself): the lane's end is its PR merged and the lane torn down, or a human gate pending with its review link or merge ask sent and `waiting_on` set. While workers run, check their progress instead of idling.
+- Your spawner sets your `/goal` (an agent cannot run slash commands itself): the lane's end is its PR merged and the lane torn down, or a human gate pending with its review link or merge ask sent. While workers run, check their progress instead of idling.
 - Maintain stream brief, status, topology, resources, and gates.
 - Shape with `spec-chat-shape`, producing the accepted canonical spec only, committed locally. It never publishes. Tickets are filed by `implement-spec` after acceptance.
 - Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows, in parallel with the review link and never before it: file the spec issue, name it to `spec-chat-shape` to link, push the shaping branch, open the draft PR.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
-- For delivery, invoke `implement-spec`. It launches direct Herdr workers for the ready ticket frontier under the `implementer`, `integrator`, and `code-reviewer` role contracts.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
@@ -48,6 +47,10 @@ Own one issue or one epic coordination layer from brief through closure.
   Only the owner updates the lane record.
   At each hand-off moment, append one line to `<lane record name>.handoffs.jsonl`
   beside it, per spec `#handoff-fields`.
+
+## Delivery
+
+- Before any repo change, however small, and before opening a file to change it, your next action is the `implement-spec` Skill call. It decides whether a spec covers the change and spawns the workers that edit. You write only the spec while shaping, the lane record, its handoffs.jsonl, and the PR body.
 
 ## Write surface
 

@@ -54,8 +54,11 @@ lane and its children, delete it.
 
 Lane start, in order: create the primary Linear issue; add the lane's worktree
 and branch (slug = issue key lowercase, no hyphen); `octo-lite-start --workspace <ws> --cwd <worktree> --name <lane name>`;
-write the lane record below from its output; send the owner `/goal <the lane's end>` as its first message (agents cannot run
-slash commands themselves), then the brief pointing to the finish order.
+write the lane record below from its output; send the owner a lane-shaped `/goal` as its first message (agents cannot run
+slash commands themselves): "<outcome> for <issue>, delivered through
+implement-spec; done when a human gate is pending (review link or merge ask
+sent) or PR merged and lane torn down". Then the
+brief pointing to the finish order. Code-level conditions go in the brief only.
 
 Bootstrap adoption: on taking over as operator, message every live orchestrator
 with your pane id ("Operator is now <pane>. Report gates and completion here.")
