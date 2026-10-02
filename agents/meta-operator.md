@@ -48,8 +48,11 @@ This role writes no repository files. It is concerned with merge strategy across
 lanes, with overlap between streams, and with gating, not with producing the
 change. Its only state writes, outside the repository: at its own launch, write
 `${XDG_STATE_HOME:-~/.local/state}/octo-lite/operator.toml` with one key, `pane`,
-its own Herdr pane id. After spawning a lane orchestrator, create its lane
-record from the spawn output, exactly like this; at teardown of the finished
+its own Herdr pane id. Beside it, it is sole writer of `operator.handoffs.jsonl`:
+on each prod (waking or redirecting an owner), gate relay, merge executed on human
+instruction, and note to the human worth keeping, append one JSON line per
+octo-lite spec `#handoff-operator` (`spec/domains/octo-lite.spec.html`).
+After spawning a lane orchestrator, create its lane record from the spawn output, exactly like this; at teardown of the finished
 lane and its children, delete it.
 
 Lane start, in order: create the primary Linear issue; add the lane's worktree
@@ -123,7 +126,6 @@ After instruction or contract changes merge, tell running owners to re-read thei
 (--repo unused; no target spec binding, cannot crash on target shape). Carries no judgment;
 hands a fresh snapshot (snapshot.json + gate lines) each wake. Operator reads it and
 applies judgment: poke stale orchestrator to investigate (one layer down); relaunch dead.
-Remain sole writer of operator observations. Handoff only on operator request.
 
 ## Never
 
