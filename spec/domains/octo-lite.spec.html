@@ -20,6 +20,7 @@
 <h2>User stories</h2>
 <p data-user-story data-anchor="user-story-deliver-spec" id="user-story-deliver-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can shape an idea into an accepted spec, then have it filed as a ticket graph and delivered on one PR ready for my review.</p>
 <p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script and a plain git pull keeps it current; on a box with an existing setup, the installer adopts compatible links, skips what belongs to someone else, and never overwrites or fails.</p>
+<p data-user-story data-anchor="user-story-operator-log" id="user-story-operator-log" data-user-facing="false" data-guided-journey="no">As the fleet operator, I append one line per prod, gate relay, merge, and note to the human to my own hand-off file, so the floor shows what I did beside each lane's own lines.</p>
 </section>
 
 <section data-anchor="install" id="install">
@@ -117,7 +118,7 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with owner, repository, goal, and issue when known, plus <code>started_at</code> set to now and <code>waiting_on</code> set to <code>""</code>. Writes <code>operator.toml</code> with its own <code>pane</code> beside the lanes directory at its own launch.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with owner, repository, goal, and issue when known, plus <code>started_at</code> set to now and <code>waiting_on</code> set to <code>""</code>. Writes <code>operator.toml</code> with its own <code>pane</code> beside the lanes directory at its own launch, and appends to <code>operator.handoffs.jsonl</code> beside it per the <a href="#handoff-operator">operator log</a>.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates <code>[[workers]]</code> <code>pane</code>, <code>role</code>, and <code>ticket</code>, and <code>last_handoff_at</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-tickets"><td>Tickets are created, or a ticket moves state or holder</td><td>Owner</td><td>Rewrites its <code>[[tickets]]</code> entry: <code>state</code> <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, <code>since</code> set to now; a repair pass adds one to <code>passes</code>.</td></tr>
@@ -149,6 +150,24 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 </table>
 </div>
 <figcaption data-anchor="handoff-fields-caption">Minimal append-only trace, so JSONL. The lane record keeps current state; this file keeps what happened.</figcaption>
+</figure>
+<p data-anchor="operator-handoffs" id="operator-handoffs">The fleet operator appends one line per operator moment to <code>operator.handoffs.jsonl</code> beside <code>operator.toml</code>, with the same common fields and the kinds below; it is the file's only writer.
+This is the lane hand-off mechanism with a different writer, matching the consumer's <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/lane-handoffs.spec.html#handoff-operator">operator log</a>.</p>
+<figure data-anchor="handoff-operator" id="handoff-operator">
+<h3 data-anchor="handoff-operator-heading">Operator log: one line per operator moment</h3>
+<div class="table-scroll" data-anchor="handoff-operator-wrap">
+<table data-anchor="handoff-operator-table">
+<thead><tr><th><code>kind</code></th><th>Written when</th><th>Fields</th></tr></thead>
+<tbody>
+<tr data-anchor="handoff-operator-note"><td><code>note</code></td><td>The operator tells the human something the floor should keep: an answer, a report, a recommendation.</td><td><code>issue</code> when about one lane, <code>text</code></td></tr>
+<tr data-anchor="handoff-operator-prod"><td><code>prod</code></td><td>The operator wakes or redirects a lane owner.</td><td><code>issue</code>, <code>note</code></td></tr>
+<tr data-anchor="handoff-operator-gate"><td><code>gate</code></td><td>The operator relays a human gate for a lane.</td><td><code>issue</code>, <code>gate</code>, <code>event</code>, <code>answer</code>, as a lane's <code>gate</code> line</td></tr>
+<tr data-anchor="handoff-operator-merge"><td><code>merge</code></td><td>The operator merges a lane's PR on a human's instruction.</td><td><code>issue</code>, <code>pr</code>, <code>commit</code></td></tr>
+</tbody>
+</table>
+</div>
+<pre data-anchor="handoff-operator-example"><code>{"at": "2026-10-02T03:40:00Z", "kind": "prod", "issue": "ANN-9", "note": "integrate the finished worker"}</code></pre>
+<figcaption data-anchor="handoff-operator-caption">A lane's own gate line still drives that lane; the operator's line only adds to the operator's log.</figcaption>
 </figure>
 </section>
 
