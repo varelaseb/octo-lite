@@ -33,8 +33,8 @@ Without consent, keep work in local commits and report where it is.
   the operator approves GitHub mutation; after finalization, the GitHub issue
   body and `octo-lite:ready` label are the issue source of truth.
 - The evolving draft PR is the durable shaping and delivery surface.
-- Specs under `spec/` and ADRs under `spec/adr/` remain durable behavior sources
-  and can outrank stale Linear, GitHub issue, or PR text.
+- Specs under `spec/` own behavior and ADRs under `spec/adr/` own decisions;
+  both outrank stale Linear, GitHub issue, or PR text.
 
 ## Required Reads
 

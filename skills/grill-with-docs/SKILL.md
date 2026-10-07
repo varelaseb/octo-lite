@@ -28,8 +28,8 @@ drafts, specs, ADRs, repo docs, code, and configuration.
 - Use concrete scenarios to stress-test boundaries, edge cases, ordering,
   dependencies, evidence, runtime expectations, and env/config needs.
 - Update the active draft and any affected spec, README, or AGENTS.md as
-  decisions crystallize. For ADRs, write a new or superseding ADR; never amend
-  one.
+  decisions crystallize. For a changed decision, write a superseding ADR;
+  never amend a committed one.
 - Do not batch durable terminology or behavior updates until the end.
 - Do not mutate Linear or GitHub tracker state unless shaping has reached
   its approved final mutation step. In Linear-first repos, do not mutate GitHub
@@ -67,8 +67,8 @@ Use these shaping patterns:
 - Classify acceptance criteria as `clear`, `gap`, or `not needed`.
 - Ask only about gaps or ambiguities that durable context cannot resolve.
 - Record durable product or system behavior in specs, not only in chat.
-- Record repo-wide rules once as spec criteria. Surface ADR-worthy decisions
-  before readiness.
+- Record a repo-wide rule once, as an acceptance criterion in its home spec.
+  Surface ADR-worthy decisions before readiness.
 - Propose follow-up issues only when the work is independently valuable or a
   real prerequisite. Create one only on explicit operator instruction.
 - Treat the final ready gate as a quality bar, not a formatting step.
@@ -110,11 +110,18 @@ Offer an ADR only when all three are true:
 
 ADRs live in `spec/adr/` and use the next sequential `0001-slug.md` style name
 in Markdown repos or the matching `0001-slug.spec.html` name in spec-chat repos.
-They may be short. An ADR holds only context, decision, why, alternatives, and
-consequences. Do not create an ADR for ordinary priority ordering, obvious
+Each ADR owns one hard-to-reverse decision: context, decision, why,
+alternatives rejected, and consequences, kept short; no policy section, no
+mechanics. Do not create an ADR for ordinary priority ordering, obvious
 implementation details, or choices that are easy to change.
 
-ADRs are immutable. To change a decision, write a new ADR that supersedes it and
-add a `Superseded-by: <new ADR>` line to the old one; never amend its content.
-Repo-wide rules live once in spec criteria: an ADR may link a rule by its spec
-criterion anchor, never restate it. Mechanics live in code and the PR.
+An ADR is immutable once committed to the base branch. A changed decision is a
+new ADR naming the one it supersedes; the old ADR gains only the line
+`Superseded by ADR NNNN (date)` (a link to the new file where ADRs carry no
+number). Git holds the history.
+
+A repo-wide rule lives once, in its home spec, as an acceptance criterion
+stating it applies to every feature. An ADR links that criterion (e.g. see
+`peer-seams#acceptance-ci`), never restates it: why in the ADR, what in the
+criterion, mechanics in code and the PR. Mechanics no caller depends on
+(tables, retry counts, internal keys, timeouts) appear in neither spec nor ADR.
