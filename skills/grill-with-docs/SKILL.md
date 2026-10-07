@@ -27,8 +27,9 @@ drafts, specs, ADRs, repo docs, code, and configuration.
 - Challenge fuzzy or overloaded terms against existing specs and repo language.
 - Use concrete scenarios to stress-test boundaries, edge cases, ordering,
   dependencies, evidence, runtime expectations, and env/config needs.
-- Update the active draft and any affected spec, ADR, README, or AGENTS.md as
-  decisions crystallize.
+- Update the active draft and any affected spec, README, or AGENTS.md as
+  decisions crystallize. For ADRs, write a new or superseding ADR; never amend
+  one.
 - Do not batch durable terminology or behavior updates until the end.
 - Do not mutate Linear or GitHub tracker state unless shaping has reached
   its approved final mutation step. In Linear-first repos, do not mutate GitHub
@@ -66,7 +67,8 @@ Use these shaping patterns:
 - Classify acceptance criteria as `clear`, `gap`, or `not needed`.
 - Ask only about gaps or ambiguities that durable context cannot resolve.
 - Record durable product or system behavior in specs, not only in chat.
-- Surface ADR-worthy decisions before readiness.
+- Record repo-wide rules once as spec criteria. Surface ADR-worthy decisions
+  before readiness.
 - Propose follow-up issues only when the work is independently valuable or a
   real prerequisite. Create one only on explicit operator instruction.
 - Treat the final ready gate as a quality bar, not a formatting step.
@@ -85,7 +87,7 @@ structure in either Markdown or spec-chat HTML:
 - `## Constraints`
 - `## Non-goals`
 - `## Open questions about system behavior`
-- `## Decision log or links to ADRs`
+- `## Links to ADRs`
 - `## References to source issues`
 
 Keep unresolved behavior questions visible in both the draft and spec until the
@@ -108,6 +110,11 @@ Offer an ADR only when all three are true:
 
 ADRs live in `spec/adr/` and use the next sequential `0001-slug.md` style name
 in Markdown repos or the matching `0001-slug.spec.html` name in spec-chat repos.
-They may be short. Record context, decision, and rationale. Do not create an ADR
-for ordinary priority ordering, obvious implementation details, or choices that
-are easy to change.
+They may be short. An ADR holds only context, decision, why, alternatives, and
+consequences. Do not create an ADR for ordinary priority ordering, obvious
+implementation details, or choices that are easy to change.
+
+ADRs are immutable. To change a decision, write a new ADR that supersedes it and
+add a `Superseded-by: <new ADR>` line to the old one; never amend its content.
+Repo-wide rules live once in spec criteria: an ADR may link a rule by its spec
+criterion anchor, never restate it. Mechanics live in code and the PR.
