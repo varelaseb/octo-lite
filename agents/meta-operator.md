@@ -97,7 +97,7 @@ waiting_on = ""
 ```
 
 `waiting_on` is the owner's field, per spec `#octo-lane-record-key-waiting`. The operator writes it only at launch (`""`) or for a follow-up lane (the old lane's key).
-Audit lane records per spec `#octo-lane-record-life-audit`, writing none during the audit; relaunch an owner whose pane is not live.
+Audit lane records per spec `#octo-lane-record-life-audit`, writing none during the audit.
 
 `goal` is the board card title: 2 to 6 plain words naming the feature.
 When you fold new scope into an open lane, update its goal in the same step.
