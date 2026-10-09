@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
-# Close one Herdr tab and end everything it ran.
+# Close one Herdr tab or space and end everything it ran.
 #
-# Closing a tab kills its pane, but a detached command child (setsid) survives,
-# reparented. Every process started in the tab carries HERDR_TAB_ID=<tab> in its
-# environ, so that tag, not the process tree, finds them. Run it from another
-# tab: the spawner owns teardown.
+# Closing a tab or space kills its panes, but a detached command child (setsid)
+# survives, reparented. Every process started in a tab carries
+# HERDR_TAB_ID=<tab> and HERDR_WORKSPACE_ID=<space> in its environ, so that tag,
+# not the process tree, finds them. A tab id is <space>:<tab>; an id without a
+# colon is a space. Run it from outside what it closes: the spawner owns teardown.
 set -uo pipefail
 
-tab="${1:-}"
-[[ -n "$tab" && "$tab" != -* && $# -eq 1 ]] || { echo "usage: herdr-close TAB" >&2; exit 64; }
+id="${1:-}"
+[[ -n "$id" && "$id" != -* && $# -eq 1 ]] || { echo "usage: herdr-close TAB|SPACE" >&2; exit 64; }
+
+if [[ "$id" == *:* ]]; then kind=tab; tag=HERDR_TAB_ID; cmd=(tab close)
+else kind=space; tag=HERDR_WORKSPACE_ID; cmd=(workspace close); fi
 
 rc=0
-herdr tab close "$tab" >/dev/null 2>&1 || rc=$?
+herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
 
 killed=0
 for env in /proc/[0-9]*/environ; do
   pid="${env#/proc/}"; pid="${pid%/environ}"
-  tr '\0' '\n' 2>/dev/null <"$env" | grep -qxF "HERDR_TAB_ID=$tab" || continue
+  tr '\0' '\n' 2>/dev/null <"$env" | grep -qxF "$tag=$id" || continue
   kill -TERM "$pid" 2>/dev/null && killed=$((killed + 1))
 done
 
-echo "tab=$tab tab_close_rc=$rc killed=$killed"
+echo "$kind=$id ${kind}_close_rc=$rc killed=$killed"
 exit "$rc"
