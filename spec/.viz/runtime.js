@@ -1,5 +1,5 @@
 // spec-chat runtime v0.1 — hydrates semantic islands and mounts the annotation layer.
-// spec-chat-capabilities: changed-root-focus custom-style-focus diff-visibility-control finish-review git-focus manual-resume-status mobile-pre-wrap mobile-review reopen-thread semantic-islands shared-style-ownership spec-acceptance tbd-later
+// spec-chat-capabilities: changed-root-focus custom-style-focus diff-visibility-control finish-review git-focus manual-resume-status mobile-pre-wrap mobile-review next-tbd reopen-thread semantic-islands shared-style-ownership spec-acceptance tbd-later
 // Transports: FSA (file://, primary) | HTTP review-serve (http(s)://, secondary).
 // Same spools, same event schema either way. See DESIGN.md.
 // Classic script, NOT a module: browsers CORS-block module scripts on file:// pages,
@@ -16,6 +16,8 @@ const SPEC_FILE = decodeURIComponent(location.pathname.split('/').pop());
 // document.currentScript is only valid during the initial synchronous run — capture now.
 const EMBED_REVIEW_DIR = (document.currentScript && document.currentScript.dataset && document.currentScript.dataset.reviewDir) || null;
 const REVIEW_DIRNAME = SPEC_FILE + '.review';
+// The spool this page reviews; also keys its outbox and last-loaded events in browser storage.
+const REVIEW_DIR = EMBED_REVIEW_DIR || location.pathname.replace(/^\//, '') + '.review';
 const RUNTIME_URL = (document.currentScript && document.currentScript.src) || new URL('./.viz/runtime.js', document.baseURI).href;
 const VENDOR = { echarts: new URL('./vendor/echarts-5.5.1.min.js', RUNTIME_URL).href };
 
@@ -54,14 +56,25 @@ const state = {
   specMtime: null,
   loopsStarted: false,
   eventsRendered: false,
+  lastTbd: null,         // open TBD marker focused by the last TBD open or Next TBD activation
+  range: { baseline: null, loaded: null, loading: false, pickerOpen: false }, // loaded: anchor signatures of the page as served
+  jev: { status: 'idle', items: [], levels: {}, offer: null, candidateOffer: null, base: null, request: 0 }, // levels: the server's mark kind -> level table
+  evidence: { criteria: null, levels: {} }, // criteria: anchor -> entry once /api/evidence answers, null shows nothing
+  readingView: false,
+  movingOrphans: new Set(),
   handoffPosting: false,
-  lastTbd: null,         // open TBD marker focused by the last TBD open activation
-  range: { baseline: null, loading: false, pickerOpen: false },
+  reviewer: null,        // {browser, author}: this browser's id and fruit name (#model-author-assign)
+  authors: new Map(),    // author key -> shown name (#model-author-shown)
+  version: null,         // SHA-256 of the spec text this page shows: its ETag (#model-fields)
+  lastStamp: null,       // last event-name stamp this page chose
+  outboxBlocked: false,  // a send failed; the offline notice shows until the outbox drains
+  storedCount: -1,       // events last kept in browser storage
 };
 
 /* ---------------- transports ---------------- */
 function httpTransport() {
-  const dir = EMBED_REVIEW_DIR || location.pathname.replace(/^\//, '') + '.review';
+  const dir = REVIEW_DIR;
+  const POST_TIMEOUT_MS = 10000; // a save that has not answered by then is waiting, not stored
   return {
     mode: 'http', label: EMBED_REVIEW_DIR ? 'review-serve (embedded)' : 'review-serve',
     ready: Promise.resolve(true),
@@ -69,8 +82,18 @@ function httpTransport() {
       const r = await fetch('/api/events?dir=' + encodeURIComponent(dir));
       return { events: await r.json(), wake: r.headers.get('X-Spec-Chat-Wake') || null };
     },
-    async postEvent(body) {
-      await fetch('/api/events?dir=' + encodeURIComponent(dir) + '&actor=human', { method: 'POST', body: JSON.stringify(body) });
+    // 'stored' (also a resend of the same bytes), 'refused' (400, 403, 409: validation no resend fixes);
+    // throws on anything else, a hung save included, so the outbox keeps the event and sends it again (#offline-outbox).
+    async postEvent(entry) {
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), POST_TIMEOUT_MS);
+      let r;
+      try {
+        r = await fetch('/api/events?dir=' + encodeURIComponent(dir) + '&actor=human&name=' + encodeURIComponent(entry.name), { method: 'POST', body: JSON.stringify(entry.body), signal: abort.signal });
+      } finally { clearTimeout(timer); }
+      if (r.ok) return 'stored';
+      if (r.status === 400 || r.status === 403 || r.status === 409) return 'refused';
+      throw new Error('review service answered ' + r.status);
     },
     async specModified() {
       if (EMBED_REVIEW_DIR) return null; // no spec file behind a live app; watchSpec stays quiet
@@ -140,10 +163,158 @@ function baselineParams(base) {
   return params;
 }
 
-function markIssueFocus(currentText, baseline) {
-  const parser = new DOMParser();
-  const current = anchorSignatures(parser.parseFromString(currentText, 'text/html'));
-  const prior = baseline.html === null ? null : anchorSignatures(parser.parseFromString(baseline.html, 'text/html'));
+// The change type's two answers (jev-suggestions #change-type).
+const JEV_TYPE_LABELS = {
+  behavior: 'Behavior',
+  'no-behavior-change': 'No behavior change',
+};
+
+function jevParams(base) {
+  const params = new URLSearchParams({ path: location.pathname.replace(/^\//, ''), base: String(base || '') });
+  if (state.readingView) params.set('view', 'reading');
+  return params;
+}
+
+async function fetchJev(base, signal) {
+  const response = await fetch('/api/jev?' + jevParams(base), { signal });
+  if (!response.ok) throw new Error('Jev unavailable');
+  const result = await response.json();
+  return {
+    jev: result && result.jev === 'off' ? 'off' : 'on',
+    items: Array.isArray(result && result.items) ? result.items.filter(item => item && typeof item === 'object').map(item => ({
+      kind: String(item.kind || ''),
+      id: String(item.id || ''),
+      state: String(item.state || 'none'),
+      label: item.label == null ? null : String(item.label),
+      target: item.target == null ? null : String(item.target),
+      record: item.record == null ? null : String(item.record),
+      level: item.level == null ? null : String(item.level),
+      side: item.side == null ? null : String(item.side),
+      other: item.other == null ? null : String(item.other), // lane items name the other slug (#acceptance-cross-lane)
+      word: item.word == null ? null : String(item.word),
+      text: item.text == null ? null : String(item.text), // a rule's criterion text, verbatim (project-rules #card)
+      name: item.name == null ? null : String(item.name), // its plain-words name, null while being written (#card-name-source)
+      rule: jevRuleOf(item.rule), // the confirmed rule a draft-check mark cites (#card-cites)
+      escalated: item.escalated === true,
+    })) : [],
+    levels: result ? result.levels : null, // the server's levels table (#markers-levels-source); markLevel reads it
+    offer: result && result.offer && typeof result.offer === 'object' && Number(result.offer.count) > 0 ? result.offer : null,
+    candidateOffer: result && result.candidate_offer && typeof result.candidate_offer === 'object'
+      && Number(result.candidate_offer.count) > 0 ? result.candidate_offer : null,
+  };
+}
+
+// A rule as every card shows it: home target, verbatim criterion text, and name (project-rules #card).
+function jevRuleOf(value) {
+  if (!value || typeof value !== 'object' || !value.target || !value.text) return null;
+  return { target: String(value.target), text: String(value.text), name: value.name == null ? null : String(value.name) };
+}
+
+function jevItem(kind, id) {
+  return state.jev.items.find(item => item.kind === kind && item.id === String(id)) || null;
+}
+
+// Jev's resolved-in-spirit hint, shown only while the thread is open; once resolved its own indicator replaces it.
+function looksResolved(th) {
+  const hint = jevItem('resolved', th.id);
+  return Boolean(th.status !== 'resolved' && hint && hint.state === 'label' && hint.label === 'resolved in spirit');
+}
+
+function findAnchor(anchorId) {
+  return [...document.querySelectorAll('[data-anchor]')].find(el => el.dataset.anchor === String(anchorId)) || null;
+}
+
+function clearJev() {
+  state.jev.request += 1;
+  state.jev.status = 'idle';
+  state.jev.items = [];
+  state.jev.levels = {};
+  state.jev.offer = null;
+  state.jev.candidateOffer = null;
+  state.jev.base = null;
+  scheduleJevPoll();
+  renderJev();
+  renderPanel();
+  renderPins();
+}
+
+// Background answers (#fast-marks-background): while any item is pending and the page is shown, read the
+// same base again in 2 s; a newer request, a base change, or hiding the page cancels it, and showing resumes it.
+let jevPollTimer = 0;
+
+function scheduleJevPoll() {
+  clearTimeout(jevPollTimer);
+  jevPollTimer = 0;
+  if (state.jev.status !== 'on' || document.hidden || !state.jev.items.some(item => item.state === 'pending')) return;
+  const request = state.jev.request;
+  const base = state.jev.base;
+  jevPollTimer = setTimeout(() => {
+    jevPollTimer = 0;
+    if (request === state.jev.request && base === state.jev.base && !document.hidden) requestJev(base, true);
+  }, 2000);
+}
+
+document.addEventListener('visibilitychange', scheduleJevPoll);
+
+// refresh: a re-read for pending items; it shows only what changed and keeps the page as is when it fails.
+async function requestJev(base, refresh = false) {
+  if (!['http:', 'https:'].includes(location.protocol) || !base) return;
+  const request = ++state.jev.request;
+  if (!refresh) {
+    state.jev.status = 'loading';
+    state.jev.base = String(base);
+    renderJev();
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    const result = await fetchJev(base, controller.signal);
+    if (request !== state.jev.request) return;
+    const status = result.jev === 'off' ? 'off' : 'on';
+    const same = refresh && status === state.jev.status
+      && JSON.stringify([result.items, result.levels, result.offer, result.candidateOffer])
+      === JSON.stringify([state.jev.items, state.jev.levels, state.jev.offer, state.jev.candidateOffer]);
+    state.jev.status = status;
+    state.jev.items = result.items;
+    state.jev.levels = result.levels;
+    state.jev.offer = result.offer;
+    state.jev.candidateOffer = result.candidateOffer;
+    scheduleJevPoll();
+    if (same) return;
+    renderJev();
+    renderPanel();
+    renderPins();
+  } catch (_) {
+    if (request !== state.jev.request) return;
+    if (refresh) { scheduleJevPoll(); return; }
+    state.jev.status = 'unavailable';
+    state.jev.items = [];
+    state.jev.levels = {};
+    state.jev.offer = null;
+    state.jev.candidateOffer = null;
+    renderJev();
+    renderPanel();
+    renderPins();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// One evidence read per page, after it renders; any failure leaves the page without evidence notes.
+async function requestEvidence() {
+  try {
+    const response = await fetch('/api/evidence?' + new URLSearchParams({ path: location.pathname.replace(/^\//, '') }));
+    const result = response.ok ? await response.json() : null;
+    const criteria = result && result.criteria;
+    if (!criteria || typeof criteria !== 'object' || Array.isArray(criteria)) return;
+    state.evidence.levels = result.levels;
+    state.evidence.criteria = criteria;
+    renderJev();
+  } catch (_) {}
+}
+
+function markIssueFocus(current, baseline) {
+  const prior = baseline.html === null ? null : anchorSignatures(new DOMParser().parseFromString(baseline.html, 'text/html'));
   const classification = classifyAnchorSignatures(current, prior);
   const focused = [...document.querySelectorAll('[data-anchor]')];
   for (const element of focused) {
@@ -162,16 +333,10 @@ function markIssueFocus(currentText, baseline) {
   document.body.classList.toggle('hx-focus-active', focused.some(element => element.dataset.hxFocus === 'changed'));
 }
 
-async function fetchBaseline(base, includeCurrent = false, signal) {
-  const params = baselineParams(base);
-  const requests = [fetch('/api/baseline?' + params, { signal })];
-  if (includeCurrent) requests.push(fetch(location.pathname, { cache: 'no-store', signal }));
-  const responses = await Promise.all(requests);
-  const baselineResponse = responses[0];
-  if (!baselineResponse.ok || (includeCurrent && !responses[1].ok)) throw new Error('Git baseline unavailable');
-  const baseline = await baselineResponse.json();
-  if (includeCurrent) return { baseline, currentText: await responses[1].text() };
-  return { baseline };
+async function fetchBaseline(base, signal) {
+  const response = await fetch('/api/baseline?' + baselineParams(base), { signal });
+  if (!response.ok) throw new Error('Git baseline unavailable');
+  return response.json();
 }
 
 async function applyIssueFocus() {
@@ -180,10 +345,11 @@ async function applyIssueFocus() {
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     const requestedBase = new URLSearchParams(location.search).get('base');
-    const result = await fetchBaseline(requestedBase, true, controller.signal);
-    state.range.baseline = result.baseline;
-    renderRangeBar(result.baseline);
-    markIssueFocus(result.currentText, result.baseline);
+    const baseline = await fetchBaseline(requestedBase, controller.signal);
+    state.range.baseline = baseline;
+    renderRangeBar(baseline);
+    requestJev(baseline.base);
+    markIssueFocus(state.range.loaded, baseline);
   } catch (error) {
     const copy = document.getElementById('hx-range-copy');
     if (copy) copy.textContent = 'Compared range unavailable.';
@@ -287,14 +453,15 @@ async function selectRangeBase(value) {
   setRangeError('');
   const apply = document.getElementById('hx-range-apply');
   if (apply) apply.disabled = true;
+  clearJev();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const result = await fetchBaseline(requested, true, controller.signal);
-    const baseline = result.baseline;
+    const baseline = await fetchBaseline(requested, controller.signal);
     state.range.baseline = baseline;
-    markIssueFocus(result.currentText, baseline);
+    markIssueFocus(state.range.loaded, baseline);
     renderRangeBar(baseline);
+    requestJev(baseline.base || requested);
     const url = new URL(location.href);
     url.searchParams.set('focus', 'changes');
     url.searchParams.set('base', baseline.base || requested);
@@ -327,6 +494,55 @@ function mountRangeBar() {
   bar.addEventListener('keydown', event => {
     if (event.key === 'Escape') openRangePicker(false);
   });
+}
+
+/* ---------------- Jev coverage ----------------
+ * Coverage stays in a separate block so other suggestion builders can add their
+ * markers without changing the review transport or thread model.
+ */
+function coveragePair(item) {
+  if (item && item.story !== undefined && item.criterion !== undefined) {
+    return { story: item.story == null ? '' : String(item.story), criterion: item.criterion == null ? '' : String(item.criterion) };
+  }
+  const id = String(item && item.id || '');
+  const split = id.indexOf('::');
+  if (split >= 0 && (split > 0 || split < id.length - 2)) return { story: id.slice(0, split), criterion: id.slice(split + 2) };
+  return null;
+}
+
+function coverageGapFlags(items) {
+  const values = new Map();
+  const ensure = (anchor, side) => {
+    const key = side + ':' + anchor;
+    if (!values.has(key)) values.set(key, { anchor, side, verifies: false, unavailable: false, pending: false });
+    return values.get(key);
+  };
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || item.kind !== 'coverage') continue;
+    const pair = coveragePair(item);
+    if (!pair) continue;
+    const story = ensure(pair.story, 'story');
+    const criterion = ensure(pair.criterion, 'criterion');
+    const verifies = item.state === 'label' && item.label === 'verifies';
+    const unavailable = item.state === 'unavailable';
+    const pending = item.state === 'pending';
+    for (const value of [story, criterion]) {
+      value.verifies ||= verifies;
+      value.unavailable ||= unavailable;
+      value.pending ||= pending;
+    }
+  }
+  return [...values.values()].flatMap(value => {
+    if (!value.anchor) return [];
+    if (value.verifies || value.pending) return [];
+    if (value.unavailable) return [{ anchor: value.anchor, side: value.side, state: 'unavailable', label: 'Jev unavailable' }];
+    return [{ anchor: value.anchor, side: value.side, state: 'gap',
+      label: value.side === 'story' ? 'No criterion covers this' : 'No story backs this' }];
+  });
+}
+
+function coverageFlags(items) {
+  return coverageGapFlags(items);
 }
 
 // Name the folder the user should grant: the first ancestor Chromium will accept
@@ -485,13 +701,13 @@ function fsaTransport() {
       out.sort((a, b) => a.name < b.name ? -1 : 1);
       return out;
     },
-    async postEvent(body) {
+    async postEvent(entry) {
       const d = await t._dir('human', true);
-      const name = String(Date.now() * 1e6 + Math.floor(Math.random() * 1e6)) + '-' + (body.event || 'event') + '-' + (body.id || 'x') + '.json';
-      const fh = await d.getFileHandle(name, { create: true });
+      const fh = await d.getFileHandle(entry.name, { create: true });
       const w = await fh.createWritable();
-      await w.write(JSON.stringify(body));
+      await w.write(JSON.stringify(entry.body));
       await w.close();
+      return 'stored';
     },
     async specModified() {
       if (!t.connected) return null;
@@ -754,7 +970,7 @@ function resolveSvgPath(holder, key) {
 }
 
 function onDocClick(e) {
-  if (!state.commentMode || e.target.closest('.hx-pin,.hx-panel,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
+  if (!state.commentMode || e.target.closest('.hx-pin,.hx-jev-marker,.hx-jev-pop,.hx-panel,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
   const holder = holderOf(e.target);
   if (!holder) return;
   if (e.target.tagName === 'CANVAS') return; // canvas clicks are the chart's business: marks via chart events, blanks via zrender
@@ -774,58 +990,155 @@ function onDocClick(e) {
 }
 
 /* ---------------- events -> threads ---------------- */
+// Events sorted by file name; meaning follows references (#model-order): an event whose
+// referent sorts later waits for it, so a skewed clock never drops or detaches a message.
 function foldThreads(events) {
   const threads = new Map();
-  let lastHandoff = '';
-  for (const e of events) if (e.body.event === 'handoff') lastHandoff = e.name;
+  const drafts = draftIds(events);
+  const ids = new Set(events.map(e => e.body.id));
+  const known = new Set();
+  const parked = new Map();
   const messageThread = new Map();
   const messageSlot = new Map();
-  const humanStatus = e => e.name > lastHandoff ? 'draft' : 'pending';
-  for (const e of events) {
+  const humanStatus = e => drafts.has(e.body.id) ? 'draft' : 'pending';
+  const markDraft = (th, e) => { if (drafts.has(e.body.id)) th.draftBy.add(e.body.browser || ''); };
+  const apply = e => {
     const b = e.body;
     if (b.event === 'comment' && e.actor === 'human') {
-      const th = { id: b.id, ev: e, messages: [e], status: humanStatus(e), latestHumanId: b.id };
+      const th = { id: b.id, ev: e, messages: [e], status: humanStatus(e), latestHumanId: b.id, history: new Map(), draftBy: new Set() };
+      markDraft(th, e);
       threads.set(b.id, th);
       messageThread.set(b.id, b.id);
       messageSlot.set(b.id, { th, index: 0 });
-      continue;
+      return;
     }
     if (b.event === 'reply') {
       const threadId = b.threadId || messageThread.get(b.respondsTo) || (threads.has(b.respondsTo) ? b.respondsTo : null);
       const th = threadId && threads.get(threadId);
-      if (!th) continue;
+      if (!th) return;
       const index = th.messages.push(e) - 1;
       messageThread.set(b.id, th.id);
       messageSlot.set(b.id, { th, index });
       if (e.actor === 'human') {
         th.latestHumanId = b.id;
         th.status = humanStatus(e);
+        markDraft(th, e);
       } else if (b.respondsTo === th.latestHumanId) {
         th.status = b.status || 'acknowledged';
       }
-      continue;
+      return;
     }
     if (b.event === 'edit' && e.actor === 'human') {
       const prior = messageSlot.get(b.supersedes);
       const threadId = b.threadId || messageThread.get(b.supersedes);
       const th = (prior && prior.th) || (threadId && threads.get(threadId));
-      if (!th) continue;
+      if (!th) return;
       const index = prior ? prior.index : th.messages.length;
-      th.messages[index] = e;
-      if (index === 0) th.ev = e;
+      if (!th.history.has(index)) th.history.set(index, { original: th.messages[index] || e, edits: [] });
+      th.history.get(index).edits.push(e);
+      th.messages[index] = e; // th.ev stays the root comment: its version, target, and quote place the thread
       messageThread.set(b.id, th.id);
       messageSlot.set(b.id, { th, index });
       th.latestHumanId = b.id;
       th.status = humanStatus(e);
-      continue;
+      markDraft(th, e);
+      return;
     }
     if (b.event === 'status') {
       const threadId = b.threadId || messageThread.get(b.respondsTo) || (threads.has(b.respondsTo) ? b.respondsTo : null);
       const th = threadId && threads.get(threadId);
       if (th) th.status = b.status;
     }
+  };
+  const visit = e => {
+    apply(e);
+    known.add(e.body.id);
+    const waiting = parked.get(e.body.id);
+    if (waiting) { parked.delete(e.body.id); waiting.forEach(visit); }
+  };
+  for (const e of events) {
+    const b = e.body;
+    const ref = b.event === 'edit' ? b.supersedes : ['reply', 'status'].includes(b.event) ? b.respondsTo : null;
+    if (ref && ref !== b.id && !known.has(ref) && ids.has(ref)) {
+      if (!parked.has(ref)) parked.set(ref, []);
+      parked.get(ref).push(e);
+    } else visit(e);
   }
   return threads;
+}
+
+// Human message ids no hand-off covers (review-state #live-handoff): a hand-off covers the ids
+// it lists in `events`; one without `events` (older, or Accept spec) covers every draft before it.
+function draftIds(events) {
+  const listed = new Set();
+  let legacy = '';
+  for (const e of events) {
+    if (e.actor !== 'human' || e.body.event !== 'handoff') continue;
+    if (Array.isArray(e.body.events)) e.body.events.forEach(id => listed.add(id));
+    else if (e.name > legacy) legacy = e.name;
+  }
+  const drafts = new Set();
+  for (const e of events) {
+    if (e.actor === 'human' && ['comment', 'reply', 'edit'].includes(e.body.event) && e.name > legacy && !listed.has(e.body.id)) drafts.add(e.body.id);
+  }
+  return drafts;
+}
+
+// This browser's drafts: what its Hand off lists. A draft from before browser ids goes with whichever page hands off next.
+function handoffEvents(events, browser) {
+  const drafts = draftIds(events);
+  return events.filter(e => e.actor === 'human' && drafts.has(e.body.id) && (!e.body.browser || e.body.browser === browser)).map(e => e.body.id);
+}
+
+// Browsers sharing a fruit are numbered by their first event's file name (#model-author-shown).
+const authorKey = b => b.browser || (b.author ? 'author:' + b.author : null);
+function authorNames(events) {
+  const shown = new Map();
+  const count = new Map();
+  for (const e of events) {
+    const key = e.actor === 'human' && e.body.author && authorKey(e.body);
+    if (!key || shown.has(key)) continue;
+    const n = (count.get(e.body.author) || 0) + 1;
+    count.set(e.body.author, n);
+    shown.set(key, n === 1 ? e.body.author : e.body.author + ' ' + n);
+  }
+  return shown;
+}
+
+function messageAuthor(names, message) {
+  if (message.actor !== 'human') return 'Agent';
+  const key = authorKey(message.body);
+  return (key && names.get(key)) || 'Reviewer';
+}
+
+// #model-author-assign: a random id and a fruit name, created once and kept in this browser.
+const FRUITS = ['Mango', 'Papaya', 'Lychee', 'Guava', 'Rambutan', 'Pineapple', 'Passion Fruit', 'Dragon Fruit', 'Durian', 'Jackfruit', 'Mangosteen', 'Starfruit', 'Soursop', 'Coconut', 'Banana', 'Tamarind', 'Longan', 'Feijoa', 'Cherimoya', 'Sapodilla', 'Kiwano', 'Pitanga', 'Jabuticaba', 'Salak'];
+function reviewerIdentity(storage, random) {
+  const KEY = 'spec-chat:reviewer';
+  try {
+    const kept = JSON.parse(storage.getItem(KEY) || 'null');
+    if (kept && typeof kept.browser === 'string' && kept.browser && FRUITS.includes(kept.author)) return kept;
+  } catch (_) { /* no storage: a name for this page only */ }
+  let browser = '';
+  while (browser.length < 20) browser += Math.floor(random() * 36).toString(36);
+  const fresh = { browser, author: FRUITS[Math.min(FRUITS.length - 1, Math.floor(random() * FRUITS.length))] };
+  try { storage.setItem(KEY, JSON.stringify(fresh)); } catch (_) { /* nothing to keep it in */ }
+  return fresh;
+}
+
+// #live-save: `<ns>-<event>-<id>.json`, chosen once before the first send; strictly increasing within a page.
+function nextStamp(last, nowMs, random) {
+  let stamp = BigInt(nowMs) * 1000000n + BigInt(Math.floor(random() * 1e6));
+  if (last && stamp <= BigInt(last)) stamp = BigInt(last) + 1n;
+  return String(stamp);
+}
+
+function eventName(body, stamp) {
+  return stamp + '-' + body.event + '-' + body.id + '.json';
+}
+
+function offlineNotice(waiting) {
+  return waiting ? 'Offline: ' + waiting + ' change' + (waiting === 1 ? '' : 's') + ' waiting' : '';
 }
 
 function resolvedThreadCollapsed(thread, expandedResolved) {
@@ -855,13 +1168,20 @@ function acknowledgedReplyCount(threads) {
   return [...threads.values()].filter(thread => thread.status === 'acknowledged').length;
 }
 
-function reviewHandoffState(threads, hasTbd = false) {
+// With open TBDs the action is TBD open once settled; until then Next TBD sits beside Hand off.
+// `browser` counts only that browser's draft threads: its Hand off hands off only its own drafts.
+function reviewHandoffState(threads, openTbds = 0, browser = null) {
   const values = [...threads.values()];
-  const drafts = values.filter(thread => thread.status === 'draft').length;
-  const settled = drafts === 0 && values.every(thread => thread.status === 'resolved');
-  const finish = !hasTbd && settled;
-  const tbd = hasTbd && settled;
-  return { drafts, finish, tbd, enabled: drafts > 0 || finish || tbd };
+  const drafts = values.filter(thread => browser ? thread.draftBy?.has(browser) || thread.draftBy?.has('') : thread.status === 'draft').length;
+  const unsent = values.some(thread => thread.status === 'draft');
+  const settled = !unsent && values.every(thread => thread.status === 'resolved');
+  const finish = !openTbds && settled;
+  const tbd = openTbds > 0 && settled;
+  return { drafts, openTbds, finish, tbd, nextTbd: openTbds > 0 && !tbd, enabled: drafts > 0 || finish || tbd };
+}
+
+function tbdCountLabel(label, openTbds) {
+  return openTbds >= 2 ? label + ' (' + openTbds + ')' : label;
 }
 
 function isOpenTbd(value) {
@@ -881,12 +1201,28 @@ function tbdBlock(el) {
   return el.closest('[data-anchor]') || el;
 }
 
-function tbdHighlightBlocks(handoffState, open) {
-  return handoffState.tbd ? [...new Set(open.map(tbdBlock))] : [];
+function tbdHighlightBlocks(open) {
+  return [...new Set(open.map(tbdBlock))];
 }
 
 function advanceTbd(st, open) {
   return st.lastTbd = nextOpenTbd(open, st.lastTbd);
+}
+
+// Open TBDs and the addressed anchor share one highlight; the addressed one keeps it while it is the address.
+function renderHighlight() {
+  const openTbds = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
+  const handoffState = reviewHandoffState(state.threads, openTbds.length, state.reviewer?.browser);
+  const addressed = addressPlace();
+  renderTbdHighlight(document, tbdHighlightBlocks(openTbds).concat(addressed ? [findAnchor(addressed.anchor)] : []));
+  return handoffState;
+}
+
+// Arrival at an anchor (a conflict link on this or another spec, or Go to) scrolls to it and highlights it as an open TBD is.
+function arriveAtAddress() {
+  renderHighlight();
+  const addressed = addressPlace();
+  if (addressed) findAnchor(addressed.anchor).scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 function renderTbdHighlight(root, blocks) {
@@ -911,8 +1247,8 @@ function handoffAgentText(observation, wake, last) {
   return last ? '· agent last event ' + new Date(last.body.createdAt).toLocaleTimeString() : '· no agent events yet';
 }
 
-function ingest(events) {
-  let changed = false;
+function ingest(events, force = false) {
+  let changed = force;
   for (const e of events) {
     if (state.seenNames.has(e.actor + '/' + e.name)) continue;
     state.seenNames.add(e.actor + '/' + e.name);
@@ -924,6 +1260,7 @@ function ingest(events) {
   if (changed) {
     state.events.sort((a, b) => a.name < b.name ? -1 : 1);
     state.threads = foldThreads(state.events);
+    state.authors = authorNames(state.events);
     for (const id of state.expandedResolved) {
       if (state.threads.get(id)?.status !== 'resolved') state.expandedResolved.delete(id);
     }
@@ -931,6 +1268,932 @@ function ingest(events) {
   renderPanel();
   renderPins();
   renderBadges();
+}
+
+function jevDisplayLabel(item) {
+  if (!item) return '';
+  if (item.state === 'unsure') return 'unsure';
+  if (item.state === 'unavailable') return 'Jev unavailable';
+  return item.label || '';
+}
+
+function corpusFlags(items) {
+  const labels = { contradicts: 'Contradicts', overlaps: 'Overlaps', oversteps: 'Oversteps' };
+  const seenUnavailable = new Set();
+  const result = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || item.kind !== 'corpus' || !item.id) continue;
+    const anchor = String(item.id);
+    if (item.state === 'unavailable') {
+      if (seenUnavailable.has(anchor)) continue;
+      seenUnavailable.add(anchor);
+      result.push({ anchor, state: 'unavailable', label: 'Jev unavailable', target: null });
+      continue;
+    }
+    if (item.state !== 'label') continue;
+    const label = labels[String(item.label || '').toLowerCase()];
+    if (label) result.push({ anchor, state: 'label', label, level: item.level || null,
+      target: item.target == null ? null : String(item.target), record: item.record || null, rule: item.rule || null });
+  }
+  return result;
+}
+
+function corpusTargetLink(target) {
+  const value = String(target || '').trim();
+  if (!value) return null;
+  const hash = value.indexOf('#');
+  const anchor = hash < 0 ? value : value.slice(hash + 1);
+  if (!anchor) return null;
+  const href = hash < 0 ? '#' + anchor : hash === 0 ? value :
+    (value.slice(0, hash).startsWith('/') ? value.slice(0, hash) : '/' + value.slice(0, hash)) + '#' + anchor;
+  return { text: hash < 0 ? '#' + anchor : value, href };
+}
+
+function goToJevTarget(target) {
+  const value = String(target || '');
+  const hash = value.indexOf('#');
+  const path = hash < 0 ? '' : value.slice(0, hash);
+  const anchor = hash < 0 ? value : value.slice(hash + 1);
+  if (path && path !== location.pathname.replace(/^\//, '')) {
+    location.href = (path.startsWith('/') ? path : '/' + path) + (anchor ? '#' + anchor : '');
+    return;
+  }
+  scrollToJevAnchor(anchor || value);
+}
+
+/* ---------------- Jev markers ----------------
+ * Jev never changes spec layout: each noted anchor gets one margin marker, and
+ * one shared popover lists that anchor's notes. A note source returns
+ * { anchor, group, state, text, href, level, actions }; criterion evidence
+ * adds a source and note buttons add actions, without touching placement.
+ */
+const JEV_NOTE_GROUPS = ['evidence', 'conflict', 'coverage', 'rule', 'type', 'neutral'];
+const JEV_RECONCILE_LABELS = new Set(['Contradicts', 'Oversteps', 'Overstepped by']);
+// Cross-lane labels (#cross-lane-finding); a pending lane item is an unanswered question and never a note.
+const JEV_LANE_LABELS = { contradicts: 'Contradicts', oversteps: 'Oversteps', 'overstepped by': 'Overstepped by' };
+const jevNoteSources = [jevSuggestionNotes, evidenceNotes];
+const jevPopoverState = { element: null, marker: null, closeTimer: 0, wired: false };
+
+// A derived mark's level from the human column of the server's levels table in one response state (#markers-levels-source);
+// the runtime holds no mapping of its own.
+function markLevel(source, kind) {
+  const level = source && source.levels && source.levels[kind] && source.levels[kind].human;
+  return typeof level === 'string' ? level : null;
+}
+
+function jevGitFocus() {
+  return new URLSearchParams(location.search).get('focus') === 'changes' || document.body.classList.contains('hx-focus-active');
+}
+
+// Note buttons only open the existing composer with fixed text; nothing is written until the reviewer sends.
+function jevDraftAction(label, text) {
+  return { label, run: note => { closeJevPopover(); openComposer(note.anchor, null, null, text); } };
+}
+
+// #batch: the one popover batch. entries are { note, line, warning } for one per-item button kind. With n listed
+// (non-warning) entries, n >= 1 and all entries >= 2, the first note of each clause gets <label> (n), drafting
+// <heading> then the listed lines in page order, and, when m warnings exist, a +m link drafting all of them.
+function jevBatch(entries, label, heading) {
+  const order = new Map([...document.querySelectorAll('[data-anchor]')].map((el, index) => [el.dataset.anchor, index]));
+  entries.sort((a, b) => (order.get(a.note.anchor) ?? Infinity) - (order.get(b.note.anchor) ?? Infinity));
+  const listed = entries.filter(entry => !entry.warning);
+  const m = entries.length - listed.length;
+  if (!listed.length || entries.length < 2) return;
+  const draft = chosen => [heading, ...chosen.map(entry => entry.line)].join('\n');
+  const shown = new Set();
+  for (const { note } of entries) {
+    if (shown.has(note.anchor)) continue;
+    shown.add(note.anchor);
+    note.actions.push(jevDraftAction(label + ' (' + listed.length + ')', draft(listed)));
+    if (m) note.actions.push({ ...jevDraftAction('+' + m + (m === 1 ? ' warning' : ' warnings'), draft(entries)), link: true });
+  }
+}
+
+// Jev unavailable names what Jev could not check in its hover sentence (jev-suggestions #neutral-questions); an unsure
+// answer is settled by the LLM fallback in the seam, so the browser never shows one.
+const JEV_QUESTIONS = {
+  type: 'whether this changes behavior',
+  criterion: 'which story this criterion verifies',
+  story: 'which criterion verifies this story',
+  corpus: 'whether this conflicts with another clause',
+  audience: 'whether this is for readers or internals',
+};
+function jevNeutralNote(anchor, question) {
+  return { anchor, group: 'neutral', state: 'unavailable', text: 'Jev unavailable', sentence: 'Jev could not check ' + JEV_QUESTIONS[question], level: null };
+}
+
+// project-rules #dismiss-where, #approval: one click that Jev is wrong, or a candidate confirmed. Changes what the page
+// shows at once, ends any read in flight, records through the offer's record route for this page, then re-reads
+// /api/jev and shows what the server returns: a recorded answer stays, a refused or failed one comes back.
+function jevRecordAction(label, body) {
+  return { label, run: () => {
+    const base = state.jev.base;
+    state.jev.request += 1;
+    jevForget(body);
+    renderJev();
+    const reread = () => { if (base === state.jev.base) requestJev(base, true); };
+    fetch('/api/jev/offer?' + new URLSearchParams({ path: location.pathname.replace(/^\//, '') }),
+      { method: 'POST', body: JSON.stringify(body) }).then(reread, reread);
+  } };
+}
+
+// What one recorded answer removes from the page (#dismiss): Not for this spec drops that one note, or, naming an
+// offer line's spec, that line's rule; Not a project rule drops every card and candidate of the rule text, leaves a
+// mark citing it a plain draft-check note, and takes it out of both offers; Confirm rule ends its candidate.
+function jevForget(body) {
+  const text = body.rule;
+  const here = body.dismiss === 'here';
+  const line = body.spec;
+  const everywhere = body.dismiss === 'rule';
+  state.jev.items = state.jev.items.flatMap(item => {
+    const own = item.kind === 'rule' || item.kind === 'candidate' ? item.text === text : false;
+    if (here) return !line && body.record && item.record === body.record && (own || (item.rule && item.rule.text === text)) ? [] : [item];
+    if (own && (everywhere || item.kind === 'candidate')) return [];
+    if (everywhere && item.kind === 'corpus' && item.rule && item.rule.text === text) return [{ ...item, rule: null }];
+    return [item];
+  });
+  const offer = state.jev.offer;
+  if (offer && (everywhere || (here && line))) {
+    const specs = (Array.isArray(offer.specs) ? offer.specs : []).map(entry => ({ ...entry,
+      rules: (Array.isArray(entry.rules) ? entry.rules : []).filter(r => r.text !== text || (here && entry.spec !== line)) }))
+      .filter(entry => entry.rules.length);
+    state.jev.offer = specs.length ? { ...offer, count: specs.length, specs } : null;
+  }
+  const candidates = state.jev.candidateOffer;
+  if (candidates && (everywhere || body.confirm)) {
+    const left = (Array.isArray(candidates.candidates) ? candidates.candidates : []).filter(c => c.text !== text);
+    state.jev.candidateOffer = left.length ? { ...candidates, count: left.length, candidates: left } : null;
+  }
+}
+
+// A rule's source: its home file name without .spec.html, a middle dot, and the clause anchor (#card).
+function jevRuleSource(target) {
+  const link = corpusTargetLink(target);
+  if (!link) return null;
+  const hash = link.text.indexOf('#');
+  const file = hash > 0 ? link.text.slice(0, hash).split('/').pop() : '';
+  const stem = file.replace(/\.spec\.html$/, '');
+  return { href: link.href, link: link.text, file, text: (stem ? stem + ' · ' : '') + link.text.slice(Math.max(hash, 0)) };
+}
+
+// The rule's plain-words name; home and anchor while the LLM still writes it (#card-name-source).
+function jevRuleTitle(rule) {
+  const source = jevRuleSource(rule.target);
+  return rule.name || (source ? source.text : '');
+}
+
+// The two rejects every rule card shares (#dismiss): left of the primary, each one click. Not for this spec holds
+// for the note's record on this page's spec, or on the repo spec an offer line names (#card-offer-row).
+function jevRuleRejects(rule, record, here = true, spec) {
+  return [...(here ? [jevRecordAction('Not for this spec', { dismiss: 'here', rule: rule.text, ...(record ? { record } : {}),
+    ...(spec ? { spec } : {}) })] : []),
+    jevRecordAction('Not a project rule', { dismiss: 'rule', rule: rule.text })];
+}
+
+// Confirm rule (#approval): the name sent only when the human corrected it (#card-name-source).
+function jevConfirmAction(rule) {
+  return { label: 'Confirm rule', primary: true, run: (note, card) => {
+    const field = card && card.querySelector('.hx-rule-card-name');
+    const name = field ? String(field.value || '').split(/\s+/).filter(Boolean).join(' ') : '';
+    const body = { confirm: true, rule: rule.text, ...(name && name !== (rule.name || '') ? { name } : {}) };
+    jevRecordAction('Confirm rule', body).run();
+  } };
+}
+
+// project-rules #card: every note about a project rule is one card, rendered the same wherever it shows. Label, the
+// rule's name as title (editable on a candidate), the full verbatim quote, the source link, then the rejects left and
+// the one primary rightmost after a hairline. A labelled group; buttons are real buttons in visual order.
+function jevRuleCard(card, note = null) {
+  const box = document.createElement('div');
+  box.className = 'hx-rule-card';
+  box.setAttribute('role', 'group');
+  const title = jevRuleTitle(card.rule);
+  box.setAttribute('aria-label', card.label + ': ' + title);
+  box.appendChild(document.createElement('div')).className = 'hx-rule-card-label';
+  box.lastElementChild.textContent = card.label;
+  if (card.editName) {
+    const field = box.appendChild(document.createElement('textarea'));
+    field.className = 'hx-rule-card-name';
+    field.rows = 1;
+    field.maxLength = 120;
+    field.value = card.rule.name || '';
+    field.placeholder = (jevRuleSource(card.rule.target) || { text: '' }).text;
+    field.setAttribute('aria-label', 'Rule name');
+    field.title = 'Correct the name before Confirm rule';
+    field.spellcheck = true;
+    field.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
+  } else {
+    box.appendChild(document.createElement('div')).className = 'hx-rule-card-title';
+    box.lastElementChild.textContent = title;
+  }
+  box.appendChild(document.createElement('blockquote')).className = 'hx-rule-card-quote';
+  box.lastElementChild.textContent = card.rule.text;
+  const source = jevRuleSource(card.rule.target);
+  if (source) {
+    const link = box.appendChild(document.createElement('a'));
+    link.className = 'hx-rule-card-source';
+    link.href = source.href;
+    link.appendChild(document.createElement('span')).className = 'hx-rule-card-source-text';
+    link.lastElementChild.textContent = source.text;
+    const arrow = link.appendChild(document.createElement('span'));
+    arrow.className = 'hx-rule-card-source-arrow';
+    arrow.setAttribute('aria-hidden', 'true');
+    arrow.textContent = '↗';
+  }
+  const actions = box.appendChild(document.createElement('div'));
+  actions.className = 'hx-rule-card-actions';
+  for (const action of card.actions) {
+    const button = actions.appendChild(document.createElement('button'));
+    button.type = 'button';
+    button.className = action.primary ? 'hx-btn pri' : 'hx-rule-card-reject';
+    button.textContent = action.label;
+    button.addEventListener('click', event => { event.stopPropagation(); action.run(note, box); });
+  }
+  return box;
+}
+
+// A note holding one card: its text and sentence name the marker; the card is what the popover shows.
+function jevCardNote(anchor, group, level, sentence, card) {
+  return { anchor, group, state: 'label', level, sentence, text: card.label + ' ' + jevRuleTitle(card.rule), card };
+}
+
+// project-rules #marks, #approval: a confirmed rule the spec misses is the missed-rule card on the Acceptance criteria
+// heading; a candidate on its home criterion is the candidate card; a check escalated to the LLM and still unanswered
+// is a wheel in the marker's place; a failed LLM fallback is the neutral Jev unavailable note naming the rule
+// (#q-fallback); anything else, a candidate elsewhere included, shows nothing.
+function jevRuleNote(item) {
+  if (!item.id || !item.text || !item.target) return null;
+  const rule = { target: item.target, text: item.text, name: item.name };
+  const title = jevRuleTitle(rule);
+  if (item.state === 'pending') {
+    return item.escalated ? { anchor: item.id, group: 'rule', state: 'pending', text: 'checking ' + title + '…' } : null;
+  }
+  if (item.kind === 'candidate') {
+    if (item.state !== 'label') return null;
+    return jevCardNote(item.id, 'rule', item.level || null, 'Jev reads this as a rule for every feature',
+      { label: 'Possible project rule', rule, editName: true, actions: [...jevRuleRejects(rule, null, false), jevConfirmAction(rule)] });
+  }
+  if (item.state !== 'unavailable' && (item.state !== 'label' || item.label !== 'missed')) return null;
+  const source = jevRuleSource(item.target);
+  if (!source) return null;
+  if (item.state === 'unavailable') {
+    return { anchor: item.id, group: 'neutral', state: 'unavailable', text: 'Jev unavailable', level: null,
+      sentence: 'Jev could not check whether this spec needs the rule ' + title };
+  }
+  const ask = { ...jevDraftAction('Ask to cover', 'Cover ' + source.link + ' with a criterion, or add one line saying why it does not apply.'), primary: true };
+  return jevCardNote(item.id, 'rule', item.level || null, 'This spec may need the rule ' + title + ' from ' + source.file,
+    { label: 'Missing project rule', rule, actions: [...jevRuleRejects(rule, item.record), ask] });
+}
+
+function jevSuggestionNotes() {
+  if (state.jev.status !== 'on') return [];
+  const notes = [];
+  const gaps = [];
+  for (const item of state.jev.items) {
+    const note = item.kind === 'rule' || item.kind === 'candidate' ? jevRuleNote(item) : null;
+    if (note) notes.push(note);
+  }
+  for (const flag of coverageGapFlags(state.jev.items)) {
+    if (flag.state !== 'gap') { notes.push(jevNeutralNote(flag.anchor, flag.side)); continue; }
+    const note = { anchor: flag.anchor, group: 'coverage', state: 'label', text: flag.label,
+      level: markLevel(state.jev, flag.side === 'story' ? 'no-criterion' : 'no-story'),
+      actions: [flag.side === 'story'
+        ? jevDraftAction('Ask for a criterion', 'Add an acceptance criterion that verifies this story.')
+        : jevDraftAction('Ask for a story', 'Name or add the user story this criterion verifies.')] };
+    gaps.push({ note, line: '#' + flag.anchor + ' ' + flag.label });
+    notes.push(note);
+  }
+  jevBatch(gaps, 'Ask about all gaps', 'Add a criterion for each story, or name the story for each criterion:');
+  if (state.readingView) {
+    for (const item of state.jev.items) {
+      if (item.kind === 'audience' && item.id && item.state === 'unavailable') notes.push(jevNeutralNote(item.id, 'audience'));
+    }
+    return notes;
+  }
+  const reconcile = [];
+  // One conflict note; a reconcile link (draft) is the full target so the agent can open it (#note-reconcile).
+  const conflict = (anchor, label, level, text, href, draftLink) => {
+    const note = { anchor, group: 'conflict', state: 'label', text, href, level, actions: [] };
+    if (draftLink && JEV_RECONCILE_LABELS.has(label)) {
+      note.actions.push(jevDraftAction('Ask agent to reconcile', 'Reconcile this clause with ' + draftLink + '.'));
+      reconcile.push({ note, line: '#' + anchor + ' ' + label + ' ' + draftLink, warning: level !== 'important' });
+    }
+    notes.push(note);
+  };
+  // Cross-lane marks compare against target main, not the Git focus base, so they show in either view (#cross-lane-finding).
+  for (const item of state.jev.items) {
+    const label = item && item.kind === 'lane' && item.state === 'label' && item.id ? JEV_LANE_LABELS[item.label] : null;
+    const link = label ? corpusTargetLink(item.target) : null;
+    if (!link) continue;
+    conflict(String(item.id), label, item.level || null, label + ' ' + item.other + ' #' + link.href.slice(link.href.indexOf('#') + 1),
+      link.href, link.text);
+  }
+  const gitFocus = jevGitFocus();
+  for (const flag of gitFocus ? corpusFlags(state.jev.items) : []) {
+    if (flag.state !== 'label') { notes.push(jevNeutralNote(flag.anchor, 'corpus')); continue; }
+    if (flag.rule) {
+      // project-rules #card-cites: a mark whose other clause is a confirmed rule is that rule's card, in its place.
+      const source = jevRuleSource(flag.rule.target);
+      const label = flag.label + ' project rule';
+      notes.push(jevCardNote(flag.anchor, 'conflict', flag.level, label + ' ' + jevRuleTitle(flag.rule), { label, rule: flag.rule,
+        actions: [...jevRuleRejects(flag.rule, flag.record),
+          { ...jevDraftAction('Ask agent to reconcile', 'Reconcile this clause with ' + (source ? source.link : flag.rule.target) + '.'), primary: true }] }));
+      continue;
+    }
+    const link = corpusTargetLink(flag.target);
+    conflict(flag.anchor, flag.label, flag.level, flag.label + (link ? ' ' + link.text : ''), link ? link.href : null, link && link.text);
+  }
+  jevBatch(reconcile, 'Reconcile all', 'Reconcile each clause with its link:');
+  if (!gitFocus) return notes;
+  for (const item of state.jev.items) {
+    if (item.kind !== 'type' || !item.id) continue;
+    if (item.state === 'unavailable') notes.push(jevNeutralNote(item.id, 'type'));
+    else if (item.state === 'label' && JEV_TYPE_LABELS[item.label]) {
+      const text = JEV_TYPE_LABELS[item.label];
+      notes.push({ anchor: item.id, group: 'type', state: 'label', text, level: null,
+        actions: item.label === 'behavior' ? [jevDraftAction('Comment on this change', 'About this change: ')] : [] });
+    }
+  }
+  return notes;
+}
+
+/* Criterion evidence (criterion-evidence spec): one note per acceptance criterion once evidence loads. */
+// Every label names QA, so evidence never reads as a Jev note beside it (#chip-labels).
+function evidenceLabel(entry) {
+  if (!entry) return 'No QA yet';
+  if (entry.uncommitted) return 'QA stale';
+  const verdict = entry.verdict === 'fail' ? 'QA failed' : 'QA passed';
+  if (entry.match) return verdict;
+  return entry.judgment === 'cosmetic' ? verdict + ' \u00b7 reworded' : 'QA stale';
+}
+
+function evidenceAge(capturedAt, now = Date.now()) {
+  const captured = Date.parse(capturedAt);
+  if (Number.isNaN(captured)) return '';
+  const minutes = Math.max(0, Math.floor((now - captured) / 60000));
+  if (minutes < 60) return minutes + ' m';
+  if (minutes < 1440) return Math.floor(minutes / 60) + ' h';
+  return Math.floor(minutes / 1440) + ' d';
+}
+
+// The criterion as read: its own text, without nested anchors or runtime overlays, whitespace collapsed as the server reads it.
+function evidenceReadText(element) {
+  const parts = [];
+  const walk = node => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) parts.push(child.nodeValue);
+      else if (child.nodeType === 1 && !child.matches('[data-anchor],.hx-jev-marker,.hx-pin,.hx-badge,script,style')) walk(child);
+    }
+  };
+  walk(element);
+  return parts.join('').split(/\s+/).filter(Boolean).join(' ');
+}
+
+// Word diff of the proven text against the text as read: [{ op: 'same' | 'del' | 'ins', text }].
+function evidenceDiff(proven, read) {
+  const a = String(proven).split(/\s+/).filter(Boolean);
+  const b = String(read).split(/\s+/).filter(Boolean);
+  const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  }
+  const parts = [];
+  const push = (op, word) => {
+    const last = parts[parts.length - 1];
+    if (last && last.op === op) last.text += ' ' + word;
+    else parts.push({ op, text: word });
+  };
+  let i = 0, j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) { push('same', a[i]); i++; j++; }
+    else if (i < a.length && (j === b.length || lcs[i + 1][j] >= lcs[i][j + 1])) push('del', a[i++]);
+    else push('ins', b[j++]);
+  }
+  return parts;
+}
+
+// Plugin bridge (criterion-evidence #plugin-bridge): IDs, never URLs, read from the service's bundle page address.
+function evidenceBundleId(url) {
+  try {
+    const parts = new URL(url).pathname.split('/');
+    const at = parts.lastIndexOf('bundles');
+    return at >= 0 && parts[at + 1] ? decodeURIComponent(parts[at + 1]) : null;
+  } catch (_) { return null; }
+}
+
+function evidenceCriterionKey(url) {
+  try {
+    const match = /^#criterion=(.+)$/.exec(new URL(url).hash);
+    return match ? decodeURIComponent(match[1]) : null;
+  } catch (_) { return null; }
+}
+
+function evidenceOpen(bundle, criterion) {
+  if (!bundle) return null;
+  return () => {
+    if (!hostBridge.evidence) return false;
+    window.parent.postMessage(criterion ? { type: 'spec-chat-open-evidence', bundle, criterion } : { type: 'spec-chat-open-evidence', bundle }, hostBridge.evidence);
+    return true;
+  };
+}
+
+/* ---------------- host bridge (criterion-evidence #plugin-bridge) ----------------
+ * Self-contained (window, document, location, navigator only): review-serve inlines this exact block
+ * into the review index, so spec pages and the index run one bridge (#bridge-tab-pages). */
+// The parent frame's origin per step its hello offers; null keeps the browser's own behavior.
+const hostBridge = { evidence: null, tab: null };
+
+// #bridge-new-tab-click: Cmd+click on macOS, Ctrl+click elsewhere, or middle-click (auxclick button 1), same-origin link.
+function hostTabClick(event) {
+  if (!hostBridge.tab || event.defaultPrevented) return;
+  const modifier = /Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey : event.ctrlKey;
+  if (!(event.type === 'auxclick' ? event.button === 1 : event.button === 0 && modifier)) return;
+  const link = event.target && event.target.closest && event.target.closest('a[href]');
+  if (!link) return;
+  let url;
+  try { url = new URL(link.getAttribute('href'), document.baseURI); } catch (_) { return; }
+  if (url.origin !== location.origin) return;
+  event.preventDefault();
+  window.parent.postMessage({ type: 'spec-chat-open-tab', href: url.href }, hostBridge.tab);
+}
+
+// #bridge-hello-check: only the parent window at a real origin; "evidence" and "tab" each turn on only their own steps.
+function listenHost() {
+  if (window.parent === window) return;
+  window.addEventListener('message', event => {
+    const data = event.data;
+    if (event.source !== window.parent || !event.origin || event.origin === 'null') return;
+    if (!data || data.type !== 'spec-chat-host' || !Array.isArray(data.opens)) return;
+    if (data.opens.includes('evidence')) hostBridge.evidence = event.origin;
+    if (!data.opens.includes('tab')) return;
+    hostBridge.tab = event.origin;
+    event.source.postMessage({ type: 'spec-chat-title', title: String(document.title) }, event.origin);
+  });
+  for (const type of ['click', 'auxclick']) document.addEventListener(type, hostTabClick, true);
+}
+/* ---------------- end host bridge ---------------- */
+
+function evidenceNotes() {
+  const criteria = state.evidence && state.evidence.criteria;
+  if (!criteria) return [];
+  const notes = [];
+  const stale = [];
+  for (const element of document.querySelectorAll('[data-acceptance-criterion]')) {
+    const anchor = element.dataset.anchor;
+    if (!anchor) continue;
+    const entry = Object.prototype.hasOwnProperty.call(criteria, anchor) && criteria[anchor] && typeof criteria[anchor] === 'object' ? criteria[anchor] : null;
+    const text = evidenceLabel(entry);
+    const note = { anchor, group: 'evidence', state: text === 'No QA yet' ? 'none' : 'label', text,
+      level: text === 'QA stale' ? markLevel(state.evidence, 'qa-stale') : text.startsWith('QA failed') ? markLevel(state.evidence, 'qa-failed') : null,
+      passed: text.startsWith('QA passed') };
+    if (entry) {
+      const pr = Number.isInteger(entry.pr) ? '#' + entry.pr : '';
+      const context = [pr, evidenceAge(entry.capturedAt), entry.onMain === false ? 'not on main' : ''].filter(Boolean).join(' · ');
+      const view = typeof entry.view === 'string' ? entry.view : null;
+      const bundle = typeof entry.bundle === 'string' ? entry.bundle : null;
+      const bundleId = evidenceBundleId(view) || evidenceBundleId(bundle);
+      Object.assign(note, { href: view, external: true, context, open: evidenceOpen(bundleId, evidenceCriterionKey(view)),
+        link: bundle ? { text: 'bundle', href: bundle, open: evidenceOpen(bundleId, null) } : null });
+      if (text !== 'QA passed' && text !== 'QA failed' && typeof entry.proven === 'string') note.diff = evidenceDiff(entry.proven, evidenceReadText(element));
+      if (text === 'QA stale') {
+        const date = commitDate(entry.capturedAt);
+        const since = [pr, date].filter(Boolean).join(', ');
+        const cited = since ? ' (' + since + ')' : '';
+        note.actions = [jevDraftAction('Ask for re-proof', anchor + ' changed since its evidence' + cited + ': please recapture it.')];
+        stale.push({ note, line: anchor + cited });
+      }
+    }
+    notes.push(note);
+  }
+  jevBatch(stale, 'Re-proof all stale', 'Re-proof each criterion, changed since its evidence:');
+  return notes;
+}
+
+function jevNotesByAnchor() {
+  const byAnchor = new Map();
+  for (const source of jevNoteSources) {
+    for (const note of source() || []) {
+      if (!note || !note.anchor || !note.text || !JEV_NOTE_GROUPS.includes(note.group)) continue;
+      const anchor = String(note.anchor);
+      const notes = byAnchor.get(anchor) || [];
+      if (note.group === 'neutral' && notes.some(other => other.group === 'neutral' && other.sentence === note.sentence)) continue;
+      notes.push(note);
+      byAnchor.set(anchor, notes);
+    }
+  }
+  for (const notes of byAnchor.values()) notes.sort((a, b) => JEV_NOTE_GROUPS.indexOf(a.group) - JEV_NOTE_GROUPS.indexOf(b.group));
+  return byAnchor;
+}
+
+function mountJevMarker(holder, notes) {
+  const marker = document.createElement('button');
+  marker.type = 'button';
+  marker.className = 'hx-jev-marker';
+  const attention = notes.some(note => note.level === 'important');
+  marker.dataset.attention = String(attention);
+  const passed = !attention && notes.some(note => note.group === 'evidence' && note.passed);
+  marker.dataset.passed = String(passed);
+  // #markers-color: a light red dot when any note is Warning at the human level, below ! and the green check.
+  marker.dataset.warning = String(!attention && !passed && notes.some(note => note.level === 'warning'));
+  // Only escalated checks here: the marker is the pending wheel, its hover sentence its name (project-rules #pending).
+  const pending = notes.every(note => note.state === 'pending');
+  marker.dataset.pending = String(pending);
+  marker.setAttribute('aria-label', (pending ? '' : 'Jev notes: ') + notes.map(note => note.sentence || note.text).join('; '));
+  marker.setAttribute('aria-haspopup', 'dialog');
+  marker.setAttribute('aria-expanded', 'false');
+  marker.jevNotes = notes;
+  marker.addEventListener('mouseenter', () => openJevPopover(marker));
+  marker.addEventListener('mouseleave', scheduleJevPopoverClose);
+  marker.addEventListener('focus', () => openJevPopover(marker));
+  marker.addEventListener('blur', event => { if (!jevPopoverKeeps(event.relatedTarget)) closeJevPopover(); });
+  marker.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); openJevPopover(marker); });
+  // Rows cannot hold a positioned child; the marker sits inside the row's last cell (a cell, never a pin).
+  (holder.tagName === 'TR' ? holder.cells[holder.cells.length - 1] || holder : holder).appendChild(marker);
+  placeJevMarker(marker);
+  wireJevPopover();
+  return marker;
+}
+
+// Center the marker on the first rendered line of its anchor, without moving any text. It sits in
+// the right margin, or just inside the column edge for rows and wherever the margin cannot hold it.
+function placeJevMarker(marker) {
+  const holder = marker.closest('[data-anchor]');
+  const parent = marker.offsetParent;
+  if (!holder || !parent || !document.createTreeWalker) return;
+  marker.dataset.inset = String(holder.tagName === 'TR');
+  if (marker.getBoundingClientRect().right > document.documentElement.clientWidth) marker.dataset.inset = 'true';
+  const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT, {
+    acceptNode: node => node.nodeValue.trim() && !node.parentElement.closest('.hx-jev-marker,.hx-pin,.hx-badge,script,style') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP,
+  });
+  const text = walker.nextNode();
+  if (!text) return;
+  const range = document.createRange();
+  const start = text.nodeValue.search(/\S/);
+  range.setStart(text, start);
+  range.setEnd(text, start + 1);
+  const line = range.getClientRects()[0];
+  if (!line) return;
+  const top = line.top + line.height / 2 - parent.getBoundingClientRect().top - parent.clientTop - marker.offsetHeight / 2;
+  marker.style.top = Math.round(top) + 'px';
+}
+
+function jevPopoverKeeps(target) {
+  const pop = jevPopoverState.element;
+  return Boolean(target && (target === jevPopoverState.marker || (pop && pop.contains(target))));
+}
+
+function scheduleJevPopoverClose() {
+  clearTimeout(jevPopoverState.closeTimer);
+  jevPopoverState.closeTimer = setTimeout(() => {
+    const pop = jevPopoverState.element;
+    const marker = jevPopoverState.marker;
+    if (!marker || marker.matches(':hover') || (pop && pop.matches(':hover'))) return;
+    if (jevPopoverKeeps(document.activeElement)) return;
+    closeJevPopover();
+  }, 160);
+}
+
+function jevPopoverElement() {
+  if (jevPopoverState.element) return jevPopoverState.element;
+  const pop = document.createElement('div');
+  pop.className = 'hx-jev-pop';
+  pop.id = 'hx-jev-pop';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'Jev notes');
+  pop.hidden = true;
+  pop.addEventListener('mouseenter', () => clearTimeout(jevPopoverState.closeTimer));
+  pop.addEventListener('mouseleave', scheduleJevPopoverClose);
+  pop.addEventListener('focusout', event => { if (!jevPopoverKeeps(event.relatedTarget) && !pop.matches(':hover')) closeJevPopover(); });
+  document.body.appendChild(pop);
+  jevPopoverState.element = pop;
+  return pop;
+}
+
+function renderJevNote(note) {
+  const row = document.createElement('li');
+  row.className = 'hx-jev-pop-note';
+  row.dataset.group = note.group;
+  row.dataset.state = note.state || 'label';
+  row.dataset.attention = String(note.level === 'important');
+  if (note.card) {
+    row.appendChild(jevRuleCard(note.card, note));
+    return row;
+  }
+  const text = document.createElement(note.href ? 'a' : 'span');
+  text.className = 'hx-jev-pop-text';
+  if (note.href) text.href = note.href;
+  if (note.href && note.external) { text.target = '_blank'; text.rel = 'noopener'; }
+  if (note.href && note.open) text.addEventListener('click', event => { if (note.open()) event.preventDefault(); });
+  text.textContent = note.text;
+  row.appendChild(text);
+  if (note.quote) {
+    const quote = row.appendChild(document.createElement('span'));
+    quote.className = 'hx-jev-pop-quote';
+    quote.textContent = '\u201c' + note.quote + '\u201d';
+  }
+  // A neutral note's sentence is its accessible name and shows in the popover on hover or focus.
+  if (note.sentence) {
+    if (!note.href) {
+      text.setAttribute('role', 'note');
+      text.setAttribute('tabindex', '0');
+    }
+    text.setAttribute('aria-label', note.sentence);
+    const sentence = row.appendChild(document.createElement('span'));
+    sentence.className = 'hx-jev-pop-sentence';
+    sentence.setAttribute('aria-hidden', 'true');
+    sentence.textContent = note.sentence;
+  }
+  if (note.context || (note.link && note.link.href)) {
+    const meta = document.createElement('span');
+    meta.className = 'hx-jev-pop-meta';
+    if (note.context) meta.appendChild(document.createElement('span')).textContent = note.context;
+    if (note.link && note.link.href) {
+      const link = meta.appendChild(document.createElement('a'));
+      link.className = 'hx-jev-pop-link';
+      link.href = note.link.href;
+      if (note.external) { link.target = '_blank'; link.rel = 'noopener'; }
+      link.textContent = note.link.text;
+      if (note.link.open) link.addEventListener('click', event => { if (note.link.open()) event.preventDefault(); });
+    }
+    row.appendChild(meta);
+  }
+  if (Array.isArray(note.diff) && note.diff.length) {
+    const legend = row.appendChild(document.createElement('div'));
+    legend.className = 'hx-jev-pop-diff-legend';
+    legend.innerHTML = '<del>removed</del> / <ins>added</ins>';
+    const diff = row.appendChild(document.createElement('span'));
+    diff.className = 'hx-jev-pop-diff';
+    note.diff.forEach((part, index) => {
+      if (index) diff.appendChild(document.createElement('span')).textContent = ' ';
+      const word = diff.appendChild(document.createElement(part.op === 'del' ? 'del' : part.op === 'ins' ? 'ins' : 'span'));
+      word.textContent = part.text;
+    });
+  }
+  const actions = Array.isArray(note.actions) ? note.actions.filter(action => action && action.label) : [];
+  if (actions.length) {
+    const slot = document.createElement('div');
+    slot.className = 'hx-jev-pop-actions';
+    for (const action of actions) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = action.link ? 'hx-jev-pop-more' : 'hx-btn';
+      button.textContent = action.label;
+      button.addEventListener('click', event => { event.stopPropagation(); if (action.run) action.run(note); });
+      // A link action sits on its button's line: both share one unwrapped group.
+      const before = action.link && slot.lastElementChild;
+      if (before && before.tagName === 'BUTTON') {
+        const group = slot.appendChild(document.createElement('span'));
+        group.className = 'hx-jev-pop-batch';
+        group.append(before, button);
+      } else slot.appendChild(button);
+    }
+    row.appendChild(slot);
+  }
+  return row;
+}
+
+function openJevPopover(marker) {
+  clearTimeout(jevPopoverState.closeTimer);
+  const pop = jevPopoverElement();
+  if (jevPopoverState.marker !== marker) {
+    if (jevPopoverState.marker) jevPopoverState.marker.setAttribute('aria-expanded', 'false');
+    const list = document.createElement('ul');
+    list.className = 'hx-jev-pop-notes';
+    for (const note of marker.jevNotes || []) list.appendChild(renderJevNote(note));
+    pop.replaceChildren(list);
+    jevPopoverState.marker = marker;
+  }
+  marker.setAttribute('aria-expanded', 'true');
+  marker.setAttribute('aria-controls', pop.id);
+  pop.hidden = false;
+  placeJevPopover();
+}
+
+function closeJevPopover() {
+  clearTimeout(jevPopoverState.closeTimer);
+  const pop = jevPopoverState.element;
+  if (jevPopoverState.marker) jevPopoverState.marker.setAttribute('aria-expanded', 'false');
+  jevPopoverState.marker = null;
+  if (pop) {
+    pop.hidden = true;
+    pop.replaceChildren();
+  }
+}
+
+// Desktop: beside the marker, below or above, never over the toolbar, dock, or open panel.
+// Its box is measured with every note sentence shown and that room is kept. Above the marker it is anchored by
+// its bottom edge, so the unhovered box hugs the marker and a hover sentence grows it upward into the kept room.
+// Narrow screens: CSS makes it a sheet above the toolbar.
+function placeJevPopover() {
+  const pop = jevPopoverState.element;
+  const marker = jevPopoverState.marker;
+  if (!pop || !marker || pop.hidden) return;
+  pop.style.left = '';
+  pop.style.top = '';
+  pop.style.bottom = '';
+  pop.style.width = '';
+  if (window.matchMedia('(max-width: 640px)').matches) return;
+  const anchor = marker.getBoundingClientRect();
+  if (!marker.isConnected || anchor.bottom < 0 || anchor.top > innerHeight) { closeJevPopover(); return; }
+  const controls = [...document.querySelectorAll('.hx-toolbar,.hx-thread-dock,.hx-panel.open,.hx-service-index-link,.hx-banner')]
+    .filter(control => getComputedStyle(control).visibility !== 'hidden' && getComputedStyle(control).opacity !== '0')
+    .map(control => control.getBoundingClientRect()).filter(rect => rect.width && rect.height);
+  pop.dataset.measure = '';
+  const { width, height } = pop.getBoundingClientRect();
+  delete pop.dataset.measure;
+  const panel = document.querySelector('.hx-panel.open');
+  const rightLimit = innerWidth - 8 - (panel ? panel.getBoundingClientRect().width : 0);
+  const left = Math.max(8, Math.min(anchor.right - width, rightLimit - width));
+  const covers = top => controls.some(rect => left < rect.right && left + width > rect.left && top < rect.bottom && top + height > rect.top);
+  const fits = top => top >= 8 && top + height <= innerHeight - 8;
+  const candidates = [anchor.bottom + 8, anchor.top - 8 - height];
+  const top = candidates.find(value => fits(value) && !covers(value)) ?? candidates.find(fits) ?? Math.max(8, candidates[0]);
+  pop.style.left = Math.round(left) + 'px';
+  if (top === candidates[1]) pop.style.bottom = Math.round(innerHeight - anchor.top + 8) + 'px';
+  else pop.style.top = Math.round(top) + 'px';
+  pop.style.width = width + 'px';
+}
+
+function wireJevPopover() {
+  if (jevPopoverState.wired) return;
+  jevPopoverState.wired = true;
+  document.addEventListener('pointerdown', event => {
+    if (jevPopoverState.marker && !jevPopoverKeeps(event.target)) closeJevPopover();
+  }, true);
+  // The popover lives at the end of body, so the keyboard path through it is bridged here:
+  // Tab from the marker enters it, Tab past its last control leaves from the marker, and Escape
+  // returns focus to the marker before closing so the marker's focus listener cannot reopen it.
+  document.addEventListener('keydown', event => {
+    const marker = jevPopoverState.marker;
+    if (!marker) return;
+    const pop = jevPopoverState.element;
+    const active = document.activeElement;
+    if (event.key === 'Escape') {
+      if (pop.contains(active)) marker.focus({ preventScroll: true });
+      closeJevPopover();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const stops = pop.querySelectorAll('a,button,textarea');
+    if (!stops.length) return;
+    if (active === marker && !event.shiftKey) { event.preventDefault(); stops[0].focus(); }
+    else if (active === stops[0] && event.shiftKey) { event.preventDefault(); marker.focus(); }
+    else if (active === stops[stops.length - 1] && !event.shiftKey) marker.focus();
+  });
+  let frame = 0;
+  document.addEventListener('scroll', () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(placeJevPopover);
+  }, true);
+  window.addEventListener('resize', placeJevPopover);
+}
+
+// The existing disclosure button pattern: a toggle that shows and hides one region.
+function jevDisclosure(region, what) {
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'hx-disclosure';
+  const set = expanded => {
+    region.hidden = !expanded;
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.setAttribute('aria-label', (expanded ? 'Hide ' : 'Show ') + what);
+    toggle.textContent = expanded ? '▾' : '▸';
+  };
+  set(false);
+  toggle.addEventListener('click', event => { event.stopPropagation(); set(region.hidden); });
+  return toggle;
+}
+
+// project-rules #bootstrap: both one-time offers are one page note, collapsed by default: a disclosure, the title,
+// then Dismiss and the offer's own primary rightmost; expanded, its detail below a hairline. Dismiss records the
+// offer, after which the server never returns it again for this project.
+function jevOfferShell(title, kind, what) {
+  const note = document.createElement('section');
+  note.className = 'hx-jev-note hx-jev-offer';
+  note.setAttribute('aria-label', title);
+  const head = note.appendChild(document.createElement('div'));
+  head.className = 'hx-jev-offer-head';
+  const detail = document.createElement('div');
+  detail.className = 'hx-jev-offer-detail';
+  head.appendChild(jevDisclosure(detail, what));
+  head.appendChild(document.createElement('span')).className = 'hx-jev-offer-title';
+  head.lastElementChild.textContent = title;
+  const record = action => {
+    if (kind === 'candidates') state.jev.candidateOffer = null;
+    else state.jev.offer = null;
+    renderJev();
+    fetch('/api/jev/offer?' + new URLSearchParams({ path: location.pathname.replace(/^\//, '') }),
+      { method: 'POST', body: JSON.stringify({ offer: action, ...(kind === 'candidates' ? { kind } : {}) }) }).catch(() => {});
+  };
+  const dismiss = head.appendChild(document.createElement('button'));
+  dismiss.type = 'button';
+  dismiss.className = 'hx-rule-card-reject';
+  dismiss.textContent = 'Dismiss';
+  dismiss.addEventListener('click', event => { event.stopPropagation(); record('dismissed'); });
+  note.appendChild(detail);
+  return { note, head, detail, record };
+}
+
+// #bootstrap-candidates: N possible project rules: confirm?, expanding to one candidate card per candidate.
+function jevCandidateOfferNote(offer) {
+  const candidates = (Array.isArray(offer.candidates) ? offer.candidates : []).map(jevRuleOf).filter(Boolean);
+  const count = candidates.length;
+  const { note, detail } = jevOfferShell(count + (count === 1 ? ' possible project rule' : ' possible project rules') + ': confirm?',
+    'candidates', 'possible project rules');
+  for (const rule of candidates) {
+    detail.appendChild(jevRuleCard({ label: 'Possible project rule', rule, editName: true,
+      actions: [...jevRuleRejects(rule, null, false), jevConfirmAction(rule)] }));
+  }
+  return note;
+}
+
+// #bootstrap-offer: N existing specs miss project rules; expanded, one line per spec, its name linking to it, then
+// misses and each missed rule's name; a line expands in place to one card per missed rule. Reconcile drafts one
+// comment, recorded only once sent. A line names its repo spec and the path this page's mount serves it at.
+function jevOfferNote(offer) {
+  const specs = (Array.isArray(offer.specs) ? offer.specs : []).map(entry => ({ spec: String(entry.spec || ''),
+    path: String(entry.path || ''),
+    rules: (Array.isArray(entry.rules) ? entry.rules : []).map(r => jevRuleOf(r) && { ...jevRuleOf(r), record: r.record || null })
+      .filter(Boolean) })).filter(entry => entry.rules.length);
+  const count = specs.length;
+  const { note, head, detail, record } = jevOfferShell(count + (count === 1 ? ' existing spec misses' : ' existing specs miss')
+    + ' project rules', 'reconcile', 'specs and the rules they miss');
+  for (const entry of specs) {
+    const row = detail.appendChild(document.createElement('div'));
+    row.className = 'hx-jev-offer-spec';
+    const line = row.appendChild(document.createElement('div'));
+    line.className = 'hx-jev-offer-line';
+    const cards = document.createElement('div');
+    cards.className = 'hx-jev-offer-cards';
+    const name = entry.spec.split('/').pop().replace(/\.spec\.html$/, '');
+    line.appendChild(jevDisclosure(cards, 'rules ' + name + ' misses'));
+    const link = line.appendChild(document.createElement('a'));
+    link.href = '/' + entry.path;
+    link.textContent = name;
+    line.appendChild(document.createElement('span')).className = 'hx-jev-offer-misses';
+    line.lastElementChild.textContent = 'misses';
+    line.appendChild(document.createElement('span')).className = 'hx-jev-offer-rules';
+    line.lastElementChild.textContent = entry.rules.map(jevRuleTitle).join(', ');
+    for (const rule of entry.rules) {
+      cards.appendChild(jevRuleCard({ label: 'Missing project rule', rule, actions: jevRuleRejects(rule, rule.record, true, entry.spec) }));
+    }
+    row.appendChild(cards);
+  }
+  const lines = specs.map(entry => entry.spec + ' misses '
+    + entry.rules.map(rule => jevRuleTitle(rule) + ' ' + (jevRuleSource(rule.target) || { link: rule.target }).link).join(', '));
+  const reconcile = head.appendChild(document.createElement('button'));
+  reconcile.type = 'button';
+  reconcile.className = 'hx-btn pri';
+  reconcile.textContent = 'Reconcile';
+  reconcile.addEventListener('click', event => {
+    event.stopPropagation();
+    const anchor = document.querySelector('[data-anchor]');
+    openComposer(anchor ? anchor.dataset.anchor : '', null, null,
+      ['Reconcile each spec with its missed rules:', ...lines].join('\n'), () => record('sent'));
+  });
+  return note;
+}
+
+function renderJev() {
+  closeJevPopover();
+  document.querySelectorAll('.hx-jev-marker,.hx-jev-note').forEach(el => el.remove());
+  document.querySelectorAll('[data-hx-audience]').forEach(el => delete el.dataset.hxAudience);
+  document.querySelectorAll('[data-hx-jev-type]').forEach(el => delete el.dataset.hxJevType);
+  if (EMBED_REVIEW_DIR) return;
+
+  const pageNote = note => {
+    const article = document.querySelector('article.spec');
+    if (article) article.parentNode.insertBefore(note, article);
+    else document.body.insertBefore(note, document.body.firstChild);
+    return note;
+  };
+  if (state.jev.status === 'off' || state.jev.status === 'unavailable') {
+    const note = document.createElement('p');
+    note.className = 'hx-jev-note';
+    note.textContent = state.jev.status === 'off' ? 'Jev off' : 'Jev unavailable';
+    pageNote(note);
+  }
+  // The candidate offer comes first (#bootstrap-candidates); the server decides when each shows.
+  if (state.jev.status === 'on' && state.jev.candidateOffer) pageNote(jevCandidateOfferNote(state.jev.candidateOffer));
+  if (state.jev.status === 'on' && state.jev.offer) pageNote(jevOfferNote(state.jev.offer));
+
+  // Dims are the only in-text Jev display: reading view internals and Git focus No behavior change sections.
+  const gitFocus = jevGitFocus();
+  for (const item of state.jev.items) {
+    if (!item.id || item.state !== 'label') continue;
+    const holder = findAnchor(item.id);
+    if (!holder) continue;
+    if (state.readingView) {
+      if (item.kind !== 'audience') continue;
+      if (item.state === 'label' && item.label === 'internals') holder.dataset.hxAudience = 'internals';
+    } else if (gitFocus && item.kind === 'type' && item.label === 'no-behavior-change') {
+      holder.dataset.hxJevType = 'no-behavior-change';
+    }
+  }
+  for (const [anchor, notes] of jevNotesByAnchor()) {
+    const holder = findAnchor(anchor);
+    if (holder) mountJevMarker(holder, notes);
+  }
 }
 
 /* ---------------- UI ---------------- */
@@ -954,6 +2217,7 @@ article.spec header{border-color:#33363c}
 article.spec nav{color:#74767e}
 article.spec a{color:#34a899}
 [data-render-target]{border-color:#33363c;background:#1d2024}
+body [data-hx-jev-type=no-behavior-change]{color:#b9c0ca!important}
 }
 @media(max-width:640px){
 :where(body){padding-bottom:calc(112px + env(safe-area-inset-bottom))}
@@ -968,6 +2232,7 @@ body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:n
 body.hx-focus-active .hx-tbd-open{position:relative;z-index:3}
 body.hx-focus-active .hx-tbd-open[data-hx-focus=unchanged]::after,body.hx-focus-active tr.hx-tbd-open[data-hx-focus=unchanged] > :is(td,th)::after{display:none!important}
 body.hx-focus-active [data-hx-focus=unchanged] .hx-pin,body.hx-focus-active [data-hx-focus=unchanged] .hx-badge{opacity:1;filter:none;z-index:700}
+body.hx-focus-active [data-hx-focus=unchanged] .hx-jev-marker{opacity:1;filter:none;z-index:700}
 .hx-focus-error{position:fixed;top:calc(12px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);max-width:calc(100vw - 24px);box-sizing:border-box;padding:8px 12px;border-radius:8px;background:#8b1a1a;color:#fff;font:600 12px system-ui;z-index:970;box-shadow:0 6px 20px rgba(30,30,40,.25)}
 @media(prefers-color-scheme:dark){
 body.hx-focus-active [data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])):not([data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])) *):not(tr):not(td):not(th):not(script):not(style)::after{background:rgba(0,0,0,calc(.6*var(--hx-veil,1)))}
@@ -975,194 +2240,286 @@ body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:n
 }
 `;
 const CSS = `
-.hx-range-bar{box-sizing:border-box;max-width:720px;margin:12px auto 0;padding:8px 10px;border:1px solid #cbd5ee;border-radius:8px;background:#e8edf9;color:#171719;font:13px/1.4 system-ui,sans-serif}
+/* ui tokens */
+:root{--ui-font:'Inter Variable',Inter,system-ui,sans-serif;--ui-mono:ui-monospace,SFMono-Regular,Menlo,monospace;--ui-text-xs:12px;--ui-text-sm:14px;--ui-text-md:16px;--ui-text-lg:20px;--ui-page:#ffffff;--ui-surface:#ffffff;--ui-ink:#333333;--ui-muted:#525252;--ui-border:#dfdfdf;--ui-focus:#262626;--ui-link:#333333;--ui-action:#262626;--ui-pass:#005c32;--ui-pass-soft:#e6efea;--ui-fail:#a5000f;--ui-fail-soft:#f6e6e7;--ui-attention:#b0540e;--ui-attention-soft:#faf4ef;--ui-draft:#b0540e;--ui-draft-soft:#faf4ef;--ui-ack:#1d4ed8;--ui-ack-soft:#eff3ff;--ui-resolved:#005c32;--ui-resolved-soft:#e6efea;--ui-error:#a5000f;--ui-marker:#767b85;--ui-marker-important:#d1242f;--ui-marker-pass:#1a7f37;--ui-pin-ring:rgba(176,84,14,0.25);--ui-shadow:rgba(51,51,51,0.14);--ui-radius:8px;--ui-radius-sm:6px;--ui-radius-pill:999px;--ui-space-1:4px;--ui-space-2:8px;--ui-space-3:12px;--ui-space-4:16px;--ui-space-5:24px;--ui-space-6:32px}
+/* range bar */
+.hx-range-bar{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-2) 10px;border:1px solid rgba(29,78,216,0.3);border-radius:var(--ui-radius);background:var(--ui-ack-soft);color:var(--ui-ink);font:var(--ui-text-sm)/1.4 var(--ui-font)}
 .hx-range-row{display:flex;align-items:center;gap:10px;min-width:0}
 .hx-range-copy{flex:1 1 auto;min-width:0;margin:0;overflow-wrap:anywhere}
-.hx-range-id{font-weight:750;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.hx-range-change{flex:0 0 auto;min-height:32px;padding:6px 10px;border:1px solid #2947c7;border-radius:6px;background:#fff;color:#2947c7;font:700 12px system-ui,sans-serif;cursor:pointer}
-.hx-range-change:hover{background:#f4f6ff}
-.hx-range-change:focus-visible,.hx-range-commit:focus-visible,.hx-range-form input:focus-visible,.hx-range-form button:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
-.hx-range-picker{margin-top:8px;padding-top:8px;border-top:1px solid #cbd5ee}
+.hx-range-id{font-weight:600;font-family:var(--ui-mono)}
+.hx-range-change{flex:0 0 auto;min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-ink);font:600 var(--ui-text-xs) var(--ui-font);cursor:pointer}
+.hx-range-change:hover{background:var(--ui-page)}
+.hx-range-change:focus-visible,.hx-range-commit:focus-visible,.hx-range-form input:focus-visible,.hx-range-form button:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
+.hx-range-picker{margin-top:var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid rgba(29,78,216,0.3)}
 .hx-range-commits{display:grid;gap:3px;max-height:270px;overflow:auto}
-.hx-range-commit{display:grid;grid-template-columns:5.5em 6.5em minmax(0,1fr);gap:8px;align-items:baseline;width:100%;padding:6px 8px;border:1px solid transparent;border-radius:4px;background:transparent;color:#171719;text-align:left;font:12px/1.35 system-ui,sans-serif;cursor:pointer}
-.hx-range-commit:hover,.hx-range-commit[data-selected=true]{border-color:#167b68;background:#e7f3ef}
-.hx-range-commit strong{font:700 12px ui-monospace,SFMono-Regular,Menlo,monospace}
-.hx-range-commit time{color:#5a5a63;font-variant-numeric:tabular-nums}
+.hx-range-commit{display:grid;grid-template-columns:5.5em 6.5em minmax(0,1fr);gap:var(--ui-space-2);align-items:baseline;width:100%;padding:var(--ui-space-1) var(--ui-space-2);border:1px solid transparent;border-radius:var(--ui-space-1);background:transparent;color:var(--ui-ink);text-align:left;font:var(--ui-text-xs)/1.35 var(--ui-font);cursor:pointer}
+.hx-range-commit:hover,.hx-range-commit[data-selected=true]{border-color:var(--ui-resolved);background:var(--ui-resolved-soft)}
+.hx-range-commit strong{font:600 var(--ui-text-xs) var(--ui-mono)}
+.hx-range-commit time{color:var(--ui-muted);font-variant-numeric:tabular-nums}
 .hx-range-commit span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hx-range-empty{margin:0;padding:6px 8px;color:#5a5a63}
-.hx-range-form{margin-top:8px;padding-top:8px;border-top:1px solid #cbd5ee}
-.hx-range-form label{display:block;margin-bottom:4px;font-size:11px;font-weight:700;color:#303036}
-.hx-range-form>div{display:flex;gap:6px}
-.hx-range-form input{box-sizing:border-box;min-width:0;flex:1 1 auto;padding:7px 8px;border:1px solid #aaa;border-radius:5px;background:#fff;color:#171719;font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
-.hx-range-form button{flex:0 0 auto;padding:7px 12px;border:1px solid #2947c7;border-radius:5px;background:#2947c7;color:#fff;font:700 12px system-ui,sans-serif;cursor:pointer}
+.hx-range-empty{margin:0;padding:var(--ui-space-1) var(--ui-space-2);color:var(--ui-muted)}
+.hx-range-form{margin-top:var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid rgba(29,78,216,0.3)}
+.hx-range-form label{display:block;margin-bottom:var(--ui-space-1);font-size:11px;font-weight:600;color:var(--ui-ink)}
+.hx-range-form>div{display:flex;gap:var(--ui-space-1)}
+.hx-range-form input{box-sizing:border-box;min-width:0;flex:1 1 auto;padding:7px var(--ui-space-2);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-ink);font:var(--ui-text-sm) var(--ui-mono)}
+.hx-range-form button{flex:0 0 auto;padding:7px var(--ui-space-3);border:1px solid var(--ui-ink);border-radius:var(--ui-radius-sm);background:var(--ui-ink);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);cursor:pointer}
 .hx-range-form button:disabled{cursor:wait;opacity:.5}
-.hx-range-error{margin:6px 0 0;color:#8b1a1a;font-size:12px}
+.hx-range-error{margin:var(--ui-space-1) 0 0;color:var(--ui-error);font-size:var(--ui-text-xs)}
 @media(prefers-color-scheme:dark){
-.hx-range-bar{border-color:#46547f;background:#242b45;color:#f3f4fa}
-.hx-range-change{background:#17191d;color:#aebcff;border-color:#7d91ff}
-.hx-range-change:hover{background:#303752}
-.hx-range-picker,.hx-range-form{border-color:#46547f}
-.hx-range-commit{color:#f3f4fa}
-.hx-range-commit:hover,.hx-range-commit[data-selected=true]{border-color:#53b9a9;background:#1d433d}
-.hx-range-commit time,.hx-range-empty{color:#b8bbc5}
-.hx-range-form label{color:#e8e7e2}
-.hx-range-form input{border-color:#666b78;background:#17191d;color:#f3f4fa}
-.hx-range-error{color:#ff9a9a}
+:root{--ui-page:#1a1a1a;--ui-surface:#242424;--ui-ink:#e0e0e0;--ui-muted:#999999;--ui-border:#3a3a3a;--ui-focus:#cccccc;--ui-link:#e0e0e0;--ui-action:#cccccc;--ui-pass:#3daa6e;--ui-pass-soft:#1a2e22;--ui-fail:#ffb4ab;--ui-fail-soft:#2e1a1c;--ui-attention:#e5873a;--ui-attention-soft:#2e2218;--ui-draft:#e5873a;--ui-draft-soft:#2e2218;--ui-ack:#6b8aed;--ui-ack-soft:#1a2040;--ui-resolved:#3daa6e;--ui-resolved-soft:#1a2e22;--ui-error:#ffb4ab;--ui-pin-ring:rgba(229,135,58,0.25);--ui-shadow:rgba(0,0,0,0.4)}
 }
 @media(max-width:640px){
-.hx-range-bar{margin:8px 16px 0;padding:8px}
-.hx-range-row{align-items:flex-start;flex-wrap:wrap;gap:6px}
+.hx-range-bar{margin:var(--ui-space-2) var(--ui-space-4) 0;padding:var(--ui-space-2)}
+.hx-range-row{align-items:flex-start;flex-wrap:wrap;gap:var(--ui-space-1)}
 .hx-range-copy{flex:1 1 100%}
 .hx-range-change{min-height:44px}
-.hx-range-picker{margin-top:6px}
+.hx-range-picker{margin-top:var(--ui-space-1)}
 .hx-range-commits{max-height:none}
-.hx-range-commit{grid-template-columns:5.5em 6.5em minmax(0,1fr);padding:8px 6px;min-height:44px}
+.hx-range-commit{grid-template-columns:5.5em 6.5em minmax(0,1fr);padding:var(--ui-space-2) var(--ui-space-1);min-height:44px}
 .hx-range-form input,.hx-range-form button{min-height:44px}
-.hx-range-form input{font-size:16px}
+.hx-range-form input{font-size:var(--ui-text-md)}
 }
 @media(max-width:800px){
 .hx-range-bar{margin-top:64px}
 }
-.hx-toolbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:4px;align-items:center;background:#fff;border:1px solid #ddd;border-radius:12px;box-shadow:0 8px 28px rgba(30,30,40,.14);padding:6px;z-index:900;font:13px system-ui}
-.hx-toolbar button{font:600 12.5px system-ui;border:none;background:transparent;border-radius:8px;padding:8px 14px;cursor:pointer}
+/* toolbar */
+.hx-toolbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:var(--ui-space-1);align-items:center;background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);box-shadow:0 8px 28px var(--ui-shadow);padding:var(--ui-space-1);z-index:900;font:var(--ui-text-sm) var(--ui-font)}
+.hx-toolbar button{font:600 var(--ui-text-xs) var(--ui-font);border:none;background:transparent;border-radius:var(--ui-radius-sm);padding:var(--ui-space-2) var(--ui-space-3);cursor:pointer;color:var(--ui-ink)}
 .hx-toolbar button:disabled{cursor:default;opacity:.45}
-.hx-mobile-handoff{display:none}
-.hx-toolbar button[aria-pressed=true]{background:#fbf3e2;color:#b47308}
-.hx-toolbar .hx-status{color:#888;font-size:11.5px;padding:0 10px}
-.hx-service-index-link{position:fixed;top:12px;left:12px;z-index:1000;display:inline-flex;align-items:center;min-height:44px;box-sizing:border-box;padding:8px 12px;border:1px solid #d9d8d3;border-radius:8px;background:rgba(255,255,255,.96);box-shadow:0 5px 18px rgba(30,30,40,.13);color:#087f73;font:650 12px/1 system-ui;text-decoration:none;backdrop-filter:blur(8px)}
-.hx-service-index-link:hover{background:#f4f3ef;border-color:#aaa;color:#075f57}
-.hx-service-index-link:focus-visible{outline:3px solid #f59e0b;outline-offset:3px}
-.hx-panel{position:fixed;top:0;right:0;width:330px;height:100vh;background:#f4f3ef;border-left:1px solid #ddd;z-index:800;display:none;flex-direction:column;font:13px system-ui;box-shadow:none}
-.hx-panel.open{display:flex;box-shadow:-8px 0 30px rgba(30,30,40,.12)}
+.hx-mobile-handoff,.hx-mobile-next-tbd{display:none}
+.hx-toolbar button[aria-pressed=true]{background:var(--ui-draft-soft);color:var(--ui-draft)}
+.hx-toolbar .hx-status{color:var(--ui-muted);font-size:var(--ui-text-xs);padding:0 10px}
+.hx-toolbar .hx-offline{font-size:var(--ui-text-xs);font-weight:600;padding:0 10px}
+/* index link */
+.hx-service-index-link{position:fixed;top:var(--ui-space-3);left:var(--ui-space-3);z-index:1000;display:inline-flex;align-items:center;min-height:44px;box-sizing:border-box;padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:rgba(255,255,255,.96);box-shadow:0 5px 18px var(--ui-shadow);color:var(--ui-resolved);font:600 var(--ui-text-xs)/1 var(--ui-font);text-decoration:none;backdrop-filter:blur(8px)}
+.hx-service-index-link:hover{background:var(--ui-page);border-color:var(--ui-muted);color:var(--ui-resolved)}
+.hx-service-index-link:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
+/* panel */
+.hx-panel{position:fixed;top:0;right:0;width:330px;height:100vh;background:var(--ui-page);color:var(--ui-ink);border-left:1px solid var(--ui-border);z-index:800;display:none;flex-direction:column;font:var(--ui-text-sm) var(--ui-font);box-shadow:none}
+.hx-panel.open{display:flex;box-shadow:-8px 0 30px var(--ui-shadow)}
 body.hx-panel-open{padding-right:330px}
-.hx-panel-head{position:relative;min-height:44px;padding:14px 16px 14px 52px;box-sizing:border-box;border-bottom:1px solid #ddd;font-weight:650}
-.hx-panel-head .hx-sub{font-weight:400;font-size:11px;color:#888}
-.hx-panel-toggle{position:absolute;top:8px;left:7px;width:30px;height:30px;border:1px solid #ccc;background:#fff;border-radius:7px;color:#555;cursor:pointer;font:18px/1 system-ui;display:grid;place-items:center;padding:0}
-.hx-panel-toggle:hover{background:#e8e7e2;color:#222}
-.hx-panel-gear{position:absolute;top:8px;right:10px;width:30px;height:30px;border:1px solid #ccc;background:#fff;border-radius:7px;color:#555;cursor:pointer;font:14px/1 system-ui;display:grid;place-items:center;padding:0}
-.hx-panel-gear:hover{background:#e8e7e2;color:#222}
-.hx-panel-gear[aria-expanded=true]{background:#fbf3e2;color:#b47308;border-color:#e3d3ab}
-.hx-settings{padding:12px 16px;border-bottom:1px solid #ddd;background:#efeee9}
-.hx-set-row{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;font:650 12px system-ui;color:#444}
-.hx-set-row input[type=range]{grid-column:1/-1;width:100%;margin:4px 0 0;accent-color:#087f73;min-height:24px;touch-action:manipulation}
-.hx-set-val{font:650 11.5px ui-monospace,Menlo,monospace;color:#777}
-.hx-set-note{margin:7px 0 0;font:400 11px/1.45 system-ui;color:#888}
+.hx-panel-head{position:relative;min-height:44px;padding:14px var(--ui-space-4) 14px 52px;box-sizing:border-box;border-bottom:1px solid var(--ui-border);font-weight:600}
+.hx-panel-head .hx-sub{font-weight:400;font-size:11px;color:var(--ui-muted)}
+.hx-panel-toggle{position:absolute;top:var(--ui-space-2);left:7px;width:var(--ui-space-6);height:var(--ui-space-6);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;font:var(--ui-text-lg)/1 var(--ui-font);display:grid;place-items:center;padding:0}
+.hx-panel-toggle:hover{background:var(--ui-page);color:var(--ui-ink)}
+.hx-panel-gear{position:absolute;top:var(--ui-space-2);right:10px;width:var(--ui-space-6);height:var(--ui-space-6);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;font:14px/1 var(--ui-font);display:grid;place-items:center;padding:0}
+.hx-panel-gear:hover{background:var(--ui-page);color:var(--ui-ink)}
+.hx-panel-gear[aria-expanded=true]{background:var(--ui-draft-soft);color:var(--ui-draft);border-color:var(--ui-draft)}
+.hx-settings{padding:var(--ui-space-3) var(--ui-space-4);border-bottom:1px solid var(--ui-border);background:var(--ui-surface)}
+.hx-set-row{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-ink)}
+.hx-set-row input[type=range]{grid-column:1/-1;width:100%;margin:var(--ui-space-1) 0 0;accent-color:var(--ui-resolved);min-height:24px;touch-action:manipulation}
+.hx-set-val{font:600 var(--ui-text-xs) var(--ui-mono);color:var(--ui-muted)}
+.hx-set-note{margin:7px 0 0;font:400 11px/1.45 var(--ui-font);color:var(--ui-muted)}
 .hx-panel-content{display:flex;flex:1;min-height:0;flex-direction:column}
-.hx-thread-dock{position:fixed;top:12px;right:12px;z-index:850;display:flex;flex-direction:column;gap:6px;padding:6px;background:rgba(255,255,255,.94);border:1px solid #d9d8d3;border-radius:11px;box-shadow:0 5px 18px rgba(30,30,40,.13);font:12px system-ui;transition:opacity .15s,transform .15s;backdrop-filter:blur(8px)}
+/* dock */
+.hx-thread-dock{position:fixed;top:var(--ui-space-3);right:var(--ui-space-3);z-index:850;display:flex;flex-direction:column;gap:var(--ui-space-1);padding:var(--ui-space-1);background:rgba(255,255,255,.94);border:1px solid var(--ui-border);border-radius:11px;box-shadow:0 5px 18px var(--ui-shadow);font:var(--ui-text-xs) var(--ui-font);transition:opacity .15s,transform .15s;backdrop-filter:blur(8px)}
 body.hx-panel-open .hx-thread-dock{opacity:0;transform:translateX(10px);pointer-events:none}
-.hx-dock-open,.hx-dock-thread{position:relative;width:32px;height:32px;box-sizing:border-box;border:1px solid #d4d3ce;background:#fff;border-radius:7px;color:#555;cursor:pointer;display:grid;place-items:center;padding:0}
-.hx-dock-open:hover,.hx-dock-thread:hover{background:#f4f3ef;border-color:#aaa;color:#222}
+.hx-dock-open,.hx-dock-thread{position:relative;width:var(--ui-space-6);height:var(--ui-space-6);box-sizing:border-box;border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;display:grid;place-items:center;padding:0}
+.hx-dock-open:hover,.hx-dock-thread:hover{background:var(--ui-page);border-color:var(--ui-muted);color:var(--ui-ink)}
 .hx-dock-open svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-.hx-unread-badge{position:absolute;top:-6px;right:-6px;min-width:17px;height:17px;box-sizing:border-box;border:2px solid #fff;border-radius:999px;padding:0 3px;background:#315fbd;color:#fff;display:grid;place-items:center;font:700 9px/1 system-ui;box-shadow:0 1px 4px rgba(20,20,30,.28)}
+.hx-unread-badge{position:absolute;top:-6px;right:-6px;min-width:17px;height:17px;box-sizing:border-box;border:2px solid var(--ui-page);border-radius:var(--ui-radius-pill);padding:0 3px;background:var(--ui-ack);color:var(--ui-page);display:grid;place-items:center;font:700 9px/1 var(--ui-font);box-shadow:0 1px 4px var(--ui-shadow)}
 .hx-unread-badge[hidden]{display:none}
-.hx-dock-threads{display:flex;flex-direction:column;gap:6px;max-height:calc(100vh - 76px);overflow-y:auto;scrollbar-width:none}
-.hx-dock-threads:not(:empty){border-top:1px solid #e1e0dc;padding-top:6px}
+.hx-dock-threads{display:flex;flex-direction:column;gap:var(--ui-space-1);max-height:calc(100vh - 76px);overflow-y:auto;scrollbar-width:none}
+.hx-dock-threads:not(:empty){border-top:1px solid var(--ui-border);padding-top:var(--ui-space-1)}
 .hx-dock-threads::-webkit-scrollbar{display:none}
-.hx-dock-thread{font:700 11px/1 ui-monospace,monospace}
-.hx-dock-thread[data-s=draft],.hx-dock-thread[data-s=pending]{border-color:#d98e04;color:#9a6100;background:#fff8e9}
-.hx-dock-thread[data-s=acknowledged]{border-color:#315fbd;color:#264f9e;background:#edf2ff}
-.hx-dock-thread[data-s=resolved]{border-color:#69a76b;color:#3d8c40;background:#f1f8f1}
-.hx-dock-thread.active{box-shadow:0 0 0 2px rgba(217,142,4,.28)}
-.hx-threads{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
-.hx-thread{background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px 12px;cursor:pointer}
-.hx-thread.resolved-collapsed{padding:8px 10px}
-.hx-thread.active{border-color:#d98e04;box-shadow:0 0 0 1px #d98e04}
-.hx-thread-summary{display:flex;align-items:center;gap:6px;min-width:0}
-.hx-anchor{flex:1;font-family:ui-monospace,monospace;font-size:10.5px;color:#999;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hx-pill{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;border-radius:4px;padding:2px 6px}
-.hx-disclosure{border:0;background:transparent;color:#888;border-radius:4px;padding:0 2px;cursor:pointer;font:15px/1 system-ui}
-.hx-disclosure:hover{background:#e8e7e2;color:#444}
-.hx-thread-preview{margin-top:5px;color:#777;font-size:11.5px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hx-pill[data-s=draft],.hx-pill[data-s=pending]{color:#b47308;background:#fbf3e2}
-.hx-pill[data-s=acknowledged]{color:#264f9e;background:#e8eefb}
-.hx-pill[data-s=resolved]{color:#3d8c40;background:#e8f2e8}
-.hx-msg{margin-top:7px;font-size:12.5px;line-height:1.45}
-.hx-who{font-size:10px;font-weight:700;color:#999;text-transform:uppercase}
-.hx-quote{display:block;border-left:2px solid #ddd;padding-left:7px;color:#999;font-style:italic;font-size:11.5px;margin:2px 0}
-.hx-msg-actions{display:flex;gap:6px;margin-top:3px}
-.hx-msg-actions .hx-btn{font-size:10.5px;padding:3px 8px;margin-top:2px}
-.hx-composer textarea{width:100%;min-height:56px;font:12.5px system-ui;border:1px solid #ccc;border-radius:6px;padding:6px 8px;box-sizing:border-box;margin-top:6px}
-.hx-btn{font:600 12px system-ui;border:1px solid #ccc;background:#fff;border-radius:6px;padding:5px 12px;cursor:pointer;margin:6px 6px 0 0}
-.hx-btn.pri{background:#22242a;color:#fff;border-color:#22242a}
-.hx-handoff{border-top:1px solid #ddd;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
-.hx-handoff .hx-note{font-size:11.5px;color:#888}
-.hx-pin{position:absolute;z-index:700;width:24px;height:24px;border-radius:50% 50% 50% 4px;border:none;cursor:pointer;font:600 11.5px system-ui;color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(20,20,30,.3)}
-.hx-pin[data-s=draft],.hx-pin[data-s=pending]{background:#d98e04}
-.hx-pin[data-s=acknowledged]{background:#315fbd}
-.hx-pin[data-s=resolved]{background:#fff;color:#3d8c40;border:2px solid #3d8c40}
-.hx-pin.active{box-shadow:0 0 0 3px rgba(217,142,4,.3),0 2px 8px rgba(20,20,30,.3)}
+.hx-dock-thread{font:600 11px/1 var(--ui-mono)}
+.hx-dock-thread[data-s=draft],.hx-dock-thread[data-s=pending]{border-color:var(--ui-draft);color:var(--ui-draft);background:var(--ui-draft-soft)}
+.hx-dock-thread[data-s=acknowledged]{border-color:var(--ui-ack);color:var(--ui-ack);background:var(--ui-ack-soft)}
+.hx-dock-thread[data-s=resolved]{border-color:var(--ui-resolved);color:var(--ui-resolved);background:var(--ui-resolved-soft)}
+.hx-dock-thread.active{box-shadow:0 0 0 2px var(--ui-pin-ring)}
+/* threads */
+.hx-threads{flex:1;overflow-y:auto;padding:10px var(--ui-space-3);display:flex;flex-direction:column;gap:var(--ui-space-2)}
+.hx-thread{background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);padding:10px var(--ui-space-3);cursor:pointer}
+.hx-thread.resolved-collapsed{padding:var(--ui-space-2) 10px}
+.hx-thread.active{border-color:var(--ui-draft);box-shadow:0 0 0 1px var(--ui-draft)}
+.hx-thread-summary{display:flex;align-items:center;gap:var(--ui-space-1);min-width:0}
+.hx-anchor{flex:1;font-family:var(--ui-mono);font-size:var(--ui-text-xs);color:var(--ui-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hx-pill{font-size:var(--ui-text-xs);font-weight:600;text-transform:uppercase;letter-spacing:.05em;border-radius:var(--ui-radius-pill);padding:2px var(--ui-space-2)}
+.hx-disclosure{border:0;background:transparent;color:var(--ui-muted);border-radius:var(--ui-radius-sm);padding:0 2px;cursor:pointer;font:15px/1 var(--ui-font)}
+.hx-disclosure:hover{background:var(--ui-page);color:var(--ui-ink)}
+.hx-thread-preview{margin-top:5px;color:var(--ui-muted);font-size:var(--ui-text-xs);line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hx-pill[data-s=draft],.hx-pill[data-s=pending]{color:var(--ui-draft);background:var(--ui-draft-soft)}
+.hx-pill[data-s=acknowledged]{color:var(--ui-ack);background:var(--ui-ack-soft)}
+.hx-pill[data-s=resolved]{color:var(--ui-resolved);background:var(--ui-resolved-soft)}
+.hx-msg{margin-top:7px;font-size:var(--ui-text-sm);line-height:1.45}
+.hx-who{font-size:10px;font-weight:600;color:var(--ui-muted);text-transform:uppercase}
+.hx-history{margin:4px 0 0;padding-left:18px;font-size:var(--ui-text-xs);color:var(--ui-muted)}
+.hx-quote{display:block;border-left:2px solid var(--ui-border);padding-left:7px;color:var(--ui-muted);font-style:italic;font-size:var(--ui-text-xs);margin:2px 0}
+.hx-msg-actions{display:flex;gap:var(--ui-space-1);margin-top:3px}
+.hx-msg-actions .hx-btn{font-size:var(--ui-text-xs);padding:3px var(--ui-space-2);margin-top:2px}
+/* composer */
+.hx-composer textarea{width:100%;min-height:56px;font:var(--ui-text-sm) var(--ui-font);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);padding:var(--ui-space-1) var(--ui-space-2);box-sizing:border-box;margin-top:var(--ui-space-1);background:var(--ui-surface);color:var(--ui-ink)}
+/* buttons */
+.hx-btn{font:600 var(--ui-text-xs) var(--ui-font);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);padding:var(--ui-space-2) var(--ui-space-3);cursor:pointer;margin:var(--ui-space-1) var(--ui-space-1) 0 0;color:var(--ui-ink);min-height:var(--ui-space-6)}
+.hx-btn.pri{background:var(--ui-ink);color:var(--ui-page);border-color:var(--ui-ink)}
+/* handoff bar */
+.hx-handoff{border-top:1px solid var(--ui-border);padding:var(--ui-space-3) var(--ui-space-4);display:flex;justify-content:space-between;align-items:center}
+.hx-handoff .hx-note{font-size:var(--ui-text-xs);color:var(--ui-muted)}
+.hx-handoff .hx-next-tbd{margin-left:auto}
+/* pins */
+.hx-pin{position:absolute;z-index:700;width:24px;height:24px;border-radius:50% 50% 50% 4px;border:none;cursor:pointer;font:600 var(--ui-text-xs) var(--ui-font);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px var(--ui-shadow)}
+.hx-pin[data-s=draft],.hx-pin[data-s=pending]{background:var(--ui-draft)}
+.hx-pin[data-s=acknowledged]{background:var(--ui-ack)}
+.hx-pin[data-s=resolved]{background:var(--ui-surface);color:var(--ui-resolved);border:2px solid var(--ui-resolved)}
+.hx-pin.active{box-shadow:0 0 0 3px var(--ui-pin-ring),0 2px 8px var(--ui-shadow)}
 [data-anchor]{position:relative}
+/* A block with a marker and a corner pin reserves a right column: marker on the first line, pin below it. */
+[data-anchor]:has(> .hx-pin[data-column]){padding-right:30px;min-height:calc(.5lh + 42px)}
+[data-anchor]:has(> .hx-pin[data-column]) > .hx-jev-marker,.hx-pin[data-column]{left:auto;right:0}
+tr[data-anchor]:has(> .hx-pin[data-column]) > :has(> .hx-jev-marker){box-sizing:content-box;padding-right:30px;height:calc(.5lh + 42px)}
 body.hx-comment [data-anchor]{cursor:copy}
-body.hx-comment [data-anchor]:hover:not(:has(:is(h1,h2,h3,h4,h5,h6,p,li,ul,ol,table,tr,td,th,blockquote,pre,code,nav,figcaption,button,input,select,textarea,label,a,output,summary,svg,[data-render-target]):hover)){outline:2px dashed #d98e04;outline-offset:6px}
-body.hx-comment [data-anchor] :is(h1,h2,h3,h4,h5,h6,p,li,td,th,blockquote,pre,code,nav,figcaption,button,label,a,output,summary):hover{outline:1.5px dashed #d98e04;outline-offset:4px;border-radius:2px}
+body.hx-comment [data-anchor]:hover:not(:has(:is(h1,h2,h3,h4,h5,h6,p,li,ul,ol,table,tr,td,th,blockquote,pre,code,nav,figcaption,button,input,select,textarea,label,a,output,summary,svg,[data-render-target]):hover)){outline:2px dashed var(--ui-draft);outline-offset:6px}
+body.hx-comment [data-anchor] :is(h1,h2,h3,h4,h5,h6,p,li,td,th,blockquote,pre,code,nav,figcaption,button,label,a,output,summary):hover{outline:1.5px dashed var(--ui-draft);outline-offset:4px;border-radius:2px}
 body.hx-comment [data-anchor] svg, body.hx-comment [data-anchor] svg *{cursor:copy}
 body.hx-comment [data-anchor] :is(button,input,select,textarea,label,a,summary){cursor:copy}
 [data-render-target]{position:relative}
-.hx-ring{position:absolute;border:2px dashed #d98e04;border-radius:4px;pointer-events:none;z-index:650}
-.hx-thread-ring{position:fixed;border:2px solid #d98e04;border-radius:5px;pointer-events:none;z-index:750;box-shadow:0 0 0 3px rgba(217,142,4,.18);transition:left .12s,top .12s,width .12s,height .12s}
-body.hx-comment [data-render-target]:hover{border:1.5px dashed #d98e04}
+.hx-ring{position:absolute;border:2px dashed var(--ui-draft);border-radius:var(--ui-space-1);pointer-events:none;z-index:650}
+.hx-thread-ring{position:fixed;border:2px solid var(--ui-draft);border-radius:5px;pointer-events:none;z-index:750;box-shadow:0 0 0 3px rgba(176,84,14,.18);transition:left .12s,top .12s,width .12s,height .12s}
+body.hx-comment [data-render-target]:hover{border:1.5px dashed var(--ui-draft)}
 body.hx-comment [data-render-target] canvas{cursor:copy!important}
-.hx-tbd-open{outline:2px solid #d98e04;outline-offset:4px}
-.hx-badge{font:600 9.5px system-ui;text-transform:uppercase;letter-spacing:.04em;color:#0e7264;background:#e3f2f0;border-radius:4px;padding:2px 7px;margin-left:8px;vertical-align:middle}
-.hx-banner{position:fixed;top:0;left:0;right:0;background:#12897c;color:#fff;font:600 13px system-ui;padding:8px 16px;z-index:950;display:flex;gap:14px;align-items:center;justify-content:center}
-.hx-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:#22242a;color:#faf9f6;font:600 12.5px system-ui;border-radius:8px;padding:9px 16px;box-shadow:0 8px 28px rgba(30,30,40,.3);z-index:960;opacity:0;transition:opacity .25s;pointer-events:none}
+.hx-tbd-open{outline:2px solid var(--ui-draft);outline-offset:var(--ui-space-1)}
+/* badge */
+.hx-badge{font:600 var(--ui-text-xs) var(--ui-font);text-transform:uppercase;letter-spacing:.04em;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:2px 7px;margin-left:var(--ui-space-2);vertical-align:middle}
+/* jev note */
+.hx-jev-note{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-1) 10px;border:1px solid rgba(176,84,14,0.4);border-radius:var(--ui-radius);background:var(--ui-draft-soft);color:var(--ui-draft);font:600 var(--ui-text-xs)/1.35 var(--ui-font)}
+[data-hx-jev-type=no-behavior-change]{color:#586069!important}
+[data-hx-jev-type=no-behavior-change] :is(h1,h2,h3,h4,h5,h6,p,li,td,th,blockquote,code,strong,em,a){color:inherit!important}
+/* jev markers */
+.hx-jev-marker{position:absolute;top:.35em;left:calc(100% + 10px);z-index:640;box-sizing:border-box;width:10px;height:10px;margin:0;padding:0;border:0;border-radius:50%;background:var(--ui-marker);color:#ffffff;cursor:pointer;display:grid;place-items:center;font:800 10px/1 var(--ui-font)}
+.hx-jev-marker::before{content:"";position:absolute;inset:-10px 0 -10px -16px}
+.hx-jev-marker[data-attention=true]{width:14px;height:14px;background:var(--ui-marker-important)}
+.hx-jev-marker[data-attention=true]::after{content:"!"}
+.hx-jev-marker[data-passed=true]{width:14px;height:14px;background:var(--ui-marker-pass)}
+.hx-jev-marker[data-warning=true]{background:#e5534b}
+.hx-jev-marker[data-passed=true]::after{content:"\\2713"}
+.hx-jev-marker[data-inset=true]{left:auto;right:0}
+.hx-jev-marker:hover,.hx-jev-marker[aria-expanded=true]{box-shadow:0 0 0 3px rgba(29,78,216,.22)}
+.hx-jev-marker:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
+.hx-jev-marker[data-pending=true]{background:transparent;border:2px solid var(--ui-marker);border-right-color:transparent;animation:hx-jev-spin 1s linear infinite}
+@keyframes hx-jev-spin{to{transform:rotate(360deg)}}
+/* jev offers (project-rules #bootstrap): one quiet panel, collapsed by default */
+.hx-jev-offer{display:block;padding:0;border:1px solid var(--ui-border);background:var(--ui-surface);color:var(--ui-ink);font:var(--ui-text-sm)/1.5 var(--ui-font);overflow:hidden}
+.hx-jev-offer+.hx-jev-offer{margin-top:var(--ui-space-2)}
+.hx-jev-offer-head{display:flex;align-items:center;flex-wrap:wrap;gap:var(--ui-space-2) var(--ui-space-3);padding:var(--ui-space-2) var(--ui-space-3)}
+.hx-jev-offer-title{flex:1 1 12em;font-weight:600;color:var(--ui-ink)}
+.hx-jev-offer-head .hx-btn{margin:0;white-space:nowrap}
+.hx-jev-offer-detail{border-top:1px solid var(--ui-border);padding:var(--ui-space-1) 0}
+.hx-jev-offer-detail[hidden],.hx-jev-offer-cards[hidden]{display:none}
+.hx-jev-offer-detail>.hx-rule-card{margin:var(--ui-space-2) var(--ui-space-3)}
+.hx-jev-offer-spec+.hx-jev-offer-spec{border-top:1px solid color-mix(in srgb,var(--ui-border) 55%,transparent)}
+.hx-jev-offer-line{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 var(--ui-space-2);padding:var(--ui-space-2) var(--ui-space-3)}
+.hx-jev-offer-line .hx-disclosure{align-self:center}
+.hx-jev-offer-line a{font-weight:600;color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px}
+.hx-jev-offer-misses{color:var(--ui-muted)}
+.hx-jev-offer-rules{flex:1 1 14em;min-width:0;overflow-wrap:anywhere}
+.hx-jev-offer-cards{display:grid;gap:var(--ui-space-2);margin:0 var(--ui-space-3) var(--ui-space-3) calc(var(--ui-space-3) + 22px)}
+.hx-jev-offer .hx-rule-card{padding:var(--ui-space-3) var(--ui-space-4);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:color-mix(in srgb,var(--ui-ink) 3%,var(--ui-surface))}
+/* rule card (project-rules #card): label, title, verbatim quote, source, then rejects left and one primary rightmost */
+.hx-rule-card{display:grid;gap:var(--ui-space-2);min-width:0;color:var(--ui-ink);font:var(--ui-text-sm)/1.55 var(--ui-font)}
+.hx-rule-card-label{font:600 var(--ui-text-xs)/1.3 var(--ui-font);letter-spacing:.02em;color:var(--ui-muted)}
+.hx-rule-card-title,.hx-rule-card-name{font:600 var(--ui-text-md)/1.35 var(--ui-font);color:var(--ui-ink);overflow-wrap:anywhere}
+.hx-rule-card-name{box-sizing:border-box;display:block;width:calc(100% + 12px);margin:-3px -6px;padding:2px 5px;border:1px dashed var(--ui-border);border-radius:var(--ui-radius-sm);background:transparent;resize:none;field-sizing:content;min-height:0}
+.hx-rule-card-name:hover{border-color:var(--ui-muted)}
+.hx-rule-card-name:focus{outline:2px solid var(--ui-focus);outline-offset:1px;border-color:transparent}
+.hx-rule-card-name::placeholder{color:var(--ui-muted);font-weight:400}
+.hx-rule-card-quote{margin:var(--ui-space-1) 0 0;padding:0 0 0 var(--ui-space-3);border-left:3px solid var(--ui-border);border-radius:0;font:inherit;font-style:normal;color:var(--ui-ink);overflow-wrap:anywhere;white-space:normal}
+.hx-rule-card-source{justify-self:start;display:inline-flex;gap:var(--ui-space-1);align-items:baseline;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:none;overflow-wrap:anywhere}
+.hx-rule-card-source-text{text-decoration:underline;text-underline-offset:2px}
+.hx-rule-card-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--ui-space-2) var(--ui-space-4);margin-top:var(--ui-space-1);padding-top:var(--ui-space-3);border-top:1px solid var(--ui-border)}
+.hx-rule-card-actions button{white-space:nowrap}
+.hx-rule-card-actions .hx-btn.pri{margin:0 0 0 auto}
+.hx-rule-card-reject{margin:0;padding:var(--ui-space-1) 2px;min-height:var(--ui-space-6);border:0;background:none;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-ink);text-decoration:underline;text-decoration-color:var(--ui-border);text-decoration-thickness:1px;text-underline-offset:3px;cursor:pointer;border-radius:var(--ui-radius-sm)}
+.hx-rule-card-reject:hover{text-decoration-color:currentColor}
+.hx-rule-card-reject:focus-visible,.hx-rule-card .hx-btn:focus-visible,.hx-rule-card-source:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
+.hx-jev-pop:has(.hx-rule-card){max-width:min(440px,calc(100vw - 16px));padding:var(--ui-space-4)}
+.hx-jev-pop-note:has(>.hx-rule-card)+.hx-jev-pop-note,.hx-jev-pop-note+.hx-jev-pop-note:has(>.hx-rule-card){margin-top:var(--ui-space-2);padding-top:var(--ui-space-3);border-top:1px solid var(--ui-border)}
+/* jev popover */
+.hx-jev-pop{position:fixed;z-index:880;box-sizing:border-box;width:max-content;min-width:180px;max-width:min(340px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:var(--ui-space-2) 10px;border:1px solid var(--ui-ink);border-radius:var(--ui-radius);background:var(--ui-surface);color:var(--ui-ink);box-shadow:0 8px 28px var(--ui-shadow);font:var(--ui-text-sm)/1.4 var(--ui-font)}
+.hx-jev-pop[hidden]{display:none}
+.hx-jev-pop-notes{margin:0;padding:0;list-style:none;display:grid;gap:var(--ui-space-1)}
+.hx-jev-pop-note{display:grid;gap:var(--ui-space-1)}
+.hx-jev-pop-text{font-weight:600;color:var(--ui-ink);overflow-wrap:anywhere}
+.hx-jev-pop-note[data-attention=true] .hx-jev-pop-text{color:var(--ui-fail)}
+.hx-jev-pop-note[data-group=neutral] .hx-jev-pop-text{font-weight:600;color:var(--ui-muted)}
+a.hx-jev-pop-text{text-decoration:underline;text-underline-offset:2px}
+.hx-jev-pop-quote{color:var(--ui-ink);overflow-wrap:anywhere}
+.hx-jev-pop-sentence{display:none;font-size:var(--ui-text-xs);color:var(--ui-muted);overflow-wrap:anywhere}
+.hx-jev-pop[data-measure] .hx-jev-pop-sentence,.hx-jev-pop-note:hover .hx-jev-pop-sentence,.hx-jev-pop-note:focus-within .hx-jev-pop-sentence{display:block}
+.hx-jev-pop-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--ui-space-1) 10px;font-size:var(--ui-text-xs);color:var(--ui-muted);overflow-wrap:anywhere}
+.hx-jev-pop-link{color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px}
+.hx-jev-pop-diff{font-size:var(--ui-text-xs);color:var(--ui-ink);overflow-wrap:anywhere}
+.hx-jev-pop-diff del{text-decoration:none;background:var(--ui-fail-soft);border-radius:2px;padding:0 1px}
+.hx-jev-pop-diff ins{text-decoration:none;background:var(--ui-pass-soft);border-radius:2px;padding:0 1px}
+.hx-jev-pop-diff-legend{font-size:10px;color:var(--ui-muted);margin-bottom:2px}
+.hx-jev-pop-diff-legend del{text-decoration:none;background:var(--ui-fail-soft);border-radius:2px;padding:0 2px}
+.hx-jev-pop-diff-legend ins{text-decoration:none;background:var(--ui-pass-soft);border-radius:2px;padding:0 2px}
+.hx-jev-pop-actions{display:flex;flex-wrap:wrap;gap:var(--ui-space-1)}
+.hx-jev-pop-actions .hx-btn{margin:0;font-size:var(--ui-text-xs);padding:var(--ui-space-1) var(--ui-space-2);border-color:var(--ui-ack);background:var(--ui-surface);color:var(--ui-ack)}
+.hx-jev-pop-batch{display:inline-flex;align-items:center;gap:var(--ui-space-1);white-space:nowrap}
+.hx-jev-pop-more{margin:0;padding:0 2px;border:0;background:none;font:inherit;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px;cursor:pointer;align-self:center}
+/* jev thread label */
+.hx-jev-thread-label{flex:0 0 auto;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:2px var(--ui-space-1);font-size:9px;font-weight:600;white-space:nowrap}
+.hx-jev-thread-label[data-state=unsure]{color:var(--ui-draft);background:var(--ui-draft-soft)}
+.hx-jev-thread-label[data-state=unavailable]{color:var(--ui-error);background:var(--ui-fail-soft)}
+/* orphan hint */
+.hx-orphan-hint{display:flex;align-items:center;flex-wrap:wrap;gap:var(--ui-space-1);margin:7px 0;padding:7px var(--ui-space-2);border-left:3px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-draft);font-size:var(--ui-text-xs);line-height:1.35}
+.hx-orphan-hint>span{flex:1 1 100%}
+.hx-place-notice{margin:7px 0;padding:7px var(--ui-space-2);border-left:3px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-draft);font-size:var(--ui-text-xs);line-height:1.35}
+.hx-orphan-hint .hx-btn{margin:0;font-size:var(--ui-text-xs);padding:var(--ui-space-1) var(--ui-space-2)}
+.hx-pin-jev{position:absolute;left:calc(100% + 4px);top:50%;transform:translateY(-50%);width:max-content;max-width:120px;color:var(--ui-resolved);background:var(--ui-resolved-soft);border:1px solid var(--ui-resolved);border-radius:var(--ui-radius-pill);padding:2px var(--ui-space-1);font:600 9px/1.1 var(--ui-font);white-space:nowrap;pointer-events:none}
+/* banner */
+.hx-banner{position:fixed;top:0;left:0;right:0;background:var(--ui-pass);color:var(--ui-page);font:600 var(--ui-text-sm) var(--ui-font);padding:var(--ui-space-2) var(--ui-space-4);z-index:950;display:flex;gap:14px;align-items:center;justify-content:center}
+/* toast */
+.hx-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--ui-ink);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);border-radius:var(--ui-radius);padding:9px var(--ui-space-4);box-shadow:0 8px 28px var(--ui-shadow);z-index:960;opacity:0;transition:opacity .25s;pointer-events:none}
 .hx-toast.show{opacity:1}
-.hx-banner button{font:inherit;border:1px solid #fff;background:transparent;color:#fff;border-radius:6px;padding:3px 12px;cursor:pointer}
+.hx-banner button{font:inherit;border:1px solid var(--ui-page);background:transparent;color:var(--ui-page);border-radius:var(--ui-radius-sm);padding:3px var(--ui-space-3);cursor:pointer}
+/* dark mode backdrop overrides */
+@media(prefers-color-scheme:dark){
+.hx-thread-dock{background:rgba(26,26,26,.94)}
+.hx-service-index-link{background:rgba(26,26,26,.96)}
+}
+/* mobile */
 @media(max-width:640px){
-.hx-toolbar{left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));transform:none;max-width:none;display:flex;flex-wrap:wrap;justify-content:stretch;gap:4px;padding:6px}
-.hx-toolbar button{min-height:44px;flex:1 1 auto;padding:8px 12px;touch-action:manipulation}
-.hx-mobile-handoff{display:block}
-.hx-toolbar .hx-status{flex:1 0 100%;min-width:0;padding:2px 8px 4px;overflow:hidden;text-align:center;text-overflow:ellipsis;white-space:nowrap}
-.hx-panel{width:100vw;height:100dvh;max-height:100dvh;border-left:0}
+.hx-toolbar{left:var(--ui-space-3);right:var(--ui-space-3);bottom:calc(10px + env(safe-area-inset-bottom));transform:none;max-width:none;display:flex;flex-wrap:wrap;justify-content:stretch;gap:var(--ui-space-1);padding:var(--ui-space-1)}
+.hx-toolbar button{min-height:44px;flex:1 1 auto;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
+.hx-mobile-handoff,.hx-mobile-next-tbd:not([hidden]){display:block}
+.hx-toolbar .hx-status{flex:1 0 100%;min-width:0;padding:2px var(--ui-space-2) var(--ui-space-1);overflow:hidden;text-align:center;text-overflow:ellipsis;white-space:nowrap}
+.hx-panel{width:100vw;height:100dvh;max-height:100dvh;border-left:0;box-sizing:border-box;padding-bottom:calc(var(--hx-dock-space,0px) + 10px + env(safe-area-inset-bottom))}
 body.hx-panel-open{padding-right:0;overflow:hidden}
-.hx-panel-head{min-height:56px;padding:18px 16px 14px 60px}
-.hx-panel-toggle{top:6px;left:6px;width:44px;height:44px;touch-action:manipulation}
-.hx-panel-gear{top:6px;right:8px;width:44px;height:44px;touch-action:manipulation}
-.hx-thread-dock{top:calc(8px + env(safe-area-inset-top));right:8px;padding:4px}
-.hx-service-index-link{top:calc(8px + env(safe-area-inset-top));left:8px;max-width:calc(100vw - 68px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hx-panel-head{min-height:56px;padding:18px var(--ui-space-4) 14px 60px}
+.hx-panel-toggle{top:var(--ui-space-1);left:var(--ui-space-1);width:44px;height:44px;touch-action:manipulation}
+.hx-panel-gear{top:var(--ui-space-1);right:var(--ui-space-2);width:44px;height:44px;touch-action:manipulation}
+.hx-thread-dock{top:calc(var(--ui-space-2) + env(safe-area-inset-top));right:var(--ui-space-2);padding:var(--ui-space-1)}
+.hx-service-index-link{top:calc(var(--ui-space-2) + env(safe-area-inset-top));left:var(--ui-space-2);max-width:calc(100vw - 68px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body.hx-panel-open .hx-service-index-link{display:none}
 .hx-dock-open,.hx-dock-thread{width:44px;height:44px;touch-action:manipulation}
 .hx-dock-threads{max-height:calc(100dvh - 68px)}
-.hx-threads{padding:12px;overscroll-behavior:contain}
-.hx-thread{padding:12px}
+.hx-threads{padding:var(--ui-space-3);overscroll-behavior:contain}
+.hx-thread{padding:var(--ui-space-3)}
 .hx-disclosure{min-width:44px;min-height:44px;touch-action:manipulation}
-.hx-composer textarea{min-height:120px;font-size:16px;padding:10px 12px}
-.hx-btn,.hx-msg-actions .hx-btn{min-height:44px;padding:8px 12px;touch-action:manipulation}
-.hx-handoff{gap:8px;flex-wrap:wrap;padding:10px 12px calc(10px + env(safe-area-inset-bottom))}
+.hx-composer textarea{min-height:120px;font-size:var(--ui-text-md);padding:10px var(--ui-space-3)}
+.hx-btn,.hx-msg-actions .hx-btn{min-height:44px;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
+.hx-handoff{gap:var(--ui-space-2);flex-wrap:wrap;padding:10px var(--ui-space-3) calc(10px + env(safe-area-inset-bottom))}
 .hx-handoff .hx-note{flex:1 1 auto}
 .hx-handoff .hx-btn{flex:1 1 auto;margin:0}
-.hx-pin{width:44px;height:44px;font-size:12px;touch-action:manipulation}
-.hx-banner{align-items:flex-start;flex-wrap:wrap;padding:calc(8px + env(safe-area-inset-top)) 12px 8px;text-align:center}
-.hx-banner button{min-height:44px;padding:8px 12px;touch-action:manipulation}
+.hx-pin{width:44px;height:44px;font-size:var(--ui-text-xs);touch-action:manipulation}
+[data-anchor]:has(> .hx-pin[data-column]){padding-right:48px;min-height:calc(.5lh + 66px)}
+tr[data-anchor]:has(> .hx-pin[data-column]) > :has(> .hx-jev-marker){padding-right:48px;height:calc(.5lh + 66px)}
+.hx-pin-jev{left:auto;right:calc(100% + 4px);max-width:110px;text-align:right}
+.hx-jev-note{margin:var(--ui-space-2) var(--ui-space-4) 0}
+.hx-jev-marker::before{inset:-14px 0 -14px -28px}
+.hx-jev-pop{left:var(--ui-space-3);right:var(--ui-space-3);top:auto;bottom:calc(10px + var(--hx-dock-space,64px) + var(--ui-space-2) + env(safe-area-inset-bottom));width:auto;max-width:none;max-height:40dvh;padding:10px var(--ui-space-3)}
+.hx-jev-pop-actions .hx-btn,.hx-jev-pop-more{min-height:44px}
+.hx-rule-card-reject{min-height:44px;padding:var(--ui-space-2) 2px}
+.hx-jev-pop:has(.hx-rule-card){max-width:none;padding:var(--ui-space-3)}
+.hx-jev-offer-cards{margin-left:var(--ui-space-3)}
+.hx-banner{align-items:flex-start;flex-wrap:wrap;padding:calc(var(--ui-space-2) + env(safe-area-inset-top)) var(--ui-space-3) var(--ui-space-2);text-align:center}
+.hx-banner button{min-height:44px;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
 .hx-toast{bottom:calc(112px + env(safe-area-inset-bottom));max-width:calc(100vw - 24px);box-sizing:border-box;text-align:center}
 }
 @media(prefers-reduced-motion:reduce){
 .hx-thread-dock,.hx-thread-ring,.hx-toast{transition:none}
-}
-@media(prefers-color-scheme:dark){
-.hx-toolbar,.hx-thread{background:#24272c;border-color:#3a3d42;color:#e8e7e2}
-.hx-toolbar button{color:#e8e7e2}
-.hx-panel{background:#1d2024;border-color:#3a3d42;color:#e8e7e2}
-.hx-panel-head{border-color:#3a3d42}
-.hx-handoff{border-color:#3a3d42}
-.hx-btn{background:#24272c;color:#e8e7e2;border-color:#4a4d52}
-.hx-btn.pri{background:#e8e7e2;color:#1d2024}
-.hx-composer textarea{background:#17191d;color:#e8e7e2;border-color:#4a4d52}
-.hx-disclosure:hover{background:#33363c;color:#e8e7e2}
-.hx-panel-toggle{background:#24272c;color:#e8e7e2;border-color:#4a4d52}
-.hx-panel-toggle:hover{background:#33363c;color:#fff}
-.hx-panel-gear{background:#24272c;color:#e8e7e2;border-color:#4a4d52}
-.hx-panel-gear:hover{background:#33363c;color:#fff}
-.hx-settings{background:#1e2126;border-color:#3a3d42}
-.hx-set-row{color:#cfd2d6}
-.hx-set-val,.hx-set-note{color:#9aa0a6}
-.hx-thread-dock{background:rgba(29,32,36,.94);border-color:#3a3d42}
-.hx-dock-open,.hx-dock-thread{background:#24272c;border-color:#4a4d52;color:#d7d6d1}
-.hx-dock-open:hover,.hx-dock-thread:hover{background:#33363c;border-color:#686b71;color:#fff}
-.hx-unread-badge{border-color:#1d2024;background:#668fe5;color:#101722}
-.hx-dock-threads:not(:empty){border-color:#3a3d42}
-.hx-dock-thread[data-s=draft],.hx-dock-thread[data-s=pending]{background:#342d20;color:#e0a33b}
-.hx-dock-thread[data-s=acknowledged]{background:#1f2f54;color:#91b2ff}
-.hx-dock-thread[data-s=resolved]{background:#263728;color:#78b87a}
+.hx-jev-marker[data-pending=true]{animation:none}
 }`;
 
 function mountUI() {
@@ -1222,8 +2579,10 @@ function mountUI() {
 
   const bar = document.createElement('div');
   bar.className = 'hx-toolbar';
-  bar.innerHTML = '<button id="hx-mode" aria-pressed="false">✛ Comment (C)</button><button class="hx-mobile-handoff" id="hx-mobile-handoff" type="button" disabled>Hand off</button><button id="hx-connect" hidden>Connect review folder</button><button id="hx-repick" hidden>Choose different folder</button><span class="hx-status" id="hx-status">starting…</span>';
+  bar.innerHTML = '<button id="hx-mode" aria-pressed="false">✛ Comment (C)</button><button class="hx-mobile-next-tbd" id="hx-mobile-next-tbd" type="button" hidden>Next TBD</button><button class="hx-mobile-handoff" id="hx-mobile-handoff" type="button" disabled>Hand off</button><button id="hx-connect" hidden>Connect review folder</button><button id="hx-repick" hidden>Choose different folder</button><span class="hx-offline" id="hx-offline" role="status" hidden></span><span class="hx-status" id="hx-status">starting…</span>';
   document.body.appendChild(bar);
+  // The narrow sidebar ends above the fixed dock, so its last content stays reachable.
+  new ResizeObserver(() => document.documentElement.style.setProperty('--hx-dock-space', bar.offsetHeight + 'px')).observe(bar);
 
   const dock = document.createElement('nav');
   dock.className = 'hx-thread-dock';
@@ -1234,25 +2593,37 @@ function mountUI() {
   const panel = document.createElement('aside');
   panel.className = 'hx-panel';
   panel.setAttribute('aria-label', 'Review sidebar');
-  panel.innerHTML = '<div class="hx-panel-head">Review <span class="hx-sub" id="hx-agent"></span><button class="hx-panel-toggle" id="hx-panel-toggle" type="button" aria-expanded="false" aria-label="Open review sidebar">‹</button><button class="hx-panel-gear" id="hx-panel-gear" type="button" aria-expanded="false" aria-controls="hx-settings" aria-label="Review display settings" title="Display settings">⚙</button></div><div class="hx-panel-content" id="hx-panel-content" aria-hidden="true" inert><div class="hx-settings" id="hx-settings" hidden><label class="hx-set-row" for="hx-veil">Diff visibility<span class="hx-set-val" id="hx-veil-val">100%</span><input type="range" id="hx-veil" min="0" max="100" step="5" value="100"></label><p class="hx-set-note">How strongly unchanged blocks are dimmed and blurred. At 0 the whole spec reads at normal clarity.</p></div><div class="hx-threads" id="hx-threads"></div><div class="hx-handoff"><span class="hx-note" id="hx-drafts">0 drafts</span><button class="hx-btn pri" id="hx-handoff">Hand off to agent →</button></div></div>';
+  panel.innerHTML = '<div class="hx-panel-head">Review <span class="hx-sub" id="hx-agent"></span><button class="hx-panel-toggle" id="hx-panel-toggle" type="button" aria-expanded="false" aria-label="Open review sidebar">‹</button><button class="hx-panel-gear" id="hx-panel-gear" type="button" aria-expanded="false" aria-controls="hx-settings" aria-label="Review display settings" title="Display settings">⚙</button></div><div class="hx-panel-content" id="hx-panel-content" aria-hidden="true" inert><div class="hx-settings" id="hx-settings" hidden><label class="hx-set-row" for="hx-veil">Diff visibility<span class="hx-set-val" id="hx-veil-val">100%</span><input type="range" id="hx-veil" min="0" max="100" step="5" value="100"></label><p class="hx-set-note">How strongly unchanged blocks are dimmed and blurred. At 0 the whole spec reads at normal clarity.</p></div><div class="hx-threads" id="hx-threads"></div><div class="hx-handoff"><span class="hx-note" id="hx-drafts">0 drafts</span><button class="hx-btn hx-next-tbd" id="hx-next-tbd" type="button" hidden>Next TBD</button><button class="hx-btn pri" id="hx-handoff">Hand off to agent →</button></div></div>';
   document.body.appendChild(panel);
 
   document.getElementById('hx-mode').addEventListener('click', () => setCommentMode(!state.commentMode));
   document.getElementById('hx-mobile-handoff').addEventListener('click', handoff);
+  document.getElementById('hx-mobile-next-tbd').addEventListener('click', nextTbd);
   document.getElementById('hx-dock-open').addEventListener('click', () => openPanel(true));
   document.getElementById('hx-panel-toggle').addEventListener('click', () => openPanel(!state.panelOpen));
   document.getElementById('hx-handoff').addEventListener('click', handoff);
+  document.getElementById('hx-next-tbd').addEventListener('click', nextTbd);
   setupDiffVisibility();
   document.addEventListener('keydown', e => {
+    // Enter or Space on a comment-target block is a plain click on the block itself (onDocClick):
+    // a plain click collapses any selection, so a leftover one never becomes the quote
+    if (state.commentMode && (e.key === 'Enter' || e.key === ' ') && !e.repeat
+      && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.target.hasAttribute && e.target.hasAttribute('data-hx-target')) {
+      e.preventDefault();
+      getSelection().removeAllRanges();
+      e.target.click();
+      return;
+    }
     if (commentModeShortcut(e)) setCommentMode(!state.commentMode);
     if (e.key === 'Escape') { state.composer = null; setCommentMode(false); renderPanel(); }
   });
   document.addEventListener('click', onDocClick, true); // capture: runs before spec-script handlers
   // suspend page interactivity while commenting; hover and text selection stay live
-  const INTERACTIVE = 'button, input, select, textarea, label, a, summary, [role="button"], [role="link"]';
+  // a comment-target block's own button role is not a control: selection inside it stays live
+  const INTERACTIVE = 'button, input, select, textarea, label, a, summary, [role="button"]:not([data-hx-target]), [role="link"]';
   const suspend = e => {
     if (!state.commentMode) return;
-    if (e.target.closest && e.target.closest('.hx-pin,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
+    if (e.target.closest && e.target.closest('.hx-pin,.hx-jev-marker,.hx-jev-pop,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
     if (e.target.tagName === 'CANVAS') return;
     if (!holderOf(e.target)) return;
     // native drag/toggle on controls dies here; elsewhere only spec-script handlers die (selection survives)
@@ -1276,7 +2647,7 @@ function mountUI() {
   document.addEventListener('pointermove', e => {
     const t = e.target;
     let box = null;
-    if (state.commentMode && t instanceof Element && !t.closest('.hx-pin,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-range-bar')) {
+    if (state.commentMode && t instanceof Element && !t.closest('.hx-pin,.hx-jev-marker,.hx-jev-pop,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-range-bar')) {
       const svg = t.closest && t.closest('[data-anchor] svg');
       if (svg && t !== svg) box = t.getBoundingClientRect();
       else if (!svg && t.closest && t.closest(INTERACTIVE) && holderOf(t)) box = t.closest(INTERACTIVE).getBoundingClientRect();
@@ -1289,9 +2660,30 @@ function mountUI() {
   renderThreadDock();
 }
 
+// Comment mode makes every leaf anchored block a button Tab stop named by its text; off restores
+// each block's own role and Tab order (data-hx-target holds them while on).
+function setCommentTargets(on) {
+  if (on) {
+    for (const block of document.querySelectorAll('[data-anchor]:not([data-hx-target])')) {
+      if (block.querySelector('[data-anchor]')) continue;
+      block.setAttribute('data-hx-target', JSON.stringify([block.getAttribute('role'), block.getAttribute('tabindex')]));
+      block.setAttribute('role', 'button');
+      block.setAttribute('tabindex', '0');
+    }
+    return;
+  }
+  for (const block of document.querySelectorAll('[data-hx-target]')) {
+    const [role, tabindex] = JSON.parse(block.getAttribute('data-hx-target'));
+    if (role === null) block.removeAttribute('role'); else block.setAttribute('role', role);
+    if (tabindex === null) block.removeAttribute('tabindex'); else block.setAttribute('tabindex', tabindex);
+    block.removeAttribute('data-hx-target');
+  }
+}
+
 function setCommentMode(on) {
   state.commentMode = on;
   document.body.classList.toggle('hx-comment', on);
+  setCommentTargets(on);
   document.getElementById('hx-mode').setAttribute('aria-pressed', String(on));
   if (on) adoptForeignCharts(); // catch charts the spec script created since the last scan
   for (const info of state.charts.values()) {
@@ -1331,8 +2723,8 @@ function openPanel(open) {
 }
 function status(msg) { document.getElementById('hx-status').textContent = msg; }
 
-function openComposer(anchorId, target, quote) {
-  state.composer = { kind: 'comment', anchorId, target, quote, text: '' };
+function openComposer(anchorId, target, quote, text = '', onSent = null) {
+  state.composer = { kind: 'comment', anchorId, target, quote, text, onSent };
   setCommentMode(false);
   openPanel(true);
   renderPanel();
@@ -1350,6 +2742,8 @@ function addComposer(parent, c) {
     '<button class="hx-btn pri" data-act="save">' + verb + '</button><button class="hx-btn" data-act="cancel">Cancel</button>';
   const textarea = box.querySelector('textarea');
   textarea.value = c.text || '';
+  // Live events re-render the panel; the composer keeps what was typed.
+  textarea.addEventListener('input', () => { c.text = textarea.value; });
   textarea.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); box.querySelector('[data-act=save]').click(); }
   });
@@ -1362,8 +2756,9 @@ function addComposer(parent, c) {
     if (c.kind === 'reply') body = Object.assign(common, { id: humanId('u'), event: 'reply', respondsTo: c.respondsTo, threadId: c.threadId });
     else if (c.kind === 'edit') body = Object.assign(common, { id: humanId('e'), event: 'edit', supersedes: c.supersedes, threadId: c.threadId });
     else body = Object.assign(common, { id: humanId('u'), event: 'comment' });
-    await state.transport.postEvent(body);
     state.composer = null;
+    save(body);
+    if (c.onSent) c.onSent();
     toast((c.kind === 'edit' ? 'Edit' : c.kind === 'reply' ? 'Reply' : 'Comment') + ' saved as draft — hand off when ready');
     refresh();
   });
@@ -1432,18 +2827,47 @@ function renderPanel() {
     const collapsed = resolvedThreadCollapsed(th, state.expandedResolved);
     const d = document.createElement('div');
     d.className = 'hx-thread' + (state.activeThread === th.id ? ' active' : '') + (collapsed ? ' resolved-collapsed' : '');
+    // A resolved thread shows its own resolved indicator, never a resolved-in-spirit Jev label.
+    const resolvedHint = th.status === 'resolved' ? null : jevItem('resolved', th.id);
+    const orphanHint = openOrphanHint(th);
+    const threadJevState = [orphanHint, resolvedHint].find(item => item && ['unsure', 'unavailable'].includes(item.state));
     d.innerHTML = '<div class="hx-thread-summary"><div class="hx-anchor">' + esc(label(b)) + '</div>' +
       '<span class="hx-pill" data-s="' + th.status + '">' + th.status + '</span>' +
+      (looksResolved(th) ? '<span class="hx-jev-thread-label">Looks resolved</span>' : '') +
+      (threadJevState ? '<span class="hx-jev-thread-label" data-state="' + threadJevState.state + '">' + esc(jevDisplayLabel(threadJevState)) + '</span>' : '') +
       (th.status === 'resolved' ? '<button class="hx-disclosure" data-act="disclosure" aria-expanded="' + String(!collapsed) + '" aria-label="' + (collapsed ? 'Show' : 'Hide') + ' resolved thread">' + (collapsed ? '▸' : '▾') + '</button>' : '') + '</div>' +
-      (collapsed ? '<div class="hx-thread-preview">' + esc(b.text || 'Resolved comment') + '</div>' : '');
+      (collapsed ? '<div class="hx-thread-preview">' + esc(th.messages[0].body.text || 'Resolved comment') + '</div>' : '');
+    const notice = th.ev.place && PLACE_NOTICES[th.ev.place.state];
+    if (notice) {
+      const n = document.createElement('div');
+      n.className = 'hx-place-notice';
+      n.dataset.state = th.ev.place.state;
+      n.innerHTML = esc(notice) + (b.quote ? '<span class="hx-quote">“' + esc(b.quote) + '”</span>' : '');
+      d.appendChild(n);
+    }
+    const hint = orphanHintElement(th, orphanHint);
+    if (hint) d.appendChild(hint);
     if (!collapsed) {
-      for (const message of th.messages) {
+      th.messages.forEach((message, index) => {
         const m = message.body;
+        const history = th.history && th.history.get(index);
         const item = document.createElement('div');
         item.className = 'hx-msg';
         item.dataset.messageId = m.id;
-        item.innerHTML = '<span class="hx-who">' + (message.actor === 'human' ? 'You' : 'Agent') + '</span>' +
-          (m.quote ? '<span class="hx-quote">“' + esc(m.quote) + '”</span>' : '') + esc(m.text || '');
+        item.innerHTML = '<span class="hx-who">' + esc(messageAuthor(state.authors, history ? history.original : message)) + '</span>' +
+          (m.quote ? '<span class="hx-quote">“' + esc(m.quote) + '”</span>' : '') + '<span class="hx-text">' + esc(m.text || '') + '</span>';
+        // #model-edit-history: more than one edit lists every edit with its author.
+        if (history && history.edits.length > 1) {
+          const list = document.createElement('ol');
+          list.className = 'hx-history';
+          list.setAttribute('aria-label', 'Edit history');
+          for (const edit of history.edits) {
+            const entry = document.createElement('li');
+            entry.innerHTML = '<span class="hx-who">' + esc(messageAuthor(state.authors, edit)) + '</span> ' + esc(edit.body.text || '');
+            list.appendChild(entry);
+          }
+          item.appendChild(list);
+        }
         if (message.actor === 'human' && m.id === th.latestHumanId && ['draft', 'pending'].includes(th.status)) {
           const actions = document.createElement('div');
           actions.className = 'hx-msg-actions';
@@ -1452,7 +2876,7 @@ function renderPanel() {
           item.appendChild(actions);
         }
         d.appendChild(item);
-      }
+      });
       const replyAction = threadReplyAction(th);
       if (replyAction) {
         const reply = document.createElement('button');
@@ -1467,6 +2891,7 @@ function renderPanel() {
         resolve.className = 'hx-btn';
         resolve.dataset.act = 'resolve';
         resolve.textContent = '✓ Resolve';
+        resolve.addEventListener('click', e => { e.stopPropagation(); resolveThread(th); });
         d.appendChild(resolve);
       }
       if (state.composer && state.composer.threadId === th.id) addComposer(d, state.composer);
@@ -1481,28 +2906,58 @@ function renderPanel() {
         renderPins();
       }
     });
-    d.querySelector('[data-act=resolve]')?.addEventListener('click', async e => {
-      e.stopPropagation();
-      await state.transport.postEvent({ id: humanId('s'), event: 'status', respondsTo: th.id, threadId: th.id, status: 'resolved', actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 });
-      state.expandedResolved.delete(th.id);
-      toast('Resolved');
-      refresh();
-    });
     wrap.appendChild(d);
   }
-  const openTbds = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
-  const handoffState = reviewHandoffState(state.threads, openTbds.length > 0);
+  const movable = threads.map(th => ({ th, hint: openOrphanHint(th) }))
+    .filter(m => m.hint && m.hint.state === 'label' && m.hint.target)
+    .map(m => ({ th: m.th, target: m.hint.target }));
+  if (movable.length >= 2) {
+    const moveAll = document.createElement('button');
+    moveAll.className = 'hx-btn';
+    moveAll.dataset.act = 'orphan-move-all';
+    moveAll.textContent = 'Move all (' + movable.length + ')';
+    moveAll.disabled = movable.some(m => state.movingOrphans.has(m.th.id));
+    moveAll.addEventListener('click', e => { e.stopPropagation(); moveOrphans(movable); });
+    wrap.appendChild(moveAll);
+  }
+  const hinted = threads.filter(looksResolved);
+  if (hinted.length) {
+    const all = document.createElement('button');
+    all.className = 'hx-btn';
+    all.dataset.act = 'resolve-all';
+    all.textContent = 'Resolve all (' + hinted.length + ')';
+    all.addEventListener('click', e => { e.stopPropagation(); resolveThreads(hinted); });
+    wrap.appendChild(all);
+  }
+  const handoffState = renderHighlight();
   const drafts = handoffState.drafts;
-  renderTbdHighlight(document, tbdHighlightBlocks(handoffState, openTbds));
   document.getElementById('hx-drafts').textContent = handoffState.finish ? 'Ready to accept' : drafts + ' draft' + (drafts === 1 ? '' : 's');
   const desktopHandoff = document.getElementById('hx-handoff');
   desktopHandoff.disabled = !handoffState.enabled;
-  desktopHandoff.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? 'TBD open' : 'Hand off to agent →';
+  desktopHandoff.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? tbdCountLabel('TBD open', handoffState.openTbds) : 'Hand off to agent →';
   const mobileHandoff = document.getElementById('hx-mobile-handoff');
   mobileHandoff.disabled = !handoffState.enabled;
-  mobileHandoff.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? 'TBD open' : drafts ? 'Hand off (' + drafts + ')' : 'Hand off';
+  mobileHandoff.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? tbdCountLabel('TBD open', handoffState.openTbds) : drafts ? 'Hand off (' + drafts + ')' : 'Hand off';
+  for (const nextButton of [document.getElementById('hx-next-tbd'), document.getElementById('hx-mobile-next-tbd')]) {
+    nextButton.hidden = !handoffState.nextTbd;
+    nextButton.textContent = tbdCountLabel('Next TBD', handoffState.openTbds);
+  }
   renderThreadDock();
   renderThreadHighlight();
+}
+
+// A card's own resolve control and Resolve all post the same resolve event.
+async function resolveThreads(threads) {
+  for (const th of threads) {
+    save({ id: humanId('s'), event: 'status', respondsTo: th.id, threadId: th.id, status: 'resolved', actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 });
+    state.expandedResolved.delete(th.id);
+  }
+  toast('Resolved');
+  refresh();
+}
+
+function resolveThread(th) {
+  return resolveThreads([th]);
 }
 
 function selectThread(th, scroll) {
@@ -1511,12 +2966,85 @@ function selectThread(th, scroll) {
   openPanel(true);
   renderPanel();
   renderPins();
-  if (scroll) scrollToThread(th.ev.body);
+  if (scroll) scrollToThread(placedMark(th.ev));
   renderThreadHighlight();
 }
 
 function scrollToThread(b) {
-  document.querySelector('[data-anchor="' + b.anchorId + '"]')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  findAnchor(b.anchorId)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function scrollToJevAnchor(anchorId) {
+  if (location.hash.slice(1) === encodeURIComponent(anchorId)) arriveAtAddress();
+  else location.hash = encodeURIComponent(anchorId);
+}
+
+// A resolved orphan is settled (#settle-orphan): it shows only its resolved indicator, no Jev guess.
+function openOrphanHint(th) {
+  return th.status === 'resolved' ? null : jevItem('orphan', th.id);
+}
+
+function orphanHintElement(th, orphanHint) {
+  if (!orphanHint || orphanHint.state !== 'label' || !orphanHint.target) return null;
+  const hint = document.createElement('div');
+  hint.className = 'hx-orphan-hint';
+  const copy = document.createElement('span');
+  copy.textContent = 'Possibly moved to: #' + orphanHint.target;
+  const go = document.createElement('button');
+  go.type = 'button';
+  go.className = 'hx-btn';
+  go.dataset.act = 'orphan-go';
+  go.textContent = 'Go to';
+  go.addEventListener('click', e => { e.stopPropagation(); goToJevTarget(orphanHint.target); });
+  const move = document.createElement('button');
+  move.type = 'button';
+  move.className = 'hx-btn pri';
+  move.dataset.act = 'orphan-move';
+  move.textContent = state.movingOrphans.has(th.id) ? 'Moving…' : 'Move comment here';
+  move.disabled = state.movingOrphans.has(th.id);
+  move.addEventListener('click', e => { e.stopPropagation(); moveOrphan(th, orphanHint.target); });
+  hint.append(copy, go, move);
+  return hint;
+}
+
+// Move comment here and Move all post the same comment and resolve events per thread.
+async function moveOrphans(moves) {
+  moves = moves.filter(m => m.th && m.target && !state.movingOrphans.has(m.th.id));
+  if (!moves.length) return;
+  for (const { th } of moves) state.movingOrphans.add(th.id);
+  renderPanel();
+  let moved = 0;
+  try {
+    for (const { th, target } of moves) {
+      const original = th.ev.body || {};
+      const text = th.messages[0].body.text;
+      const quote = original.quote || text || '';
+      save({
+        id: humanId('u'), event: 'comment', anchorId: target, target: null,
+        quote, text: text || 'Moved comment', actor: 'human',
+        createdAt: new Date().toISOString(), schemaVersion: 1,
+      });
+      save({
+        id: humanId('s'), event: 'status', respondsTo: th.id, threadId: th.id,
+        status: 'resolved', actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1,
+      });
+      moved++;
+    }
+    toast(moves.length === 1 ? 'Comment moved to #' + moves[0].target : 'Moved ' + moved + ' comments');
+    state.activeThread = null;
+    await refresh();
+  } catch (_) {
+    toast('Could not move comment');
+    if (moved) await refresh();
+  } finally {
+    for (const { th } of moves) state.movingOrphans.delete(th.id);
+    renderPanel();
+    renderPins();
+  }
+}
+
+function moveOrphan(th, target) {
+  return moveOrphans([{ th, target }]);
 }
 
 const chartInfoFor = b => {
@@ -1631,10 +3159,26 @@ function threadTargetRect(b, holder) {
   return host;
 }
 
+// #anchoring-states: where a thread's mark sits now. The service's place (place.py) wins: its
+// block, for a text target its surviving text, for an element target its current key; a gone mark
+// sits on the block alone. An event without a place, or unplaced, sits by its own anchor and quote.
+function placedMark(e) {
+  const b = e.body, p = e.place;
+  if (!p || !p.anchorId) return b;
+  if (p.state === 'gone') return { ...b, anchorId: p.anchorId, target: null };
+  const type = b.target && b.target.type;
+  const target = type === 'text' ? { type: 'text', key: p.quote }
+    : type === 'element' ? (p.key ? { type: 'element', key: p.key } : null)
+    : p.anchorId === b.anchorId ? b.target : null;
+  return { ...b, anchorId: p.anchorId, target };
+}
+
+const PLACE_NOTICES = { changed: 'Text changed since this comment', gone: 'Text removed' };
+
 function renderThreadHighlight() {
   let ring = document.querySelector('.hx-thread-ring');
   const th = state.activeThread && state.threads.get(state.activeThread);
-  const b = th && th.ev.body;
+  const b = th && placedMark(th.ev);
   const holder = b && document.querySelector('[data-anchor="' + b.anchorId + '"]');
   if (!holder) {
     syncChartHighlight(null, null);
@@ -1653,7 +3197,7 @@ function renderThreadHighlight() {
 
 function pinPos(b, holder) {
   const t = b.target;
-  if (!t) return { top: 4, left: holder.clientWidth - 30 };
+  if (!t) return cornerPos(holder);
   const info = chartInfoFor(b);
   if (info && ['datum', 'axis-x', 'axis-y', 'target'].includes(t.type)) {
     try {
@@ -1680,6 +3224,16 @@ function pinPos(b, holder) {
       return { top: cR.top - hR.top + y - 12, left: cR.left - hR.left + x - 12 };
     } catch { /* fall through */ }
   }
+  if (t.type === 'text') {
+    // beside the text's first line, in the block's pin corner or column, so it covers no text
+    const r = textTargetRect(holder, t.key || b.quote);
+    const corner = cornerPos(holder);
+    if (r) {
+      const top = Math.round(r.top - holder.getBoundingClientRect().top - holder.clientTop);
+      return corner.column ? { column: true, top: Math.max(corner.top, top) } : { top, left: corner.left };
+    }
+    return corner;
+  }
   if (t.type === 'element') {
     const el = resolveElement(holder, t.key);
     if (el) {
@@ -1687,7 +3241,17 @@ function pinPos(b, holder) {
       return { top: eR.top - hR.top - 4, left: Math.min(holder.clientWidth - 28, eR.right - hR.left - 12) };
     }
   }
-  return { top: 4, left: holder.clientWidth - 30 }; // orphan/text fallback: block corner
+  return cornerPos(holder); // orphan/text fallback
+}
+
+// Block corner, or, when the block has its own Jev marker, the block's reserved right column
+// directly below the marker's tap pad (its ::before), so the pin covers neither the marker nor text.
+function cornerPos(holder) {
+  const marker = holder.querySelector(holder.tagName === 'TR' ? ':scope > :is(td,th) > .hx-jev-marker' : ':scope > .hx-jev-marker');
+  if (!marker) return { top: 4, left: holder.clientWidth - 30 };
+  const pad = parseFloat(getComputedStyle(marker, '::before').bottom) || 0;
+  const top = marker.getBoundingClientRect().bottom - pad - holder.getBoundingClientRect().top - holder.clientTop;
+  return { column: true, top: Math.ceil(top) }; // right edge by CSS, so a table's later reflow keeps it
 }
 
 function renderPins() {
@@ -1695,18 +3259,32 @@ function renderPins() {
   let n = 0;
   for (const th of state.threads.values()) {
     n++;
-    const b = th.ev.body;
-    const holder = document.querySelector('[data-anchor="' + b.anchorId + '"]');
+    const b = placedMark(th.ev);
+    const holder = findAnchor(b.anchorId);
     if (!holder) continue;
     const pos = pinPos(b, holder);
     const pin = document.createElement('button');
     pin.className = 'hx-pin' + (state.activeThread === th.id ? ' active' : '');
     pin.dataset.s = th.status;
-    pin.textContent = n;
-    pin.title = label(b);
+    const hinted = looksResolved(th);
+    pin.textContent = '';
+    const number = document.createElement('span');
+    number.className = 'hx-pin-number';
+    number.textContent = n;
+    pin.appendChild(number);
+    if (hinted) {
+      pin.dataset.jev = 'resolved';
+      const marker = document.createElement('span');
+      marker.className = 'hx-pin-jev';
+      marker.textContent = 'Looks resolved';
+      pin.appendChild(marker);
+    }
+    pin.title = (hinted ? 'Looks resolved · ' : '') + label(b);
+    pin.setAttribute('aria-label', (hinted ? 'Looks resolved: ' : '') + label(b));
     pin.style.top = pos.top + 'px';
+    if (pos.column) pin.dataset.column = '';
     const pinSize = window.matchMedia('(max-width: 640px)').matches ? 44 : 24;
-    pin.style.left = Math.max(0, Math.min(pos.left, holder.clientWidth - pinSize)) + 'px';
+    if (!pos.column) pin.style.left = Math.max(0, Math.min(pos.left, holder.clientWidth - pinSize)) + 'px';
     pin.addEventListener('click', e => { e.stopPropagation(); selectThread(th, true); });
     holder.appendChild(pin);
   }
@@ -1729,19 +3307,23 @@ function renderBadges() {
   }
 }
 
-async function handoff() {
+function handoff() {
   const openTbds = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
-  const action = reviewHandoffState(state.threads, openTbds.length > 0);
-  if (action.tbd) return jumpToTbd(advanceTbd(state, openTbds));
+  const action = reviewHandoffState(state.threads, openTbds.length, state.reviewer.browser);
+  if (action.tbd) return nextTbd();
   if (state.handoffPosting || !action.enabled) return;
-  state.handoffPosting = true;
-  try {
-    await state.transport.postEvent({ id: 'h' + Date.now().toString(36), event: 'handoff', anchorId: '', target: null, quote: null, text: 'batch from ' + state.transport.mode, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 });
-    toast(action.finish ? 'Spec accepted' : 'Handed off ' + action.drafts + ' comment' + (action.drafts === 1 ? '' : 's') + ', agent notified');
-    refresh();
-  } finally {
-    state.handoffPosting = false;
-  }
+  state.handoffPosting = true; // until this hand-off's send settles: a double tap writes one
+  // Hand off lists this browser's drafts (#live-handoff); Accept spec writes the existing hand-off without a list.
+  const listed = action.finish ? {} : { events: handoffEvents(state.events, state.reviewer.browser) };
+  save(Object.assign({ id: humanId('h'), event: 'handoff', anchorId: '', target: null, quote: null, text: 'batch from ' + state.transport.mode, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 }, listed));
+  toast(action.finish ? 'Spec accepted' : 'Handed off ' + action.drafts + ' comment' + (action.drafts === 1 ? '' : 's') + ', agent notified');
+  refresh().finally(() => { state.handoffPosting = false; });
+}
+
+// TBD open and Next TBD share one step and one position (state.lastTbd).
+function nextTbd() {
+  const open = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
+  if (open.length) jumpToTbd(advanceTbd(state, open));
 }
 
 function jumpToTbd(el) {
@@ -1767,12 +3349,100 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
 }
 
+/* ---------------- saving: page-named events through the outbox ----------------
+ * review-state #live-save, #offline. Every human event is named by this page, kept in
+ * browser storage for this spool until the service stores it, shown at once, and sent
+ * in order; a resend after a lost response stores nothing new.
+ */
+const OUTBOX_KEY = 'spec-chat:outbox:' + REVIEW_DIR;
+const LOADED_KEY = 'spec-chat:events:' + REVIEW_DIR;
+let pageOutbox = null; // this page's own outbox when browser storage cannot keep it
+let flushing = null;
+
+function reviewStorage() {
+  try { return window.localStorage; } catch (_) { return null; }
+}
+
+function outboxEntries() {
+  if (pageOutbox) return pageOutbox;
+  try { return JSON.parse(reviewStorage().getItem(OUTBOX_KEY) || '[]'); } catch (_) { return pageOutbox = []; }
+}
+
+function setOutbox(entries) {
+  if (!pageOutbox) {
+    try { reviewStorage().setItem(OUTBOX_KEY, JSON.stringify(entries)); return; } catch (_) { /* fall back to this page */ }
+  }
+  pageOutbox = entries;
+}
+
+const outboxEvents = () => outboxEntries().map(entry => ({ actor: 'human', name: entry.name, body: entry.body }));
+
+function save(body) {
+  const event = Object.assign({}, body, { browser: state.reviewer.browser, author: state.reviewer.author }, state.version ? { version: state.version } : {});
+  state.lastStamp = nextStamp(state.lastStamp, Date.now(), Math.random);
+  const entry = { name: eventName(event, state.lastStamp), body: event };
+  setOutbox(outboxEntries().concat([entry]));
+  ingest([{ actor: 'human', name: entry.name, body: event }]);
+  flushOutbox();
+}
+
+async function drainOutbox() {
+  for (let entry; (entry = outboxEntries()[0]);) {
+    let result;
+    try { result = await state.transport.postEvent(entry); } catch (_) { state.outboxBlocked = true; return; }
+    setOutbox(outboxEntries().filter(waiting => waiting.name !== entry.name));
+    if (result === 'refused') forgetEvent(entry.name);
+  }
+  state.outboxBlocked = false;
+}
+
+function flushOutbox() {
+  if (!flushing) flushing = drainOutbox().finally(() => { flushing = null; renderOffline(); });
+  return flushing;
+}
+
+// The service refused the event outright; no resend can store it.
+function forgetEvent(name) {
+  state.events = state.events.filter(e => !(e.actor === 'human' && e.name === name));
+  state.seenNames.delete('human/' + name);
+  ingest([], true);
+  toast('The review service refused a change; it was not saved');
+}
+
+function keepLoaded(events) {
+  if (events.length === state.storedCount) return;
+  state.storedCount = events.length;
+  try { reviewStorage().setItem(LOADED_KEY, JSON.stringify(events)); } catch (_) { /* the page still shows them */ }
+}
+
+function loadedEvents() {
+  try { return JSON.parse(reviewStorage().getItem(LOADED_KEY) || '[]'); } catch (_) { return []; }
+}
+
+function renderOffline() {
+  const el = document.getElementById('hx-offline');
+  if (!el) return;
+  el.textContent = state.outboxBlocked ? offlineNotice(outboxEntries().length) : '';
+  el.hidden = !el.textContent;
+}
+
+// The ETag of the spec text this page shows, from the browser's copy of this document.
+async function shownVersion() {
+  try {
+    const tag = (await fetch(location.href.split('#')[0], { cache: 'force-cache' })).headers.get('ETag');
+    return tag ? tag.replace(/^W\//, '').replace(/"/g, '') : null;
+  } catch (_) { return null; }
+}
+
 /* ---------------- loops ---------------- */
 async function refresh() {
+  flushOutbox(); // #offline-reopen: waiting events are sent first; the read never waits on a pending save
   try {
     const listed = await state.transport.listEvents();
     const wake = Array.isArray(listed) ? null : listed.wake;
-    ingest(Array.isArray(listed) ? listed : listed.events);
+    const events = Array.isArray(listed) ? listed : listed.events;
+    keepLoaded(events);
+    ingest(events.concat(outboxEvents()));
     const agentEvents = state.events.filter(e => e.actor === 'agent');
     const observation = handoffObservation(state.events, Date.now());
     document.getElementById('hx-agent').textContent = handoffAgentText(observation, wake, agentEvents[agentEvents.length - 1]);
@@ -1781,11 +3451,16 @@ async function refresh() {
       state._beaconed = true;
       fetch('/hxdebug/threads=' + state.threads.size + '/pins=' + document.querySelectorAll('.hx-pin').length + '/charts=' + state.charts.size).catch(() => {});
     }
-  } catch (e) { status('event sync failed: ' + e.message); }
+  } catch (e) {
+    if (!state.eventsRendered) ingest(loadedEvents().concat(outboxEvents()));
+    status('event sync failed: ' + e.message);
+  }
+  renderOffline();
 }
 
 async function watchSpec() {
-  const m = await state.transport.specModified();
+  let m;
+  try { m = await state.transport.specModified(); } catch (_) { return; } // offline: the next poll checks
   if (m && state.specMtime && m > state.specMtime && !document.getElementById('hx-banner')) {
     const b = document.createElement('div');
     b.className = 'hx-banner';
@@ -1797,13 +3472,82 @@ async function watchSpec() {
   if (m) state.specMtime = state.specMtime || m;
 }
 
+/* ---------------- ANN-233 reader's place ----------------
+ * Per spec path: the nearest data-anchor at the viewport top plus the offset
+ * past its top, in localStorage. Restored once, after render; an address anchor
+ * wins, and a reader who already moved is never re-scrolled. Every storage call
+ * is wrapped: no storage means no kept place, never a broken page.
+ */
+const PLACE_KEY = 'hx-place:' + location.pathname;
+
+function readPlace(storage) {
+  try {
+    const place = JSON.parse(storage.getItem(PLACE_KEY));
+    return place && typeof place.anchor === 'string' && Number.isFinite(place.offset) ? place : null;
+  } catch (_) { return null; }
+}
+
+function writePlace(storage, place) {
+  try {
+    if (place) storage.setItem(PLACE_KEY, JSON.stringify(place));
+    else storage.removeItem(PLACE_KEY);
+  } catch (_) { /* full, sandboxed, or disabled: the place is simply not kept */ }
+}
+
+function currentPlace() {
+  if (window.scrollY <= 0) return null;
+  let place = null;
+  for (const el of document.querySelectorAll('[data-anchor]')) {
+    const r = el.getBoundingClientRect();
+    if (!r.height || r.top > 0 || (place && -r.top >= place.offset)) continue;
+    place = { anchor: el.dataset.anchor, offset: Math.round(-r.top) };
+  }
+  return place;
+}
+
+// Call before render; returns the after-render step that restores, then keeps, the place.
+// An address anchor names a [data-anchor]; specs carry no ids, so the browser never scrolls to it.
+function addressPlace() {
+  let anchor = location.hash.slice(1);
+  try { anchor = decodeURIComponent(anchor); } catch (_) { /* keep raw */ }
+  return anchor && findAnchor(anchor) ? { anchor, offset: 0 } : null;
+}
+
+function keepPlace() {
+  if (EMBED_REVIEW_DIR) return () => {};
+  let storage = null;
+  try { storage = window.localStorage; } catch (_) { /* sandboxed frame */ }
+  let moved = false;
+  const intent = () => { moved = true; };
+  const intents = ['wheel', 'touchstart', 'keydown', 'pointerdown'];
+  for (const t of intents) window.addEventListener(t, intent, { capture: true, passive: true });
+  return () => {
+    for (const t of intents) window.removeEventListener(t, intent, true);
+    const place = moved ? null : addressPlace() || (storage && readPlace(storage));
+    const el = place && findAnchor(place.anchor);
+    if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY + place.offset);
+    if (!storage) return;
+    let timer = 0;
+    const save = () => { clearTimeout(timer); timer = 0; writePlace(storage, currentPlace()); };
+    window.addEventListener('scroll', () => { if (!timer) timer = setTimeout(save, 250); }, { passive: true });
+    window.addEventListener('pagehide', save);
+  };
+}
+
 /* ---------------- boot ---------------- */
 (async function boot() {
-  mountUI();
+  const restorePlace = keepPlace();
   const httpPage = !EMBED_REVIEW_DIR && ['http:', 'https:'].includes(location.protocol);
+  // Deferred script: the DOM is the served spec until mountUI; compare it, never refetch it.
+  if (httpPage) state.range.loaded = anchorSignatures(document);
+  mountUI();
   if (httpPage) applyIssueFocus();
+  if (httpPage) { listenHost(); requestEvidence(); }
   await hydrateIslands();
   adoptForeignCharts();
+  restorePlace();
+  renderHighlight();
+  window.addEventListener('hashchange', arriveAtAddress);
   // spec scripts can create/recreate charts at any time; rescan when canvases appear
   let adoptTimer = null;
   new MutationObserver(muts => {
@@ -1818,6 +3562,8 @@ async function watchSpec() {
     return;
   }
   state.transport = location.protocol === 'file:' ? fsaTransport() : httpTransport();
+  state.reviewer = reviewerIdentity(reviewStorage(), Math.random);
+  if (httpPage) state.version = await shownVersion();
 
   if (state.transport.mode === 'fsa') {
     const btn = document.getElementById('hx-connect');
@@ -1919,11 +3665,86 @@ function startLoops() {
   refresh();
   watchSpec();
   setInterval(refresh, 2000);
+  window.addEventListener('online', refresh);
   setInterval(watchSpec, 5000);
   // Pins live inside anchored holders; a host framework re-rendering a holder (React
   // remounts, spec scripts rebuilding DOM) silently drops them. Redraw is idempotent.
   setInterval(() => { renderPins(); renderThreadHighlight(); }, 2000);
-  window.addEventListener('resize', () => { renderPins(); renderThreadHighlight(); });
+  // Markers are placed before pins, which step clear of them.
+  window.addEventListener('resize', () => { document.querySelectorAll('.hx-jev-marker').forEach(placeJevMarker); renderPins(); renderThreadHighlight(); });
 }
+
+/* ---------------- ANN-108 reading view ----------------
+ * This block owns the audience toggle and its HTTP-only Jev request. It never
+ * changes document order or removes clauses. Git focus and reading view are
+ * mutually exclusive display modes.
+ */
+function clearReadingAudience() {
+  document.querySelectorAll('[data-hx-audience]').forEach(el => delete el.dataset.hxAudience);
+}
+
+function clearGitFocusForReading() {
+  document.body.classList.remove('hx-focus-active');
+  document.querySelectorAll('[data-hx-focus],[data-hx-focus-root]').forEach(el => {
+    delete el.dataset.hxFocus;
+    delete el.dataset.hxFocusRoot;
+  });
+  document.querySelectorAll('.hx-focus-error').forEach(el => el.remove());
+  const url = new URL(location.href);
+  if (url.searchParams.get('focus') === 'changes') {
+    url.searchParams.delete('focus');
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+  }
+}
+
+function setReadingView(on) {
+  const next = Boolean(on);
+  if (next === state.readingView && !next) {
+    clearReadingAudience();
+    return;
+  }
+  if (next) clearGitFocusForReading();
+  state.readingView = next;
+  document.body.classList.toggle('hx-reading-active', next);
+  const button = document.getElementById('hx-reading');
+  if (button) {
+    button.setAttribute('aria-pressed', String(next));
+    button.textContent = next ? 'Reading view on' : 'Reading view';
+  }
+  if (!next) clearReadingAudience();
+  if (next) {
+    const base = (state.range.baseline && state.range.baseline.base) || new URLSearchParams(location.search).get('base');
+    if (base) requestJev(base);
+  } else {
+    renderJev();
+  }
+}
+
+function mountReadingView() {
+  if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(location.protocol) || document.getElementById('hx-reading')) return;
+  const toolbar = document.querySelector('.hx-toolbar');
+  if (!toolbar) return;
+  const style = document.createElement('style');
+  style.textContent = `.hx-reading-active [data-hx-audience="internals"]{color:#586069!important}
+.hx-reading-active [data-hx-audience="internals"] :is(a,code,strong,em,span){color:inherit!important}
+` + (document.querySelector('link[rel~="stylesheet"][href*=".style/spec.css"]') ? '' :
+    `@media(prefers-color-scheme:dark){.hx-reading-active [data-hx-audience="internals"]{color:#b9c0ca!important}}`);
+  document.head.appendChild(style);
+  const button = document.createElement('button');
+  button.id = 'hx-reading';
+  button.type = 'button';
+  button.textContent = 'Reading view';
+  button.setAttribute('aria-pressed', 'false');
+  button.addEventListener('click', () => setReadingView(!state.readingView));
+  toolbar.insertBefore(button, document.getElementById('hx-status'));
+  document.body.classList.toggle('hx-reading-active', state.readingView);
+}
+
+const readingClassObserver = new MutationObserver(() => {
+  if (state.readingView && document.body.classList.contains('hx-focus-active')) setReadingView(false);
+  else document.body.classList.toggle('hx-reading-active', state.readingView);
+});
+readingClassObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+setTimeout(mountReadingView, 0);
 
 })();
