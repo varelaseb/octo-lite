@@ -33,6 +33,7 @@
 <p data-acceptance-criterion data-anchor="acceptance-lane-space-workers" id="acceptance-lane-space-workers" data-story="user-story-lane-space"><span data-acceptance-scenario>Given a lane owner delivering a spec, When it spawns implementer, integrator, and reviewer workers,</span> <span data-acceptance-observable>Then Herdr shows each worker in the lane's space under a name that carries its role and its ticket, and no worker in any other space.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-lane-space-derive" id="acceptance-lane-space-derive" data-story="user-story-lane-space"><span data-acceptance-scenario>Given a lane with live workers in its space, When a reader reads the lane's workers,</span> <span data-acceptance-observable>Then it gets each worker's pane, role, and ticket from the lane's space and the workers' names, with no worker list in the lane record, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-lane-space-close" id="acceptance-lane-space-close" data-story="user-story-lane-space"><span data-acceptance-scenario>Given a finished lane whose space still holds its owner and a worker that started a background process, When the operator closes the lane's space,</span> <span data-acceptance-observable>Then Herdr no longer lists the space and none of the lane's agents or their background processes are still running, proven by a unit test: no screen shows the processes.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lane-space-shared" id="acceptance-lane-space-shared" data-story="user-story-lane-space"><span data-acceptance-scenario>Given a finished lane whose owner was started in a space shared with the operator and other lanes, When its owner reports the lane closed and the operator tears it down,</span> <span data-acceptance-observable>Then the owner's report names its owner tab to close and no space, and Herdr closes only that tab while the shared space, the operator, and every other lane in it keep running.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
@@ -91,14 +92,17 @@ The installer never upgrades anything without the user's explicit consent.</p>
 <p data-anchor="transport-no-ack" id="transport-no-ack">There is no acknowledgement step, inbox, or drain.</p>
 <p data-anchor="transport-lane-space" id="transport-lane-space">Each lane, one PR, runs in its own Herdr space labelled with the lane name; the fleet operator runs in a space of its own.
 <code>octo-lite-start</code> creates the lane space and starts the owner in it, leaving no other tab there, and prints its <code>workspace=</code> beside <code>pane=</code>.
-The owner spawns every worker of its lane into its own space, <code>$HERDR_WORKSPACE_ID</code>.</p>
-<p data-anchor="transport-space-derived" id="transport-space-derived">A lane's space id is the prefix of its owner pane id, <code>w7</code> in <code>"w7:p1"</code>, so no record key holds it.</p>
+The owner spawns every worker of its lane into its own space, <code>$HERDR_WORKSPACE_ID</code>.
+A lane's own space is the one <code>octo-lite-start</code> created for it; a lane started in a space shared with the operator or other lanes has no space of its own.</p>
+<p data-anchor="transport-space-derived" id="transport-space-derived">A lane's space id is the prefix of its owner pane id, <code>w7</code> in <code>"w7:p1"</code>, so no record key holds it.
+That space is the lane's own when no other lane's owner pane and not the operator's pane carries the same prefix.</p>
 <p data-anchor="transport-spawn-name" id="transport-spawn-name">Every worker is spawned under the name <code>&lt;role&gt;-&lt;ticket&gt;</code>, lowercase, for example <code>implementer-ann-64</code>, where the role is the role contract it runs and the ticket is the issue key it works; the lane space already names the lane, and Herdr accepts only lowercase names of at most 32 characters.
 The ticket is the issue key ending the name, read back in upper case; a worker serving the whole lane, such as the integrator or a reviewer of the integration head, carries the lane's primary issue key.
 An agent in the lane's space whose name does not follow this form is still a worker of the lane, with no role or ticket.
 The owner closes a worker once its result is consumed, before spawning the next one under the same name, so a name is live at most once; Herdr refuses a spawn under a live name.</p>
 <p data-anchor="transport-no-move" id="transport-no-move">A lane pane never moves to another space: Herdr rewrites a moved pane's pane and tab ids, which breaks the lane record, review rows, and teardown.</p>
-<p data-anchor="transport-close-space" id="transport-close-space">At teardown the operator closes the lane space with <code>herdr-close &lt;space id&gt;</code>, which closes the space and stops every process started in it, including detached ones.</p>
+<p data-anchor="transport-close-space" id="transport-close-space">At teardown the operator closes a lane's own space with <code>herdr-close &lt;space id&gt;</code>, which closes the space and stops every process started in it, including detached ones.
+A lane started in a shared space ends at its owner tab: the operator closes it with <code>herdr-close &lt;owner tab&gt;</code>, and the owner's close report names that tab, never the space.</p>
 <p data-anchor="transport-restart-risk" id="transport-restart-risk" data-spec-tbd="later">Risk: whether Herdr keeps space and pane ids across a Herdr server restart is unproven; if it does not, a restart breaks every lane record owner pane and every space derived from it.</p>
 </section>
 
@@ -169,7 +173,7 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 <tr data-anchor="octo-lane-record-life-waiting-lane"><td>Owner parks the lane on another lane, such as its merge, or resumes</td><td>Owner</td><td>Sets <code>waiting_on</code> to that lane's issue key; clears it to <code>""</code> on resume. One lane at a time.</td></tr>
 <tr data-anchor="octo-lane-record-life-operator"><td>Owner escalates to the fleet operator, or the operator answers</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"operator"</code>; clears it to <code>""</code> on answer.</td></tr>
 <tr data-anchor="octo-lane-record-life-audit"><td>Operator checks fleet status or wakes</td><td>Operator</td><td>Reads every record, writes none: a record is stale when its <code>waiting_on</code> key names no listed lane, its owner pane is not live, or its <code>goal</code> no longer names the lane's scope; the operator wakes that owner to fix it.</td></tr>
-<tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Closes the lane space, then removes the record.</td></tr>
+<tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Closes the lane's own space, or only its owner tab when the lane started in a shared space, then removes the record.</td></tr>
 </tbody>
 </table>
 </div>
