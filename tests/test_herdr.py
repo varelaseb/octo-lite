@@ -46,7 +46,7 @@ dialog_state() { [[ -f "$FAKE_DIALOG" ]] && cat "$FAKE_DIALOG" || echo none; }
 case "$sub" in
   "tab create")
     echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
-  "tab close")
+  "tab close"|"workspace close")
     echo "CLOSED" >>"$FAKE_CLOSED"; echo '{"result":{}}' ;;
   "agent start")
     n=0
@@ -422,10 +422,10 @@ class HerdrWrapperTest(unittest.TestCase):
 
     # --- close -----------------------------------------------------------
 
-    def tagged(self, tab):
+    def tagged(self, tab, space="w-none"):
         # setsid, like a detached command child that survives its tab
         p = subprocess.Popen(["sleep", "600"], start_new_session=True,
-                             env={**self.env, "HERDR_TAB_ID": tab})
+                             env={**self.env, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": space})
         self.addCleanup(lambda: (p.kill(), p.wait()))
         return p
 
@@ -437,8 +437,8 @@ class HerdrWrapperTest(unittest.TestCase):
         return False
 
     def test_close_ends_every_process_tagged_with_the_tab(self):
-        tab = f"t-{uuid.uuid4()}"
-        mine, other = self.tagged(tab), self.tagged(f"t-{uuid.uuid4()}")
+        tab = f"w1:t-{uuid.uuid4()}"
+        mine, other = self.tagged(tab), self.tagged(f"w1:t-{uuid.uuid4()}")
         r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True, env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"tab close {tab}", self.log.read_text())
@@ -447,6 +447,18 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIsNone(other.poll(), "killed a process from another tab")
         self.assertIn("killed=1", r.stdout)
         self.assertEqual(r.stderr, "", "unreadable /proc entries must be silent")
+
+    def test_close_of_a_space_ends_every_process_started_in_it(self):
+        space = f"w-{uuid.uuid4()}"
+        owner, worker = self.tagged(f"{space}:t1", space), self.tagged(f"{space}:t2", space)
+        other = self.tagged("w-other:t1", f"w-other-{uuid.uuid4()}")
+        r = subprocess.run([str(CLOSE), space], capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"workspace close {space}", self.log.read_text())
+        self.assertNotIn("tab close", self.log.read_text())
+        self.assertTrue(self.gone(owner) and self.gone(worker), "a space process survived herdr-close")
+        self.assertIsNone(other.poll(), "killed a process from another space")
+        self.assertIn(f"space={space} space_close_rc=0 killed=2", r.stdout)
 
     def test_close_rejects_an_option_as_a_tab(self):
         for arg in ("--help", "-h"):
