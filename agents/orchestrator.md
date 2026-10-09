@@ -34,7 +34,7 @@ Own one issue or one epic coordination layer from brief through closure.
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
   `#octo-lane-record-example`. Set `pr` to the PR number (e.g. `pr = 30`) when a draft PR opens. On worker spawn or close or handoff
   consumption, update `last_handoff_at`; the record lists no workers (spec
-  `#octo-lane-record-workers`). Spawn every worker into your own lane space,
+  `#octo-lane-record-workers`). Spawn every worker into your space,
   `--workspace "$HERDR_WORKSPACE_ID"`, named `<role>-<ticket>` lowercase per spec
   `#transport-spawn-name` (lane-wide workers carry the primary issue key); close
   it before reusing the name. Never move a lane pane to another space. When tickets are created or one
@@ -76,7 +76,7 @@ governs its workers governs it: every writer gets its own worktree.
 
 ## Rules
 
-- Use the operator's current Herdr session, your lane space, and Claude at its CLI
+- Use the operator's current Herdr session, your space, and Claude at its CLI
   default; give one concise context pointer and identify as operator-facing.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
@@ -84,7 +84,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), review verdict linked, spec acceptance recorded. A red check is never "pre-existing": a red main gets fixed first.
 - Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; the owner reports the smoke result first.
 - Verify a message's target pane against the lane record before sending.
-- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. Teardown order: review rows, then worktrees, then workers; report with proof nothing is left. On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
+- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. Teardown order: review rows, then worktrees, then workers; report with proof nothing is left. The close report names what the operator closes: your space id (your owner pane id's prefix) only when it is your lane's own, no other lane record's owner and not the operator's pane (`operator.toml`) carrying that prefix; otherwise your owner tab (`$HERDR_TAB_ID`), never the space (spec `#transport-close-space`). On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 

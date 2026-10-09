@@ -56,7 +56,7 @@ After spawning a lane orchestrator, create its lane record from the spawn output
 lane and its children, derive its space id (the owner pane id's prefix, `w5` in
 `w5:pP8`). Close the space with `herdr-close <space id>` only when it is the lane's
 own: no other lane record's owner and not your pane (`operator.toml`) has that
-prefix (spec `#transport-lane-space`). Otherwise close only the owner's tab with
+prefix (spec `#transport-space-derived`, `#transport-close-space`). Otherwise close only the owner's tab with
 `herdr-close <owner tab>` (the spawn's `tab=`). Then delete the record. Never move
 a lane pane to another space; Herdr rewrites its ids.
 
