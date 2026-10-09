@@ -96,8 +96,8 @@ started_at = "2026-09-26T01:05:00Z"   # UTC now, once, at launch
 waiting_on = ""
 ```
 
-`waiting_on` is the owner's field: empty, `blocked`, `operator`, or another lane's issue key, never free text. The operator writes it only at launch (`""`) or for a follow-up lane (the old lane's key); gates are derived by the board, so the operator records them nowhere in the lane record.
-Check each lane record against what you observe; when one is stale, wake its owner to fix it.
+`waiting_on` is the owner's field, per spec `#octo-lane-record-key-waiting`. The operator writes it only at launch (`""`) or for a follow-up lane (the old lane's key).
+Audit per spec `#octo-lane-record-life-audit`: read every lane record, write none; a record is stale when a `waiting_on` key names no listed lane, its owner pane is not live, or its `goal` no longer names the lane's scope; wake that owner to fix it.
 
 `goal` is the board card title: 2 to 6 plain words naming the feature.
 When you fold new scope into an open lane, update its goal in the same step.
