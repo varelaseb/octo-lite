@@ -81,7 +81,7 @@ invocation is unknown or changed. Spawn every exploration,
 implementation, merge, review-fix worker through Herdr. Prefer background tabs
 and fill available capacity from the current frontier.
 
-Spawn every worker into the lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
+Spawn every worker into the owner's space, `--workspace "$HERDR_WORKSPACE_ID"`,
 named `<role>-<ticket>` lowercase (`implementer-ann-64`; a lane-wide worker such
 as the integrator carries the primary issue key), per spec
 `#transport-spawn-name`. Close a worker before reusing its name. Herdr owns
