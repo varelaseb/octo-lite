@@ -53,9 +53,12 @@ on each prod (waking or redirecting an owner), gate relay, merge executed on hum
 instruction, and note to the human worth keeping, append one JSON line per
 octo-lite spec `#handoff-operator` (`spec/domains/octo-lite.spec.html`).
 After spawning a lane orchestrator, create its lane record from the spawn output, exactly like this; at teardown of the finished
-lane and its children, close the lane space with `herdr-close <space id>` (the owner
-pane id's prefix, `w5` in `w5:pP8`), then delete it. Never move a lane pane to
-another space; Herdr rewrites its ids.
+lane and its children, derive its space id (the owner pane id's prefix, `w5` in
+`w5:pP8`). Close the space with `herdr-close <space id>` only when it is the lane's
+own: no other lane record's owner and not your pane (`operator.toml`) has that
+prefix (spec `#transport-lane-space`). Otherwise close only the owner's tab with
+`herdr-close <owner tab>` (the spawn's `tab=`). Then delete the record. Never move
+a lane pane to another space; Herdr rewrites its ids.
 
 Lane start, in order: create the primary Linear issue; add the lane's worktree
 and branch (slug = issue key lowercase, no hyphen); `octo-lite-start --cwd <worktree> --name <lane name>`, which creates the lane space;
@@ -83,7 +86,7 @@ every service restart, confirm it answers.
 
 After every merge, check the target's main CI; a red main gets a fix lane at once, and a merge ask always states its CI result.
 
-Cross-lane and shared only: merge order across lanes, restart shared services and confirm they answer, live install clones on main, close the owner's tab after it reports done. No re-checking a lane's merge-ask items beyond a spot check.
+Cross-lane and shared only: merge order across lanes, restart shared services and confirm they answer, live install clones on main, tear a lane down after its owner reports done, per the teardown rule above. No re-checking a lane's merge-ask items beyond a spot check.
 
 The operator's own PRs follow the same finish order (CI green before a merge ask).
 
