@@ -37,10 +37,7 @@ class LaneRecordTests(unittest.TestCase):
             record["waiting_on"],
             {"", "blocked", "operator"},
         )
-        self.assertIsInstance(record["workers"], list)
-        self.assertEqual(record["workers"][0]["pane"], "w5:pC1")
-        self.assertEqual(record["workers"][0]["ticket"], "ANN-64")
-        self.assertEqual(record["workers"][0]["role"], "implementer")
+        self.assertNotIn("workers", record)
         tickets = {t["key"]: t for t in record["tickets"]}
         self.assertEqual(tickets["ANN-64"]["state"], "active")
         for ticket in tickets.values():

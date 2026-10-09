@@ -17,6 +17,10 @@ herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
   -- codex     # non-default alternative
 ```
 
+A lane worker spawns into its lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
+named `<role>-<ticket>` lowercase (`implementer-ann-64`). A pane never moves
+between spaces: Herdr rewrites its ids.
+
 Spawn bare, then send the brief with `herdr-say`. Nothing follows the runtime:
 with an inline prompt, `herdr agent start` times out waiting for readiness.
 
