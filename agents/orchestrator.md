@@ -37,11 +37,9 @@ Own one issue or one epic coordination layer from brief through closure.
   `pane`, `role` (its contract), and `ticket`. When tickets are created or one
   moves state or holder, rewrite its `[[tickets]]` entry: `key`, `state`
   (`"waiting"`, `"ready"`, `"active"`, `"done"`), `passes` (repair passes, +1 per
-  repair), `since` (quoted UTC now). Set `waiting_on` to `"operator"` while escalated to the
-  fleet operator, `"blocked"` while waiting, or to
-  another lane's issue key (one lane at a time) while parked on another lane, and clear it to `""` when
-  work resumes. Do not hand-set `"spec review"`, `"QA review"`, or `"merge"`;
-  the column function derives them from observable state (ANN-373).
+  repair), `since` (quoted UTC now). Set `waiting_on` per spec `#octo-lane-record-key-waiting`: `"operator"` while escalated,
+  one other lane's issue key while parked on that lane, `"blocked"` for any other wait
+  (ticket, role, outside issue), `""` on resume or at a human gate; never a gate value.
   The lane owner sets `issue` when shaping creates the issue, if the operator
   did not, no later than `pr`.
   Only the owner updates the lane record, and keeps it current as things change;

@@ -76,7 +76,10 @@ Readers follow this format; octo-lite names no reader.</p>
 <tr data-anchor="octo-lane-record-key-tickets"><td><code>[[tickets]] key</code>, <code>state</code>, <code>passes</code>, <code>since</code></td><td>One entry per ticket of the lane: its key, <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, its repair pass count, and the quoted UTC instant it entered its current state and holder.</td></tr>
 <tr data-anchor="octo-lane-record-key-started"><td><code>started_at</code></td><td>Quoted UTC instant when the lane launched, for example <code>"2026-09-26T01:05:00Z"</code>, written once at launch.</td></tr>
 <tr data-anchor="octo-lane-record-key-last-handoff"><td><code>last_handoff_at</code></td><td>Quoted UTC instant of the owner's last worker spawn, close, or hand-off consumption.</td></tr>
-<tr data-anchor="octo-lane-record-key-waiting"><td><code>waiting_on</code></td><td><code>""</code>, <code>"blocked"</code>, <code>"operator"</code> (the lane escalated to the fleet operator), or one other lane's issue key, for example <code>"ANN-136"</code>, while this lane waits on that lane. The gate values <code>"spec review"</code>, <code>"QA review"</code>, and <code>"merge"</code> are derived by the <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#health">column function</a> and are no longer set here (ANN-373).</td></tr>
+<tr data-anchor="octo-lane-record-key-waiting"><td><code>waiting_on</code></td><td><code>""</code>, <code>"blocked"</code>, <code>"operator"</code> (the lane escalated to the fleet operator), or one other lane's issue key, for example <code>"ANN-136"</code>, while this lane waits on that lane.
+The <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/worklane-provider.spec.html#health">column function</a> reads a key no listed lane has as that lane done.
+A wait on a ticket, role, or outside issue is <code>"blocked"</code>.
+A human gate leaves it <code>""</code>: the column function derives <code>"spec review"</code>, <code>"QA review"</code>, and <code>"merge"</code>, which are never set here.</td></tr>
 </tbody>
 </table>
 </div>
@@ -92,7 +95,7 @@ goal = "Shape ANN-45 and ANN-44 through spec acceptance"
 pr = 30                          # set when shaping opens the draft PR
 started_at = "2026-09-24T17:02:00Z"   # operator, once, at launch
 last_handoff_at = "2026-09-24T18:24:09Z"
-waiting_on = ""                  # "", "blocked", "operator", or a lane key "ANN-44"; gate values derived (ANN-373)
+waiting_on = ""                  # "", "blocked", "operator", or another lane's issue key "ANN-136"; human gates leave it ""
 
 [[workers]]
 pane = "w5:pC1"
@@ -122,9 +125,9 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates <code>[[workers]]</code> <code>pane</code>, <code>role</code>, and <code>ticket</code>, and <code>last_handoff_at</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-tickets"><td>Tickets are created, or a ticket moves state or holder</td><td>Owner</td><td>Rewrites its <code>[[tickets]]</code> entry: <code>state</code> <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, <code>since</code> set to now; a repair pass adds one to <code>passes</code>.</td></tr>
-<tr data-anchor="octo-lane-record-life-gate"><td>Owner hands a human gate to the human, or the gate resolves</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"spec review"</code> while spec acceptance waits on human spec review, <code>"QA review"</code> while QA evidence waits on the human, or <code>"merge"</code> when only the human's merge instruction remains; clears it when the gate resolves.</td></tr>
 <tr data-anchor="octo-lane-record-life-waiting-lane"><td>Owner parks the lane on another lane, such as its merge, or resumes</td><td>Owner</td><td>Sets <code>waiting_on</code> to that lane's issue key; clears it to <code>""</code> on resume. One lane at a time.</td></tr>
 <tr data-anchor="octo-lane-record-life-operator"><td>Owner escalates to the fleet operator, or the operator answers</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"operator"</code>; clears it to <code>""</code> on answer.</td></tr>
+<tr data-anchor="octo-lane-record-life-audit"><td>Operator checks fleet status or wakes</td><td>Operator</td><td>Reads every record, writes none: a record is stale when its <code>waiting_on</code> key names no listed lane, its owner pane is not live, or its <code>goal</code> no longer names the lane's scope; the operator wakes that owner to fix it.</td></tr>
 <tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
 </tbody>
 </table>
