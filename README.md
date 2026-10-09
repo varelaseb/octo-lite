@@ -49,7 +49,7 @@ missing, or too old with the upgrade source.
 
 ```bash
 scripts/install-octo-lite --onboard
-octo-lite-start --workspace ID --cwd WORKTREE [--runtime claude|codex] [--operating-model FILE]
+octo-lite-start --cwd WORKTREE [--name LANE] [--runtime claude|codex] [--operating-model FILE]
 ```
 
 `--onboard` installs the links, then asks whether agents may push, open pull
@@ -60,8 +60,9 @@ again; delete the file to answer afresh. Every install publishes
 `${XDG_STATE_HOME:-~/.local/state}/octo-lite/onboarding.toml`: `status`
 (`pending` until consent is kept, then `done`) and `doc`, a link here.
 
-`octo-lite-start`, installed on `PATH`, starts one orchestrator in its own Herdr
-tab at the worktree. It is the published start command; callers never use
+`octo-lite-start`, installed on `PATH`, creates a Herdr space labelled with the
+lane name and starts the lane's orchestrator alone in it at the worktree,
+printing `workspace=` beside `pane=`. It is the published start command; callers never use
 `herdr-spawn` inside the clone.
 
 With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
@@ -80,7 +81,8 @@ state and config above under `PATH/.local/state` and `PATH/.config`, ignoring
 `herdr-spawn --role ROLE -- claude|codex`: Claude through `--agent ROLE`, Codex
 as developer instructions. Spawn bare; the brief follows by `herdr-say`.
 `herdr-close TAB` tears a worker down, detached processes
-included. The meta-operator is a persistent Herdr pane started with `herdr-spawn
+included; `herdr-close SPACE` tears down a lane space the lane owns alone, else
+the operator closes only the owner's tab. The meta-operator is a persistent Herdr pane started with `herdr-spawn
 --role meta-operator -- claude`; there is no supervised sweep.
 
 ## Workflow

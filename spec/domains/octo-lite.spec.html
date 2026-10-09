@@ -8,7 +8,7 @@
 <script defer src="../.viz/runtime.js"></script>
 </head>
 <body>
-<article class="spec" data-spec-version="1">
+<article class="spec" data-spec-version="1" data-spec-contract="shaped-sections-v1">
 <header data-anchor="header" id="header">
 <h1>octo-lite current state</h1>
 <nav><a href="../index.spec.html">Specifications</a> / octo-lite</nav>
@@ -16,11 +16,45 @@
 <p data-anchor="header-replaces" id="header-replaces">It replaces the operating-model, delivery-lifecycle, role-runtime, and operator-control domain specs, which described deleted apparatus; they remain in git history.</p>
 </header>
 
-<section data-anchor="user-stories" id="user-stories">
+<section data-spec-section="user-stories" data-anchor="user-stories" id="user-stories">
 <h2>User stories</h2>
 <p data-user-story data-anchor="user-story-deliver-spec" id="user-story-deliver-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can shape an idea into an accepted spec, then have it filed as a ticket graph and delivered on one PR ready for my review.</p>
 <p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script and a plain git pull keeps it current; on a box with an existing setup, the installer adopts compatible links, skips what belongs to someone else, and never overwrites or fails.</p>
 <p data-user-story data-anchor="user-story-operator-log" id="user-story-operator-log" data-user-facing="false" data-guided-journey="no">As the fleet operator, I append one line per prod, gate relay, merge, and note to the human to my own hand-off file, so the floor shows what I did beside each lane's own lines.</p>
+<p data-user-story data-anchor="user-story-lane-space" id="user-story-lane-space" data-user-facing="true" data-guided-journey="no">As an operator, I see each lane in its own Herdr space named after the lane, holding its owner and every worker of that lane, while I work in a space of my own; closing a finished lane's space leaves nothing of it running.</p>
+</section>
+
+<section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
+<h2>Acceptance criteria</h2>
+<p data-acceptance-criterion data-anchor="acceptance-deliver-spec" id="acceptance-deliver-spec" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator with an accepted spec in a lane, When the lane owner runs <code>implement-spec</code> to completion,</span> <span data-acceptance-observable>Then one PR holds every ticket's work and shows clear review and passing required checks, ready for the operator's review.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-install" id="acceptance-install" data-story="user-story-install"><span data-acceptance-scenario>Given an operator on a box where some install paths are already occupied by someone else's files, When the operator runs the installer,</span> <span data-acceptance-observable>Then it reports each occupied path as skipped, links every other item, and exits successfully, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-operator-log" id="acceptance-operator-log" data-story="user-story-operator-log"><span data-acceptance-scenario>Given the fleet operator prodding a lane owner, When the prod is sent,</span> <span data-acceptance-observable>Then the operator's hand-off file gains one prod line naming the lane, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lane-space-start" id="acceptance-lane-space-start" data-story="user-story-lane-space"><span data-acceptance-scenario>Given an operator in its own Herdr space, When the operator launches a lane,</span> <span data-acceptance-observable>Then Herdr shows a new space named after the lane holding only that lane's owner, and the operator's space is unchanged.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lane-space-workers" id="acceptance-lane-space-workers" data-story="user-story-lane-space"><span data-acceptance-scenario>Given a lane owner delivering a spec, When it spawns implementer, integrator, and reviewer workers,</span> <span data-acceptance-observable>Then Herdr shows each worker in the lane's space under a name that carries its role and its ticket, and no worker in any other space.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lane-space-derive" id="acceptance-lane-space-derive" data-story="user-story-lane-space"><span data-acceptance-scenario>Given a lane with live workers in its space, When a reader reads the lane's workers,</span> <span data-acceptance-observable>Then it gets each worker's pane, role, and ticket from the lane's space and the workers' names, with no worker list in the lane record, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lane-space-close" id="acceptance-lane-space-close" data-story="user-story-lane-space"><span data-acceptance-scenario>Given a finished lane whose space still holds its owner and a worker that started a background process, When the operator closes the lane's space,</span> <span data-acceptance-observable>Then Herdr no longer lists the space and none of the lane's agents or their background processes are still running, proven by a unit test: no screen shows the processes.</span></p>
+</section>
+
+<section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
+<h2>Modular boundaries</h2>
+<p data-modular-boundary data-anchor="boundary-transport" id="boundary-transport">
+<span data-boundary-responsibility>The Herdr wrappers (<code>octo-lite-start</code>, <code>herdr-spawn</code>, <code>herdr-say</code>, <code>herdr-close</code>) own placing lane agents in spaces, messaging them, and closing tabs and spaces.</span>
+<span data-boundary-seam>The caller-facing seam is each wrapper's arguments and its printed <code>pane=</code> and <code>workspace=</code> lines.</span>
+<span data-boundary-dependency>Direction is external-provider: the wrappers depend on the Herdr CLI; roles and skills depend on the wrappers, never the reverse.</span>
+<span data-boundary-scope>Observable scope: Herdr spaces, tabs, and agents, and process exit.</span>
+</p>
+<p data-modular-boundary data-anchor="boundary-lane-record" id="boundary-lane-record">
+<span data-boundary-responsibility>octo-lite owns and publishes the lane record and hand-off formats; roles write them at the named moments.</span>
+<span data-boundary-seam>The caller-facing seam is the files under <code>$XDG_STATE_HOME/octo-lite/lanes/</code>, plus the lane's Herdr space and spawn names for workers.</span>
+<span data-boundary-dependency>Direction is self-contained: readers such as a board depend on the format; octo-lite names no reader.</span>
+<span data-boundary-scope>Observable scope: file contents and the lane's space membership.</span>
+</p>
+<p data-modular-boundary data-anchor="boundary-delivery" id="boundary-delivery">
+<span data-boundary-responsibility>Role contracts and skills own shaping, delivery, review, and gates.</span>
+<span data-boundary-seam>The caller-facing seam is the role contracts in <code>agents/</code> and the skills in <code>skills/</code>.</span>
+<span data-boundary-dependency>Direction is downward: roles use the wrappers and the lane record format; external providers are Linear, GitHub, and Spec Chat.</span>
+<span data-boundary-scope>Observable scope: tickets, the PR, and the lane record.</span>
+</p>
 </section>
 
 <section data-anchor="install" id="install">
@@ -55,6 +89,17 @@ The installer never upgrades anything without the user's explicit consent.</p>
 <p data-anchor="transport-herdr" id="transport-herdr"><code>herdr-spawn</code> opens one tab and agent at an explicit worktree, and <code>herdr-say</code> delivers a message, returning only once Herdr observes a state change.</p>
 <p data-anchor="transport-spawn-bare" id="transport-spawn-bare"><code>herdr-spawn</code> starts the agent bare, and its brief follows by <code>herdr-say</code>.</p>
 <p data-anchor="transport-no-ack" id="transport-no-ack">There is no acknowledgement step, inbox, or drain.</p>
+<p data-anchor="transport-lane-space" id="transport-lane-space">Each lane, one PR, runs in its own Herdr space labelled with the lane name; the fleet operator runs in a space of its own.
+<code>octo-lite-start</code> creates the lane space and starts the owner in it, leaving no other tab there, and prints its <code>workspace=</code> beside <code>pane=</code>.
+The owner spawns every worker of its lane into its own space, <code>$HERDR_WORKSPACE_ID</code>.</p>
+<p data-anchor="transport-space-derived" id="transport-space-derived">A lane's space id is the prefix of its owner pane id, <code>w7</code> in <code>"w7:p1"</code>, so no record key holds it.</p>
+<p data-anchor="transport-spawn-name" id="transport-spawn-name">Every worker is spawned under the name <code>&lt;role&gt;-&lt;ticket&gt;</code>, lowercase, for example <code>implementer-ann-64</code>, where the role is the role contract it runs and the ticket is the issue key it works; the lane space already names the lane, and Herdr accepts only lowercase names of at most 32 characters.
+The ticket is the issue key ending the name, read back in upper case; a worker serving the whole lane, such as the integrator or a reviewer of the integration head, carries the lane's primary issue key.
+An agent in the lane's space whose name does not follow this form is still a worker of the lane, with no role or ticket.
+The owner closes a worker once its result is consumed, before spawning the next one under the same name, so a name is live at most once; Herdr refuses a spawn under a live name.</p>
+<p data-anchor="transport-no-move" id="transport-no-move">A lane pane never moves to another space: Herdr rewrites a moved pane's pane and tab ids, which breaks the lane record, review rows, and teardown.</p>
+<p data-anchor="transport-close-space" id="transport-close-space">At teardown the operator closes the lane space with <code>herdr-close &lt;space id&gt;</code>, which closes the space and stops every process started in it, including detached ones.</p>
+<p data-anchor="transport-restart-risk" id="transport-restart-risk" data-spec-tbd="later">Risk: whether Herdr keeps space and pane ids across a Herdr server restart is unproven; if it does not, a restart breaks every lane record owner pane and every space derived from it.</p>
 </section>
 
 <section data-anchor="lane-record" id="lane-record">
@@ -72,7 +117,6 @@ Readers follow this format; octo-lite names no reader.</p>
 <tr data-anchor="octo-lane-record-key-goal"><td><code>goal</code></td><td>One line: a short plain feature name, the lane title.</td></tr>
 <tr data-anchor="octo-lane-record-key-pr"><td><code>pr</code></td><td>Pull request number; absent until one opens.</td></tr>
 <tr data-anchor="octo-lane-record-key-owner"><td><code>owner</code></td><td>The owner's Herdr pane id, the <code>pane=</code> value <code>herdr-spawn</code> printed, for example <code>"w5:pB2"</code>; never the agent name or tab.</td></tr>
-<tr data-anchor="octo-lane-record-key-workers"><td><code>[[workers]] pane</code>, <code>role</code>, <code>ticket</code></td><td>Each worker's Herdr pane, its role (the role contract it runs, for example <code>"implementer"</code>), and the ticket key it works.</td></tr>
 <tr data-anchor="octo-lane-record-key-tickets"><td><code>[[tickets]] key</code>, <code>state</code>, <code>passes</code>, <code>since</code></td><td>One entry per ticket of the lane: its key, <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, its repair pass count, and the quoted UTC instant it entered its current state and holder.</td></tr>
 <tr data-anchor="octo-lane-record-key-started"><td><code>started_at</code></td><td>Quoted UTC instant when the lane launched, for example <code>"2026-09-26T01:05:00Z"</code>, written once at launch.</td></tr>
 <tr data-anchor="octo-lane-record-key-last-handoff"><td><code>last_handoff_at</code></td><td>Quoted UTC instant of the owner's last worker spawn, close, or hand-off consumption.</td></tr>
@@ -85,10 +129,12 @@ A human gate leaves it <code>""</code>: the column function derives <code>"spec 
 </div>
 <figcaption data-anchor="octo-lane-record-fields-caption">The file is rewritten when the lane moves, so its modified time is the lane's last activity.</figcaption>
 </figure>
+<p data-anchor="octo-lane-record-workers" id="octo-lane-record-workers">The record lists no workers.
+A lane's workers are the Herdr agents in the lane's space other than the owner; each worker's pane is its Herdr pane id, and its role and ticket come from its <a href="#transport-spawn-name">spawn name</a>.</p>
 <figure data-anchor="octo-lane-record">
 <h3 data-anchor="octo-lane-record-heading">The lane record</h3>
 <pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
-owner = "w5:pB2"                 # owner pane id: herdr-spawn pane=, never agent name or tab; file named by agent name
+owner = "w7:pB2"                 # owner pane id: herdr-spawn pane=, never agent name or tab; its prefix w7 is the lane space
 repository = "varelaseb/octo-lite"
 issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
 goal = "Shape ANN-45 and ANN-44 through spec acceptance"
@@ -96,11 +142,6 @@ pr = 30                          # set when shaping opens the draft PR
 started_at = "2026-09-24T17:02:00Z"   # operator, once, at launch
 last_handoff_at = "2026-09-24T18:24:09Z"
 waiting_on = ""                  # "", "blocked", "operator", or another lane's issue key "ANN-136"; human gates leave it ""
-
-[[workers]]
-pane = "w5:pC1"
-ticket = "ANN-64"
-role = "implementer"
 
 [[tickets]]
 key = "ANN-64"
@@ -121,14 +162,14 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 <table data-anchor="octo-lane-record-life-table">
 <thead><tr><th>Moment</th><th>Who</th><th>Record change</th></tr></thead>
 <tbody>
-<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates it with owner, repository, goal, and issue when known, plus <code>started_at</code> set to now and <code>waiting_on</code> set to <code>""</code>. Writes <code>operator.toml</code> with its own <code>pane</code> beside the lanes directory at its own launch, and appends to <code>operator.handoffs.jsonl</code> beside it per the <a href="#handoff-operator">operator log</a>.</td></tr>
+<tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates the lane space through <code>octo-lite-start</code>, then the record with owner, repository, goal, and issue when known, plus <code>started_at</code> set to now and <code>waiting_on</code> set to <code>""</code>. Writes <code>operator.toml</code> with its own <code>pane</code> beside the lanes directory at its own launch, and appends to <code>operator.handoffs.jsonl</code> beside it per the <a href="#handoff-operator">operator log</a>.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
-<tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates <code>[[workers]]</code> <code>pane</code>, <code>role</code>, and <code>ticket</code>, and <code>last_handoff_at</code>.</td></tr>
+<tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates <code>last_handoff_at</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-tickets"><td>Tickets are created, or a ticket moves state or holder</td><td>Owner</td><td>Rewrites its <code>[[tickets]]</code> entry: <code>state</code> <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, <code>since</code> set to now; a repair pass adds one to <code>passes</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-waiting-lane"><td>Owner parks the lane on another lane, such as its merge, or resumes</td><td>Owner</td><td>Sets <code>waiting_on</code> to that lane's issue key; clears it to <code>""</code> on resume. One lane at a time.</td></tr>
 <tr data-anchor="octo-lane-record-life-operator"><td>Owner escalates to the fleet operator, or the operator answers</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"operator"</code>; clears it to <code>""</code> on answer.</td></tr>
 <tr data-anchor="octo-lane-record-life-audit"><td>Operator checks fleet status or wakes</td><td>Operator</td><td>Reads every record, writes none: a record is stale when its <code>waiting_on</code> key names no listed lane, its owner pane is not live, or its <code>goal</code> no longer names the lane's scope; the operator wakes that owner to fix it.</td></tr>
-<tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Removes it.</td></tr>
+<tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Closes the lane space, then removes the record.</td></tr>
 </tbody>
 </table>
 </div>

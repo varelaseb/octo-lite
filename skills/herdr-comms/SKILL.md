@@ -17,6 +17,10 @@ herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
   -- codex     # non-default alternative
 ```
 
+A lane worker spawns into its lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
+named `<role>-<ticket>` lowercase (`implementer-ann-64`). A pane never moves
+between spaces: Herdr rewrites its ids.
+
 Spawn bare, then send the brief with `herdr-say`. Nothing follows the runtime:
 with an inline prompt, `herdr agent start` times out waiting for readiness.
 
@@ -65,16 +69,20 @@ those leave to the caller:
 
 Any failure closes the tab, so a failed spawn never leaves an orphan.
 
-## Close an agent
+## Close an agent or a lane space
 
 ```
 herdr-close TAB
+herdr-close SPACE
 ```
 
-The teardown step. Closes the tab, then sends TERM to every process whose
-environ carries `HERDR_TAB_ID=TAB`, which catches detached children that tab
-close alone leaves running. Run it from the spawner's tab. Prints
-`tab= tab_close_rc= killed=` and exits with the tab close status.
+The teardown step. An id with a colon (`w5:t2`) is a tab, one without (`w5`)
+is a space. Closes it, then sends TERM to every process whose environ carries
+`HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which catches detached
+children that close alone leaves running. Run it from outside what it closes:
+the spawner closes a tab, the operator closes a finished lane's space. Prints
+`tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and exits with
+the close status.
 
 ## Send a message
 

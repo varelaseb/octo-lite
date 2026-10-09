@@ -81,8 +81,11 @@ invocation is unknown or changed. Spawn every exploration,
 implementation, merge, review-fix worker through Herdr. Prefer background tabs
 and fill available capacity from the current frontier.
 
-Use the same current Herdr session and workspace routing as the owning
-orchestrator. Herdr owns session selection. Spawn Claude workers
+Spawn every worker into the lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
+named `<role>-<ticket>` lowercase (`implementer-ann-64`; a lane-wide worker such
+as the integrator carries the primary issue key), per spec
+`#transport-spawn-name`. Close a worker before reusing its name. Herdr owns
+session selection. Spawn Claude workers
 (`-- claude`, CLI default model; brief via `herdr-say`); Codex only when the operator
 explicitly selects it. Keep the worker-specific nuance: every writer still
 gets its own worktree, and only one integrator writes the integration branch.

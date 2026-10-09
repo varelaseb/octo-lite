@@ -33,8 +33,11 @@ Own one issue or one epic coordination layer from brief through closure.
   fields a moment names and keeping every other field;
   the owner never creates or rewrites it. `last_handoff_at` is a quoted UTC string, as in spec
   `#octo-lane-record-example`. Set `pr` to the PR number (e.g. `pr = 30`) when a draft PR opens. On worker spawn or close or handoff
-  consumption, update `[[workers]]` and `last_handoff_at`. Each `[[workers]]` entry has
-  `pane`, `role` (its contract), and `ticket`. When tickets are created or one
+  consumption, update `last_handoff_at`; the record lists no workers (spec
+  `#octo-lane-record-workers`). Spawn every worker into your own lane space,
+  `--workspace "$HERDR_WORKSPACE_ID"`, named `<role>-<ticket>` lowercase per spec
+  `#transport-spawn-name` (lane-wide workers carry the primary issue key); close
+  it before reusing the name. Never move a lane pane to another space. When tickets are created or one
   moves state or holder, rewrite its `[[tickets]]` entry: `key`, `state`
   (`"waiting"`, `"ready"`, `"active"`, `"done"`), `passes` (repair passes, +1 per
   repair), `since` (quoted UTC now). Set `waiting_on` per spec `#octo-lane-record-key-waiting`: `"operator"` while escalated,
@@ -73,7 +76,7 @@ governs its workers governs it: every writer gets its own worktree.
 
 ## Rules
 
-- Use the operator's current Herdr session/workspace and Claude at its CLI
+- Use the operator's current Herdr session, your lane space, and Claude at its CLI
   default; give one concise context pointer and identify as operator-facing.
 - Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
