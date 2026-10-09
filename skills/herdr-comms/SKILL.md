@@ -80,7 +80,8 @@ The teardown step. An id with a colon (`w5:t2`) is a tab, one without (`w5`)
 is a space. Closes it, then sends TERM to every process whose environ carries
 `HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which catches detached
 children that close alone leaves running. Run it from outside what it closes:
-the spawner closes a tab, the operator closes a finished lane's space. Prints
+the spawner closes a tab, the operator closes a finished lane's own space, or
+only its owner tab when the lane started in a shared space. Prints
 `tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and exits with
 the close status.
 
