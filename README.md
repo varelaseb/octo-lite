@@ -81,7 +81,8 @@ state and config above under `PATH/.local/state` and `PATH/.config`, ignoring
 `herdr-spawn --role ROLE -- claude|codex`: Claude through `--agent ROLE`, Codex
 as developer instructions. Spawn bare; the brief follows by `herdr-say`.
 `herdr-close TAB` tears a worker down, detached processes
-included. The meta-operator is a persistent Herdr pane started with `herdr-spawn
+included; `herdr-close SPACE` tears down a lane space the lane owns alone, else
+the operator closes only the owner's tab. The meta-operator is a persistent Herdr pane started with `herdr-spawn
 --role meta-operator -- claude`; there is no supervised sweep.
 
 ## Workflow
