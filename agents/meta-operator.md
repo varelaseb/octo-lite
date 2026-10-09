@@ -53,10 +53,12 @@ on each prod (waking or redirecting an owner), gate relay, merge executed on hum
 instruction, and note to the human worth keeping, append one JSON line per
 octo-lite spec `#handoff-operator` (`spec/domains/octo-lite.spec.html`).
 After spawning a lane orchestrator, create its lane record from the spawn output, exactly like this; at teardown of the finished
-lane and its children, delete it.
+lane and its children, close the lane space with `herdr-close <space id>` (the owner
+pane id's prefix, `w5` in `w5:pP8`), then delete it. Never move a lane pane to
+another space; Herdr rewrites its ids.
 
 Lane start, in order: create the primary Linear issue; add the lane's worktree
-and branch (slug = issue key lowercase, no hyphen); `octo-lite-start --workspace <ws> --cwd <worktree> --name <lane name>`;
+and branch (slug = issue key lowercase, no hyphen); `octo-lite-start --cwd <worktree> --name <lane name>`, which creates the lane space;
 write the lane record below from its output; send the owner a lane-shaped `/goal` as its first message (agents cannot run
 slash commands themselves): "<outcome> for <issue>, delivered through
 implement-spec; done when a human gate is pending (review link or merge ask
