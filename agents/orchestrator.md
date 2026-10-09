@@ -39,7 +39,7 @@ Own one issue or one epic coordination layer from brief through closure.
   (`"waiting"`, `"ready"`, `"active"`, `"done"`), `passes` (repair passes, +1 per
   repair), `since` (quoted UTC now). Set `waiting_on` per spec `#octo-lane-record-key-waiting`: `"operator"` while escalated,
   one other lane's issue key while parked on that lane, `"blocked"` for any other wait
-  (ticket, person, role, outside issue), `""` on resume; never a gate value.
+  (ticket, role, outside issue), `""` on resume or at a human gate; never a gate value.
   The lane owner sets `issue` when shaping creates the issue, if the operator
   did not, no later than `pr`.
   Only the owner updates the lane record, and keeps it current as things change;

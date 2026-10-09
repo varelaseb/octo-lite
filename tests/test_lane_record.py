@@ -35,7 +35,7 @@ class LaneRecordTests(unittest.TestCase):
         self.assertRegex(record["started_at"], UTC)
         self.assertIn(
             record["waiting_on"],
-            {"", "spec review", "QA review", "merge", "blocked", "operator"},
+            {"", "blocked", "operator"},
         )
         self.assertIsInstance(record["workers"], list)
         self.assertEqual(record["workers"][0]["pane"], "w5:pC1")
