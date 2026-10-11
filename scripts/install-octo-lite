@@ -88,10 +88,9 @@ link_one() {
     exit 1
   fi
   mkdir -p "$(dirname "$target")"
-  # A dangling link belongs to nobody: whoever owned it stopped shipping it.
-  # Replacing it is not clobbering, and refusing to wedges the whole install
-  # over a path no repo claims any more.
-  [[ -L "$target" && ! -e "$target" ]] && rm -f "$target"
+  # A dangling link into this repo is ours and may be replaced; any other
+  # dangling link is someone else's and falls through to skip below.
+  [[ -L "$target" && ! -e "$target" && "$(readlink "$target")" == "$root"/* ]] && rm -f "$target"
   if [[ -e "$target" || -L "$target" ]]; then
     [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
     # Adopt: symlink from a different clone with the same origin.

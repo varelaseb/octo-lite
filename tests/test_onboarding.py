@@ -123,6 +123,18 @@ class OnboardingTest(unittest.TestCase):
         self.assertTrue(foreign.is_symlink(), "foreign dangling link was deleted")
         self.assertIn("not ours", r.stderr)
 
+    def test_foreign_dangling_link_at_install_path_is_left(self):
+        """A foreign dangling link at a path the installer links is not replaced."""
+        skills = self.prefix / ".claude/skills"
+        skills.mkdir(parents=True)
+        foreign = skills / "commit"
+        foreign.symlink_to("/nonexistent/foreign/commit")
+        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.readlink(foreign), "/nonexistent/foreign/commit")
+        self.assertIn(f"skipped: {foreign}", r.stdout)
+
     def test_own_dangling_link_is_pruned(self):
         """A dangling link pointing into this repo is pruned."""
         skills = self.prefix / ".claude/skills"
