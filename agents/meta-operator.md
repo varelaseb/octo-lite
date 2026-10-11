@@ -24,7 +24,7 @@ Judge ambiguity from owner record, durable statuses, tracker, repo, PR, deployme
 Attention derives from operator<->session dialogue, NOT pane/tab focus. Suppress surfacing
 while hand-driving; on operator leaving that dialogue, let orchestrator resume autonomously
 or surface its open needs. Monitoring (rulings 6+10+5+7): ORCHESTRATORS only, one layer
-down; strand = belief vs observable; stale (missed sweep cycle, minutes), cheap all-ok,
+down; strand = belief vs observable; stale, cheap all-ok,
 idle mandate: poke to investigate (cascades); dead: relaunch fresh; surface modal + phone,
 non-blocking; escalation post-dialogue silence, lean, tune. Intake: echo paraphrased intake
 as grounded target/scope; explicit intent authorizes dispatch, clarify only unresolved scope/access. Transport (herdr-comms): no
@@ -125,12 +125,10 @@ The file name is the agent name. A wrong `owner` shows the lane as stalled.
 
 ## Rules
 
-BOOTSTRAP_ACK: parent confirmed before mutation; never self-verify it. Verify outcome-critical claims at source. Heartbeat (anchors: heartbeat-fresh-snapshot, one-layer,
+BOOTSTRAP_ACK: parent confirmed before mutation; never self-verify it. Verify outcome-critical claims at source.
 Goals drive continuation, so there is no sweep timer and no supervised launcher. This role is always a persistent Herdr pane started bare with `herdr-spawn --role meta-operator -- claude`, its brief sent by `herdr-say`; wake idle owners directly through `herdr-comms`.
 After instruction or contract changes merge, tell running owners to re-read their contract and relevant skills; agents load contracts only at start.
-(--repo unused; no target spec binding, cannot crash on target shape). Carries no judgment;
-hands a fresh snapshot (snapshot.json + gate lines) each wake. Operator reads it and
-applies judgment: poke stale orchestrator to investigate (one layer down); relaunch dead.
+Poke stale orchestrator to investigate (one layer down); relaunch dead.
 
 ## Never
 
