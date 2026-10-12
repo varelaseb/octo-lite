@@ -1,5 +1,5 @@
-"""Contract checks: octo-lite's published lane record and acceptance receipt
-formats read back by their own spec keys."""
+"""Contract checks: octo-lite's published lane record format and its one
+acceptance record, read back by their own spec keys."""
 
 from __future__ import annotations
 
@@ -45,27 +45,16 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIsInstance(ticket["passes"], int)
             self.assertRegex(ticket["since"], UTC)
 
-    def test_acceptance_receipt_is_keyed_by_repository_and_pr(self) -> None:
+    def test_acceptance_has_one_record_the_pr_receipt(self) -> None:
+        contracts = [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/SKILL.md")]
+        for path in contracts:
+            self.assertNotIn("octo-lite/acceptance/", path.read_text(encoding="utf-8"), path)
         html = SPEC.read_text(encoding="utf-8")
-        match = re.search(
-            r'<pre data-anchor="acceptance-receipt-example"><code># (\S+)\n(.*?)</code></pre>',
-            html,
-            flags=re.DOTALL,
-        )
-        self.assertIsNotNone(match, "acceptance receipt example is missing")
-        path, body = match.groups()
-        receipt = tomllib.loads(unescape(body))
-        owner, repo = receipt["repository"].split("/")
-        self.assertEqual(
-            path,
-            f"$XDG_STATE_HOME/octo-lite/acceptance/acceptance-{owner}-{repo}-{receipt['pr']}.toml",
-        )
-        self.assertIsInstance(receipt["pr"], int)
-        self.assertRegex(receipt["head"], r"^[0-9a-f]{40}$")
-        self.assertRegex(receipt["accepted_at"], UTC)
-        self.assertIsInstance(receipt["instruction"], str)
-        self.assertNotIn("issue", receipt)
-        self.assertNotIn("ticket", receipt)
+        table = re.search(r'id="handoff-operator".*?<tbody>(.*?)</tbody>', html, flags=re.DOTALL)
+        self.assertIsNotNone(table, "operator log table is missing")
+        kinds = re.findall(r"<tr[^>]*><td><code>(\w+)</code>", table.group(1))
+        self.assertEqual(kinds, ["note", "prod"])
+        self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"gate relay|merge executed")
 
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")
