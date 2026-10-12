@@ -61,20 +61,27 @@ normalize_origin() {
   printf '%s' "$url"
 }
 
-# True when resolved path lives in a different clone of this repo (same
-# git remote origin). Used to adopt links from a prior octo-lite clone.
-is_same_origin_clone() {
-  local resolved="$1"
-  [[ -e "$resolved" ]] || return 1
+# True when path (existing or not) lies in a clone of this repo: this one, or
+# another with the same git remote origin. A missing path is judged by its
+# nearest existing ancestor directory.
+is_ours() {
+  local dir="$1"
+  while [[ ! -d "$dir" ]]; do dir="$(dirname "$dir")"; done
   local other_root
-  other_root="$(cd "$(dirname "$resolved")" && git rev-parse --show-toplevel 2>/dev/null)" || return 1
-  [[ "$other_root" != "$root" ]] || return 1
+  other_root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [[ "$other_root" == "$root" ]] && return 0
   local our_origin other_origin our_key other_key
   our_origin="$(git -C "$root" remote get-url origin 2>/dev/null)" || return 1
   other_origin="$(git -C "$other_root" remote get-url origin 2>/dev/null)" || return 1
   our_key="$(normalize_origin "$our_origin")"
   other_key="$(normalize_origin "$other_origin")"
   [[ -n "$our_key" && "$our_key" == "$other_key" ]]
+}
+
+# True when an existing resolved path lives in a different clone of this repo.
+# Used to adopt links from a prior octo-lite clone.
+is_same_origin_clone() {
+  [[ -e "$1" && "$1" != "$root"/* ]] && is_ours "$1"
 }
 
 link_one() {
@@ -88,9 +95,9 @@ link_one() {
     exit 1
   fi
   mkdir -p "$(dirname "$target")"
-  # A dangling link into this repo is ours and may be replaced; any other
-  # dangling link is someone else's and falls through to skip below.
-  [[ -L "$target" && ! -e "$target" && "$(readlink "$target")" == "$root"/* ]] && rm -f "$target"
+  # A dangling link into a clone of this repo is ours and may be replaced; any
+  # other dangling link is someone else's and falls through to skip below.
+  [[ -L "$target" && ! -e "$target" ]] && is_ours "$(readlink -m "$target")" && rm -f "$target"
   if [[ -e "$target" || -L "$target" ]]; then
     [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
     # Adopt: symlink from a different clone with the same origin.
@@ -183,8 +190,8 @@ for legacy in "${legacy_links[@]}"; do
   fi
 done
 
-# A dangling link whose target was inside this repository is a known legacy
-# path: prune it. Any other dangling link is reported and left untouched.
+# A dangling link whose target was inside a clone of this repository is a known
+# legacy path: prune it. Any other dangling link is reported and left untouched.
 prune_dangling_skills() {
   local d f target pruned=0
   for d in "$prefix/.claude/skills" "$prefix/.codex/skills" \
@@ -193,10 +200,8 @@ prune_dangling_skills() {
     for f in "$d"/*; do
       [[ -L "$f" && ! -e "$f" ]] || continue
       target="$(readlink "$f")"
-      case "$target" in
-        "$root"/*) ;;
-        *) echo "dangling link (not ours): $f -> $target" >&2; continue ;;
-      esac
+      is_ours "$(readlink -m "$f")" || {
+        echo "dangling link (not ours): $f -> $target" >&2; continue; }
       if [[ "$check" == true ]]; then
         echo "dangling legacy link: $f" >&2; exit 1
       fi
