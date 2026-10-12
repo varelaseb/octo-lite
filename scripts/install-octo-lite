@@ -81,7 +81,8 @@ is_ours() {
 # True when an existing resolved path lives in a different clone of this repo.
 # Used to adopt links from a prior octo-lite clone.
 is_same_origin_clone() {
-  [[ -e "$1" && "$1" != "$root"/* ]] && is_ours "$1"
+  [[ -e "$1" ]] || return 1
+  [[ "$(git -C "$(dirname "$1")" rev-parse --show-toplevel 2>/dev/null)" != "$root" ]] && is_ours "$1"
 }
 
 link_one() {
