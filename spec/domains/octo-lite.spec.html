@@ -20,7 +20,7 @@
 <h2>User stories</h2>
 <p data-user-story data-anchor="user-story-deliver-spec" id="user-story-deliver-spec" data-user-facing="true" data-guided-journey="no">As an operator, I can shape an idea into an accepted spec, then have it filed as a ticket graph and delivered on one PR ready for my review.</p>
 <p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script and a plain git pull keeps it current; on a box with an existing setup, the installer adopts compatible links, skips what belongs to someone else, and never overwrites or fails.</p>
-<p data-user-story data-anchor="user-story-operator-log" id="user-story-operator-log" data-user-facing="false" data-guided-journey="no">As the fleet operator, I append one line per prod, gate relay, merge, and note to the human to my own hand-off file, so the floor shows what I did beside each lane's own lines.</p>
+<p data-user-story data-anchor="user-story-operator-log" id="user-story-operator-log" data-user-facing="false" data-guided-journey="no">As the fleet operator, I append one line per prod and note to the human to my own hand-off file, so the floor shows what I did beside each lane's own lines.</p>
 <p data-user-story data-anchor="user-story-lane-space" id="user-story-lane-space" data-user-facing="true" data-guided-journey="no">As an operator, I see each lane in its own Herdr space named after the lane, holding its owner and every worker of that lane, while I work in a space of my own; closing a finished lane's space leaves nothing of it running.</p>
 </section>
 
@@ -42,7 +42,8 @@
 <p data-acceptance-criterion data-anchor="acceptance-start-fail" id="acceptance-start-fail" data-story="user-story-lane-space"><span data-acceptance-scenario>Given an operator launching a lane whose owner fails to start, needs an induced failure: owner agent start fails, When <code>octo-lite-start</code> ends,</span> <span data-acceptance-observable>Then it reports the failure and Herdr shows no space for the lane.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-say-blocked" id="acceptance-say-blocked" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given a lane owner messaging a worker that is waiting on an interactive dialog, When the owner sends the message with <code>herdr-say</code>,</span> <span data-acceptance-observable>Then nothing is typed into the dialog and the message is reported not delivered, to retry once the worker frees, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-single-ticket" id="acceptance-single-ticket" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator with a ticket whose behavior the spec on main already states, When the lane owner runs <code>implement-spec</code> on that ticket to completion,</span> <span data-acceptance-observable>Then no spec review is asked, and one PR holds the ticket's work with clear review and passing required checks, ready for the operator's review.</span></p>
-<p data-acceptance-criterion data-anchor="acceptance-chat-acceptance" id="acceptance-chat-acceptance" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator who accepts a lane's spec in chat with the fleet operator, When the fleet operator records it,</span> <span data-acceptance-observable>Then the review page shows the spec accepted and the lane's PR shows a receipt comment from the fleet operator, not from the lane owner.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-chat-acceptance" id="acceptance-chat-acceptance" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator who accepts a lane's spec in chat with the fleet operator, When the fleet operator records it,</span> <span data-acceptance-observable>Then the lane's PR shows a receipt comment from the fleet operator, not from the lane owner.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-one-record" id="acceptance-one-record" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator who tells the fleet to merge a lane's PR, When the PR merges,</span> <span data-acceptance-observable>Then the PR shows one receipt comment quoting the operator's words and the accepted commit, and the box holds no other record of that acceptance, proven by a unit test: no screen shows it.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
@@ -230,13 +231,11 @@ This is the lane hand-off mechanism with a different writer, matching the consum
 <tbody>
 <tr data-anchor="handoff-operator-note"><td><code>note</code></td><td>The operator tells the human something the floor should keep: an answer, a report, a recommendation.</td><td><code>issue</code> when about one lane, <code>text</code></td></tr>
 <tr data-anchor="handoff-operator-prod"><td><code>prod</code></td><td>The operator wakes or redirects a lane owner.</td><td><code>issue</code>, <code>note</code></td></tr>
-<tr data-anchor="handoff-operator-gate"><td><code>gate</code></td><td>The operator relays a human gate for a lane.</td><td><code>issue</code>, <code>gate</code>, <code>event</code>, <code>answer</code>, as a lane's <code>gate</code> line</td></tr>
-<tr data-anchor="handoff-operator-merge"><td><code>merge</code></td><td>The operator merges a lane's PR on a human's instruction.</td><td><code>issue</code>, <code>pr</code>, <code>commit</code></td></tr>
 </tbody>
 </table>
 </div>
 <pre data-anchor="handoff-operator-example"><code>{"at": "2026-10-02T03:40:00Z", "kind": "prod", "issue": "ANN-9", "note": "integrate the finished worker"}</code></pre>
-<figcaption data-anchor="handoff-operator-caption">A lane's own gate line still drives that lane; the operator's line only adds to the operator's log.</figcaption>
+<figcaption data-anchor="handoff-operator-caption">The log keeps what the operator needs; an acceptance is the <a href="#acceptance-receipt">PR receipt</a>, a merge is git, and a lane's gate is its own gate line.</figcaption>
 </figure>
 </section>
 
@@ -244,21 +243,15 @@ This is the lane hand-off mechanism with a different writer, matching the consum
 <h2>Human gates</h2>
 <p data-anchor="gates-list" id="gates-list">Spec acceptance, acceptance of delivered work, merge of unaccepted work, preproduction promotion, and live traffic shifts require explicit human instruction.</p>
 <p data-anchor="gates-chat-acceptance" id="gates-chat-acceptance">A spec acceptance the human gives the fleet operator in chat is recorded by the fleet operator at once, on the review page and as a receipt comment on the PR, and the owner is told; an owner never records it, since that reads as self-approval.</p>
-<p data-anchor="acceptance-receipt" id="acceptance-receipt">The owner receiving acceptance of delivered work records it before merging in one TOML file per PR, <code>$XDG_STATE_HOME/octo-lite/acceptance/acceptance-&lt;owner&gt;-&lt;repo&gt;-&lt;pr&gt;.toml</code>, named and keyed by repository and PR.
-It names no ticket; the ticket stays machinery metadata.
-Earlier receipts keyed by issue stay as history.</p>
+<p data-anchor="acceptance-receipt" id="acceptance-receipt">Every acceptance, of a spec or of delivered work, is recorded once, as a receipt comment on the lane's PR, and everything that needs it reads that comment.
+The receipt quotes the human's words, gives the date, names what is accepted (the spec path or the PR), the exact accepted commit, and who recorded it.
+A spec accepted on the review page is recorded by the owner processing that hand-off, quoting the action; a spec accepted in chat by the fleet operator; delivered work by the agent receiving the instruction, before it merges.
+A delivered-work receipt goes on the PR before the merge, and the merge commit closes it; nothing else records the merge.
+The review host's <code>accepted</code> flag is a view cache for screens and is never cited as the record.</p>
 <figure data-anchor="acceptance-receipt-figure">
 <h3 data-anchor="acceptance-receipt-heading">The acceptance receipt</h3>
-<pre data-anchor="acceptance-receipt-example"><code># $XDG_STATE_HOME/octo-lite/acceptance/acceptance-varelaseb-annotateanything-74.toml
-repository = "varelaseb/annotateanything"
-pr = 74
-head = "9be60f696a9e32c936935314f023188181445b15"   # exact accepted head
-accepted_at = "2026-09-26T18:05:39Z"
-instruction = "merge #74. Accepts head 9be60f6."   # the human's words
-relayed_by = "human"
-qa_bundle = "ann255-pr74-9be60f6"   # when a QA bundle backed the ask
-merge = "ef33c01f88d6f7cf8ff91ea6b63977643c6b85dd"   # added after merge</code></pre>
-<figcaption data-anchor="acceptance-receipt-caption">A durable gate record, so TOML.</figcaption>
+<pre data-anchor="acceptance-receipt-example"><code>Acceptance receipt: human "merge #74" (2026-09-26) accepts and merges PR #74 at 9be60f6. Recorded by meta-operator.</code></pre>
+<figcaption data-anchor="acceptance-receipt-caption">A PR comment outlives the box, so it is the record.</figcaption>
 </figure>
 </section>
 
