@@ -147,6 +147,44 @@ class OnboardingTest(unittest.TestCase):
         self.assertFalse(own.exists() or own.is_symlink(), "own dangling link was not pruned")
         self.assertIn("pruned", r.stdout)
 
+    def test_dangling_link_into_other_same_origin_clone_is_pruned(self):
+        """A dangling link into another clone of this repo (same origin) is ours."""
+        origin = subprocess.run(["git", "-C", str(ROOT), "remote", "get-url", "origin"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        clone = self.prefix.parent / "other-clone"
+        subprocess.run(["git", "init", "-q", str(clone)], check=True)
+        subprocess.run(["git", "-C", str(clone), "remote", "add", "origin", origin], check=True)
+        agents = self.prefix / ".claude/agents"
+        agents.mkdir(parents=True)
+        own = agents / "merger.md"
+        own.symlink_to(str(clone / "agents/merger.md"))
+        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(own.is_symlink(), "same-origin dangling link was not pruned")
+        self.assertNotIn("not ours", r.stderr)
+
+    def test_live_link_into_nested_same_origin_worktree_is_adopted(self):
+        """A live link into a same-origin clone nested in this repo is adopted."""
+        origin = subprocess.run(["git", "-C", str(ROOT), "remote", "get-url", "origin"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        (ROOT / ".claude/worktrees").mkdir(parents=True, exist_ok=True)
+        nested = tempfile.TemporaryDirectory(dir=ROOT / ".claude/worktrees")
+        self.addCleanup(nested.cleanup)
+        clone = Path(nested.name)
+        subprocess.run(["git", "init", "-q", str(clone)], check=True)
+        subprocess.run(["git", "-C", str(clone), "remote", "add", "origin", origin], check=True)
+        (clone / "agents").mkdir()
+        (clone / "agents/implementer.md").write_text("x")
+        agents = self.prefix / ".claude/agents"
+        agents.mkdir(parents=True)
+        link = agents / "implementer.md"
+        link.symlink_to(str(clone / "agents/implementer.md"))
+        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"adopted: {link}", r.stdout)
+
     def test_foreign_dangling_link_in_bin_is_left(self):
         """A dangling link in ~/.local/bin not pointing into this repo is left."""
         bindir = self.prefix / ".local/bin"
