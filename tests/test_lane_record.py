@@ -56,6 +56,10 @@ class LaneRecordTests(unittest.TestCase):
         self.assertEqual(kinds, ["note", "prod"])
         self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"gate relay|merge executed")
 
+    def test_owner_posts_spec_receipt_on_accept_spec_handoff(self) -> None:
+        text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        self.assertRegex(text, r"Accept spec hand-off.*gh pr comment.*Spec acceptance receipt: human")
+
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")
         match = re.search(r"```toml\n(.*?)```", text, flags=re.DOTALL)
