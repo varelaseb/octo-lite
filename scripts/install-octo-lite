@@ -15,7 +15,7 @@ while (($#)); do
   esac
 done
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+root="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 # One root: --prefix owns every path it writes, state and config included;
 # without it, XDG decides under $HOME.
 if [[ -n "$prefix" ]]; then
