@@ -59,6 +59,19 @@ class InstallSkillMirrorTests(unittest.TestCase):
         check = self._install("--check")
         self.assertEqual(0, check.returncode, check.stderr)
 
+    def test_run_through_path_symlink_resolves_root_to_clone(self) -> None:
+        self.assertEqual(0, self._install().returncode)
+        link = self.prefix / ".local" / "bin" / "install-octo-lite"
+        if not link.is_symlink():
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(INSTALLER)
+        check = subprocess.run(
+            [str(link), "--prefix", str(self.prefix), "--check"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, check.returncode, check.stdout + check.stderr)
+
     def test_check_fails_when_managed_mirror_is_broken(self) -> None:
         self.assertEqual(0, self._install().returncode)
         (self.prefix / ".codex" / "skills" / MANAGED_SKILLS[0]).unlink()
