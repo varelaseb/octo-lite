@@ -48,10 +48,13 @@ class LaneRecordTests(unittest.TestCase):
 
     def test_owner_archives_record_and_log_at_close(self) -> None:
         # spec #acceptance-lane-archive: owner moves both files unchanged into
-        # archive/ before its close report; the operator touches no record.
+        # archive/ after worker teardown, before its close report; the operator
+        # touches no record.
         owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         self.assertRegex(
             owner,
+            r"tear down in order: review rows, worktrees, workers\. Last, after your last "
+            r"hand-off line \(the final worker close\) and "
             r"before your close report, move `<name>\.toml` and "
             r"`<name>\.handoffs\.jsonl` unchanged into `archive/` in the lanes directory",
         )
