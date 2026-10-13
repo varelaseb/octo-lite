@@ -23,7 +23,6 @@ class OnboardingTest(unittest.TestCase):
         self.sentinel.mkdir()
         self.env = {**os.environ, "XDG_STATE_HOME": str(self.sentinel / "state"),
                     "XDG_CONFIG_HOME": str(self.sentinel / "config")}
-        self.consent = self.prefix / ".config/octo-lite/consent.toml"
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
 
     def install(self, *extra, answers=""):
@@ -36,16 +35,20 @@ class OnboardingTest(unittest.TestCase):
         state = self.install()
         self.assertEqual(state["status"], "pending")
         self.assertTrue(state["doc"].endswith("README.md#onboarding"))
-        self.assertFalse(self.consent.exists())
+        self.assertNotIn("consent", state)
 
-    def test_onboard_asks_keeps_consent_and_is_done(self):
+    def test_onboard_keeps_consent_in_onboarding_file_and_is_done(self):
         state = self.install("--onboard", answers="y\nn\n\n")
         self.assertEqual(state["status"], "done")
-        self.assertEqual(tomllib.loads(self.consent.read_text()),
-                         {"push": True, "pull_request": False, "issues": False})
+        kept = {"push": True, "pull_request": False, "issues": False}
+        self.assertEqual(state["consent"], kept)
+        self.assertEqual(list(self.onboarding.parent.iterdir()), [self.onboarding])
         # kept: a second onboarding does not ask again or change the answers
-        self.install("--onboard", answers="n\ny\ny\n")
-        self.assertTrue(tomllib.loads(self.consent.read_text())["push"])
+        self.assertEqual(self.install("--onboard", answers="n\ny\ny\n")["consent"], kept)
+        # a plain install keeps the answers and the done status
+        state = self.install()
+        self.assertEqual((state["status"], state["consent"]), ("done", kept))
+        self.assertFalse((self.prefix / ".config/octo-lite").exists())
 
     def test_check_writes_no_state(self):
         self.install()
