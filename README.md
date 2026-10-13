@@ -53,12 +53,13 @@ octo-lite-start --cwd WORKTREE [--name LANE] [--runtime claude|codex] [--operati
 ```
 
 `--onboard` installs the links, then asks whether agents may push, open pull
-requests, and file issues, each defaulting to no, and keeps the answers in
-`${XDG_CONFIG_HOME:-~/.config}/octo-lite/consent.toml` (see
-[consent](skills/octo-lite-github/SKILL.md#consent)). Kept answers are not asked
-again; delete the file to answer afresh. Every install publishes
+requests, and file issues, each defaulting to no. Every install publishes
+octo-lite's one onboarding file,
 `${XDG_STATE_HOME:-~/.local/state}/octo-lite/onboarding.toml`: `status`
-(`pending` until consent is kept, then `done`) and `doc`, a link here.
+(`pending` until consent is kept, then `done`), `doc`, a link here, and the
+kept answers as a `[consent]` table (see
+[consent](skills/octo-lite-github/SKILL.md#consent)). Kept answers are not asked
+again, and a plain install keeps them; delete the file to answer afresh.
 
 `octo-lite-start`, installed on `PATH`, creates a Herdr space labelled with the
 lane name and starts the lane's orchestrator alone in it at the worktree,

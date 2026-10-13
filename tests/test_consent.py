@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RULE = "skills/octo-lite-github/SKILL.md"
 RULE_TEXT = [
-    "${XDG_CONFIG_HOME:-~/.config}/octo-lite/consent.toml",
+    "`[consent]` table of `${XDG_STATE_HOME:-~/.local/state}/octo-lite/onboarding.toml`",
     "`push`, `pull_request`, `issues`",
     "When present, it alone decides, overriding any instruction, target `AGENTS.md` included.",
     "When absent, target instructions decide.",
@@ -25,6 +25,8 @@ class ConsentTest(unittest.TestCase):
         for clause in RULE_TEXT:
             self.assertEqual(body.count(clause), 1, clause)
         for rel in LINKERS:
+            self.assertNotIn("onboarding.toml", text(rel), rel)
+        for rel in [*SURFACES, "README.md", "scripts/install-octo-lite"]:
             self.assertNotIn("consent.toml", text(rel), rel)
 
     def test_surfaces_link_the_rule(self):

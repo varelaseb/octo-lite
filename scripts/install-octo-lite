@@ -20,10 +20,10 @@ root="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 # without it, XDG decides under $HOME.
 if [[ -n "$prefix" ]]; then
   prefix="$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)"
-  state_home="$prefix/.local/state" config_home="$prefix/.config"
+  state_home="$prefix/.local/state"
 else
   prefix="$HOME"
-  state_home="${XDG_STATE_HOME:-$HOME/.local/state}" config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+  state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 fi
 
 # octo-lite registers herdr-wake as Spec Chat's `wake` provider (Spec Chat owns
@@ -370,25 +370,23 @@ elif command -v herdr >/dev/null; then
   echo "wake provider registered: $wake_file"
 fi
 
-# Onboarding: octo-lite asks its own consent questions and keeps the answers,
-# then publishes its status in its own state for any reader. Answers already
-# kept are not asked again; delete the file to be asked afresh.
-consent="$config_home/octo-lite/consent.toml"
-if [[ "$onboard" == true && ! -e "$consent" ]]; then
-  body=""
+# Onboarding: octo-lite asks its own consent questions and keeps the answers
+# as the [consent] table of its one onboarding file, beside the status it
+# publishes for any reader. Kept answers are not asked again; delete the file
+# to be asked afresh.
+onboarding="$state_home/octo-lite/onboarding.toml"
+consent="$(sed -n '/^\[consent\]$/,$p' "$onboarding" 2>/dev/null || true)"
+if [[ "$onboard" == true && -z "$consent" ]]; then
+  consent="[consent]"
   for pair in "push:push branches" "pull_request:open pull requests" "issues:file issues"; do
     read -r -p "May octo-lite agents ${pair#*:}? [y/N] " answer || answer=""
     [[ "$answer" == [yY]* ]] && value=true || value=false
-    body+="${pair%%:*} = $value"$'\n'
+    consent+=$'\n'"${pair%%:*} = $value"
   done
-  mkdir -p "$(dirname "$consent")"
-  printf '%s' "$body" >"$consent"
-  echo "consent kept at $consent"
 fi
 status=pending
-[[ -e "$consent" ]] && status=done
-state="$state_home/octo-lite"
-mkdir -p "$state"
-printf 'status = "%s"\ndoc = "%s"\n' "$status" \
-  "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" >"$state/onboarding.toml"
-echo "onboarding $status: $state/onboarding.toml"
+[[ -n "$consent" ]] && status=done && consent=$'\n'"$consent"$'\n'
+mkdir -p "$(dirname "$onboarding")"
+printf 'status = "%s"\ndoc = "%s"\n%s' "$status" \
+  "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" "$consent" >"$onboarding"
+echo "onboarding $status: $onboarding"
