@@ -43,6 +43,8 @@
 <p data-acceptance-criterion data-anchor="acceptance-say-blocked" id="acceptance-say-blocked" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given a lane owner messaging a worker that is waiting on an interactive dialog, When the owner sends the message with <code>herdr-say</code>,</span> <span data-acceptance-observable>Then nothing is typed into the dialog and the message is reported not delivered, to retry once the worker frees, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-single-ticket" id="acceptance-single-ticket" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator with a ticket whose behavior the spec on main already states, When the lane owner runs <code>implement-spec</code> on that ticket to completion,</span> <span data-acceptance-observable>Then no spec review is asked, and one PR holds the ticket's work with clear review and passing required checks, ready for the operator's review.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-chat-acceptance" id="acceptance-chat-acceptance" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator who accepts a lane's spec in chat with the fleet operator, When the fleet operator records it,</span> <span data-acceptance-observable>Then the lane's PR shows a receipt comment from the fleet operator, not from the lane owner.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lane-archive" id="acceptance-lane-archive" data-story="user-story-lane-space"><span data-acceptance-scenario>Given a lane owner whose PR merged, When it closes the lane,</span> <span data-acceptance-observable>Then the lanes directory no longer lists the lane, and its archive holds the lane's record and hand-off log unchanged, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lane-no-tickets" id="acceptance-lane-no-tickets" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given a lane owner delivering a ticket graph, When a ticket moves state,</span> <span data-acceptance-observable>Then the tracker shows the new state and the lane record holds no ticket entry, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-one-record" id="acceptance-one-record" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator who tells the fleet to merge a lane's PR, When the PR merges,</span> <span data-acceptance-observable>Then the PR shows one receipt comment quoting the operator's words and the accepted commit, and the box holds no other record of that acceptance, proven by a unit test: no screen shows it.</span></p>
 </section>
 
@@ -131,7 +133,8 @@ A lane started in a shared space ends at its owner tab: the operator closes it w
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">Octo-lite owns and publishes the lane record format: one TOML file per lane in <code>$XDG_STATE_HOME/octo-lite/lanes/</code>, named by the owner agent name, with the keys below, written at the moments below.
+<p data-anchor="lane-record-intent">Octo-lite owns and publishes the lane record format: one TOML file per open lane in <code>$XDG_STATE_HOME/octo-lite/lanes/</code>, named by the owner agent name, with the keys below, written at the moments below.
+A closed lane's record and hand-off log live in <code>archive/</code> inside that directory.
 Readers follow this format; octo-lite names no reader.</p>
 <figure data-anchor="octo-lane-record-fields">
 <h3 data-anchor="octo-lane-record-fields-heading">Lane record keys</h3>
@@ -144,7 +147,6 @@ Readers follow this format; octo-lite names no reader.</p>
 <tr data-anchor="octo-lane-record-key-goal"><td><code>goal</code></td><td>One line: a short plain feature name, the lane title.</td></tr>
 <tr data-anchor="octo-lane-record-key-pr"><td><code>pr</code></td><td>Pull request number; absent until one opens.</td></tr>
 <tr data-anchor="octo-lane-record-key-owner"><td><code>owner</code></td><td>The owner's Herdr pane id, the <code>pane=</code> value <code>herdr-spawn</code> printed, for example <code>"w5:pB2"</code>; never the agent name or tab.</td></tr>
-<tr data-anchor="octo-lane-record-key-tickets"><td><code>[[tickets]] key</code>, <code>state</code>, <code>passes</code>, <code>since</code></td><td>One entry per ticket of the lane: its key, <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, its repair pass count, and the quoted UTC instant it entered its current state and holder.</td></tr>
 <tr data-anchor="octo-lane-record-key-started"><td><code>started_at</code></td><td>Quoted UTC instant when the lane launched, for example <code>"2026-09-26T01:05:00Z"</code>, written once at launch.</td></tr>
 <tr data-anchor="octo-lane-record-key-last-handoff"><td><code>last_handoff_at</code></td><td>Quoted UTC instant of the owner's last worker spawn, close, or hand-off consumption.</td></tr>
 <tr data-anchor="octo-lane-record-key-waiting"><td><code>waiting_on</code></td><td><code>""</code>, <code>"blocked"</code>, <code>"operator"</code> (the lane escalated to the fleet operator), or one other lane's issue key, for example <code>"ANN-136"</code>, while this lane waits on that lane.
@@ -156,6 +158,7 @@ A human gate leaves it <code>""</code>: the column function derives <code>"spec 
 </div>
 <figcaption data-anchor="octo-lane-record-fields-caption">The file is rewritten when the lane moves, so its modified time is the lane's last activity.</figcaption>
 </figure>
+<p data-anchor="octo-lane-record-tickets" id="octo-lane-record-tickets">The record holds no ticket state: a ticket's state, holder, and repair passes live in the tracker only.</p>
 <p data-anchor="octo-lane-record-workers" id="octo-lane-record-workers">The record lists no workers.
 A lane's workers are the Herdr agents in the lane's space other than the owner; each worker's pane is its Herdr pane id, and its role and ticket come from its <a href="#transport-spawn-name">spawn name</a>.</p>
 <figure data-anchor="octo-lane-record">
@@ -168,19 +171,7 @@ goal = "Shape ANN-45 and ANN-44 through spec acceptance"
 pr = 30                          # set when shaping opens the draft PR
 started_at = "2026-09-24T17:02:00Z"   # operator, once, at launch
 last_handoff_at = "2026-09-24T18:24:09Z"
-waiting_on = ""                  # "", "blocked", "operator", or another lane's issue key "ANN-136"; human gates leave it ""
-
-[[tickets]]
-key = "ANN-64"
-state = "active"                 # "waiting", "ready", "active", or "done"
-passes = 0                       # repair passes
-since = "2026-09-24T18:24:09Z"   # entered this state and holder
-
-[[tickets]]
-key = "ANN-65"
-state = "waiting"
-passes = 0
-since = "2026-09-24T17:40:00Z"</code></pre>
+waiting_on = ""                  # "", "blocked", "operator", or another lane's issue key "ANN-136"; human gates leave it ""</code></pre>
 <figcaption data-anchor="octo-lane-record-caption">Current control state, so TOML.</figcaption>
 </figure>
 <figure data-anchor="octo-lane-record-life">
@@ -192,15 +183,15 @@ since = "2026-09-24T17:40:00Z"</code></pre>
 <tr data-anchor="octo-lane-record-life-launch"><td>Operator launches a lane orchestrator</td><td>Operator</td><td>Creates the lane space through <code>octo-lite-start</code>, then the record with owner, repository, goal, and issue when known, plus <code>started_at</code> set to now and <code>waiting_on</code> set to <code>""</code>. Writes <code>operator.toml</code> with its own <code>pane</code> beside the lanes directory at its own launch, and appends to <code>operator.handoffs.jsonl</code> beside it per the <a href="#handoff-operator">operator log</a>.</td></tr>
 <tr data-anchor="octo-lane-record-life-pr"><td>Shaping opens the draft pull request</td><td>Owner</td><td>Sets <code>issue</code> if missing and <code>pr</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-work"><td>Owner spawns or closes a worker, or consumes a handoff</td><td>Owner</td><td>Updates <code>last_handoff_at</code>.</td></tr>
-<tr data-anchor="octo-lane-record-life-tickets"><td>Tickets are created, or a ticket moves state or holder</td><td>Owner</td><td>Rewrites its <code>[[tickets]]</code> entry: <code>state</code> <code>"waiting"</code>, <code>"ready"</code>, <code>"active"</code>, or <code>"done"</code>, <code>since</code> set to now; a repair pass adds one to <code>passes</code>.</td></tr>
 <tr data-anchor="octo-lane-record-life-waiting-lane"><td>Owner parks the lane on another lane, such as its merge, or resumes</td><td>Owner</td><td>Sets <code>waiting_on</code> to that lane's issue key; clears it to <code>""</code> on resume. One lane at a time.</td></tr>
 <tr data-anchor="octo-lane-record-life-operator"><td>Owner escalates to the fleet operator, or the operator answers</td><td>Owner</td><td>Sets <code>waiting_on</code> to <code>"operator"</code>; clears it to <code>""</code> on answer.</td></tr>
 <tr data-anchor="octo-lane-record-life-audit"><td>Operator checks fleet status or wakes</td><td>Operator</td><td>Reads every record, writes none: a record is stale when its <code>waiting_on</code> key names no listed lane, its owner pane is not live, or its <code>goal</code> no longer names the lane's scope; the operator wakes that owner to fix it.</td></tr>
-<tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Closes the lane's own space, or only its owner tab when the lane started in a shared space, then removes the record.</td></tr>
+<tr data-anchor="octo-lane-record-life-archive" id="octo-lane-record-life-archive"><td>Owner closes the finished lane, after its last hand-off line</td><td>Owner</td><td>Moves <code>&lt;name&gt;.toml</code> and <code>&lt;name&gt;.handoffs.jsonl</code> unchanged into <code>archive/</code> inside the lanes directory, before its close report.</td></tr>
+<tr data-anchor="octo-lane-record-life-teardown"><td>Operator tears down the finished lane and its children</td><td>Operator</td><td>Closes the lane's own space, or only its owner tab when the lane started in a shared space; touches no record.</td></tr>
 </tbody>
 </table>
 </div>
-<figcaption data-anchor="octo-lane-record-life-caption">The operator creates and removes the record. In between, only the owner updates it in place.</figcaption>
+<figcaption data-anchor="octo-lane-record-life-caption">The operator creates the record. Only the owner updates it in place, and at close moves it and its hand-off log into the archive.</figcaption>
 </figure>
 <p data-anchor="octo-lane-record-handoffs">At each hand-off moment the owner appends one line to <code>&lt;lane record name&gt;.handoffs.jsonl</code> beside the lane record, per the <a href="#handoff-fields">hand-off field list</a>; only the owner writes the file.</p>
 <figure data-anchor="handoff-fields" id="handoff-fields">
