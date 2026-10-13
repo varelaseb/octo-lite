@@ -38,10 +38,8 @@ Own one issue or one epic coordination layer from brief through closure.
   `#octo-lane-record-workers`). Spawn every worker into your space,
   `--workspace "$HERDR_WORKSPACE_ID"`, named `<role>-<ticket>` lowercase per spec
   `#transport-spawn-name` (lane-wide workers carry the primary issue key); close
-  it before reusing the name. Never move a lane pane to another space. When tickets are created or one
-  moves state or holder, rewrite its `[[tickets]]` entry: `key`, `state`
-  (`"waiting"`, `"ready"`, `"active"`, `"done"`), `passes` (repair passes, +1 per
-  repair), `since` (quoted UTC now). Set `waiting_on` per spec `#octo-lane-record-key-waiting`: `"operator"` while escalated,
+  it before reusing the name. Never move a lane pane to another space. Ticket state lives in Linear only;
+  the record holds no tickets (spec `#octo-lane-record-tickets`). Set `waiting_on` per spec `#octo-lane-record-key-waiting`: `"operator"` while escalated,
   one other lane's issue key while parked on that lane, `"blocked"` for any other wait
   (ticket, role, outside issue), `""` on resume or at a human gate; never a gate value.
   The lane owner sets `issue` when shaping creates the issue, if the operator
@@ -85,7 +83,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), review verdict linked, spec acceptance receipt (spec `#acceptance-receipt`, or `#delivery-single-ticket`). A red check is never "pre-existing": a red main gets fixed first.
 - Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; the owner reports the smoke result first.
 - Verify a message's target pane against the lane record before sending.
-- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, archive state, and terminate. Teardown order: review rows, then worktrees, then workers; report with proof nothing is left. The close report names what the operator closes: your space id (your owner pane id's prefix) only when it is your lane's own, no other lane record's owner and not the operator's pane (`operator.toml`) carrying that prefix; otherwise your owner tab (`$HERDR_TAB_ID`), never the space (spec `#transport-close-space`). On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
+- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, then, after your last hand-off line and before your close report, move `<name>.toml` and `<name>.handoffs.jsonl` unchanged into `archive/` in the lanes directory (`mkdir -p` it; spec `#octo-lane-record-life-archive`), and terminate. Teardown order: review rows, then worktrees, then workers; report with proof nothing is left. The close report names what the operator closes: your space id (your owner pane id's prefix) only when it is your lane's own, no other lane record's owner and not the operator's pane (`operator.toml`) carrying that prefix; otherwise your owner tab (`$HERDR_TAB_ID`), never the space (spec `#transport-close-space`). On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 

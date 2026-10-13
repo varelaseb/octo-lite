@@ -38,12 +38,25 @@ class LaneRecordTests(unittest.TestCase):
             {"", "blocked", "operator"},
         )
         self.assertNotIn("workers", record)
-        tickets = {t["key"]: t for t in record["tickets"]}
-        self.assertEqual(tickets["ANN-64"]["state"], "active")
-        for ticket in tickets.values():
-            self.assertIn(ticket["state"], {"waiting", "ready", "active", "done"})
-            self.assertIsInstance(ticket["passes"], int)
-            self.assertRegex(ticket["since"], UTC)
+        self.assertNotIn("tickets", record)
+
+    def test_lane_record_holds_no_tickets(self) -> None:
+        # spec #acceptance-lane-no-tickets: no contract writes ticket entries.
+        contracts = [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/SKILL.md")]
+        for path in contracts:
+            self.assertNotIn("[[tickets]]", path.read_text(encoding="utf-8"), path)
+
+    def test_owner_archives_record_and_log_at_close(self) -> None:
+        # spec #acceptance-lane-archive: owner moves both files unchanged into
+        # archive/ before its close report; the operator touches no record.
+        owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        self.assertRegex(
+            owner,
+            r"before your close report, move `<name>\.toml` and "
+            r"`<name>\.handoffs\.jsonl` unchanged into `archive/` in the lanes directory",
+        )
+        self.assertNotIn("archive state", owner)
+        self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"delete the record")
 
     def test_acceptance_has_one_record_the_pr_receipt(self) -> None:
         contracts = [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/SKILL.md")]
