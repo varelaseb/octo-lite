@@ -99,12 +99,12 @@ herdr-close --park PANE >>"$lanes/<lane>.handoffs.jsonl"
 
 `$lanes` is `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes`. Reads the
 session of the Claude process in PANE from `~/.claude/sessions/<pid>.json`,
-closes its tab, or its whole space when that space is labelled with the agent's
-name (a lane owner in its own space), and prints one parked line (`at kind pane
-name role cwd session`) on stdout; the close report goes to stderr. The parker
-appends the line: the operator for an owner, the owner for a worker. A working
-agent is refused with exit 75, a Codex agent (no session file) with 65; nothing
-is closed.
+closes its tab, or its whole space when that tab is the space's only one (a
+lane owner in its own space), and prints one parked line (`at kind pane name
+role cwd session`) on stdout, even when the close fails; the close report goes
+to stderr. The parker appends the line: the operator for an owner, the owner for
+a worker. An agent Herdr does not report idle is refused with exit 75, a Codex
+agent (no session file) with 65; nothing is closed.
 
 ## Send a message
 

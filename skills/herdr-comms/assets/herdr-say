@@ -26,14 +26,14 @@ set -euo pipefail
 
 usage() { echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE | --parked TARGET" >&2; }
 
-# The latest parked line naming TARGET by pane or name. A line without name or
-# role is the lane owner: the lane's name, its log's stem, as orchestrator.
+# The latest parked line naming TARGET by pane or name. A line without name is
+# the lane owner: the lane's name, its log's stem.
 parked() {
   local line logs=("${XDG_STATE_HOME:-$HOME/.local/state}"/octo-lite/lanes/*.handoffs.jsonl)
   [[ -f "${logs[0]}" ]] || return 1
   line="$(jq -nc --arg t "$1" '[inputs | select(.kind == "parked")
     | .lane = (input_filename | split("/") | last | rtrimstr(".handoffs.jsonl"))
-    | .name //= .lane | .role //= "orchestrator"
+    | .name //= .lane
     | select(.pane == $t or .name == $t)] | sort_by(.at) | last // empty' "${logs[@]}")" &&
     [[ -n "$line" ]] && printf '%s\n' "$line"
 }
@@ -64,7 +64,7 @@ if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$target")
       started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
     else
       started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
-        --role "$(jq -r .role <<<"$line")" "${resume[@]}" -- claude)"
+        --role "$(jq -r '.role // empty' <<<"$line")" "${resume[@]}" -- claude)"
     fi
     name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
     echo "pane=$name"

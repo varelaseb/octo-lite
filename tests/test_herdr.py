@@ -72,6 +72,8 @@ case "$sub" in
     if [[ -n "${FAKE_START_NOT_READY:-}" ]]; then
       echo '{"error":{"code":"agent_not_ready","message":"blocked during startup"},"id":"cli:agent:start"}' >&2; exit 1
     fi
+    # FAKE_START_GATE holds the start until the test creates that file.
+    while [[ -n "${FAKE_START_GATE:-}" && ! -e "$FAKE_START_GATE" ]]; do sleep 0.05; done
     if [[ -f "${FAKE_GONE:-}" ]]; then sed -i "/^$3\$/d" "$FAKE_GONE"; fi
     echo '{"result":{}}' ;;
   "pane read")
@@ -496,7 +498,7 @@ class HerdrWrapperTest(unittest.TestCase):
 
     # --- park ------------------------------------------------------------
 
-    def park(self, status="idle", session=True, name="implementer-ann-1", label=""):
+    def park(self, status="idle", session=True, name="implementer-ann-1", tabs=2):
         # A detached stand-in for the agent's Claude process in a unique pane,
         # with Claude's own session file for its pid.
         space = f"w-{uuid.uuid4()}"
@@ -509,10 +511,12 @@ class HerdrWrapperTest(unittest.TestCase):
             sessions.mkdir(parents=True, exist_ok=True)
             (sessions / f"{p.pid}.json").write_text(json.dumps({
                 "pid": p.pid, "sessionId": "s-1", "cwd": str(self.cwd),
-                "agent": "implementer", "status": status}))
+                "agent": "implementer"}))
         agent = {"result": {"agent": {"name": name, "pane_id": pane, "tab_id": tab,
-                                      "workspace_id": space}}}
-        ws = {"result": {"workspace": {"workspace_id": space, "label": label}}}
+                                      "workspace_id": space, "agent_status": status}}}
+        # The space is the lane's, labelled with its name; only its tab count decides.
+        ws = {"result": {"workspace": {"workspace_id": space, "label": "ann45",
+                                       "tab_count": tabs}}}
         r = subprocess.run([str(CLOSE), "--park", pane], capture_output=True, text=True,
                            env={**self.env, "FAKE_AGENT_GET": json.dumps(agent),
                                 "FAKE_WORKSPACE_GET": json.dumps(ws)})
@@ -522,7 +526,7 @@ class HerdrWrapperTest(unittest.TestCase):
         return self.log.read_text() if self.log.exists() else ""
 
     def test_parking_a_worker_closes_its_tab_and_prints_one_parked_line(self):
-        p, r, pane, tab, space = self.park(label="ann45")
+        p, r, pane, tab, space = self.park()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"tab close {tab}", self.calls())
         self.assertNotIn("workspace close", self.calls())
@@ -534,17 +538,24 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertRegex(line["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
     def test_parking_a_lane_owner_frees_its_whole_space(self):
-        # acceptance-park-owner-free: the owner's space is labelled with its name.
-        p, r, pane, tab, space = self.park(name="ann45", label="ann45")
+        # acceptance-park-owner-free: the owner's tab is the only one in its space.
+        p, r, pane, tab, space = self.park(name="ann45", tabs=1)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"workspace close {space}", self.calls())
         self.assertTrue(self.gone(p), "a process of the parked owner is still running")
         self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
         self.assertEqual(json.loads(r.stdout)["session"], "s-1")
 
+    def test_parking_an_owner_in_a_shared_space_closes_only_its_tab(self):
+        # The space's other tabs are agents that may be working.
+        p, r, pane, tab, space = self.park(name="ann45", tabs=2)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"tab close {tab}", self.calls())
+        self.assertNotIn("workspace close", self.calls())
+
     def test_park_refuses_a_working_or_codex_agent(self):
         # acceptance-park-refuse: nothing closed, the agent keeps running.
-        for kw, code in (({"status": "busy"}, 75), ({"session": False}, 65)):
+        for kw, code in (({"status": "working"}, 75), ({"session": False}, 65)):
             p, r, *_ = self.park(**kw)
             self.assertEqual(r.returncode, code, r.stderr)
             self.assertEqual(r.stdout, "")
@@ -629,6 +640,32 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_wake_check_is_zero_only_for_a_resolving_owner(self):
         self.assertEqual(self.wake("check", "w1:p1").returncode, 0)
         self.assertEqual(self.wake("check", "w1:p2").returncode, 1)
+
+    def test_wake_send_resumes_a_parked_owner_outside_its_send_bound(self):
+        # Spec Chat kills the send's process group after 10 s (review-serve.py
+        # run_wake); a resume takes longer, so this resume is held until after.
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w9:p2")
+        self.gone_file.write_text("w9:p2\nann45\n")
+        gate = Path(self.tmp.name) / "gate"
+        self.addCleanup(gate.touch)
+        p = subprocess.Popen([str(WAKE), "send", "w9:p2", "a.spec.html", "hand-off ready"],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             env={**self.env, "FAKE_START_GATE": str(gate)},
+                             start_new_session=True)
+        try:
+            _, err = p.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.communicate()
+            self.fail("send waited on the resume")
+        self.assertEqual(p.returncode, 0, err)
+        gate.touch()
+        for _ in range(100):
+            if "agent prompt w1:p1 hand-off ready" in self.calls():
+                break
+            time.sleep(0.1)
+        self.assertIn("agent prompt w1:p1 hand-off ready", self.calls())
 
     def test_wake_check_counts_a_parked_owner_as_present(self):
         self.parked_line("ann45", pane="w1:p2")

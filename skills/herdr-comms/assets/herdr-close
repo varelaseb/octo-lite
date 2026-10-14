@@ -9,10 +9,10 @@
 # colon is a space. Run it from outside what it closes: the spawner owns teardown.
 #
 # --park PANE reads the session of the Claude process in PANE from Claude's own
-# ~/.claude/sessions/<pid>.json, closes its tab, or its space when the space is
-# labelled with the agent's name (the lane's own space, its owner), and prints
-# one parked hand-off line. A working agent, or one with no Claude session file
-# (Codex), is refused with nothing closed.
+# ~/.claude/sessions/<pid>.json, closes its tab, or its space when that tab is
+# the space's only one (a lane owner in its own space), and prints one parked
+# hand-off line, even when the close fails. An agent Herdr does not report idle,
+# or one with no Claude session file (Codex), is refused with nothing closed.
 set -uo pipefail
 
 usage() { echo "usage: herdr-close TAB|SPACE | --park PANE" >&2; exit 64; }
@@ -25,12 +25,12 @@ if [[ "${1:-}" == --park ]]; then
     tr '\0' '\n' 2>/dev/null </proc/"$pid"/environ | grep -qxF "HERDR_PANE_ID=$pane" && { session="$file"; break; }
   done
   [[ -n "$session" ]] || { echo "herdr-close: no Claude session in $pane; parking is Claude only" >&2; exit 65; }
-  [[ "$(jq -r .status "$session")" != busy ]] || { echo "herdr-close: $pane is working; not parked" >&2; exit 75; }
   agent="$(herdr agent get "$pane")" || { printf '%s\n' "$agent" >&2; exit 1; }
+  [[ "$(jq -r .result.agent.agent_status <<<"$agent")" == idle ]] || { echo "herdr-close: $pane is not idle; not parked" >&2; exit 75; }
   name="$(jq -r .result.agent.name <<<"$agent")"
   space="$(jq -r '.result.agent.workspace_id // empty' <<<"$agent")"
-  label="$(herdr workspace get "$space" 2>/dev/null | jq -r '.result.workspace.label // empty')"
-  [[ "$label" == "$name" ]] && set -- "$space" || set -- "$(jq -r '.result.agent.tab_id // empty' <<<"$agent")"
+  tabs="$(herdr workspace get "$space" 2>/dev/null | jq -r '.result.workspace.tab_count // empty')"
+  [[ "$tabs" == 1 ]] && set -- "$space" || set -- "$(jq -r '.result.agent.tab_id // empty' <<<"$agent")"
   line="$(jq -c --arg at "$(date -u +%FT%TZ)" --arg pane "$pane" --arg name "$name" \
     '{at: $at, kind: "parked", pane: $pane, name: $name, role: .agent, cwd, session: .sessionId}' "$session")"
 fi
@@ -53,5 +53,5 @@ done
 
 report="$kind=$id ${kind}_close_rc=$rc killed=$killed"
 if [[ -z "$line" ]]; then echo "$report"
-else echo "$report" >&2; ((rc)) || echo "$line"; fi
+else echo "$report" >&2; echo "$line"; fi
 exit "$rc"

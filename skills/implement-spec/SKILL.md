@@ -197,7 +197,7 @@ After every ticket is integrated:
 5. Close each consumed worker with `herdr-close TAB`, which also ends its
    detached processes. A worker you would keep idle through a long wait (human
    gate, another lane) is parked instead, never a consumed one:
-   `herdr-close --park <pane> >> <lane record name>.handoffs.jsonl`;
+   `herdr-close --park <pane> >> ${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<lane record name>.handoffs.jsonl`;
    `herdr-say <name>` resumes it. Remove every temporary worker worktree only after it is
    clean and its commits are reachable from the integration branch. Never
    force-remove a worktree with uncommitted or unmerged work.
