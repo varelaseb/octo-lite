@@ -163,7 +163,7 @@ independent work and report the exact remaining dependency.
 
 ## Review and finish
 
-Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); then one merge ask that carries the review result and that evidence. A merge ask never goes out ahead of a step it needs.
+Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged per `spec/domains/octo-lite.spec.html#delivery-qa-triage`; then one merge ask that carries the review result and that evidence. A merge ask never goes out ahead of a step it needs.
 
 After every ticket is integrated:
 
