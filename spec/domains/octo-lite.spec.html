@@ -22,6 +22,7 @@
 <p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script and a plain git pull keeps it current; on a box with an existing setup, the installer adopts compatible links, skips what belongs to someone else, and never overwrites or fails.</p>
 <p data-user-story data-anchor="user-story-operator-log" id="user-story-operator-log" data-user-facing="false" data-guided-journey="no">As the fleet operator, I append one line per prod and note to the human to my own hand-off file, so the floor shows what I did beside each lane's own lines.</p>
 <p data-user-story data-anchor="user-story-lane-space" id="user-story-lane-space" data-user-facing="true" data-guided-journey="no">As an operator, I see each lane in its own Herdr space named after the lane, holding its owner and every worker of that lane, while I work in a space of my own; closing a finished lane's space leaves nothing of it running.</p>
+<p data-user-story data-anchor="user-story-qa-triage" id="user-story-qa-triage" data-user-facing="true" data-guided-journey="no">As an operator, every QA criterion that failed on my lane reaches my merge ask either fixed and recaptured or named as outside the lane with why, so no failure ships as a note.</p>
 </section>
 
 <section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
@@ -51,6 +52,10 @@
 <p data-acceptance-criterion data-anchor="acceptance-lane-no-tickets-tracker" id="acceptance-lane-no-tickets-tracker" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given a lane owner delivering a ticket graph, When a ticket moves state and the operator opens that ticket in the tracker,</span> <span data-acceptance-observable>Then the tracker shows the ticket's new state.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-one-record" id="acceptance-one-record" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator with a lane's PR ready to merge, When the operator tells the fleet to merge it and the PR merges,</span> <span data-acceptance-observable>Then the box holds no record of that acceptance besides the PR's receipt comment, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-one-record-receipt" id="acceptance-one-record-receipt" data-story="user-story-deliver-spec"><span data-acceptance-scenario>Given an operator with a lane's PR ready to merge, When the operator tells the fleet to merge it, the PR merges, and the operator opens the PR,</span> <span data-acceptance-observable>Then the PR shows one receipt comment quoting the operator's words and the accepted commit.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-qa-code-fault" id="acceptance-qa-code-fault" data-story="user-story-qa-triage"><span data-acceptance-scenario>Given a lane owner whose QA capture shows a criterion failed because the product does not do what it states, When the owner triages that failure and the operator opens the lane's issue in the tracker,</span> <span data-acceptance-observable>Then the tracker shows a repair ticket under that issue naming the criterion, worked by a new implementer.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-qa-code-fault-ask" id="acceptance-qa-code-fault-ask" data-story="user-story-qa-triage"><span data-acceptance-scenario>Given a lane owner whose QA capture shows a criterion failed because the product does not do what it states, When the repair is integrated and the operator reads the lane's merge ask,</span> <span data-acceptance-observable>Then the merge ask lists that criterion as a code fault with its repair ticket and its outcome in a recapture at the repaired head.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-qa-capture-fault" id="acceptance-qa-capture-fault" data-story="user-story-qa-triage"><span data-acceptance-scenario>Given a lane owner whose QA capture shows a criterion failed because the capture never reached or showed the state it names, When the owner fixes that cause and the operator reads the lane's merge ask,</span> <span data-acceptance-observable>Then the merge ask lists that criterion as a capture fault with the cause fixed, the commit that fixed it, and its outcome in a recapture of just that criterion.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-qa-outside" id="acceptance-qa-outside" data-story="user-story-qa-triage"><span data-acceptance-scenario>Given a lane owner whose QA capture shows a criterion failed in behavior the lane did not change, When the operator reads the lane's merge ask,</span> <span data-acceptance-observable>Then the merge ask lists that criterion as outside the lane with the reason, and the lane's PR is ready for review.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
@@ -70,7 +75,7 @@
 <p data-modular-boundary data-anchor="boundary-delivery" id="boundary-delivery">
 <span data-boundary-responsibility>Role contracts and skills own shaping, delivery, review, and gates.</span>
 <span data-boundary-seam>The caller-facing seam is the role contracts in <code>agents/</code> and the skills in <code>skills/</code>.</span>
-<span data-boundary-dependency>Direction is downward: roles use the wrappers and the lane record format; external providers are Linear, GitHub, and Spec Chat.</span>
+<span data-boundary-dependency>Direction is downward: roles use the wrappers and the lane record format; external providers are Linear, GitHub, Spec Chat, and annotateanything's QA capture program, whose rules (when QA runs, outcomes) live in its <code>jev-capture</code> spec under QA rules.</span>
 <span data-boundary-scope>Observable scope: tickets, the PR, and the lane record.</span>
 </p>
 </section>
@@ -110,6 +115,13 @@ A processed human spec acceptance (page action Accept spec, formerly called Fini
 <p data-anchor="delivery-consent" id="delivery-consent">Pushing, opening pull requests, and filing issues follow the kept consent answers alone when present, overriding any instruction; when absent, target instructions decide.
 Without push consent the lane stays on local branches and ends at a local integration head.</p>
 <p data-anchor="delivery-single-ticket" id="delivery-single-ticket">A ticket whose behavior the spec on main already states needs no shaping or new acceptance: that spec's commit on main is the acceptance receipt, the ticket is a one-node graph, and one implementer, one integrator, and one reviewer still run.</p>
+<p data-anchor="delivery-qa-triage" id="delivery-qa-triage">Before the merge ask, the owner triages every criterion the lane's QA capture shows failed, from its evidence (screenshot, actions taken, judge observation), whatever owner the bundle names.
+A code fault, where the product does not do what the criterion states, gets a repair ticket under the spec issue, worked by a fresh implementer and integrated like any ticket, then a recapture of that criterion at the new head.
+A capture fault, where the capture never reached or showed the state, gets its cause fixed where it arises: the target's qa.toml navigation hint or fixture, the criterion's shape under the capturable-criterion rules, or the QA program itself through annotateanything's own lane; then just that criterion is recaptured.
+A reshaped criterion keeps its meaning; one whose meaning changes is a spec change and goes back to spec review.
+A fault outside the lane, in behavior the lane did not change, is reported with why and does not hold the merge ask.
+Every recapture follows a fixed cause and names the commit that fixed it; a rerun with nothing changed is never a triage outcome.
+The merge ask lists each failed criterion with its triage, its cause or reason, and its outcome.</p>
 </section>
 
 <section data-anchor="transport" id="transport">
