@@ -16,8 +16,11 @@ live Herdr 0.9.0:
   * a Codex contract sent as a prompt is worked as a task, and a Codex thread
     on the shared daemon outlives its tab
   * a detached child outlives its closed tab unless `herdr-close` reaps it
+  * a parked agent must hold no process, refuse when working or Codex, and
+    resume once under its name when messaged
 """
 
+import json
 import os
 import signal
 import subprocess
@@ -42,12 +45,17 @@ echo "$*" >>"$FAKE_LOG"
 sub="$1 ${2:-}"
 
 dialog_state() { [[ -f "$FAKE_DIALOG" ]] && cat "$FAKE_DIALOG" || echo none; }
+# FAKE_GONE lists targets Herdr finds no agent for; a started name leaves it.
+gone() { [[ -f "${FAKE_GONE:-}" ]] && grep -qxF "$1" "$FAKE_GONE"; }
+not_found() { echo '{"error":{"code":"agent_not_found","message":"not found"}}' >&2; exit 1; }
 
 case "$sub" in
   "workspace create")
     echo '{"result":{"workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"},"root_pane":{"pane_id":"w2:p1"}}}' ;;
   "tab create")
     echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
+  "workspace get")
+    echo "${FAKE_WORKSPACE_GET:-{\}}" ;;
   "tab close"|"workspace close")
     echo "CLOSED" >>"$FAKE_CLOSED"; echo '{"result":{}}' ;;
   "agent start")
@@ -64,6 +72,7 @@ case "$sub" in
     if [[ -n "${FAKE_START_NOT_READY:-}" ]]; then
       echo '{"error":{"code":"agent_not_ready","message":"blocked during startup"},"id":"cli:agent:start"}' >&2; exit 1
     fi
+    if [[ -f "${FAKE_GONE:-}" ]]; then sed -i "/^$3\$/d" "$FAKE_GONE"; fi
     echo '{"result":{}}' ;;
   "pane read")
     case "$(dialog_state)" in
@@ -111,7 +120,9 @@ case "$sub" in
   "agent get")
     # FAKE_NEVER_READY poses an agent that starts but never reports a session,
     # which is the window in which a prompt is silently lost.
-    if [[ -n "${FAKE_AGENT_GET:-}" ]]; then
+    if gone "$3"; then
+      not_found
+    elif [[ -n "${FAKE_AGENT_GET:-}" ]]; then
       echo "$FAKE_AGENT_GET"
     elif [[ -n "${FAKE_NEVER_READY:-}" ]]; then
       echo '{"result":{"agent":{}}}'
@@ -121,6 +132,7 @@ case "$sub" in
       echo '{"result":{"agent":{"agent_session":{"value":"sess-123"},"agent_status":"idle"}}}'
     fi ;;
   "agent prompt")
+    gone "$3" && not_found
     if [[ -n "${FAKE_PROMPT_BLOCKED:-}" ]]; then
       echo '{"error":{"code":"agent_blocked","message":"requires interactive input"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
@@ -169,7 +181,10 @@ class HerdrWrapperTest(unittest.TestCase):
             "FAKE_START_COUNT": str(d / "count"),
             "FAKE_START_ARGV": str(d / "start.argv"),
             "HOME": str(d),
+            "XDG_STATE_HOME": str(d / "state"),
+            "FAKE_GONE": str(d / "gone"),
         }
+        self.gone_file = d / "gone"
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
 
     def spawn(self, extra=(), **env):
@@ -343,6 +358,17 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.start_argv()[-2:], ["--agent", "r"])
 
+    def test_a_resumed_claude_keeps_its_role_and_session(self):
+        self.dialog.write_text("none\n")
+        r = self.spawn(extra=["--resume", "s-1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.start_argv()[-4:], ["--agent", "r", "--resume", "s-1"])
+
+    def test_resume_is_claude_only_and_refused_before_any_tab(self):
+        r = self.spawn_codex(extra=["--resume", "s-1"])
+        self.assertEqual(r.returncode, 64, r.stderr)
+        self.assertFalse(self.log.exists(), "no tab may be created")
+
     def test_an_inline_prompt_is_rejected_before_any_tab(self):
         # herdr agent start times out waiting for readiness with an inline prompt.
         for runtime in ("claude", "codex"):
@@ -468,6 +494,63 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertEqual(r.returncode, 64, r.stdout)
             self.assertFalse(self.log.exists(), "an option reached herdr tab close")
 
+    # --- park ------------------------------------------------------------
+
+    def park(self, status="idle", session=True, name="implementer-ann-1", label=""):
+        # A detached stand-in for the agent's Claude process in a unique pane,
+        # with Claude's own session file for its pid.
+        space = f"w-{uuid.uuid4()}"
+        tab, pane = f"{space}:t1", f"{space}:p1"
+        p = subprocess.Popen(["sleep", "600"], start_new_session=True, env={
+            **self.env, "HERDR_PANE_ID": pane, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": space})
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        if session:
+            sessions = Path(self.env["HOME"]) / ".claude/sessions"
+            sessions.mkdir(parents=True, exist_ok=True)
+            (sessions / f"{p.pid}.json").write_text(json.dumps({
+                "pid": p.pid, "sessionId": "s-1", "cwd": str(self.cwd),
+                "agent": "implementer", "status": status}))
+        agent = {"result": {"agent": {"name": name, "pane_id": pane, "tab_id": tab,
+                                      "workspace_id": space}}}
+        ws = {"result": {"workspace": {"workspace_id": space, "label": label}}}
+        r = subprocess.run([str(CLOSE), "--park", pane], capture_output=True, text=True,
+                           env={**self.env, "FAKE_AGENT_GET": json.dumps(agent),
+                                "FAKE_WORKSPACE_GET": json.dumps(ws)})
+        return p, r, pane, tab, space
+
+    def calls(self):
+        return self.log.read_text() if self.log.exists() else ""
+
+    def test_parking_a_worker_closes_its_tab_and_prints_one_parked_line(self):
+        p, r, pane, tab, space = self.park(label="ann45")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"tab close {tab}", self.calls())
+        self.assertNotIn("workspace close", self.calls())
+        self.assertTrue(self.gone(p), "the parked agent's process survived")
+        line = json.loads(r.stdout)
+        self.assertEqual({k: line[k] for k in ("kind", "pane", "name", "role", "cwd", "session")},
+                         {"kind": "parked", "pane": pane, "name": "implementer-ann-1",
+                          "role": "implementer", "cwd": str(self.cwd), "session": "s-1"})
+        self.assertRegex(line["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+
+    def test_parking_a_lane_owner_frees_its_whole_space(self):
+        # acceptance-park-owner-free: the owner's space is labelled with its name.
+        p, r, pane, tab, space = self.park(name="ann45", label="ann45")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"workspace close {space}", self.calls())
+        self.assertTrue(self.gone(p), "a process of the parked owner is still running")
+        self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
+        self.assertEqual(json.loads(r.stdout)["session"], "s-1")
+
+    def test_park_refuses_a_working_or_codex_agent(self):
+        # acceptance-park-refuse: nothing closed, the agent keeps running.
+        for kw, code in (({"status": "busy"}, 75), ({"session": False}, 65)):
+            p, r, *_ = self.park(**kw)
+            self.assertEqual(r.returncode, code, r.stderr)
+            self.assertEqual(r.stdout, "")
+            self.assertNotIn("close", self.calls())
+            self.assertIsNone(p.poll(), "a refused park stopped the agent")
+
     # --- say -------------------------------------------------------------
 
     def test_say_delivers_through_the_native_prompt_and_waits(self):
@@ -491,6 +574,51 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.say("--kind", "command", "--artifact", "x.spec.html", "a1", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    def parked_line(self, lane, at="2026-10-14T10:00:00Z", **fields):
+        lanes = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes"
+        lanes.mkdir(parents=True, exist_ok=True)
+        line = {"at": at, "kind": "parked", "cwd": str(self.cwd), "session": "s-1", **fields}
+        with open(lanes / f"{lane}.handoffs.jsonl", "a") as f:
+            f.write(json.dumps(line) + "\n")
+
+    def test_say_resumes_a_parked_worker_in_the_callers_space(self):
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", at="2026-10-14T09:00:00Z", pane="w1:p7",
+                         name="implementer-ann-1", role="implementer", session="s-old")
+        self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
+        self.gone_file.write_text("w1:p7\nimplementer-ann-1\n")
+        r = self.say("w1:p7", "hi", HERDR_WORKSPACE_ID="w3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "pane=w1:p1\n")
+        argv = self.start_argv()
+        self.assertEqual(argv[2], "implementer-ann-1")
+        self.assertEqual(argv[-4:], ["--agent", "implementer", "--resume", "s-1"])
+        self.assertIn("tab create --workspace w3 ", self.calls())
+        self.assertIn("agent prompt w1:p1 hi", self.calls())
+
+    def test_say_resumes_a_parked_owner_in_a_new_lane_space(self):
+        # A legacy line without name or role is the owner under the lane's name.
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w9:p2")
+        self.gone_file.write_text("w9:p2\nann45\n")
+        r = self.say("w9:p2", "what are you waiting on?")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "pane=w1:p1\n")
+        self.assertIn(f"workspace create --label ann45 --cwd {self.cwd} --no-focus", self.calls())
+        argv = self.start_argv()
+        self.assertEqual(argv[2], "ann45")
+        self.assertEqual(argv[-4:], ["--agent", "orchestrator", "--resume", "s-1"])
+        self.assertIn("agent prompt w1:p1 what are you waiting on?", self.calls())
+
+    def test_a_second_message_to_a_resumed_owner_starts_no_second_copy(self):
+        # acceptance-park-wake-once: the old pane is gone, its name is live.
+        self.parked_line("ann45", pane="w9:p2")
+        self.gone_file.write_text("w9:p2\n")
+        r = self.say("w9:p2", "hi")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("agent start", self.calls())
+        self.assertIn("agent prompt ann45 hi", self.calls())
+
     # --- wake provider (Spec Chat's wake protocol) -------------------------
 
     def wake(self, *args, status="idle", pane="w1:p1", **env):
@@ -501,6 +629,11 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_wake_check_is_zero_only_for_a_resolving_owner(self):
         self.assertEqual(self.wake("check", "w1:p1").returncode, 0)
         self.assertEqual(self.wake("check", "w1:p2").returncode, 1)
+
+    def test_wake_check_counts_a_parked_owner_as_present(self):
+        self.parked_line("ann45", pane="w1:p2")
+        self.assertEqual(self.wake("check", "w1:p2").returncode, 0)
+        self.assertEqual(self.wake("check", "w1:p3").returncode, 1)
 
     def test_wake_send_prompts_the_owner_with_the_message(self):
         r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready")
