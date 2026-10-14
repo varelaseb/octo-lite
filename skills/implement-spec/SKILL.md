@@ -135,7 +135,8 @@ when they do not install dependencies, change branches or generate files there.
 Consume completed results at the next owner wake, before optional status work,
 and continue integration or the next ready task in that turn. Keep one integrator
 owner for the lane's integration branch. Every worker brief names the owner pane.
-The owner waits for the worker's result message; it is the only wake.
+The owner waits for the worker's result message; between messages, each goal
+check-in reads the awaited workers' Herdr state (`agents/orchestrator.md`).
 Record one truthful current state, next action and dependency.
 Do not end delivery at startup, dispatch, worker completion or review forwarding.
 
@@ -144,6 +145,9 @@ Do not end delivery at startup, dispatch, worker completion or review forwarding
 Read target `AGENTS.md` and applicable CI commands before broad validation,
 including DB isolation, shard/file concurrency, schema and dependencies.
 Do not run parallel destructive suites on one shared DB when CI isolates them.
+Before a heavy job (full suite, QA capture, build), yours or a worker's, check
+box load (`uptime` against `nproc`, `free -m`); when high, run one heavy job at
+a time and say so in worker briefs.
 On topology failures, stop the owned invalid run and diagnose before retrying.
 Reuse passing evidence only for unchanged code and compatible environment
 when target rules permit; final-head required checks and integration-sensitive
@@ -191,7 +195,10 @@ After every ticket is integrated:
    progress. Otherwise keep it draft and report the blocker. Keep the spec
    issue open until human review or repository automation closes it.
 5. Close each consumed worker with `herdr-close TAB`, which also ends its
-   detached processes. Remove every temporary worker worktree only after it is
+   detached processes. A worker you would keep idle through a long wait (human
+   gate, another lane) is parked instead, never a consumed one:
+   `herdr-close --park <pane> >> ${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<lane record name>.handoffs.jsonl`;
+   `herdr-say <name>` resumes it. Remove every temporary worker worktree only after it is
    clean and its commits are reachable from the integration branch. Never
    force-remove a worktree with uncommitted or unmerged work.
 
@@ -215,5 +222,6 @@ Failed required checks still block merge until fixed or durably waived through
 a repository-approved path.
 
 The merge completes the worklane: reconcile the PR and worklane state together,
-reconcile the primary Linear issue to Done, remove clean worker worktrees, and
-stop.
+reconcile the primary Linear issue to Done, tear down in the close order of
+`agents/orchestrator.md` (review rows before any worktree, lane record archived
+last), and stop.

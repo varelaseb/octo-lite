@@ -5,8 +5,9 @@ description: Spawn Herdr agents and send them messages, over native Herdr.
 
 # herdr-comms
 
-Three thin wrappers over native Herdr. Herdr itself owns the transport; these
-exist only for the failure modes it leaves to the caller.
+Thin wrappers over native Herdr. Herdr itself owns the transport; these
+exist only for the failure modes it leaves to the caller, and for parking an
+idle Claude agent so it holds no memory while it waits.
 
 ## Spawn an agent
 
@@ -69,6 +70,11 @@ those leave to the caller:
 
 Any failure closes the tab, so a failed spawn never leaves an orphan.
 
+`--resume SESSION` (Claude only) starts a parked agent as it was launched:
+Claude gets `--agent ROLE --resume SESSION` and keeps its conversation. An
+owner resumes through `octo-lite-start --cwd WORKTREE --name LANE --resume
+SESSION`, in a new lane space. `herdr-say` does both for you; see below.
+
 ## Close an agent or a lane space
 
 ```
@@ -84,6 +90,21 @@ the spawner closes a tab, the operator closes a finished lane's own space, or
 only its owner tab when the lane started in a shared space. Prints
 `tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and exits with
 the close status.
+
+## Park an idle agent
+
+```
+herdr-close --park PANE >>"$lanes/<lane>.handoffs.jsonl"
+```
+
+`$lanes` is `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes`. Reads the
+session of the Claude process in PANE from `~/.claude/sessions/<pid>.json`,
+closes its tab, or its whole space when that tab is the space's only one (a
+lane owner in its own space), and prints one parked line (`at kind pane name
+role cwd session`) on stdout, even when the close fails; the close report goes
+to stderr. The parker appends the line: the operator for an owner, the owner for
+a worker. An agent Herdr does not report idle is refused with exit 75, a Codex
+agent (no session file) with 65; nothing is closed.
 
 ## Send a message
 
@@ -108,6 +129,14 @@ is either delivered now or reported as not delivered.
 
 Native Herdr refuses to prompt a blocked agent, so an open dialog is never
 typed into.
+
+A target Herdr does not find may be parked. The latest parked line naming it,
+by pane or name, in any lane hand-off log decides: a live agent under the
+line's name gets the message; otherwise the agent is resumed (an owner, the line
+named after its log, in a new lane space; a worker in the caller's
+`$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its new
+`pane=`. `herdr-say --parked TARGET` prints that line, or exits 1. `herdr-wake
+check` counts a parked owner as present, so a spec review hand-off resumes it.
 
 ## Reading a pane
 

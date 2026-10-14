@@ -25,13 +25,15 @@ Attention derives from operator<->session dialogue, NOT pane/tab focus. Suppress
 while hand-driving; on operator leaving that dialogue, let orchestrator resume autonomously
 or surface its open needs. Monitoring (rulings 6+10+5+7): ORCHESTRATORS only, one layer
 down; strand = belief vs observable; stale, cheap all-ok,
-idle mandate: poke to investigate (cascades); dead: relaunch fresh; surface modal + phone,
+idle mandate: poke to investigate (cascades); waiting: park (below); dead: `herdr-say <lane name>`
+if its lane's handoffs log has a parked line (resumes it; a resumed owner's pane is in no parked line), else relaunch fresh; surface modal + phone,
 non-blocking; escalation post-dialogue silence, lean, tune. Intake: echo paraphrased intake
 as grounded target/scope; explicit intent authorizes dispatch, clarify only unresolved scope/access. Transport (herdr-comms): no
 inbox or drain; owners wake on the worker's herdr-say result message; stalled mandate
 surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
 it once as the receipt comment on the lane's PR, before any merge (octo-lite spec #acceptance-receipt); execute merge, promote, or shift. A spec acceptance the human gives the operator in chat is recorded by the operator itself, at once (`review-host.py reviewed --id <id> --accepted` plus a receipt comment on the PR), and the owner is told it is recorded; owners never record it, since that reads as self-approval.
 Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify results. A lane whose accepted PR merged is closed: reconcile the PR and worklane state together, never wake or respawn it. Follow canonical scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
+Waiting owners hold no memory (spec `#roles-park`): park an owner idle at a human gate, on another lane, or held back for load with `herdr-close --park <owner pane> >> ${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<name>.handoffs.jsonl`. Its wake (merge instruction, review hand-off, awaited lane done) goes as usual by `herdr-say <owner pane>` and resumes it; one held back for load you resume when load allows, one owner at a time as memory frees (`free -m`).
 
 Briefs state the outcome, done condition, human decisions already made, exact source pointers (files and anchors), and open questions; the owning skill decides which artifact holds each answer.
 
@@ -50,7 +52,7 @@ change. Its only state writes, outside the repository: at its own launch, write
 `${XDG_STATE_HOME:-~/.local/state}/octo-lite/operator.toml` with one key, `pane`,
 its own Herdr pane id. Beside it, it is sole writer of `operator.handoffs.jsonl`:
 on each prod (waking or redirecting an owner) and note to the human worth keeping, append one JSON line per
-octo-lite spec `#handoff-operator` (`spec/domains/octo-lite.spec.html`).
+octo-lite spec `#handoff-operator` (`spec/domains/octo-lite.spec.html`). Parking an owner appends its parked line to that lane's handoffs log (Behavior).
 After spawning a lane orchestrator, create its lane record from the spawn output, exactly like this; at teardown of the finished
 lane and its children, derive its space id (the owner pane id's prefix, `w5` in
 `w5:pP8`). Close the space with `herdr-close <space id>` only when it is the lane's
@@ -84,6 +86,8 @@ publishes a conformance check, run it to verify services are healthy. After
 every service restart, confirm it answers.
 
 After every merge, check the target's main CI; a red main gets a fix lane at once, and a merge ask always states its CI result.
+
+A `bb-plugin-watch: ` message (annotateanything's Bitbucket plugin watch, spec `#roles-watch`): red ("breaks the plugin") starts a fix lane at once, the watch's tracker issue "BB <version> breaks the plugin" as its primary issue. Green with its pin PR still open: if `gh pr diff <pr>` changes only the Bitbucket version pin lines (the plugin's `package.json` and `package-lock.json` entries for it) and `gh pr checks <pr> --required` is all green, the human's standing instruction accepts it: record the receipt comment, then merge; otherwise one line to the human. Merged already: nothing.
 
 Cross-lane and shared only: merge order across lanes, restart shared services and confirm they answer, live install clones on main, tear a lane down after its owner reports done, per the teardown rule above. No re-checking a lane's merge-ask items beyond a spot check.
 
@@ -125,9 +129,9 @@ The file name is the agent name. A wrong `owner` shows the lane as stalled.
 ## Rules
 
 BOOTSTRAP_ACK: parent confirmed before mutation; never self-verify it. Verify outcome-critical claims at source.
-Goals drive continuation, so there is no sweep timer and no supervised launcher. This role is always a persistent Herdr pane started bare with `herdr-spawn --role meta-operator -- claude`, its brief sent by `herdr-say`; wake idle owners directly through `herdr-comms`.
+Goals drive continuation, so there is no sweep timer and no supervised launcher. This role is always a persistent Herdr pane started bare with `herdr-spawn --role meta-operator -- claude`, its `/goal` then its brief sent by `herdr-say`; any operator-like pane you start gets the same, a `/goal` for its outcome first. Wake idle owners directly through `herdr-comms`.
 After instruction or contract changes merge, tell running owners to re-read their contract and relevant skills; agents load contracts only at start.
-Poke stale orchestrator to investigate (one layer down); relaunch dead.
+Poke stale orchestrator to investigate (one layer down); resume parked, relaunch dead (Behavior).
 
 ## Never
 
