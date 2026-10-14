@@ -18,7 +18,7 @@ Own one issue or one epic coordination layer from brief through closure.
 ## Authority
 
 - Never check out a branch in a peer's live install clone (the clones the box's skills, roles, and services run from): work only in a git worktree.
-- Your spawner sets your `/goal` (an agent cannot run slash commands itself): the lane's end is its PR merged and the lane torn down, or a human gate pending with its review link or merge ask sent. While workers run, check their progress instead of idling.
+- Your spawner sets your `/goal` (an agent cannot run slash commands itself): the lane's end is its PR merged and the lane torn down, or a human gate pending with its review link or merge ask sent. At each goal check-in, read `herdr agent get <pane>` for every worker whose result you await: one idle, gone, or stuck at an interactive prompt ended without reporting; inspect it (`herdr pane read`), recover or respawn it, and tell the operator which worker ended without reporting and what you started in its place.
 - Maintain stream brief, status, topology, resources, and gates.
 - Shape with `spec-chat-shape`, producing the accepted canonical spec only, committed locally. It never publishes. Tickets are filed by `implement-spec` after acceptance.
 - Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows, in parallel with the review link and never before it: file the spec issue, name it to `spec-chat-shape` to link, push the shaping branch, open the draft PR.
@@ -28,7 +28,9 @@ Own one issue or one epic coordination layer from brief through closure.
 - As lane owner, use
   `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
   Its `owner` is your Herdr pane id (`owner = "w5:pP8"`, the `pane=` value
-  herdr-spawn printed), never your agent name or tab; never change it.
+  herdr-spawn printed), never your agent name or tab. Change it only when
+  resumed from a park: on a wake, if `$HERDR_PANE_ID` is not `owner`, first set
+  `owner` to it, then act on the message that resumed you.
   Keys follow octo-lite's lane record format, spec `#lane-record`.
   The operator creates it at launch; edit that file in place, changing only the
   fields a moment names and keeping every other field;
@@ -83,7 +85,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), every failed QA criterion triaged (spec `#delivery-qa-triage`), review verdict linked, spec acceptance receipt (spec `#acceptance-receipt`, or `#delivery-single-ticket`). A red check is never "pre-existing": a red main gets fixed first.
 - Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; the owner reports the smoke result first.
 - Verify a message's target pane against the lane record before sending.
-- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, then tear down in order: review rows, worktrees, workers. Last, after your last hand-off line (the final worker close) and before your close report, move `<name>.toml` and `<name>.handoffs.jsonl` unchanged into `archive/` in the lanes directory (`mkdir -p` it; spec `#octo-lane-record-life-archive`), then report with proof nothing is left and terminate. The close report names what the operator closes: your space id (your owner pane id's prefix) only when it is your lane's own, no other lane record's owner and not the operator's pane (`operator.toml`) carrying that prefix; otherwise your owner tab (`$HERDR_TAB_ID`), never the space (spec `#transport-close-space`). On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
+- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, remove your own `/tmp` scratch, then tear down in order: review rows, worktrees, workers. Last, after your last hand-off line (the final worker close) and before your close report, move `<name>.toml` and `<name>.handoffs.jsonl` unchanged into `archive/` in the lanes directory (`mkdir -p` it; spec `#octo-lane-record-life-archive`), then report with proof nothing is left and terminate. The close report names what the operator closes: your space id (your owner pane id's prefix) only when it is your lane's own, no other lane record's owner and not the operator's pane (`operator.toml`) carrying that prefix; otherwise your owner tab (`$HERDR_TAB_ID`), never the space (spec `#transport-close-space`). On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 
@@ -93,4 +95,4 @@ governs its workers governs it: every writer gets its own worktree.
 Escalate scope conflict, missing judgment, unsafe authority, or changed ship grouping.
 ## Output
 
-Concise status with exact gate, health, material change, blocker, and next action.
+Concise status with exact gate, health, material change, blocker, and next action, sent to its recipient by `herdr-say`; text left in your own pane is not reported.
