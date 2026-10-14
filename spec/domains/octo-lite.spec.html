@@ -163,8 +163,7 @@ The parker appends that line to the lane's hand-off log: the operator when it pa
 A working agent or a Codex agent is refused with nothing closed; Codex keeps no per-process session file, so parking is Claude only.</p>
 <p data-anchor="transport-resume" id="transport-resume">A parked agent resumes as it was launched, plus <code>--resume &lt;session&gt;</code>: an owner through <code>octo-lite-start --resume &lt;session&gt;</code> in a new lane space under the lane's name at its worktree, a worker through <code>herdr-spawn --resume &lt;session&gt;</code> in the caller's space under its old name and role; Claude starts with <code>--agent &lt;role&gt; --resume &lt;session&gt;</code> and keeps its conversation.</p>
 <p data-anchor="transport-wake-parked" id="transport-wake-parked">When Herdr finds no agent for a <code>herdr-say</code> target, the latest parked line naming that pane or name decides: if an agent already runs under the line's name, the message goes to it; otherwise the agent is resumed first, then the message is delivered, and <code>herdr-say</code> prints the resumed agent's <code>pane=</code>.
-<code>herdr-wake check</code> counts a parked owner as present, so a spec review hand-off to it resumes it.
-A resumed owner sets the lane record's <code>owner</code> to its new pane before anything else.</p>
+<code>herdr-wake check</code> counts a parked owner as present, so a spec review hand-off to it resumes it.</p>
 <p data-anchor="transport-restart-risk" id="transport-restart-risk" data-spec-tbd="later">Risk: whether Herdr keeps space and pane ids across a Herdr server restart is unproven; if it does not, a restart breaks every lane record owner pane and every space derived from it.</p>
 </section>
 
@@ -183,7 +182,7 @@ Readers follow this format; octo-lite names no reader.</p>
 <tr data-anchor="octo-lane-record-key-repository"><td><code>repository</code></td><td><code>"owner/name"</code> where the lane's PR lives.</td></tr>
 <tr data-anchor="octo-lane-record-key-goal"><td><code>goal</code></td><td>One line: a short plain feature name, the lane title.</td></tr>
 <tr data-anchor="octo-lane-record-key-pr"><td><code>pr</code></td><td>Pull request number; absent until one opens.</td></tr>
-<tr data-anchor="octo-lane-record-key-owner"><td><code>owner</code></td><td>The owner's Herdr pane id, the <code>pane=</code> value <code>herdr-spawn</code> printed, for example <code>"w5:pB2"</code>; never the agent name or tab. A <a href="#transport-wake-parked">resumed owner</a> rewrites it to its new pane.</td></tr>
+<tr data-anchor="octo-lane-record-key-owner"><td><code>owner</code></td><td>The owner's Herdr pane id, the <code>pane=</code> value <code>herdr-spawn</code> printed, for example <code>"w5:pB2"</code>; never the agent name or tab. A <a href="#roles-park">resumed owner</a> rewrites it to its new pane.</td></tr>
 <tr data-anchor="octo-lane-record-key-started"><td><code>started_at</code></td><td>Quoted UTC instant when the lane launched, for example <code>"2026-09-26T01:05:00Z"</code>, written once at launch.</td></tr>
 <tr data-anchor="octo-lane-record-key-last-handoff"><td><code>last_handoff_at</code></td><td>Quoted UTC instant of the owner's last worker spawn, close, or hand-off consumption.</td></tr>
 <tr data-anchor="octo-lane-record-key-waiting"><td><code>waiting_on</code></td><td><code>""</code>, <code>"blocked"</code>, <code>"operator"</code> (the lane escalated to the fleet operator), or one other lane's issue key, for example <code>"ANN-136"</code>, while this lane waits on that lane.
