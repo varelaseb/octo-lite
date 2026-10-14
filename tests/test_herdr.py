@@ -553,9 +553,18 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn(f"tab close {tab}", self.calls())
         self.assertNotIn("workspace close", self.calls())
 
-    def test_park_refuses_a_working_or_codex_agent(self):
+    def test_parking_an_agent_herdr_reports_done(self):
+        # Herdr 0.9.0 reports a Claude agent waiting at its prompt as done.
+        p, r, pane, tab, space = self.park(status="done")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"tab close {tab}", self.calls())
+        self.assertTrue(self.gone(p), "the parked agent's process survived")
+        self.assertEqual(json.loads(r.stdout)["kind"], "parked")
+
+    def test_park_refuses_a_working_blocked_or_codex_agent(self):
         # acceptance-park-refuse: nothing closed, the agent keeps running.
-        for kw, code in (({"status": "working"}, 75), ({"session": False}, 65)):
+        for kw, code in (({"status": "working"}, 75), ({"status": "blocked"}, 75),
+                         ({"session": False}, 65)):
             p, r, *_ = self.park(**kw)
             self.assertEqual(r.returncode, code, r.stderr)
             self.assertEqual(r.stdout, "")
