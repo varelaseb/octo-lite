@@ -62,6 +62,7 @@
 <p data-acceptance-criterion data-anchor="acceptance-park-wake" id="acceptance-park-wake" data-story="user-story-park"><span data-acceptance-scenario>Given an operator with a parked lane owner, When the operator sends that owner a message asking what its lane is waiting on,</span> <span data-acceptance-observable>Then Herdr shows the lane's space again with the owner under the lane's name, and the owner answers from its earlier conversation.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-park-wake-once" id="acceptance-park-wake-once" data-story="user-story-park"><span data-acceptance-scenario>Given an operator with a parked lane owner already resumed by one message, When the operator sends a second message to the owner's old pane,</span> <span data-acceptance-observable>Then the message reaches the resumed owner and no second copy of it starts, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-park-worker" id="acceptance-park-worker" data-story="user-story-park"><span data-acceptance-scenario>Given a lane owner with an idle worker, When the owner parks that worker and later sends it a message by its name,</span> <span data-acceptance-observable>Then Herdr shows the worker in the lane's space under the same name, answering from its earlier conversation.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-park-fleet" id="acceptance-park-fleet" data-story="user-story-park"><span data-acceptance-scenario>Given the fleet operator on a box short of memory with a lane owner idle at a human gate, When the fleet operator checks the fleet,</span> <span data-acceptance-observable>Then Herdr no longer shows that lane's space, and every working lane is still shown.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-park-refuse" id="acceptance-park-refuse" data-story="user-story-park"><span data-acceptance-scenario>Given an operator with a lane agent that is working, or that runs Codex, When the operator tries to park it,</span> <span data-acceptance-observable>Then the park is refused and the agent keeps running, proven by a unit test: no screen shows it.</span></p>
 </section>
 
@@ -106,6 +107,11 @@ Kept answers are not asked again; deleting that file asks afresh.</p>
 <h2>Roles</h2>
 <p data-anchor="roles-contracts" id="roles-contracts"><code>agents/*.md</code> are the hand-written role contracts: orchestrator, implementer, integrator, code-reviewer, and meta-operator; none pins a model.</p>
 <p data-anchor="roles-loaded" id="roles-loaded">Every spawned worker with a role contract (implementer, integrator, or code-reviewer) loads it: Claude through <code>--agent ROLE</code>, Codex as developer instructions via <code>herdr-spawn --role ROLE</code>.</p>
+<p data-anchor="roles-park" id="roles-park">Waiting agents hold no memory: the fleet operator parks a lane owner idle at a human gate, on another lane, or held back for load, and resumes it by sending it the wake message, or when load allows, one owner at a time as memory frees.
+A parked owner is resumed, never relaunched fresh; only an owner with no parked line and no live pane is relaunched.
+A lane owner parks a worker it would otherwise keep idle through a long wait, such as a human gate or another lane, and messages it to resume; a worker whose result is consumed is closed, not parked.
+A resumed owner first sets its lane record's <code>owner</code> to its new pane, then acts on the message that resumed it.
+The meta-operator and orchestrator contracts and the <code>herdr-comms</code> and <code>implement-spec</code> skills state these moves where they wait or close.</p>
 <p data-anchor="roles-operating-model" id="roles-operating-model">An optional operating model given to <code>herdr-spawn</code> reaches the agent at start and passes to every agent it spawns, and each spawn forwards the caller's <code>HOME</code>.</p>
 </section>
 
