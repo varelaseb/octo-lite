@@ -16,14 +16,33 @@
 #   75  not delivered now because the target is blocked on interactive input;
 #       the caller should retry once the target is free
 #   >0  anything else
+#
+# A target Herdr does not find may be parked: the latest parked line naming it,
+# in any lane hand-off log, decides. A live agent under the line's name gets the
+# message; otherwise the agent is resumed first (an owner, the lane's name, in a
+# new lane space; a worker in the caller's space), and its new pane= is printed.
+# `herdr-say --parked TARGET` prints that line, or exits 1 when there is none.
 set -euo pipefail
 
-usage() { echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE" >&2; }
+usage() { echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE | --parked TARGET" >&2; }
+
+# The latest parked line naming TARGET by pane or name. A line without name or
+# role is the lane owner: the lane's name, its log's stem, as orchestrator.
+parked() {
+  local line logs=("${XDG_STATE_HOME:-$HOME/.local/state}"/octo-lite/lanes/*.handoffs.jsonl)
+  [[ -f "${logs[0]}" ]] || return 1
+  line="$(jq -nc --arg t "$1" '[inputs | select(.kind == "parked")
+    | .lane = (input_filename | split("/") | last | rtrimstr(".handoffs.jsonl"))
+    | .name //= .lane | .role //= "orchestrator"
+    | select(.pane == $t or .name == $t)] | sort_by(.at) | last // empty' "${logs[@]}")" &&
+    [[ -n "$line" ]] && printf '%s\n' "$line"
+}
 
 while (($#)); do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --kind|--artifact) shift 2 ;;   # accepted for caller compatibility, unused
+    --parked) (($# == 2)) || { usage; exit 64; }; parked "$2"; exit ;;
     --) shift; break ;;
     -*) echo "herdr-say: unknown option $1" >&2; exit 64 ;;
     *) break ;;
@@ -32,13 +51,31 @@ done
 (($# == 2)) || { usage; exit 64; }
 target="$1"; message="$2"
 
-rc=0
-out="$(herdr agent prompt "$target" "$message" --wait --until working --until idle 2>&1)" || rc=$?
+prompt() { rc=0; out="$(herdr agent prompt "$1" "$message" --wait --until working --until idle 2>&1)" || rc=$?; }
+code() { jq -r '.error.code // empty' <<<"$out" 2>/dev/null || true; }
+
+prompt "$target"
+if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$target")"; then
+  name="$(jq -r .name <<<"$line")"
+  if ! herdr agent get "$name" >/dev/null 2>&1; then
+    here="$(dirname "$(readlink -f "$0")")"
+    resume=(--cwd "$(jq -r .cwd <<<"$line")" --name "$name" --resume "$(jq -r .session <<<"$line")")
+    if [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
+      started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
+    else
+      started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
+        --role "$(jq -r .role <<<"$line")" "${resume[@]}" -- claude)"
+    fi
+    name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
+    echo "pane=$name"
+  fi
+  prompt "$name"
+fi
 [[ "$rc" == 0 ]] && exit 0
 
 # A blocked target is a retry, not a failure: it is sitting on a dialog and
 # Herdr correctly declined to type past it.
-[[ "$(jq -r '.error.code // empty' <<<"$out" 2>/dev/null || true)" == agent_blocked ]] && {
+[[ "$(code)" == agent_blocked ]] && {
   echo "herdr-say: $target is blocked on interactive input; not delivered" >&2; exit 75; }
 
 printf '%s\n' "$out" >&2

@@ -7,6 +7,7 @@
 # send keeps host-wake's states: a working owner defers; a prompt Herdr typed
 # but did not see land (agent_prompt_stalled) counts as sent so the same batch
 # is never retyped. Spec Chat bounds send and treats its timeout as sent.
+# A parked owner counts as present: herdr-say resumes it on send.
 set -uo pipefail
 
 usage() { echo "usage: herdr-wake check OWNER | send OWNER ARTIFACT MESSAGE" >&2; exit 64; }
@@ -18,15 +19,15 @@ status() {
   jq -er --arg p "$1" '.result.agent | select(.pane_id == $p) | .agent_status // "unknown"' <<<"$out" 2>/dev/null || return 1
 }
 
+say="$(dirname "$(readlink -f "$0")")/herdr-say"
 case "${1:-}" in
   check)
     (($# == 2)) || usage
-    status "$2" >/dev/null ;;
+    status "$2" >/dev/null || "$say" --parked "$2" >/dev/null ;;
   send)
     (($# == 4)) || usage
-    s="$(status "$2")" || exit 1
+    s="$(status "$2")" || { "$say" --parked "$2" >/dev/null || exit 1; }
     [[ "$s" == working ]] && exit 75
-    say="$(dirname "$(readlink -f "$0")")/herdr-say"
     err="$("$say" --kind command --artifact "$3" "$2" "$4" 2>&1 >/dev/null)"
     rc=$?
     ((rc == 0 || rc == 75)) && exit "$rc"
