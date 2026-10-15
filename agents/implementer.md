@@ -38,7 +38,6 @@ Implement one ticket inside the worktree it was given, and return the commit.
 - Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; report the smoke result first.
 - One mechanism (operating model): before adding a client, format, store, config, status file, or table, find the existing one and extend it, or state in the spec why a second is needed.
 - Start any server or background process as `setsid sh -c 'echo $$ > "$(git rev-parse --git-dir)/pids/<name>"; exec cmd' &` (mkdir that `pids` dir first) and stop it before reporting, only via that file: `kill -- -<pid>`. Never `pkill -f` or `killall`.
-- When done, send the owner pane the commit and terse evidence (what changed, declared repo skills loaded, what was run, what it returned) with `herdr-say`, then stop. Same channel as a blocker.
 
 ## Never
 
@@ -52,4 +51,4 @@ Stop on a ticket that contradicts the spec, a missing environment, or work that 
 
 ## Output
 
-Commit id, what changed, declared repo skills loaded, validation run and its result, blockers.
+Last step, result or blocker alike: send the commit id, what changed, declared repo skills loaded, validation run and its result, and blockers to the owner pane your brief names with `herdr-say`, then stop. Only exit 0 confirms the send; on any other exit, send it again. Text left in your own pane is not reported.

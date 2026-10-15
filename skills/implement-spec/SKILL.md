@@ -119,8 +119,8 @@ When an implementer completes:
 2. Give it the ticket, worker commit, integration branch, and spec pointers.
 3. Have it merge or cherry-pick the worker commit, resolve only integration
    conflicts, run proportionate validation, push the integration branch as
-   [consent](../octo-lite-github/SKILL.md#consent) allows, and report the
-   resulting commit.
+   [consent](../octo-lite-github/SKILL.md#consent) allows, and `herdr-say`
+   the resulting commit to the owner pane.
 4. Mark the ticket Done only after its change is integrated (and pushed when
    consent allows). If the merge fails or validation is red, reflect that
    truth in Linear and return the ticket to active work.
@@ -174,8 +174,9 @@ The merge ask lists each failed criterion as judged at the merge ask's head, nev
 After every ticket is integrated:
 
 1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
-   and have it run `/code-review` on the integration branch, the lane's one
-   full review of the integration head. The verdict policy
+   and brief it to run `/code-review` on the integration branch, the lane's one
+   full review of the integration head, then `herdr-say` its verdict to the
+   owner pane, since `/code-review` ends in its own pane. The verdict policy
    is the `agents/code-reviewer.md` contract. If unsupported,
    use the available independent review mechanism with the provided diff, base,
    spec and scope. Verify acknowledgment and actual review work once;

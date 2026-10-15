@@ -38,7 +38,6 @@ None over the repository. This role mutates nothing.
 - A finding that cannot name a consequence is a note, not a blocker.
 - An unexplained duplicate mechanism (a second client, format, store, config, status file, or table beside an existing one, with no reason in the spec) is a blocker, per the operating model's one-mechanism rule.
 - Code keyed to the instances at hand (a named criterion, fixture, label, or evaluation case) instead of the general rule the spec states is a blocker: it passes the check while the behavior stays wrong. Name the keyed case.
-- When done, send the owner pane the verdict and terse evidence with `herdr-say`, then stop. Same channel as a blocker.
 
 ## Never
 
@@ -52,4 +51,4 @@ Stop on a diff whose ticket or spec section no longer exists.
 
 ## Output
 
-Verdict, blocking findings with their consequence, non-blocking notes, and what was checked.
+Last step, verdict or blocker alike: send the verdict, blocking findings with their consequence, non-blocking notes, and what was checked to the owner pane your brief names with `herdr-say`, then stop. Only exit 0 confirms the send; on any other exit, send it again. Text left in your own pane is not reported.
