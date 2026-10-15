@@ -25,6 +25,7 @@
 <p data-user-story data-anchor="user-story-qa-triage" id="user-story-qa-triage" data-user-facing="true" data-guided-journey="no">As an operator, every QA criterion that failed on my lane reaches my merge ask either fixed and recaptured or named as outside the lane with why, so no failure ships as a note.</p>
 <p data-user-story data-anchor="user-story-owner-liveness" id="user-story-owner-liveness" data-user-facing="true" data-guided-journey="no">As an operator, a lane never stalls silently: its owner notices a worker that ended without reporting, recovers it, and tells me, and every report reaches me as a message.</p>
 <p data-user-story data-anchor="user-story-park" id="user-story-park" data-user-facing="true" data-guided-journey="no">As an operator on a box short of memory, I can park an idle lane owner or worker so it holds no memory while it waits, and a later message to it resumes it under the same name with its conversation intact.</p>
+<p data-user-story data-anchor="user-story-session" id="user-story-session" data-user-facing="true" data-guided-journey="no">As an operator running several Herdr sessions on one box, I work in each without coordinating: an agent in one session never sees, wakes, or tears down a lane of another.</p>
 </section>
 
 <section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
@@ -67,6 +68,13 @@
 <p data-acceptance-criterion data-anchor="acceptance-park-worker" id="acceptance-park-worker" data-story="user-story-park"><span data-acceptance-scenario>Given a lane owner with an idle worker, When the owner parks that worker and later sends it a message by its name,</span> <span data-acceptance-observable>Then Herdr shows the worker in the lane's space under the same name, answering from its earlier conversation.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-park-fleet" id="acceptance-park-fleet" data-story="user-story-park"><span data-acceptance-scenario>Given the fleet operator on a box short of memory with a lane owner idle at a human gate, When the fleet operator checks the fleet,</span> <span data-acceptance-observable>Then Herdr no longer shows that lane's space, and every working lane is still shown.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-park-refuse" id="acceptance-park-refuse" data-story="user-story-park"><span data-acceptance-scenario>Given an operator with a lane agent that is working, or that runs Codex, When the operator tries to park it,</span> <span data-acceptance-observable>Then the park is refused and the agent keeps running, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-session-dir" id="acceptance-session-dir" data-story="user-story-session"><span data-acceptance-scenario>Given an agent in a named Herdr session, When it locates octo-lite's state,</span> <span data-acceptance-observable>Then it gets that session's own state directory, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-session-default" id="acceptance-session-default" data-story="user-story-session"><span data-acceptance-scenario>Given an agent in the default Herdr session, When it locates octo-lite's state,</span> <span data-acceptance-observable>Then it gets octo-lite's top state directory, the one holding the onboarding file, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-session-fleet" id="acceptance-session-fleet" data-story="user-story-session"><span data-acceptance-scenario>Given an operator with a lane open in each of two Herdr sessions on one box, When the fleet operator of one session checks the fleet,</span> <span data-acceptance-observable>Then its fleet report names its own session's lane and not the other.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-session-wake" id="acceptance-session-wake" data-story="user-story-session"><span data-acceptance-scenario>Given a parked lane owner in one Herdr session and no agent under its pane id in another, When an agent in that other session sends a message to the owner's pane id,</span> <span data-acceptance-observable>Then no agent is resumed and the message is reported not delivered, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-session-close" id="acceptance-session-close" data-story="user-story-session"><span data-acceptance-scenario>Given lanes in two Herdr sessions whose spaces have the same id and each run a background process, When the operator of one session closes its finished lane's space,</span> <span data-acceptance-observable>Then the other session's lane processes keep running, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-session-park" id="acceptance-session-park" data-story="user-story-session"><span data-acceptance-scenario>Given idle Claude agents in two Herdr sessions under the same pane id, When the operator of one session parks that pane,</span> <span data-acceptance-observable>Then the parked line names the conversation of its own session's agent, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-session-own-space" id="acceptance-session-own-space" data-story="user-story-session"><span data-acceptance-scenario>Given a finished lane in its own space and a lane in another Herdr session whose owner pane carries the same space id, When the lane's owner reports the lane closed,</span> <span data-acceptance-observable>Then the owner's report names its space to close.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
@@ -74,13 +82,13 @@
 <p data-modular-boundary data-anchor="boundary-transport" id="boundary-transport">
 <span data-boundary-responsibility>The Herdr wrappers (<code>octo-lite-start</code>, <code>herdr-spawn</code>, <code>herdr-say</code>, <code>herdr-close</code>) own placing lane agents in spaces, messaging them, parking and resuming them, and closing tabs and spaces.</span>
 <span data-boundary-seam>The caller-facing seam is each wrapper's arguments and its printed <code>pane=</code> and <code>workspace=</code> lines.</span>
-<span data-boundary-dependency>Direction is external-provider: the wrappers depend on the Herdr CLI and, for parking, on Claude's own per-process session file and <code>--resume</code>; roles and skills depend on the wrappers, never the reverse.</span>
+<span data-boundary-dependency>Direction is external-provider: the wrappers depend on the Herdr CLI, the <a href="#session-key">session key</a> Herdr exports, and, for parking, on Claude's own per-process session file and <code>--resume</code>; roles and skills depend on the wrappers, never the reverse.</span>
 <span data-boundary-scope>Observable scope: Herdr spaces, tabs, and agents, and process exit.</span>
 </p>
 <p data-modular-boundary data-anchor="boundary-lane-record" id="boundary-lane-record">
 <span data-boundary-responsibility>octo-lite owns and publishes the lane record and hand-off formats; roles write them at the named moments.</span>
-<span data-boundary-seam>The caller-facing seam is the files under <code>$XDG_STATE_HOME/octo-lite/lanes/</code>, plus the lane's Herdr space and spawn names for workers.</span>
-<span data-boundary-dependency>Direction is self-contained: readers such as a board depend on the format; octo-lite names no reader.</span>
+<span data-boundary-seam>The caller-facing seam is the files in each Herdr session's <a href="#session-state">state directory</a>, plus the lane's Herdr space and spawn names for workers.</span>
+<span data-boundary-dependency>Direction is self-contained: readers such as a board depend on the format and locate a session's files from the Herdr session key; octo-lite names no reader.</span>
 <span data-boundary-scope>Observable scope: file contents and the lane's space membership.</span>
 </p>
 <p data-modular-boundary data-anchor="boundary-delivery" id="boundary-delivery">
@@ -146,6 +154,24 @@ Every recapture follows a fixed cause and names the commit that fixed it; a reru
 The merge ask lists each failed criterion with its triage, its cause or reason, and its outcome.</p>
 </section>
 
+<section data-anchor="session" id="session">
+<h2>Herdr session</h2>
+<p data-anchor="session-unit" id="session-unit">The Herdr session is octo-lite's isolation unit: an agent sees, messages, parks, wakes, and tears down only the lanes of its own session, and sessions need no coordination.
+Every wrapper and role acts in its caller's session and reads and writes only that session's state.</p>
+<p data-anchor="session-key" id="session-key">The session key is the Herdr session name, read from Herdr alone.
+Herdr exports the name as <code>HERDR_SESSION</code> to every pane of a named session, and a pane of the default session has none, so a process reads the key as <code>${HERDR_SESSION:-default}</code>.
+The Herdr CLI selects its own session by the same variable, so a process outside any pane that sets it acts in that session, and one that does not acts in the default session.
+Herdr limits session names to ASCII letters, digits, <code>.</code>, <code>_</code>, and <code>-</code>, so the key is safe as a path component.
+Any repository that scopes its own state by Herdr session reads this same key from Herdr directly.</p>
+<p data-anchor="session-state" id="session-state">octo-lite's state directory for a session is <code>$XDG_STATE_HOME/octo-lite/</code> for the key <code>default</code>, and <code>$XDG_STATE_HOME/octo-lite/sessions/&lt;key&gt;/</code> for any other key, as Herdr keeps its own named sessions under <code>sessions/&lt;name&gt;</code>.
+It holds the session's <code>lanes/</code> directory, with each lane's record, hand-off log, and archive, and the session's <code>operator.toml</code> and <code>operator.handoffs.jsonl</code>.
+<code>octo-lite-state</code> prints the caller's session state directory, and roles and wrappers locate lane and operator files through it.
+The onboarding file belongs to the box, not a session, and stays at <code>$XDG_STATE_HOME/octo-lite/onboarding.toml</code>.</p>
+<p data-anchor="session-ids" id="session-ids">Herdr pane, tab, and space ids are unique only within a session; another session repeats them.
+Every id in a session's state is read and acted on in that session: a message, park, wake, or close by id reaches only the caller's session, and a close stops only processes of the caller's session.
+No record key names a session.</p>
+</section>
+
 <section data-anchor="transport" id="transport">
 <h2>Transport</h2>
 <p data-anchor="transport-herdr" id="transport-herdr"><code>herdr-spawn</code> opens one tab and agent at an explicit worktree, and <code>herdr-say</code> delivers a message, returning only once Herdr observes a state change.
@@ -159,7 +185,7 @@ A target blocked on interactive input gets nothing typed, and <code>herdr-say</c
 The owner spawns every worker of its lane into its own space, <code>$HERDR_WORKSPACE_ID</code>.
 A lane's own space is the one <code>octo-lite-start</code> created for it; a lane started in a space shared with the operator or other lanes has no space of its own.</p>
 <p data-anchor="transport-space-derived" id="transport-space-derived">A lane's space id is the prefix of its owner pane id, <code>w7</code> in <code>"w7:p1"</code>, so no record key holds it.
-That space is the lane's own when no other lane's owner pane and not the operator's pane carries the same prefix.</p>
+That space is the lane's own when no other lane's owner pane and not the operator's pane, both read from the session's state, carries the same prefix.</p>
 <p data-anchor="transport-spawn-name" id="transport-spawn-name">Every worker is spawned under the name <code>&lt;role&gt;-&lt;ticket&gt;</code>, lowercase, for example <code>implementer-ann-64</code>, where the role is the role contract it runs and the ticket is the issue key it works; the lane space already names the lane, and Herdr accepts only lowercase names of at most 32 characters.
 The ticket is the issue key ending the name, read back in upper case; a worker serving the whole lane, such as the integrator or a reviewer of the integration head, carries the lane's primary issue key.
 An agent in the lane's space whose name does not follow this form is still a worker of the lane, with no role or ticket.
@@ -178,7 +204,7 @@ A working agent or a Codex agent is refused with nothing closed; Codex keeps no 
 
 <section data-anchor="lane-record" id="lane-record">
 <h2>Lane record</h2>
-<p data-anchor="lane-record-intent">Octo-lite owns and publishes the lane record format: one TOML file per open lane in <code>$XDG_STATE_HOME/octo-lite/lanes/</code>, named by the owner agent name, with the keys below, written at the moments below.
+<p data-anchor="lane-record-intent">Octo-lite owns and publishes the lane record format: one TOML file per open lane in the <code>lanes/</code> directory of its Herdr session's <a href="#session-state">state directory</a>, named by the owner agent name, with the keys below, written at the moments below.
 A closed lane's record and hand-off log live in <code>archive/</code> inside that directory.
 Readers follow this format; octo-lite names no reader.</p>
 <figure data-anchor="octo-lane-record-fields">
@@ -208,7 +234,7 @@ A human gate leaves it <code>""</code>: the column function derives <code>"spec 
 A lane's workers are the Herdr agents in the lane's space other than the owner; each worker's pane is its Herdr pane id, and its role and ticket come from its <a href="#transport-spawn-name">spawn name</a>.</p>
 <figure data-anchor="octo-lane-record">
 <h3 data-anchor="octo-lane-record-heading">The lane record</h3>
-<pre data-anchor="octo-lane-record-example"><code># $XDG_STATE_HOME/octo-lite/lanes/ann45-44-shape.toml
+<pre data-anchor="octo-lane-record-example"><code># $(octo-lite-state)/lanes/ann45-44-shape.toml
 owner = "w7:pB2"                 # owner pane id: herdr-spawn pane=, never agent name or tab; its prefix w7 is the lane space
 repository = "varelaseb/octo-lite"
 issue = "ANN-45"                 # primary issue; operator at launch if known, else owner at shaping
@@ -297,6 +323,7 @@ The review host's <code>accepted</code> flag is a view cache for screens and is 
 <section data-anchor="absent" id="absent">
 <h2>Not present</h2>
 <p data-anchor="absent-list" id="absent-list">There is no sweep or host timer, loop workflow, role resolver or <code>roles.toml</code>, control CLI, owner file, readiness envelope, trust root, or conformance checker; do not rebuild them.
+There is no cross-session addressing or coordination and no session key in any record: the session scopes state by directory alone.
 The removed owner file was coordination and control state; the <a href="#lane-record">lane record</a> is a read-only declaration for observation that nothing gates on.</p>
 </section>
 </article>

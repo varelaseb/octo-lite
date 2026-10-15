@@ -66,6 +66,12 @@ lane name and starts the lane's orchestrator alone in it at the worktree,
 printing `workspace=` beside `pane=`. It is the published start command; callers never use
 `herdr-spawn` inside the clone.
 
+`octo-lite-state`, also on `PATH`, prints the caller's Herdr session state
+directory: `${XDG_STATE_HOME:-~/.local/state}/octo-lite` in the default session,
+its `sessions/<name>` in a named one. Lane records, their hand-off logs, and
+`operator.toml` live there, so each session sees only its own lanes; the
+onboarding file stays box-wide.
+
 With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
 `wake` provider by writing
 `${XDG_STATE_HOME:-~/.local/state}/spec-chat/hosting/default/providers/wake.toml`

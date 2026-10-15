@@ -26,7 +26,7 @@ Own one issue or one epic coordination layer from brief through closure.
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use
-  `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<owner agent name>.toml`.
+  `$(octo-lite-state)/lanes/<owner agent name>.toml`.
   Its `owner` is your Herdr pane id (`owner = "w5:pP8"`, the `pane=` value
   herdr-spawn printed), never your agent name or tab. Change it only when
   resumed from a park: on a wake, if `$HERDR_PANE_ID` is not `owner`, first set
@@ -85,7 +85,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), every failed QA criterion triaged (spec `#delivery-qa-triage`), review verdict linked, spec acceptance receipt (spec `#acceptance-receipt`, or `#delivery-single-ticket`). A red check is never "pre-existing": a red main gets fixed first.
 - Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; the owner reports the smoke result first.
 - Verify a message's target pane against the lane record before sending.
-- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, remove your own `/tmp` scratch, then tear down in order: review rows, worktrees, workers. Last, after your last hand-off line (the final worker close) and before your close report, move `<name>.toml` and `<name>.handoffs.jsonl` unchanged into `archive/` in the lanes directory (`mkdir -p` it; spec `#octo-lane-record-life-archive`), then report with proof nothing is left and terminate. The close report names what the operator closes: your space id (your owner pane id's prefix) only when it is your lane's own, no other lane record's owner and not the operator's pane (`operator.toml`) carrying that prefix; otherwise your owner tab (`$HERDR_TAB_ID`), never the space (spec `#transport-close-space`). On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
+- Keep one writer per mutable resource. An accepted PR merged into target main closes the lane: reconcile the PR and worklane state together, reconcile the primary Linear issue to Done, remove your own `/tmp` scratch, then tear down in order: review rows, worktrees, workers. Last, after your last hand-off line (the final worker close) and before your close report, move `<name>.toml` and `<name>.handoffs.jsonl` unchanged into `archive/` in the lanes directory (`mkdir -p` it; spec `#octo-lane-record-life-archive`), then report with proof nothing is left and terminate. The close report names what the operator closes: your space id (your owner pane id's prefix) only when it is your lane's own, no other lane record's owner and not the operator's pane (`operator.toml`), both read from `$(octo-lite-state)`, carrying that prefix; otherwise your owner tab (`$HERDR_TAB_ID`), never the space (spec `#transport-close-space`). On operator poke or investigate signal, re-check own workers; worker-level liveness (belief vs observable contradiction) is caught here, not escalated.
 
 ## Never
 
