@@ -160,6 +160,7 @@ The merge ask lists each failed criterion with its triage, its cause or reason, 
 Every wrapper and role acts in its caller's session and reads and writes only that session's state.</p>
 <p data-anchor="session-key" id="session-key">The session key is the Herdr session name, read from Herdr alone.
 Herdr exports the name as <code>HERDR_SESSION</code> to every pane of a named session, and a pane of the default session has none, so a process reads the key as <code>${HERDR_SESSION:-default}</code>.
+The Herdr CLI selects its own session by the same variable, so a process outside any pane that sets it acts in that session, and one that does not acts in the default session.
 Herdr limits session names to ASCII letters, digits, <code>.</code>, <code>_</code>, and <code>-</code>, so the key is safe as a path component.
 Any repository that scopes its own state by Herdr session reads this same key from Herdr directly.</p>
 <p data-anchor="session-state" id="session-state">octo-lite's state directory for a session is <code>$XDG_STATE_HOME/octo-lite/</code> for the key <code>default</code>, and <code>$XDG_STATE_HOME/octo-lite/sessions/&lt;key&gt;/</code> for any other key, as Herdr keeps its own named sessions under <code>sessions/&lt;name&gt;</code>.
