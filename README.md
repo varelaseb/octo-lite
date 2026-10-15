@@ -45,6 +45,13 @@ scripts/install-octo-lite --check
 (git, herdr, jq, gh, and at least one of claude or codex), printing ok,
 missing, or too old with the upgrade source.
 
+`--project CHECKOUT` also links the skills a project declares on its
+`AGENTS.md` [`Repo skills:` line](#repo-skills) from that checkout, the
+project's live main clone, into the same skill directories, each under its
+directory name. An existing link at one of those names that resolves anywhere
+else is stale: install and `--check` warn, naming the link and where it points,
+leave it untouched, and continue. Nothing repairs it.
+
 ## Onboarding
 
 ```bash
@@ -149,6 +156,14 @@ off, drain, edit, and reply.
 The shaper and worker skills read this signal before touching a spec. They
 preserve the repo's declared format, and spec-chat work never regenerates a
 Markdown counterpart.
+
+### Repo skills
+
+Target repos declare their own skills in root `AGENTS.md` with one line,
+`Repo skills:` followed by comma-separated repository-relative paths to skill
+directories, for example `Repo skills: skills/ui-rules, tools/house-style`.
+`install-octo-lite --project CHECKOUT` links them; implementers load the ones
+their ticket needs by name. octo-lite names no project skill.
 
 ## Trackers And GitHub
 

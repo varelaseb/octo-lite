@@ -5,13 +5,15 @@ prefix=""
 check=false
 onboard=false
 undo=false
+project=""
 while (($#)); do
   case "$1" in
     --prefix) prefix="${2:?}"; shift 2 ;;
     --check) check=true; shift ;;
     --onboard) onboard=true; shift ;;
     --undo) undo=true; shift ;;
-    *) echo "usage: install-octo-lite [--prefix PATH] [--check | --onboard | --undo]" >&2; exit 64 ;;
+    --project) project="$(cd "${2:?}" && pwd -P)"; shift 2 ;;
+    *) echo "usage: install-octo-lite [--prefix PATH] [--project CHECKOUT] [--check | --onboard | --undo]" >&2; exit 64 ;;
   esac
 done
 
@@ -279,6 +281,26 @@ for source in "$root"/skills/herdr-comms/assets/*; do
   [[ -x "$source" ]] || continue
   link_one "$source" "$prefix/.local/bin/$(basename "$source")"
 done
+
+# Project skills: the target's AGENTS.md declares them on one line,
+# `Repo skills: a/skill, b/skill`, and they link from the given live main
+# checkout only. An existing link resolving anywhere else is stale: warn,
+# leave it, continue. Never repair it, never link from another clone.
+if [[ -n "$project" ]]; then
+  repo_skills="$(sed -n '/^[-*[:space:]]*Repo skills:/{s///p;q;}' "$project/AGENTS.md")"
+  while read -r rel; do
+    [[ -n "$rel" ]] || continue
+    source="$project/$rel"
+    for dir in .codex/skills .agents/skills .claude/skills; do
+      target="$prefix/$dir/$(basename "$rel")"
+      if [[ -L "$target" && "$(readlink -f "$target")" != "$(readlink -f "$source")" ]]; then
+        echo "stale link: $target -> $(readlink "$target") (not from $project)" >&2
+        continue
+      fi
+      link_one "$source" "$target"
+    done
+  done <<< "${repo_skills//,/$'\n'}"
+fi
 
 # Version floors: each tool octo-lite uses at runtime, with the minimum version
 # it needs and the upgrade source. --check reports each as ok, missing, or too
