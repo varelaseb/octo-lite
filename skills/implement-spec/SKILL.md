@@ -172,21 +172,25 @@ Order, every lane: build only after the spec acceptance receipt; integrate every
 After every ticket is integrated:
 
 1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
-   and have it run `/code-review` on the integration branch. The verdict policy
+   and have it run `/code-review` on the integration branch, the lane's one
+   full review of the integration head. The verdict policy
    is the `agents/code-reviewer.md` contract. If unsupported,
    use the available independent review mechanism with the provided diff, base,
    spec and scope. Verify acknowledgment and actual review work once;
    do not retry an unrecognized slash command or count pasted text as review.
-2. If review reports issues, create one fix branch and worktree and spawn one
-   implementer through `herdr-comms` to fix all findings. Merge it through one
-   Herdr integrator, then
-   review the new integration head. One consolidated batch is the default,
-   not a lifetime repair cap. If a confirmed defect remains, continue a bounded
-   repair of that finding and changed surface. If the same attempt makes no
+2. Only blockers (broken or clearly over-built) send the PR back: one fix
+   branch and worktree, one implementer through `herdr-comms` briefed with the
+   accepted spec, the current diff, and the findings, not the history, and one
+   Herdr integrator. After a fix batch that changes behavior, a fresh reviewer
+   reviews only the fix delta (base = the last reviewed head) plus the surface
+   it touches; never re-review unchanged code. Nits, wording, test-only, and
+   cosmetic findings never cost a review round: they ride in a fix batch
+   already running, else ship as historical notes. A PR back from review with
+   findings a second time gets a fresh step-back pass toward the simplest
+   design that meets the spec, not another patch. Never park a confirmed defect or
+   implicitly waive a failed required check. If the same attempt makes no
    progress, diagnose or route the concrete unresolved blocker through the
-   repo-approved path while independent tasks continue. Never park an
-   actionable defect solely because a cycle completed, repeat unchanged
-   reviews blindly, or implicitly waive a failed required check.
+   repo-approved path while independent tasks continue.
 3. Run the target repo's required validation.
 4. Mark the PR ready for review only when the final review is clear, every
    required validation succeeds, and any required evidence (QA bundle) is

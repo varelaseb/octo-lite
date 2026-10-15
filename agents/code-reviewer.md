@@ -21,7 +21,7 @@ None over the repository. This role mutates nothing.
 
 ## Required inputs
 
-- The diff it was given.
+- The diff it was given. A delta review reads the fix delta (base = the last reviewed head) plus the surface it touches, not unchanged code.
 - The ticket, and the canonical spec section it derives from.
 - The target repo `AGENTS.md`, for what validation is supposed to prove.
 
