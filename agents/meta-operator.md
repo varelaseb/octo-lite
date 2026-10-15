@@ -33,7 +33,7 @@ inbox or drain; owners wake on the worker's herdr-say result message; stalled ma
 surfaced. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
 it once as the receipt comment on the lane's PR, before any merge (octo-lite spec #acceptance-receipt); execute merge, promote, or shift. A spec acceptance the human gives the operator in chat is recorded by the operator itself, at once (`review-host.py reviewed --id <id> --accepted` plus a receipt comment on the PR), and the owner is told it is recorded; owners never record it, since that reads as self-approval.
 Consume completed artifacts before optional reporting; wake unfinished idle owners to integrate/advance and verify results. A lane whose accepted PR merged is closed: reconcile the PR and worklane state together, never wake or respawn it. Follow canonical scoped-access, validation, isolation and preview-preservation rules; review-cycle limits never strand defects or waive checks.
-Waiting owners hold no memory (spec `#roles-park`): park an owner idle at a human gate, on another lane, or held back for load with `herdr-close --park <owner pane> >> ${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/<name>.handoffs.jsonl`. Its wake (merge instruction, review hand-off, awaited lane done) goes as usual by `herdr-say <owner pane>` and resumes it; one held back for load you resume when load allows, one owner at a time as memory frees (`free -m`).
+Waiting owners hold no memory (spec `#roles-park`): park an owner idle at a human gate, on another lane, or held back for load with `herdr-close --park <owner pane> >> $(octo-lite-state)/lanes/<name>.handoffs.jsonl`. Its wake (merge instruction, review hand-off, awaited lane done) goes as usual by `herdr-say <owner pane>` and resumes it; one held back for load you resume when load allows, one owner at a time as memory frees (`free -m`).
 
 Briefs state the outcome, done condition, human decisions already made, exact source pointers (files and anchors), and open questions; the owning skill decides which artifact holds each answer.
 
@@ -49,15 +49,15 @@ Owners report everything to you as it happens; never tell them to report less. Y
 This role writes no repository files. It is concerned with merge strategy across
 lanes, with overlap between streams, and with gating, not with producing the
 change. Its only state writes, outside the repository: at its own launch, write
-`${XDG_STATE_HOME:-~/.local/state}/octo-lite/operator.toml` with one key, `pane`,
+`$(octo-lite-state)/operator.toml` with one key, `pane`,
 its own Herdr pane id. Beside it, it is sole writer of `operator.handoffs.jsonl`:
 on each prod (waking or redirecting an owner) and note to the human worth keeping, append one JSON line per
 octo-lite spec `#handoff-operator` (`spec/domains/octo-lite.spec.html`). Parking an owner appends its parked line to that lane's handoffs log (Behavior).
 After spawning a lane orchestrator, create its lane record from the spawn output, exactly like this; at teardown of the finished
 lane and its children, derive its space id (the owner pane id's prefix, `w5` in
 `w5:pP8`). Close the space with `herdr-close <space id>` only when it is the lane's
-own: no other lane record's owner and not your pane (`operator.toml`) has that
-prefix (spec `#transport-space-derived`, `#transport-close-space`). Otherwise close only the owner's tab with
+own: no other lane record's owner and not your pane (`operator.toml`), both read
+from `$(octo-lite-state)`, has that prefix (spec `#transport-space-derived`, `#transport-close-space`). Otherwise close only the owner's tab with
 `herdr-close <owner tab>` (the spawn's `tab=`). Touch no record: its owner archived it. Never move
 a lane pane to another space; Herdr rewrites its ids.
 
@@ -95,7 +95,7 @@ The operator's own PRs follow the same finish order (CI green before a merge ask
 
 ```toml
 # herdr-spawn printed: name=ann114-projects role=orchestrator tab=w5:t8 pane=w5:pP8 ...
-# file: ${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes/ann114-projects.toml
+# file: $(octo-lite-state)/lanes/ann114-projects.toml
 owner = "w5:pP8"                 # the pane= value
 repository = "varelaseb/octo-lite"
 issue = "ANN-114"                # primary Linear issue, when known

@@ -9,6 +9,12 @@ Thin wrappers over native Herdr. Herdr itself owns the transport; these
 exist only for the failure modes it leaves to the caller, and for parking an
 idle Claude agent so it holds no memory while it waits.
 
+Every wrapper acts only in the caller's Herdr session,
+`${HERDR_SESSION:-default}`: pane, tab, and space ids repeat across sessions.
+`octo-lite-state` prints the caller's session state directory, holding `lanes/`
+(lane records, hand-off logs, `archive/`), `operator.toml`, and
+`operator.handoffs.jsonl` (spec `#session-state`).
+
 ## Spawn an agent
 
 ```
@@ -82,14 +88,14 @@ herdr-close TAB
 herdr-close SPACE
 ```
 
-The teardown step. An id with a colon (`w5:t2`) is a tab, one without (`w5`)
-is a space. Closes it, then sends TERM to every process whose environ carries
-`HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which catches detached
-children that close alone leaves running. Run it from outside what it closes:
-the spawner closes a tab, the operator closes a finished lane's own space, or
-only its owner tab when the lane started in a shared space. Prints
-`tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and exits with
-the close status.
+The teardown step. An id with a colon (`w5:t2`) is a tab, one without (`w5`) is
+a space. Closes it, then sends TERM to every process of the caller's session
+whose environ carries `HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which
+catches detached children that close alone leaves running. Run it from outside
+what it closes: the spawner closes a tab, the operator closes a finished lane's
+own space, or only its owner tab when the lane started in a shared space.
+Prints `tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and
+exits with the close status.
 
 ## Park an idle agent
 
@@ -97,14 +103,14 @@ the close status.
 herdr-close --park PANE >>"$lanes/<lane>.handoffs.jsonl"
 ```
 
-`$lanes` is `${XDG_STATE_HOME:-~/.local/state}/octo-lite/lanes`. Reads the
-session of the Claude process in PANE from `~/.claude/sessions/<pid>.json`,
+`$lanes` is `$(octo-lite-state)/lanes`. Reads the Claude session of the process
+in PANE, a pane of the caller's session, from `~/.claude/sessions/<pid>.json`,
 closes its tab, or its whole space when that tab is the space's only one (a
 lane owner in its own space), and prints one parked line (`at kind pane name
 role cwd session`) on stdout, even when the close fails; the close report goes
-to stderr. The parker appends the line: the operator for an owner, the owner for
-a worker. An agent Herdr does not report idle is refused with exit 75, a Codex
-agent (no session file) with 65; nothing is closed.
+to stderr. The parker appends the line: the operator for an owner, the owner
+for a worker. An agent Herdr does not report idle is refused with exit 75, a
+Codex agent (no session file) with 65; nothing is closed.
 
 ## Send a message
 
@@ -131,12 +137,13 @@ Native Herdr refuses to prompt a blocked agent, so an open dialog is never
 typed into.
 
 A target Herdr does not find may be parked. The latest parked line naming it,
-by pane or name, in any lane hand-off log decides: a live agent under the
-line's name gets the message; otherwise the agent is resumed (an owner, the line
-named after its log, in a new lane space; a worker in the caller's
-`$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its new
-`pane=`. `herdr-say --parked TARGET` prints that line, or exits 1. `herdr-wake
-check` counts a parked owner as present, so a spec review hand-off resumes it.
+by pane or name, in any lane hand-off log in `$lanes` decides: a live agent
+under the line's name gets the message; otherwise the agent is resumed (an
+owner, the line named after its log, in a new lane space; a worker in the
+caller's `$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its
+new `pane=`. `herdr-say --parked TARGET` prints that line, or exits 1.
+`herdr-wake check` counts a parked owner as present, so a spec review hand-off
+resumes it.
 
 ## Reading a pane
 

@@ -46,6 +46,13 @@ class LaneRecordTests(unittest.TestCase):
         for path in contracts:
             self.assertNotIn("[[tickets]]", path.read_text(encoding="utf-8"), path)
 
+    def test_contracts_locate_session_state_through_octo_lite_state(self) -> None:
+        # spec #session-state: lane and operator files live in the caller's
+        # Herdr session state directory, located only through octo-lite-state.
+        docs = [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/SKILL.md"), ROOT / "README.md"]
+        for path in docs:
+            self.assertNotRegex(path.read_text(encoding="utf-8"), r"octo-lite/(lanes|operator)", path)
+
     def test_owner_archives_record_and_log_at_close(self) -> None:
         # spec #acceptance-lane-archive: owner moves both files unchanged into
         # archive/ after worker teardown, before its close report; the operator
