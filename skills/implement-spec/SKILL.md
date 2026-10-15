@@ -119,8 +119,8 @@ When an implementer completes:
 2. Give it the ticket, worker commit, integration branch, and spec pointers.
 3. Have it merge or cherry-pick the worker commit, resolve only integration
    conflicts, run proportionate validation, push the integration branch as
-   [consent](../octo-lite-github/SKILL.md#consent) allows, and report the
-   resulting commit.
+   [consent](../octo-lite-github/SKILL.md#consent) allows, and `herdr-say`
+   the resulting commit to the owner pane.
 4. Mark the ticket Done only after its change is integrated (and pushed when
    consent allows). If the merge fails or validation is red, reflect that
    truth in Linear and return the ticket to active work.
@@ -167,13 +167,16 @@ independent work and report the exact remaining dependency.
 
 ## Review and finish
 
-Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged per `spec/domains/octo-lite.spec.html#delivery-qa-triage`; then one merge ask that carries the review result and that evidence. A merge ask never goes out ahead of a step it needs.
+Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head; then one merge ask that carries the review result and that evidence. A merge ask never goes out ahead of a step it needs.
+
+The merge ask lists each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
 
 After every ticket is integrated:
 
 1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
-   and have it run `/code-review` on the integration branch, the lane's one
-   full review of the integration head. The verdict policy
+   and brief it to run `/code-review` on the integration branch, the lane's one
+   full review of the integration head, then `herdr-say` its verdict to the
+   owner pane, since `/code-review` ends in its own pane. The verdict policy
    is the `agents/code-reviewer.md` contract. If unsupported,
    use the available independent review mechanism with the provided diff, base,
    spec and scope. Verify acknowledgment and actual review work once;
