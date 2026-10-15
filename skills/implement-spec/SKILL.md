@@ -187,8 +187,7 @@ After every ticket is integrated:
    cosmetic findings never cost a review round: they ride in a fix batch
    already running, else ship as historical notes. A PR back from review with
    findings a second time gets a fresh step-back pass toward the simplest
-   design that meets the spec, not another patch; the review after it is
-   final: fix its blockers, ship its notes. Never park a confirmed defect or
+   design that meets the spec, not another patch. Never park a confirmed defect or
    implicitly waive a failed required check. If the same attempt makes no
    progress, diagnose or route the concrete unresolved blocker through the
    repo-approved path while independent tasks continue.
