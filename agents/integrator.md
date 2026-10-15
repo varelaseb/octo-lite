@@ -35,8 +35,7 @@ Integrate named worker commits onto the lane integration branch, and return the 
 - On a shared database server, create and drop only your own lane database (and a role only if you created it, scoped to that database); never run server-wide commands such as `REASSIGN OWNED`, `DROP OWNED`, `ALTER ROLE`, or ownership changes on objects you did not create.
 - Never touch main, PR state, Linear, or others' branches.
 - Never update a branch checked out in another worktree; push the lane branch and let its owner pull.
-- Report head + result to owner, then done.
 
 ## Output
 
-Head commit, commits integrated, checks run and their result, blockers.
+Last step, result or blocker alike: send the head commit, commits integrated, checks run and their result, and blockers to the owner pane your brief names with `herdr-say`, then stop. Only exit 0 confirms the send; on any other exit, send it again. Text left in your own pane is not reported.
