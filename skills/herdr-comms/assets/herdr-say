@@ -18,18 +18,21 @@
 #   >0  anything else
 #
 # A target Herdr does not find may be parked: the latest parked line naming it,
-# in any lane hand-off log, decides. A live agent under the line's name gets the
-# message; otherwise the agent is resumed first (an owner, the lane's name, in a
-# new lane space; a worker in the caller's space), and its new pane= is printed.
+# in any lane hand-off log of the caller's Herdr session (octo-lite-state),
+# decides; another session's lanes repeat its ids. A live agent under the
+# line's name gets the message; otherwise the agent is resumed first (an owner,
+# the lane's name, in a new lane space; a worker in the caller's space), and its
+# new pane= is printed.
 # `herdr-say --parked TARGET` prints that line, or exits 1 when there is none.
 set -euo pipefail
 
 usage() { echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE | --parked TARGET" >&2; }
+here="$(dirname "$(readlink -f "$0")")"
 
 # The latest parked line naming TARGET by pane or name. A line without name is
 # the lane owner: the lane's name, its log's stem.
 parked() {
-  local line logs=("${XDG_STATE_HOME:-$HOME/.local/state}"/octo-lite/lanes/*.handoffs.jsonl)
+  local line logs=("$("$here/../../../scripts/octo-lite-state")"/lanes/*.handoffs.jsonl)
   [[ -f "${logs[0]}" ]] || return 1
   line="$(jq -nc --arg t "$1" '[inputs | select(.kind == "parked")
     | .lane = (input_filename | split("/") | last | rtrimstr(".handoffs.jsonl"))
@@ -58,7 +61,6 @@ prompt "$target"
 if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$target")"; then
   name="$(jq -r .name <<<"$line")"
   if ! herdr agent get "$name" >/dev/null 2>&1; then
-    here="$(dirname "$(readlink -f "$0")")"
     resume=(--cwd "$(jq -r .cwd <<<"$line")" --name "$name" --resume "$(jq -r .session <<<"$line")")
     if [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
       started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
