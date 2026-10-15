@@ -7,6 +7,9 @@
 # HERDR_TAB_ID=<tab> and HERDR_WORKSPACE_ID=<space> in its environ, so that tag,
 # not the process tree, finds them. A tab id is <space>:<tab>; an id without a
 # colon is a space. Run it from outside what it closes: the spawner owns teardown.
+# Herdr ids repeat across sessions, so only processes of the caller's Herdr
+# session count: those whose HERDR_SESSION equals the caller's, unset in both
+# for the default session.
 #
 # --park PANE reads the session of the Claude process in PANE from Claude's own
 # ~/.claude/sessions/<pid>.json, closes its tab, or its space when that tab is
@@ -17,13 +20,20 @@
 set -uo pipefail
 
 usage() { echo "usage: herdr-close TAB|SPACE | --park PANE" >&2; exit 64; }
+# True when the process behind environ file $1 carries the line $2 and runs in
+# the caller's Herdr session. Unreadable entries are silently not ours.
+ours() {
+  local vars
+  vars="$(tr '\0' '\n' 2>/dev/null <"$1")" && grep -qxF "$2" <<<"$vars" &&
+    [[ "$(sed -n 's/^HERDR_SESSION=//p' <<<"$vars")" == "${HERDR_SESSION:-}" ]]
+}
 line=""
 if [[ "${1:-}" == --park ]]; then
   (($# == 2)) && [[ "$2" == *:* ]] || usage
   pane="$2"; session=""
   for file in "$HOME"/.claude/sessions/[0-9]*.json; do
     pid="${file##*/}"; pid="${pid%.json}"
-    tr '\0' '\n' 2>/dev/null </proc/"$pid"/environ | grep -qxF "HERDR_PANE_ID=$pane" && { session="$file"; break; }
+    ours /proc/"$pid"/environ "HERDR_PANE_ID=$pane" && { session="$file"; break; }
   done
   [[ -n "$session" ]] || { echo "herdr-close: no Claude session in $pane; parking is Claude only" >&2; exit 65; }
   agent="$(herdr agent get "$pane")" || { printf '%s\n' "$agent" >&2; exit 1; }
@@ -48,7 +58,7 @@ herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
 killed=0
 for env in /proc/[0-9]*/environ; do
   pid="${env#/proc/}"; pid="${pid%/environ}"
-  tr '\0' '\n' 2>/dev/null <"$env" | grep -qxF "$tag=$id" || continue
+  ours "$env" "$tag=$id" || continue
   kill -TERM "$pid" 2>/dev/null && killed=$((killed + 1))
 done
 

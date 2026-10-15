@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Print octo-lite's state directory for the caller's Herdr session: the one
+# holding that session's lanes/ and operator files. The session key is
+# ${HERDR_SESSION:-default}, as Herdr exports it to every pane of a named
+# session and to none of the default one. The default session's directory is
+# octo-lite's top one, beside the box's onboarding file; a named session's is
+# sessions/<key> under it, as Herdr keeps its own.
+set -euo pipefail
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite"
+[[ "${HERDR_SESSION:-default}" == default ]] || dir+="/sessions/$HERDR_SESSION"
+printf '%s\n' "$dir"
