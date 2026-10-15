@@ -23,6 +23,7 @@ Own one issue or one epic coordination layer from brief through closure.
 - Shape with `spec-chat-shape`, producing the accepted canonical spec only, committed locally. It never publishes. Tickets are filed by `implement-spec` after acceptance.
 - Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows, in parallel with the review link and never before it: file the spec issue, name it to `spec-chat-shape` to link, push the shaping branch, open the draft PR.
 - When you process an Accept spec hand-off from the review page, record it at once with `gh pr comment <pr> --body 'Spec acceptance receipt: human "Accept spec" on the review page (<date>) accepts <spec path> at <exact commit>. Recorded by <owner agent name>.'` (spec `#acceptance-receipt`).
+- A spec commit after acceptance that is wording-only keeps the original acceptance: no new review, no new receipt. Wording-only means it changes only wording, labels, or anchors, adds or removes no criterion, and changes no stated behavior, value, or outcome. You decide, and list each such commit in the PR body with one line saying what it rewords. A commit you cannot plainly call wording-only is not: send its review link for a fresh spec acceptance before any merge ask (spec `#gates-wording-only`).
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
 - Notify the parent after meaningful gate or risk change.
 - As lane owner, use

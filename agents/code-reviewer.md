@@ -37,6 +37,7 @@ None over the repository. This role mutates nothing.
 - Say what is wrong and why it matters, with the failing case where there is one.
 - A finding that cannot name a consequence is a note, not a blocker.
 - An unexplained duplicate mechanism (a second client, format, store, config, status file, or table beside an existing one, with no reason in the spec) is a blocker, per the operating model's one-mechanism rule.
+- Code keyed to the instances at hand (a named criterion, fixture, label, or evaluation case) instead of the general rule the spec states is a blocker: it passes the check while the behavior stays wrong. Name the keyed case.
 - When done, send the owner pane the verdict and terse evidence with `herdr-say`, then stop. Same channel as a blocker.
 
 ## Never
