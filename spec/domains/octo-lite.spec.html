@@ -26,6 +26,9 @@
 <p data-user-story data-anchor="user-story-owner-liveness" id="user-story-owner-liveness" data-user-facing="true" data-guided-journey="no">As an operator, a lane never stalls silently: its owner notices a worker that ended without reporting, recovers it, and tells me, and every report reaches me as a message.</p>
 <p data-user-story data-anchor="user-story-park" id="user-story-park" data-user-facing="true" data-guided-journey="no">As an operator on a box short of memory, I can park an idle lane owner or worker so it holds no memory while it waits, and a later message to it resumes it under the same name with its conversation intact.</p>
 <p data-user-story data-anchor="user-story-session" id="user-story-session" data-user-facing="true" data-guided-journey="no">As an operator running several Herdr sessions on one box, I work in each without coordinating: an agent in one session never sees, wakes, or tears down a lane of another.</p>
+<p data-user-story data-anchor="user-story-repo-skills" id="user-story-repo-skills" data-user-facing="true" data-guided-journey="no">As an operator whose project keeps its own skills, such as its design rules, every implementer on my lanes loads the ones its ticket needs from my live main checkout, and onboarding warns me when a skill link points at a stale clone.</p>
+<p data-user-story data-anchor="user-story-wording-only" id="user-story-wording-only" data-user-facing="true" data-guided-journey="no">As an operator, a wording-only correction to a spec I accepted rides on my original acceptance, while any change to what the spec makes the system do comes back to me for acceptance.</p>
+<p data-user-story data-anchor="user-story-general-rule" id="user-story-general-rule" data-user-facing="true" data-guided-journey="no">As an operator, work that passes the cases at hand without following the rule the spec states never reaches my merge ask.</p>
 </section>
 
 <section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
@@ -75,6 +78,12 @@
 <p data-acceptance-criterion data-anchor="acceptance-session-close" id="acceptance-session-close" data-story="user-story-session"><span data-acceptance-scenario>Given lanes in two Herdr sessions whose spaces have the same id and each run a background process, When the operator of one session closes its finished lane's space,</span> <span data-acceptance-observable>Then the other session's lane processes keep running, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-session-park" id="acceptance-session-park" data-story="user-story-session"><span data-acceptance-scenario>Given idle Claude agents in two Herdr sessions under the same pane id, When the operator of one session parks that pane,</span> <span data-acceptance-observable>Then the parked line names the conversation of its own session's agent, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-session-own-space" id="acceptance-session-own-space" data-story="user-story-session"><span data-acceptance-scenario>Given a finished lane in its own space and a lane in another Herdr session whose owner pane carries the same space id, When the lane's owner reports the lane closed,</span> <span data-acceptance-observable>Then the owner's report names its space to close.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-repo-skills-link" id="acceptance-repo-skills-link" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given an operator whose project's instructions declare the project's own skills, When the operator runs the installer with the project's live main checkout,</span> <span data-acceptance-observable>Then each declared skill is linked from that checkout for Claude and Codex agents, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-repo-skills-stale" id="acceptance-repo-skills-stale" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given an operator whose project declares a skill whose existing link points into another clone of the project, When the operator runs the installer with the project's live main checkout,</span> <span data-acceptance-observable>Then the installer warns that the link is stale, naming it and the clone it points into, leaves it untouched, and exits successfully, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-repo-skills-load" id="acceptance-repo-skills-load" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given a lane owner delivering a ticket in a project that declares a skill bearing on that ticket, When the implementer finishes the ticket and reports to the owner,</span> <span data-acceptance-observable>Then the report names that declared skill as loaded.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-wording-only" id="acceptance-wording-only" data-story="user-story-wording-only"><span data-acceptance-scenario>Given an operator with an accepted spec on a lane, When the owner commits a correction that only rewords that spec and the operator opens the lane's PR,</span> <span data-acceptance-observable>Then the PR body names that commit as wording-only in one line, and the PR shows no new acceptance receipt for it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-wording-behavior" id="acceptance-wording-behavior" data-story="user-story-wording-only"><span data-acceptance-scenario>Given an operator with an accepted spec on a lane, When the owner commits a spec change that alters a behavior the spec states,</span> <span data-acceptance-observable>Then the operator receives a review link for that change before any merge ask.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-general-rule" id="acceptance-general-rule" data-story="user-story-general-rule"><span data-acceptance-scenario>Given a lane whose integration head passes a named criterion through code keyed to that criterion's own case instead of the rule the spec states, When a fresh code reviewer judges the head,</span> <span data-acceptance-observable>Then its verdict to the owner is changes, with a blocker naming the keyed case.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
@@ -97,6 +106,12 @@
 <span data-boundary-dependency>Direction is downward: roles use the wrappers and the lane record format; external providers are Linear, GitHub, Spec Chat, and annotateanything's QA capture program, whose rules (when QA runs, outcomes) live in its <code>jev-capture</code> spec under QA rules.</span>
 <span data-boundary-scope>Observable scope: tickets, the PR, and the lane record.</span>
 </p>
+<p data-modular-boundary data-anchor="boundary-install" id="boundary-install">
+<span data-boundary-responsibility>The installer owns linking octo-lite's skills, roles, and helpers, and a project's declared skills, into the agent profiles.</span>
+<span data-boundary-seam>The caller-facing seam is the installer's flags and the target <code>AGENTS.md</code> <code>Repo skills:</code> line.</span>
+<span data-boundary-dependency>Direction is external-provider: the installer reads the target's declaration from its checkout; the target names no octo-lite path, and octo-lite names no project skill.</span>
+<span data-boundary-scope>Observable scope: links in the profile skill, agent, and helper directories, and the installer's printed report.</span>
+</p>
 </section>
 
 <section data-anchor="install" id="install">
@@ -105,6 +120,10 @@
 <p data-anchor="install-collision" id="install-collision">When a target path is already occupied, the installer classifies it: a symlink resolving into a different clone of this repository (matched by <code>git remote get-url origin</code>) is adopted and reported; any other existing file or symlink is skipped and reported; the installer never overwrites, never fails on an occupied path, and continues with the remaining items.
 A dangling link whose target was inside this repository is pruned as a known legacy path.
 Any other dangling link, including one at a path the installer links, belongs to someone else: it is reported and left untouched, never replaced.</p>
+<p data-anchor="install-repo-skills" id="install-repo-skills">A target repository declares its own skills in its root <code>AGENTS.md</code> with one line, <code>Repo skills:</code> followed by comma-separated repository-relative paths to skill directories.
+<code>install-octo-lite --project &lt;checkout&gt;</code> reads that line from the project's live main checkout, the clone the operator keeps on main, and links each declared skill from that checkout under its directory name, into the same skill directories as octo-lite's own skills.
+A declared skill's existing link that resolves anywhere but that checkout is stale: with or without <code>--check</code>, the installer warns, naming the link and where it points, leaves it untouched, and continues.
+It never links a project skill from another clone and never repairs a link.</p>
 <p data-anchor="install-peers" id="install-peers">Each peer links only what it owns (<a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/toolchain-ownership.spec.html#toolchain-install">toolchain ownership</a>); Spec Chat's installer links Spec Chat's own skills.
 Only the third-party tdd skill is pinned, by <code>Skillfile</code> into <code>agents/skills</code> (ADR 0002).</p>
 <p data-anchor="install-floors" id="install-floors"><code>--check</code> also reports version floors: for each tool octo-lite uses at runtime (git, herdr, jq, gh, node, python3, and at least one of claude or codex), it prints ok, missing, or too old (found version vs minimum) with the upgrade source.
@@ -118,6 +137,10 @@ Kept answers are not asked again; deleting that file asks afresh.</p>
 <h2>Roles</h2>
 <p data-anchor="roles-contracts" id="roles-contracts"><code>agents/*.md</code> are the hand-written role contracts: orchestrator, implementer, integrator, code-reviewer, and meta-operator; none pins a model.</p>
 <p data-anchor="roles-loaded" id="roles-loaded">Every spawned worker with a role contract (implementer, integrator, or code-reviewer) loads it: Claude through <code>--agent ROLE</code>, Codex as developer instructions via <code>herdr-spawn --role ROLE</code>.</p>
+<p data-anchor="roles-repo-skills" id="roles-repo-skills">An implementer loads by name each skill the target <code>AGENTS.md</code> declares under <code>Repo skills:</code> that bears on its ticket, beside the octo-lite skills its contract lists; a declared skill outranks an octo-lite skill on the same subject, as a project's UI skill outranks <code>frontend-design</code>.
+Its report to the owner names the declared skills it loaded; a declared skill it needs that does not resolve is a missing environment, reported as a blocker.</p>
+<p data-anchor="roles-general-rule" id="roles-general-rule">An implementer implements the general rule the spec states, so every case the rule covers holds, not only the criterion, fixture, label, or evaluation case at hand.
+A code reviewer blocks code keyed to the instances at hand, such as a named criterion, fixture, label, or evaluation case, in place of the rule the spec states: it passes the check while the behavior stays wrong.</p>
 <p data-anchor="roles-park" id="roles-park">Waiting agents hold no memory: the fleet operator parks a lane owner idle at a human gate, on another lane, or held back for load, and resumes it by sending it the wake message, or when load allows, one owner at a time as memory frees.
 A parked owner is resumed, never relaunched fresh; only an owner with no parked line and no live pane is relaunched.
 A lane owner parks a worker it would otherwise keep idle through a long wait, such as a human gate or another lane, and messages it to resume; a worker whose result is consumed is closed, not parked.
@@ -313,6 +336,10 @@ The receipt quotes the human's words, gives the date, names what is accepted (th
 A spec accepted on the review page is recorded by the owner processing that hand-off, quoting the action; a spec accepted in chat by the fleet operator; delivered work by the agent receiving the instruction, before it merges.
 A delivered-work receipt goes on the PR before the merge, and the merge commit closes it; nothing else records the merge.
 The review host's <code>accepted</code> flag is a view cache for screens and is never cited as the record.</p>
+<p data-anchor="gates-wording-only" id="gates-wording-only">A spec commit after acceptance that is wording-only keeps the original acceptance, with no new review and no new receipt.
+Wording-only means the commit changes only wording, labels, or anchors: it adds or removes no criterion and changes no stated behavior, value, or outcome.
+The lane owner decides, and lists each such commit in the PR body with one line saying what it rewords, so the human sees it at the merge gate.
+A commit the owner cannot plainly call wording-only is not, and goes back to spec review for a fresh acceptance.</p>
 <figure data-anchor="acceptance-receipt-figure">
 <h3 data-anchor="acceptance-receipt-heading">The acceptance receipt</h3>
 <pre data-anchor="acceptance-receipt-example"><code>Acceptance receipt: human "merge #74" (2026-09-26) accepts and merges PR #74 at 9be60f6. Recorded by meta-operator.</code></pre>
@@ -322,7 +349,7 @@ The review host's <code>accepted</code> flag is a view cache for screens and is 
 
 <section data-anchor="absent" id="absent">
 <h2>Not present</h2>
-<p data-anchor="absent-list" id="absent-list">There is no sweep or host timer, loop workflow, role resolver or <code>roles.toml</code>, control CLI, owner file, readiness envelope, trust root, or conformance checker; do not rebuild them.
+<p data-anchor="absent-list" id="absent-list">There is no sweep or host timer, loop workflow, role resolver or <code>roles.toml</code>, control CLI, owner file, readiness envelope, trust root, conformance checker, or wording-only diff detector; do not rebuild them.
 There is no cross-session addressing or coordination and no session key in any record: the session scopes state by directory alone.
 The removed owner file was coordination and control state; the <a href="#lane-record">lane record</a> is a read-only declaration for observation that nothing gates on.</p>
 </section>
