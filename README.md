@@ -56,7 +56,7 @@ leave it untouched, and continue. Nothing repairs it.
 
 ```bash
 scripts/install-octo-lite --onboard
-octo-lite-start --cwd WORKTREE [--name LANE] [--runtime claude|codex] [--operating-model FILE]
+octo-lite-start --cwd WORKTREE [--name LANE] [--runtime claude|codex|pi] [--operating-model FILE]
 ```
 
 `--onboard` installs the links, then asks whether agents may push, open pull
@@ -92,8 +92,8 @@ state and config above under `PATH/.local/state` and `PATH/.config`, ignoring
 `XDG_*`.
 
 `agents/*.md` are hand-written role contracts. Workers load them from
-`herdr-spawn --role ROLE -- claude|codex`: Claude through `--agent ROLE`, Codex
-as developer instructions. Spawn bare; the brief follows by `herdr-say`.
+`herdr-spawn --role ROLE -- claude|codex|pi`: Claude through `--agent ROLE`,
+Codex as developer instructions, pi as an appended system prompt. Spawn bare; the brief follows by `herdr-say`.
 `herdr-close TAB` tears a worker down, detached processes
 included; `herdr-close SPACE` tears down a lane space the lane owns alone, else
 the operator closes only the owner's tab. The meta-operator is a persistent Herdr pane started with `herdr-spawn

@@ -22,6 +22,8 @@ herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
   -- claude    # default
 herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
   -- codex     # non-default alternative
+herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
+  -- pi        # non-default alternative
 ```
 
 A lane worker spawns into its lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
@@ -44,13 +46,15 @@ pins no model, effort, or service tier.
 `--agent ROLE`, which `herdr-spawn` passes. Codex has no custom-agent file, so
 the contract at `~/.claude/agents/ROLE.md` is passed as `-c developer_instructions=...`. It
 binds at the developer layer and the agent waits for its brief; a contract sent
-as a prompt is worked as a task. The output reports `contract=` so a silent miss
-is visible.
+as a prompt is worked as a task. Pi has neither, so it gets the contract file
+through `--append-system-prompt FILE`. The output reports `contract=` so a
+silent miss is visible.
 
 `--operating-model FILE` is optional. It hands that file to the agent at start,
 so no global instruction file is needed: Claude gets
 `--append-system-prompt-file FILE`, Codex gets it ahead of the contract in
-`developer_instructions`. It defaults to `$OCTO_LITE_OPERATING_MODEL`, and the
+`developer_instructions`, pi gets `--append-system-prompt FILE` ahead of the
+contract's. It defaults to `$OCTO_LITE_OPERATING_MODEL`, and the
 spawn exports that path into the new tab, so every child inherits the model
 without passing the flag. Without either, nothing changes.
 
@@ -110,7 +114,7 @@ lane owner in its own space), and prints one parked line (`at kind pane name
 role cwd session`) on stdout, even when the close fails; the close report goes
 to stderr. The parker appends the line: the operator for an owner, the owner
 for a worker. An agent Herdr does not report idle is refused with exit 75, a
-Codex agent (no session file) with 65; nothing is closed.
+Codex or pi agent (no Claude session file) with 65; nothing is closed.
 
 ## Send a message
 

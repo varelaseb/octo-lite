@@ -21,7 +21,7 @@ usage() {
   cat <<'EOF'
 usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
-    [--operating-model FILE] [--resume SESSION] -- claude|codex
+    [--operating-model FILE] [--resume SESSION] -- claude|codex|pi
 
 Spawn bare, then send the brief with herdr-say. Claude gets --agent ROLE from
 --role. --resume SESSION continues a parked Claude session (Claude only).
@@ -55,19 +55,20 @@ fi
 
 runtime="$(basename "$1")"
 case "$runtime" in
-  claude|codex) kind="$runtime" ;;
-  *) echo "herdr-spawn: persistent tabs require claude or codex, got $runtime" >&2; exit 65 ;;
+  claude|codex|pi) kind="$runtime" ;;
+  *) echo "herdr-spawn: persistent tabs require claude, codex, or pi, got $runtime" >&2; exit 65 ;;
 esac
 # An inline prompt makes herdr agent start wait for a readiness it never sees and
 # time out, so the runtime takes no arguments.
 (($# == 1)) || { echo "herdr-spawn: no args after the runtime; spawn bare, then send the brief with herdr-say" >&2; exit 64; }
-# Codex keeps no per-process session file, so only Claude is ever parked.
+# Only Claude keeps the per-process session file parking resumes from.
 [[ -z "$resume" || "$kind" == claude ]] || { echo "herdr-spawn: --resume is Claude only" >&2; exit 64; }
 
 # The role contract. A Claude agent loads it itself through `--agent ROLE`,
 # derived from --role. Codex has no custom-agent file, so the contract goes
 # in at the developer layer as one TOML string argv. Delivered as a prompt
-# instead, Codex treats it as a task and starts working it.
+# instead, Codex treats it as a task and starts working it. Pi has neither,
+# and appends the contract file to its system prompt.
 #
 # The installed profile is the lookup, so a contract owned by any peer
 # repository resolves without this script knowing which one.
@@ -78,6 +79,14 @@ if [[ "$kind" == claude ]]; then
   contract="loaded-by-agent-flag"
   launch_argv=(--agent "$role")
   [[ -z "$resume" ]] || launch_argv+=(--resume "$resume")
+elif [[ "$kind" == pi ]]; then
+  launch_argv=()
+  if [[ -f "$contract_file" ]]; then
+    contract="appended-system-prompt"
+    launch_argv=(--append-system-prompt "$contract_file")
+  else
+    echo "herdr-spawn: no $role contract at $contract_file; the agent does not know its bounds" >&2
+  fi
 else
   # --no-daemon keeps the thread and its commands in this tab's process tree,
   # tagged with HERDR_TAB_ID, so herdr-close can end all of it. The shared
@@ -91,10 +100,13 @@ else
 fi
 
 # An optional operating model, handed over at start so the agent needs no global
-# instruction file. Claude appends it to its system prompt. Codex takes it ahead
-# of the contract in the one developer_instructions string.
+# instruction file. Claude and pi append it to their system prompt, pi ahead of
+# the contract. Codex takes it ahead of the contract in the one
+# developer_instructions string.
 if [[ "$kind" == claude ]]; then
   [[ -z "$model" ]] || launch_argv=(--append-system-prompt-file "$model" "${launch_argv[@]}")
+elif [[ "$kind" == pi ]]; then
+  [[ -z "$model" ]] || launch_argv=(--append-system-prompt "$model" "${launch_argv[@]}")
 elif [[ -n "$model" || -f "$contract_file" ]]; then
   instructions="$({ [[ -z "$model" ]] || { cat "$model"; echo; }; [[ ! -f "$contract_file" ]] || cat "$contract_file"; } | jq -Rs .)"
   launch_argv=(-c "developer_instructions=$instructions" "${launch_argv[@]}")
