@@ -107,7 +107,7 @@ class LaneRecordTests(unittest.TestCase):
     def test_worker_result_send_is_bounded_then_goes_to_operator(self) -> None:
         # spec #roles-goal, #acceptance-worker-owner-gone(-stops): 3 sends to
         # the owner, then one to the operator pane, then stop; the operator
-        # brings the owner back and forwards the result.
+        # forwards to the owner pane and relaunches only a gone, unparked owner.
         for role in ("implementer", "integrator", "code-reviewer"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
@@ -121,7 +121,9 @@ class LaneRecordTests(unittest.TestCase):
         self.assertRegex(
             OPERATOR.read_text(encoding="utf-8"),
             r"A worker result sent to you names its unreachable owner pane.*"
-            r"`#roles-park`\), then `herdr-say` its owner the result\.",
+            r"forward it with `herdr-say <owner pane> <result>`.*; "
+            r"only when that pane is gone and no parked line names it, relaunch fresh.*"
+            r"`#roles-park`\), then forward\.",
         )
 
     def test_operator_launch_example_writes_started_at(self) -> None:
