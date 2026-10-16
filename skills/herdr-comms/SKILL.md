@@ -149,6 +149,10 @@ new `pane=`. `herdr-say --parked TARGET` prints that line, or exits 1.
 `herdr-wake check` counts a parked owner as present, so a spec review hand-off
 resumes it.
 
+The review service may run in another Herdr session, so register a review row
+with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks
+and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
+
 ## Reading a pane
 
 `herdr pane read` returns raw text. `herdr agent get` returns JSON. Use the

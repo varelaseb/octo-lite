@@ -45,6 +45,7 @@ STATE = ROOT / "scripts/octo-lite-state"
 FAKE_HERDR = r"""#!/usr/bin/env bash
 set -eu
 echo "$*" >>"$FAKE_LOG"
+[[ -z "${FAKE_ENV_LOG:-}" ]] || echo "session=${HERDR_SESSION:-} socket=${HERDR_SOCKET_PATH:-}" >>"$FAKE_ENV_LOG"
 sub="$1 ${2:-}"
 
 dialog_state() { [[ -f "$FAKE_DIALOG" ]] && cat "$FAKE_DIALOG" || echo none; }
@@ -773,6 +774,21 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.wake(*send, FAKE_PROMPT_STALLED="1").returncode, 0)
         self.assertNotIn(self.wake(*send, FAKE_PROMPT_NOT_FOUND="1").returncode, (0, 75))
         self.assertNotIn(self.wake(*send, pane="w1:p9").returncode, (0, 75))
+
+    def test_wake_reaches_an_owner_in_the_session_it_names(self):
+        # acceptance-session-wake-owner: a service in one session, pinned to
+        # its socket, wakes an owner of session s2, parked or live.
+        envlog = Path(self.tmp.name) / "env.log"
+        here = {"FAKE_ENV_LOG": str(envlog), "HERDR_SOCKET_PATH": "/here.sock"}
+        self.assertEqual(self.wake("check", "s2/w1:p1", **here).returncode, 0)
+        r = self.wake("send", "s2/w1:p1", "a.spec.html", "hand-off ready", **here)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("agent prompt w1:p1 hand-off ready", self.calls())
+        self.assertEqual(set(envlog.read_text().splitlines()), {"session=s2 socket="})
+        self.parked_line("ann46", pane="w8:p1", session="s2")
+        self.gone_file.write_text("w8:p1\n")
+        self.assertEqual(self.wake("check", "s2/w8:p1", **here).returncode, 0)
+        self.assertEqual(self.wake("check", "w8:p1", **here).returncode, 1)
 
     # --- session state ---------------------------------------------------
 
