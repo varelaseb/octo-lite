@@ -190,11 +190,12 @@ After every ticket is integrated:
    cosmetic findings never cost a review round: they ride in a fix batch
    already running, else ship as historical notes. A PR back from review with
    findings a second time gets a fresh step-back pass toward the simplest
-   design that meets the spec, not another patch. After a step-back pass, the
-   next review is final: fix its blockers, ship its notes. Never park a
-   confirmed defect or implicitly waive a failed required check. If the same
-   attempt makes no progress, diagnose or route the concrete unresolved
-   blocker through the repo-approved path while independent tasks continue.
+   design that meets the spec, not another patch. A step-back pass ends
+   step-backs: the next review's blockers get one fix batch and a fix-delta
+   review. Never park a confirmed defect or implicitly waive a failed required
+   check. If the same attempt makes no progress, diagnose or route the
+   concrete unresolved blocker through the repo-approved path while
+   independent tasks continue.
 3. Run the target repo's required validation.
 4. Mark the PR ready for review only when the final review is clear, every
    required validation succeeds, and any required evidence (QA bundle) is
