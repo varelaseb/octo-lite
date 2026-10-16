@@ -1,5 +1,6 @@
-"""Contract checks: octo-lite's published lane record format and its one
-acceptance record, read back by their own spec keys."""
+"""Contract checks: octo-lite's published lane record and hand-off formats,
+its one acceptance record, and the worker result send, read back by their own
+spec keys."""
 
 from __future__ import annotations
 
@@ -82,6 +83,46 @@ class LaneRecordTests(unittest.TestCase):
     def test_owner_posts_spec_receipt_on_accept_spec_handoff(self) -> None:
         text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         self.assertRegex(text, r"Accept spec hand-off.*gh pr comment.*Spec acceptance receipt: human")
+
+    def test_owner_logs_attempt_line_on_consuming_worker_result(self) -> None:
+        # spec #acceptance-lane-log: consuming a worker's result appends one
+        # attempt line naming the worker's role, ticket, pane, and commit.
+        html = SPEC.read_text(encoding="utf-8")
+        row = re.search(
+            r'<tr data-anchor="handoff-kind-attempt"><td><code>attempt</code></td>'
+            r"<td>(.*?)</td><td>(.*?)</td></tr>",
+            html,
+        )
+        self.assertIsNotNone(row, "attempt row is missing")
+        self.assertEqual(unescape(row.group(1)), "A worker's result is consumed.")
+        for field in ("<code>role</code>", "<code>ticket</code>", "<code>worker</code> (pane)", "<code>commit</code>"):
+            self.assertIn(field, row.group(2))
+        owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        self.assertRegex(
+            owner,
+            r"At each hand-off moment, append one line to `<lane record name>\.handoffs\.jsonl`"
+            r"\s+beside it, per spec `#handoff-fields`",
+        )
+
+    def test_worker_result_send_is_bounded_then_goes_to_operator(self) -> None:
+        # spec #roles-goal, #acceptance-worker-owner-gone(-stops): 3 sends to
+        # the owner, then one to the operator pane, then stop; the operator
+        # brings the owner back and forwards the result.
+        for role in ("implementer", "integrator", "code-reviewer"):
+            output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
+            self.assertIn(
+                "to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; "
+                "on any other exit, send it again, 3 sends in all. If none exits 0, send it once, "
+                "naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). "
+                "Then stop, whatever the last exit.",
+                output,
+                role,
+            )
+        self.assertRegex(
+            OPERATOR.read_text(encoding="utf-8"),
+            r"A worker result sent to you names its unreachable owner pane.*"
+            r"`#roles-park`\), then `herdr-say` its owner the result\.",
+        )
 
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")
