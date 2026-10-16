@@ -9,6 +9,10 @@
 # is never retyped. Spec Chat bounds send and treats its timeout as sent.
 # A parked owner counts as present. Its resume outlasts that bound, so send
 # starts herdr-say detached in its own session and counts it as sent.
+# OWNER is a pane of the caller's Herdr session, or SESSION/PANE: a pane of
+# Herdr session SESSION, so a review service of one session wakes an owner in
+# another. Herdr selects the session by HERDR_SESSION unless HERDR_SOCKET_PATH
+# pins one, so the socket is dropped.
 set -uo pipefail
 
 usage() { echo "usage: herdr-wake check OWNER | send OWNER ARTIFACT MESSAGE" >&2; exit 64; }
@@ -21,6 +25,10 @@ status() {
 }
 
 say="$(dirname "$(readlink -f "$0")")/herdr-say"
+if [[ "${2:-}" == */* ]]; then
+  export HERDR_SESSION="${2%%/*}"; unset HERDR_SOCKET_PATH
+  set -- "$1" "${2#*/}" "${@:3}"
+fi
 case "${1:-}" in
   check)
     (($# == 2)) || usage

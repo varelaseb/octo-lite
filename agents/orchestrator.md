@@ -26,6 +26,7 @@ Own one issue or one epic coordination layer from brief through closure.
 - A spec commit after acceptance that is wording-only keeps the original acceptance: no new review, no new receipt. Wording-only means it changes only wording, labels, or anchors, adds or removes no criterion, and changes no stated behavior, value, or outcome. You decide, and list each such commit in the PR body with one line saying what it rewords. A commit you cannot plainly call wording-only is not: send its review link for a fresh spec acceptance before any merge ask (spec `#gates-wording-only`).
 - Choose sequential, stacked, parallel, or train delivery from actual constraints.
 - Notify the parent after meaningful gate or risk change.
+- Register each review row with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`, your session and pane: the review service may run in another Herdr session, and it wakes you only in the session the owner names (spec `#session-wake-owner`).
 - As lane owner, use
   `$(octo-lite-state)/lanes/<owner agent name>.toml`.
   Its `owner` is your Herdr pane id (`owner = "w5:pP8"`, the `pane=` value
