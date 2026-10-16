@@ -165,7 +165,7 @@ A finished result on that pane is consumed as the worker's report; otherwise the
 Either way the owner tells the operator which worker ended without reporting and what it did.</p>
 <p data-anchor="roles-load" id="roles-load">Before a heavy job, such as a full test suite, a QA capture, or a build, the owner checks box load; when load is high it runs one heavy job at a time.</p>
 <p data-anchor="roles-teardown" id="roles-teardown">At lane close the owner removes the lane's review rows before removing any worktree, closes its workers, removes its own <code>/tmp</code> scratch, and archives the lane record last, per <a href="#octo-lane-record-life-archive">the archive moment</a>.</p>
-<p data-anchor="roles-watch" id="roles-watch">The fleet operator acts on annotateanything's Bitbucket plugin watch: a red report starts a fix lane, and a green report whose pull request only moves the pin is merged under the human's standing instruction, recorded as its <a href="#acceptance-receipt">acceptance receipt</a>.</p>
+<p data-anchor="roles-watch" id="roles-watch">The fleet operator acts on annotateanything's Bitbucket plugin watch: a red report starts a fix lane.</p>
 <p data-anchor="roles-operating-model" id="roles-operating-model">An optional operating model given to <code>herdr-spawn</code> reaches the agent at start and passes to every agent it spawns, and each spawn forwards the caller's <code>HOME</code>.</p>
 </section>
 

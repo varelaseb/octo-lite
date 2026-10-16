@@ -87,7 +87,7 @@ every service restart, confirm it answers.
 
 After every merge, check the target's main CI; a red main gets a fix lane at once, and a merge ask always states its CI result.
 
-A `bb-plugin-watch: ` message (annotateanything's Bitbucket plugin watch, spec `#roles-watch`): red ("breaks the plugin") starts a fix lane at once, the watch's tracker issue "BB <version> breaks the plugin" as its primary issue. Green with its pin PR still open: if `gh pr diff <pr>` changes only the Bitbucket version pin lines (the plugin's `package.json` and `package-lock.json` entries for it) and `gh pr checks <pr> --required` is all green, the human's standing instruction accepts it: record the receipt comment, then merge; otherwise one line to the human. Merged already: nothing.
+A `bb-plugin-watch: ` message (annotateanything's Bitbucket plugin watch, spec `#roles-watch`): red ("breaks the plugin") starts a fix lane at once, the watch's tracker issue "BB <version> breaks the plugin" as its primary issue.
 
 Cross-lane and shared only: merge order across lanes, restart shared services and confirm they answer, live install clones on main, tear a lane down after its owner reports done, per the teardown rule above. No re-checking a lane's merge-ask items beyond a spot check.
 
