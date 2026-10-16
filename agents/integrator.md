@@ -38,4 +38,4 @@ Integrate named worker commits onto the lane integration branch, and return the 
 
 ## Output
 
-Last step, result or blocker alike: send the head commit, commits integrated, checks run and their result, and blockers to the owner pane your brief names with `herdr-say`, then stop. Only exit 0 confirms the send; on any other exit, send it again. Text left in your own pane is not reported.
+Last step, result or blocker alike: send the head commit, commits integrated, checks run and their result, and blockers to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; on any other exit, send it again, 3 sends in all. If none exits 0, send it once, naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last exit. Text left in your own pane is not reported.
