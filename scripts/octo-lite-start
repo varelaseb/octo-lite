@@ -7,7 +7,7 @@ set -euo pipefail
 cwd="$PWD"; name=""; label="orchestrator"; runtime="claude"; model=(); resume=()
 usage() {
   echo "usage: octo-lite-start [--cwd DIR] [--name LANE] [--label LABEL]" \
-       "[--runtime claude|codex] [--operating-model FILE] [--resume SESSION]" >&2
+       "[--runtime claude|codex|pi] [--operating-model FILE] [--resume SESSION]" >&2
   exit 64
 }
 while (($#)); do
@@ -22,7 +22,7 @@ while (($#)); do
   esac
 done
 case "$runtime" in
-  claude|codex) ;;
+  claude|codex|pi) ;;
   *) usage ;;
 esac
 # Herdr rejects '/' and the like in agent names.

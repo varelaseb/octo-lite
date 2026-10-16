@@ -202,9 +202,12 @@ class HerdrWrapperTest(unittest.TestCase):
         )
 
     def spawn_codex(self, extra=(), **env):
+        return self.spawn_as("codex", extra, **env)
+
+    def spawn_as(self, runtime, extra=(), **env):
         return subprocess.run(
             [str(SPAWN), "--workspace", "w1", "--name", "a1", "--label", "L",
-             "--cwd", str(self.cwd), "--role", "r", *extra, "--", "codex"],
+             "--cwd", str(self.cwd), "--role", "r", *extra, "--", runtime],
             capture_output=True, text=True, env={**self.env, **env},
         )
 
@@ -359,6 +362,30 @@ class HerdrWrapperTest(unittest.TestCase):
                          str(model.resolve()))
         self.assertIn(exported, self.log.read_text())
 
+    def test_pi_appends_the_operating_model_then_its_contract(self):
+        # pi has no --agent: both files go in as appended system prompt, model first.
+        self.dialog.write_text("none\n")
+        agents = Path(self.env["HOME"]) / ".claude/agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        (agents / "r.md").write_text("# Role\n")
+        model = self.cwd / "AGENTS.md"
+        model.write_text("# Model\n")
+        r = self.spawn_as("pi", extra=["--operating-model", str(model)])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("contract=appended-system-prompt", r.stdout)
+        argv = self.start_argv()
+        self.assertEqual(argv[argv.index("--kind") + 1], "pi")
+        self.assertEqual(argv[argv.index("--") + 1:],
+                         ["--append-system-prompt", str(model.resolve()),
+                          "--append-system-prompt", str(agents / "r.md")])
+
+    def test_pi_without_a_contract_says_so(self):
+        self.dialog.write_text("none\n")
+        r = self.spawn_as("pi")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("contract=not-found", r.stdout)
+        self.assertNotIn("--append-system-prompt", self.start_argv())
+
     def test_claude_gets_its_role_from_role(self):
         self.dialog.write_text("none\n")
         r = self.spawn()
@@ -372,13 +399,14 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.start_argv()[-4:], ["--agent", "r", "--resume", "s-1"])
 
     def test_resume_is_claude_only_and_refused_before_any_tab(self):
-        r = self.spawn_codex(extra=["--resume", "s-1"])
-        self.assertEqual(r.returncode, 64, r.stderr)
-        self.assertFalse(self.log.exists(), "no tab may be created")
+        for runtime in ("codex", "pi"):
+            r = self.spawn_as(runtime, extra=["--resume", "s-1"])
+            self.assertEqual(r.returncode, 64, r.stderr)
+            self.assertFalse(self.log.exists(), "no tab may be created")
 
     def test_an_inline_prompt_is_rejected_before_any_tab(self):
         # herdr agent start times out waiting for readiness with an inline prompt.
-        for runtime in ("claude", "codex"):
+        for runtime in ("claude", "codex", "pi"):
             r = subprocess.run(
                 [str(SPAWN), "--workspace", "w1", "--name", "a1", "--label", "L",
                  "--cwd", str(self.cwd), "--role", "r", "--", runtime, "do the ticket"],
@@ -399,8 +427,8 @@ class HerdrWrapperTest(unittest.TestCase):
         # A tab starts with the Herdr server's env; the caller's HOME goes with
         # it, on both runtimes.
         self.dialog.write_text("none\n")
-        for run in (self.spawn, self.spawn_codex):
-            r = run()
+        for runtime in ("claude", "codex", "pi"):
+            r = self.spawn_as(runtime)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn(f"--env HOME={self.env['HOME']}", self.log.read_text())
             self.log.unlink()
@@ -802,6 +830,16 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.start("--runtime", "codex", "--name", "n1")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("developer_instructions=", " ".join(self.start_argv()))
+
+    def test_start_pi_takes_the_orchestrator_contract(self):
+        self.dialog.write_text("none\n")
+        contract = Path(self.env["HOME"]) / ".claude/agents/orchestrator.md"
+        contract.parent.mkdir(parents=True)
+        contract.write_text("# Orchestrator\n")
+        r = self.start("--runtime", "pi", "--name", "n1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("contract=appended-system-prompt", r.stdout)
+        self.assertEqual(self.start_argv()[-2:], ["--append-system-prompt", str(contract)])
 
 
 if __name__ == "__main__":

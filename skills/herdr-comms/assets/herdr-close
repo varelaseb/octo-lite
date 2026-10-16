@@ -16,7 +16,7 @@
 # the space's only one (a lane owner in its own space), and prints one parked
 # hand-off line, even when the close fails. An agent Herdr does not report idle
 # or done (Herdr 0.9.0 reports a Claude agent waiting at its prompt as done), or
-# one with no Claude session file (Codex), is refused with nothing closed.
+# one with no Claude session file (Codex, pi), is refused with nothing closed.
 set -uo pipefail
 
 usage() { echo "usage: herdr-close TAB|SPACE | --park PANE" >&2; exit 64; }
