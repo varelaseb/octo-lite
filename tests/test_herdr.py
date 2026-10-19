@@ -130,7 +130,11 @@ case "$sub" in
       not_found
     elif [[ -n "${FAKE_AGENT_GET_ERROR:-}" ]]; then
       echo "$FAKE_AGENT_GET_ERROR" >&2; exit 1
+    elif [[ -n "${FAKE_AGENT_GET_HANG:-}" ]]; then
+      exec sleep 30
     elif [[ -n "${FAKE_AGENT_GET:-}" ]]; then
+      # FAKE_AGENT_GET_WARN: a successful get that also warns on stderr.
+      [[ -z "${FAKE_AGENT_GET_WARN:-}" ]] || echo "$FAKE_AGENT_GET_WARN" >&2
       echo "$FAKE_AGENT_GET"
     elif [[ -n "${FAKE_NEVER_READY:-}" ]]; then
       echo '{"result":{"agent":{}}}'
@@ -794,12 +798,19 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def bare_path(self, herdr=True):
         # A launcher's search path (cron: /usr/bin:/bin) lacks Herdr's dir;
-        # Herdr's installer puts it in ~/.local/bin.
+        # Herdr's installer puts it in ~/.local/bin. The launcher path mirrors
+        # the system's tools minus any Herdr there, so no test reaches a real one.
+        launcher = Path(self.tmp.name) / "launcher"
+        launcher.mkdir()
+        for d in ("/usr/bin", "/bin"):
+            for tool in Path(d).iterdir():
+                if tool.name != "herdr" and not (launcher / tool.name).exists():
+                    (launcher / tool.name).symlink_to(tool)
         home_bin = Path(self.env["HOME"]) / ".local/bin"
         home_bin.mkdir(parents=True)
         if herdr:
             (home_bin / "herdr").symlink_to(Path(self.tmp.name) / "bin/herdr")
-        return {"PATH": "/usr/bin:/bin"}
+        return {"PATH": str(launcher)}
 
     def test_wake_reaches_herdr_outside_the_callers_search_path(self):
         # acceptance-wake-search-path
@@ -838,6 +849,35 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertEqual(r.stderr.count("\n"), 1, r.stderr)
         self.assertIn("agent_not_found", r.stderr)
+
+    def test_wake_names_a_herdr_that_does_not_answer(self):
+        # Herdr hangs past the bound on its own get; both run at once.
+        ps = [subprocess.Popen([str(WAKE), *args], stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True,
+                               env={**self.env, "FAKE_AGENT_GET_HANG": "1"})
+              for args in (("check", "w1:p1"), ("send", "w1:p1", "a.spec.html", "m"))]
+        for p in ps:
+            _, err = p.communicate(timeout=20)
+            self.assertEqual(p.returncode, 1)
+            self.assertEqual(err.count("\n"), 1, err)
+            self.assertIn("Herdr not answering", err)
+
+    def test_wake_reads_a_live_owner_past_herdrs_warnings(self):
+        warn = {"FAKE_AGENT_GET_WARN": "warning: config is deprecated"}
+        r = self.wake("check", "w1:p1", **warn)
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        r = self.wake("send", "w1:p1", "a.spec.html", "m", status="working", **warn)
+        self.assertEqual((r.returncode, r.stderr), (75, ""))
+
+    def test_wake_reason_stays_one_line_beside_a_malformed_handoff_log(self):
+        lanes = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes"
+        lanes.mkdir(parents=True)
+        (lanes / "ann45.handoffs.jsonl").write_text("not json\n")
+        for args in (("check", "w1:p2"), ("send", "w1:p2", "a.spec.html", "m")):
+            r = self.wake(*args)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr, "herdr-wake: owner pane w1:p2 not found "
+                                       "in Herdr session default\n")
 
     # --- session state ---------------------------------------------------
 

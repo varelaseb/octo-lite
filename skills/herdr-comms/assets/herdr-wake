@@ -24,16 +24,20 @@ usage() { echo "usage: herdr-wake check OWNER | send OWNER ARTIFACT MESSAGE" >&2
 # Print the owner's agent_status, or parked for one herdr-say would resume;
 # fail with the reason on stderr.
 status() {
-  local out rc=0
+  local out err f rc=0
   command -v herdr >/dev/null || { echo "herdr-wake: herdr not found on PATH $PATH" >&2; return 1; }
-  out="$(timeout -k 1 5 herdr agent get "$1" 2>&1)" || rc=$?
+  f="$(mktemp)"
+  out="$(timeout -k 1 5 herdr agent get "$1" 2>"$f")" || rc=$?
+  err="$(<"$f")"; rm -f "$f"
   ((rc == 0)) && jq -er --arg p "$1" '.result.agent | select(.pane_id == $p)
     | .agent_status // "unknown"' <<<"$out" 2>/dev/null && return
-  "$say" --parked "$1" >/dev/null && { echo parked; return; }
-  if ((rc == 0)) || [[ "$(jq -r '.error.code?' <<<"$out" 2>/dev/null)" == agent_not_found ]]; then
+  "$say" --parked "$1" >/dev/null 2>&1 && { echo parked; return; }
+  if ((rc == 0)) || [[ "$(jq -r '.error.code?' <<<"$err" 2>/dev/null)" == agent_not_found ]]; then
     echo "herdr-wake: owner pane $1 not found in Herdr session ${HERDR_SESSION:-default}" >&2
+  elif ((rc == 124)); then
+    echo "herdr-wake: Herdr not answering: herdr agent get $1 timed out after 5s" >&2
   else
-    echo "herdr-wake: herdr agent get $1: ${out//$'\n'/ }" >&2
+    echo "herdr-wake: herdr agent get $1: ${err//$'\n'/ }" >&2
   fi
   return 1
 }
