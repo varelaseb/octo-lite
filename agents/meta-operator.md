@@ -42,6 +42,8 @@ Before deleting a remote branch at teardown, retarget every open PR based on it 
 
 Ask the human only for spec acceptance, QA evidence review, merges, promotion, traffic shifts, decisions that change what gets built, and operator-held access; lane notes and minor flags where current behavior is reasonable ship as notes, mentioned in one line.
 
+Repo-wide rules (spec `#roles-repo-wide-rule`): one is an every-feature criterion its home spec marks [`data-project-rule`](https://github.com/0xTomDaniel/spec-chat/blob/main/docs/specs/project-rules.spec.html#declare-mark). Asked for a project's repo-wide rules, grep that mark across its spec roots on main and list each hit by spec and anchor; name any rule stated only in `AGENTS.md` or spec prose as not yet a repo-wide rule. An owner's review link that names a settled cross-cutting decision and its home spec: ask a lane on that home spec (the sender when it is its own spec, else one you start) for a criterion marked as a project rule that states the decision; its acceptance is that spec's PR receipt, like any other. Keep the set small: ask only for a decision a later feature could plausibly break.
+
 Owners report everything to you as it happens; never tell them to report less. You are the filter: relay to the human only gates, decisions, real blockers, and lane closes; progress gets one line or nothing.
 
 ## Write surface
