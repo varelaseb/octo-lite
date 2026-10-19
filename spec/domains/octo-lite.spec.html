@@ -31,6 +31,8 @@
 <p data-user-story data-anchor="user-story-wording-only" id="user-story-wording-only" data-user-facing="true" data-guided-journey="no">As an operator, a wording-only correction to a spec I accepted rides on my original acceptance, while any change to what the spec makes the system do comes back to me for acceptance.</p>
 <p data-user-story data-anchor="user-story-general-rule" id="user-story-general-rule" data-user-facing="true" data-guided-journey="no">As an operator, work that passes the cases at hand without following the rule the spec states never reaches my merge ask.</p>
 <p data-user-story data-anchor="user-story-repo-wide-rule" id="user-story-repo-wide-rule" data-user-facing="true" data-guided-journey="no">As an operator, every agent takes a repo-wide rule to mean one thing, an every-feature criterion its home spec marks as a project rule so Jev checks it at every shaping, and a cross-cutting decision a lane settles becomes one, so I never explain the term again.</p>
+<p data-user-story data-anchor="user-story-health-notes" id="user-story-health-notes" data-user-facing="true" data-guided-journey="no">As an operator, every review note that names what it will cost becomes one tracker ticket when its lane closes, labeled by its kind, instead of shipping only as PR history, so architecture and cleanliness debt stops piling up across PRs.</p>
+<p data-user-story data-anchor="user-story-health-pass" id="user-story-health-pass" data-user-facing="true" data-guided-journey="no">As an operator, I can fire a repo health pass on a repository whenever I choose, and its few real findings on architecture and cleanliness arrive as ranked tickets, never a report, that I triage on the Roadmap and fire off with Fix like bugs.</p>
 </section>
 
 <section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
@@ -104,6 +106,16 @@
 <p data-acceptance-criterion data-anchor="acceptance-general-rule" id="acceptance-general-rule" data-story="user-story-general-rule"><span data-acceptance-scenario>Given a lane whose integration head passes a named criterion through code keyed to that criterion's own case instead of the rule the spec states, When a fresh code reviewer judges the head,</span> <span data-acceptance-observable>Then its verdict to the owner is changes, with a blocker naming the keyed case.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-repo-wide-rule-list" id="acceptance-repo-wide-rule-list" data-story="user-story-repo-wide-rule"><span data-acceptance-scenario>Given an operator whose project's specs mark project-rule criteria and whose agent instructions state one more rule only as prose, When the operator asks the fleet operator for the project's repo-wide rules,</span> <span data-acceptance-observable>Then the reply lists each marked criterion by its spec and anchor, and names the prose-only rule as not yet a repo-wide rule.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-repo-wide-rule-ask" id="acceptance-repo-wide-rule-ask" data-story="user-story-repo-wide-rule"><span data-acceptance-scenario>Given an operator with a lane whose spec settles a cross-cutting decision, such as an identity key, that a later feature could plausibly break and no project-rule criterion states, When the lane's owner sends that spec's review link to the fleet operator,</span> <span data-acceptance-observable>Then a lane on the decision's home spec receives the fleet operator's ask for a criterion marked as a project rule that states the decision.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-note-tagged" id="acceptance-health-note-tagged" data-story="user-story-health-notes"><span data-acceptance-scenario>Given a lane whose integration head works but leaves a function no caller uses, When a fresh code reviewer judges the head,</span> <span data-acceptance-observable>Then its verdict to the owner lists a cleanliness note naming that function and what keeping it will cost.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-note-filed" id="acceptance-health-note-filed" data-story="user-story-health-notes"><span data-acceptance-scenario>Given a lane whose PR lists one review note naming a consequence and one naming none, When the PR merges and the lane's owner closes the lane, then the operator opens the tracker's open health tickets,</span> <span data-acceptance-observable>Then they show one new ticket for the note naming a consequence, with its category label, its consequence, and a link to the PR, and none for the other note.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-note-open" id="acceptance-health-note-open" data-story="user-story-health-notes"><span data-acceptance-scenario>Given an open health ticket and a lane whose PR lists a review note naming the same issue with a consequence, When the PR merges and the lane's owner closes the lane, then the operator opens that health ticket,</span> <span data-acceptance-observable>Then it shows a comment linking the lane's PR as a new source of that issue, filed in place of a second ticket.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-batch" id="acceptance-health-batch" data-story="user-story-health-notes"><span data-acceptance-scenario>Given the fleet operator with two merged PRs whose notes name the same issue with a consequence that no open health ticket names, When the fleet operator files both PRs' notes in one batch, then opens the tracker's open health tickets,</span> <span data-acceptance-observable>Then they show one ticket for that issue, naming both PRs as its sources.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-batch-fixed" id="acceptance-health-batch-fixed" data-story="user-story-health-notes"><span data-acceptance-scenario>Given the fleet operator with a merged PR whose notes name two issues with a consequence, one of which the target's main no longer has, When the fleet operator files that PR's notes, then opens the tracker's open health tickets,</span> <span data-acceptance-observable>Then they show a ticket for the issue main still has and none for the one main no longer has.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-close-fixed" id="acceptance-health-close-fixed" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the fleet operator with an open health ticket whose issue the target's main no longer has, When the fleet operator fires a health pass on that repository, then opens that ticket,</span> <span data-acceptance-observable>Then the ticket shows done, with a comment naming the main commit it was checked at and why the issue is gone.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-pass-filed" id="acceptance-health-pass-filed" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the fleet operator and a repository whose code holds an issue with a consequence that no open health ticket names, a fixture that must be added to provide it, When the fleet operator fires a health pass on that repository, then opens the tracker's open health tickets,</span> <span data-acceptance-observable>Then they show a new ticket for that issue with its category label, its consequence, and a priority from its rank.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-pass-few" id="acceptance-health-pass-few" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the fleet operator and a repository holding more real issues than one pass files, a fixture that must be added to provide it, When the fleet operator fires a health pass on that repository, then opens the tracker's open health tickets,</span> <span data-acceptance-observable>Then they show new tickets only for the pass's highest-ranked issues, as many as one pass files.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-pass-ask" id="acceptance-health-pass-ask" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the human and a fleet operator, When the human asks the fleet operator for a health pass on a repository and the pass ends,</span> <span data-acceptance-observable>Then the fleet operator's reply names each ticket the pass filed, commented on, or closed, by its key, and carries no finding outside those tickets.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-health-roadmap" id="acceptance-health-roadmap" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the human on a box with a fleet operator, whose tracker holds a health ticket a pass filed, When the human opens the Roadmap,</span> <span data-acceptance-observable>Then that ticket shows as a loose end with Fix.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
@@ -131,6 +143,12 @@
 <span data-boundary-seam>The caller-facing seam is the installer's flags and the target <code>AGENTS.md</code> <code>Repo skills:</code> line.</span>
 <span data-boundary-dependency>Direction is external-provider: the installer reads the target's declaration from its checkout; the target names no octo-lite path, and octo-lite names no project skill.</span>
 <span data-boundary-scope>Observable scope: links in the profile skill, agent, and helper directories, and the installer's printed report.</span>
+</p>
+<p data-modular-boundary data-anchor="boundary-health" id="boundary-health">
+<span data-boundary-responsibility>The <a href="#health-filing">filing rule</a> and the <code>repo-health</code> skill own turning review notes and health findings into <a href="#health-ticket">health tickets</a>.</span>
+<span data-boundary-seam>The caller-facing seam is the health tickets in the box's tracker, with their Health label and priority, and the tagged notes in each PR body.</span>
+<span data-boundary-dependency>Direction is external-provider: the filer depends on the tracker the lanes already file in; annotateanything's Roadmap reads health tickets from that tracker like any <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/roadmap.spec.html#loose">loose end</a>, so octo-lite names no Roadmap code and the Roadmap names no octo-lite path.</span>
+<span data-boundary-scope>Observable scope: health tickets, their labels, priorities, comments, and states, and the pass's one message.</span>
 </p>
 </section>
 
@@ -183,7 +201,7 @@ At each check-in the owner reads the Herdr state of every worker it waits on; on
 A finished result on that pane is consumed as the worker's report; otherwise the owner recovers or respawns the worker.
 Either way the owner tells the operator which worker ended without reporting and what it did.</p>
 <p data-anchor="roles-load" id="roles-load">Before a heavy job, such as a full test suite, a QA capture, or a build, the owner checks box load; when load is high it runs one heavy job at a time.</p>
-<p data-anchor="roles-teardown" id="roles-teardown">At lane close the owner removes the lane's review rows before removing any worktree, closes its workers, removes its own <code>/tmp</code> scratch, and archives the lane record last, per <a href="#octo-lane-record-life-archive">the archive moment</a>.</p>
+<p data-anchor="roles-teardown" id="roles-teardown">At lane close the owner first files its PR's notes by the <a href="#health-filing">filing rule</a>, then removes the lane's review rows before removing any worktree, closes its workers, removes its own <code>/tmp</code> scratch, and archives the lane record last, per <a href="#octo-lane-record-life-archive">the archive moment</a>.</p>
 <p data-anchor="roles-watch" id="roles-watch">The fleet operator acts on annotateanything's Bitbucket plugin watch: a red report starts a fix lane.</p>
 <p data-anchor="roles-operating-model" id="roles-operating-model">An optional operating model given to <code>herdr-spawn</code> reaches the agent at start and passes to every agent it spawns, and each spawn forwards the caller's <code>HOME</code>.</p>
 </section>
@@ -197,7 +215,8 @@ A processed human spec acceptance (page action Accept spec, formerly called Fini
 <p data-anchor="delivery-implement" id="delivery-implement"><code>implement-spec</code> first files the dependency-linked ticket graph from the accepted spec, runs its pre-dispatch mechanical checks, then fills the ready ticket frontier with implementer workers, each in its own worktree; repository tests run in delivery, never during shaping.</p>
 <p data-anchor="delivery-notes" id="delivery-notes">An optional exploration worker writes its notes only in the lane's notes directory, <code>lanes/&lt;lane record name&gt;-notes/</code> beside the lane record, and the tickets it serves link them; the owner archives that directory with the record at lane close.</p>
 <p data-anchor="delivery-merge" id="delivery-merge">One integrator at a time integrates finished commits onto the single integration branch and PR.</p>
-<p data-anchor="delivery-review" id="delivery-review">A code-reviewer judges the integration head, and findings get bounded repair until review is clear and required checks pass.</p>
+<p data-anchor="delivery-review" id="delivery-review">A code-reviewer judges the integration head, and findings get bounded repair until review is clear and required checks pass.
+Its non-blocking notes ship tagged in the PR body and become <a href="#health-notes">health tickets</a> at lane close.</p>
 <p data-anchor="delivery-linear" id="delivery-linear">Linear stays truthful: a ticket is Done only once integrated, and pushed when consent allows, and a merged accepted PR completes the worklane.</p>
 <p data-anchor="delivery-consent" id="delivery-consent">Pushing, opening pull requests, and filing issues follow the kept consent answers alone when present, overriding any instruction; when absent, target instructions decide.
 Without push consent the lane stays on local branches and ends at a local integration head.</p>
@@ -208,6 +227,48 @@ A reshaped criterion keeps its meaning; one whose meaning changes is a spec chan
 Every verdict the merge ask lists was judged at the merge ask's head: a failure carried from an older head is recaptured at that head before it is triaged.
 The merge ask lists each failed criterion with the bundle's <code>evidence_state</code>, its <code>decision_source</code> and the head it was judged at, its triage, its cause or reason, and its outcome.
 A failure whose <code>evidence_state</code> is <code>complete</code>, where the judge reached the state and saw the product not match the criterion, is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape.</p>
+</section>
+
+<section data-anchor="health" id="health">
+<h2>Repo health</h2>
+<p data-anchor="health-ticket" id="health-ticket">A health ticket is a tracker ticket for one real architecture or cleanliness issue in a repository, in the box's tracker, the one its lanes already file tickets in; no other store holds health issues.
+It names the issue, its consequence, where in the repository it lives, and each source that raised it: a PR or a health pass.
+It carries one label of the tracker's Health label group, naming its category, and a priority from its <a href="#health-rank">rank</a>.
+It is filed unassigned, with no parent, in a state not yet started, so annotateanything's Roadmap lists it as a <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/roadmap.spec.html#loose">loose end</a> the human triages and fires off with Fix, like a bug.</p>
+<p data-anchor="health-categories" id="health-categories">The categories are architecture, cleanliness, naming, duplication, test, and docs.
+A consequence is what the issue will cost or break, named concretely, such as the next change to acceptance must edit four copies.
+A note or finding that names no consequence stays history and never becomes a ticket.</p>
+<p data-anchor="health-notes" id="health-notes">A code reviewer tags every non-blocking note with its category and, when it has one, its consequence.
+The owner lists the reviewer's notes in the PR body, tagged as given, so the PR keeps them and a filer reads them there.
+At lane close, after the PR merges and before teardown, the agent closing the lane, its owner or the fleet operator, files the PR's notes by the filing rule.</p>
+<p data-anchor="health-filing" id="health-filing">One filing rule turns notes and findings into health tickets: one PR's notes at lane close, many PRs' notes in one batch, and a health pass's findings.
+The filer first reads every open health ticket and the target's current main, then gives each note or finding the first disposition below that fits.
+Two notes name the same issue when one fix would remove both, whatever their wording.
+An open health ticket whose issue the filer finds gone from main is closed as done, with a comment naming the main commit it was checked at and why the issue is gone.</p>
+<figure data-anchor="health-filing-figure">
+<h3 data-anchor="health-filing-heading">Filing rule: the first row that fits decides</h3>
+<div class="table-scroll" data-anchor="health-filing-wrap">
+<table data-anchor="health-filing-table">
+<thead><tr><th>The note or finding</th><th>Disposition</th></tr></thead>
+<tbody>
+<tr data-anchor="health-filing-no-consequence"><td>Names no consequence</td><td>Stays history; nothing is filed.</td></tr>
+<tr data-anchor="health-filing-gone"><td>Names an issue the target's main no longer has</td><td>Nothing is filed.</td></tr>
+<tr data-anchor="health-filing-open"><td>Names the same issue as an open health ticket</td><td>A comment on that ticket naming the new source, in place of a second ticket.</td></tr>
+<tr data-anchor="health-filing-batch"><td>Names the same issue as another note or finding in the batch</td><td>One new ticket for all of them, naming every source.</td></tr>
+<tr data-anchor="health-filing-new"><td>Any other</td><td>One new health ticket.</td></tr>
+</tbody>
+</table>
+</div>
+<figcaption data-anchor="health-filing-caption">One ticket per real issue, however many notes, PRs, or passes raise it.</figcaption>
+</figure>
+<p data-anchor="health-rank" id="health-rank">A health issue's rank is its consequence: high when it will cause wrong behavior or block a change, medium when it makes the next change in that area cost more, such as a duplicate, a dead store, or a misleading name, and low when it costs only reading time.
+The rank is the ticket's tracker priority, so the Roadmap orders health tickets among its loose ends by it.</p>
+<p data-anchor="health-pass" id="health-pass">The <code>repo-health</code> skill is the repo health pass, fired by hand by the fleet operator, at its own call or when the human asks for one, and never on a timer.
+The fleet operator starts one fresh agent for it on the target's main checkout; that agent changes no repository file and writes only health tickets.
+It reads the target's instructions, its specs' modular boundaries, the open health tickets, and the code, and looks across the whole repository for architecture, cleanliness, best-practice, and trimming issues, a deletion first wherever one would do.
+It checks every open health ticket against main, closing each one main fixed, and files its findings by the filing rule, at most five new tickets per pass, highest rank first; the rest wait for a later pass that still finds them.
+Its result is the tickets, never a report: its one message to the fleet operator names each ticket it filed, commented on, or closed, by key, and the fleet operator relays that list to the human who asked.</p>
+<p data-anchor="health-contracts" id="health-contracts">The code-reviewer, orchestrator, and meta-operator contracts and the <code>implement-spec</code> skill state these moves where they review, list notes, close a lane, and fire the pass.</p>
 </section>
 
 <section data-anchor="session" id="session">
