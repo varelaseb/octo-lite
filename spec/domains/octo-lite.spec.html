@@ -32,7 +32,7 @@
 <p data-user-story data-anchor="user-story-general-rule" id="user-story-general-rule" data-user-facing="true" data-guided-journey="no">As an operator, work that passes the cases at hand without following the rule the spec states never reaches my merge ask.</p>
 <p data-user-story data-anchor="user-story-repo-wide-rule" id="user-story-repo-wide-rule" data-user-facing="true" data-guided-journey="no">As an operator, every agent takes a repo-wide rule to mean one thing, an every-feature criterion its home spec marks as a project rule so Jev checks it at every shaping, and a cross-cutting decision a lane settles becomes one, so I never explain the term again.</p>
 <p data-user-story data-anchor="user-story-health-notes" id="user-story-health-notes" data-user-facing="true" data-guided-journey="no">As an operator, every review note that names what it will cost becomes one tracker ticket when its lane closes, labeled by its kind, instead of shipping only as PR history, so architecture and cleanliness debt stops piling up across PRs.</p>
-<p data-user-story data-anchor="user-story-health-pass" id="user-story-health-pass" data-user-facing="true" data-guided-journey="no">As an operator, I can fire a repo health pass on a repository whenever I choose, and its few real findings on architecture and cleanliness arrive as ranked tickets, never a report, that I triage on the Roadmap and fire off with Fix like bugs.</p>
+<p data-user-story data-anchor="user-story-health-pass" id="user-story-health-pass" data-user-facing="true" data-guided-journey="no">As an operator, I can fire a repo health pass on a repository whenever I choose, and its few real findings on architecture and cleanliness arrive as ranked tickets, never a report, that I triage and fire off like bugs.</p>
 </section>
 
 <section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
@@ -115,7 +115,6 @@
 <p data-acceptance-criterion data-anchor="acceptance-health-pass-filed" id="acceptance-health-pass-filed" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the fleet operator and a repository whose code holds an issue with a consequence that no open health ticket names, a fixture that must be added to provide it, When the fleet operator fires a health pass on that repository, then opens the tracker's open health tickets,</span> <span data-acceptance-observable>Then they show a new ticket for that issue with its category label, its consequence, and a priority from its rank.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-health-pass-few" id="acceptance-health-pass-few" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the fleet operator and a repository holding more real issues than one pass files, a fixture that must be added to provide it, When the fleet operator fires a health pass on that repository, then opens the tracker's open health tickets,</span> <span data-acceptance-observable>Then they show new tickets only for the pass's highest-ranked issues, as many as one pass files.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-health-pass-ask" id="acceptance-health-pass-ask" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the human and a fleet operator, When the human asks the fleet operator for a health pass on a repository and the pass ends,</span> <span data-acceptance-observable>Then the fleet operator's reply names each ticket the pass filed, commented on, or closed, by its key, and carries no finding outside those tickets.</span></p>
-<p data-acceptance-criterion data-anchor="acceptance-health-roadmap" id="acceptance-health-roadmap" data-story="user-story-health-pass"><span data-acceptance-scenario>Given the human on a box with a fleet operator, whose tracker holds a health ticket a pass filed, When the human opens the Roadmap,</span> <span data-acceptance-observable>Then that ticket shows as a loose end with Fix.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
@@ -147,7 +146,7 @@
 <p data-modular-boundary data-anchor="boundary-health" id="boundary-health">
 <span data-boundary-responsibility>The <a href="#health-filing">filing rule</a> and the <code>repo-health</code> skill own turning review notes and health findings into <a href="#health-ticket">health tickets</a>.</span>
 <span data-boundary-seam>The caller-facing seam is the health tickets in the box's tracker, with their Health label and priority, and the tagged notes in each PR body.</span>
-<span data-boundary-dependency>Direction is external-provider: the filer depends on the tracker the lanes already file in; annotateanything's Roadmap reads health tickets from that tracker like any <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/roadmap.spec.html#loose">loose end</a>, so octo-lite names no Roadmap code and the Roadmap names no octo-lite path.</span>
+<span data-boundary-dependency>Direction is external-provider: the filer depends on the tracker the lanes already file in, and octo-lite names no reader of health tickets.</span>
 <span data-boundary-scope>Observable scope: health tickets, their labels, priorities, comments, and states, and the pass's one message.</span>
 </p>
 </section>
@@ -234,7 +233,7 @@ A failure whose <code>evidence_state</code> is <code>complete</code>, where the 
 <p data-anchor="health-ticket" id="health-ticket">A health ticket is a tracker ticket for one real architecture or cleanliness issue in a repository, in the box's tracker, the one its lanes already file tickets in; no other store holds health issues.
 It names the issue, its consequence, where in the repository it lives, and each source that raised it: a PR or a health pass.
 It carries one label of the tracker's Health label group, naming its category, and a priority from its <a href="#health-rank">rank</a>.
-It is filed unassigned, with no parent, in a state not yet started, so annotateanything's Roadmap lists it as a <a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/roadmap.spec.html#loose">loose end</a> the human triages and fires off with Fix, like a bug.</p>
+It is filed unassigned, with no parent, in a state not yet started, so it waits in the tracker beside the bugs a human triages and fires off.</p>
 <p data-anchor="health-categories" id="health-categories">The categories are architecture, cleanliness, naming, duplication, test, and docs.
 A consequence is what the issue will cost or break, named concretely, such as the next change to acceptance must edit four copies.
 A note or finding that names no consequence stays history and never becomes a ticket.</p>
@@ -262,7 +261,7 @@ An open health ticket whose issue the filer finds gone from main is closed as do
 <figcaption data-anchor="health-filing-caption">One ticket per real issue, however many notes, PRs, or passes raise it.</figcaption>
 </figure>
 <p data-anchor="health-rank" id="health-rank">A health issue's rank is its consequence: high when it will cause wrong behavior or block a change, medium when it makes the next change in that area cost more, such as a duplicate, a dead store, or a misleading name, and low when it costs only reading time.
-The rank is the ticket's tracker priority, so the Roadmap orders health tickets among its loose ends by it.</p>
+The rank is the ticket's tracker priority, so it orders health tickets among the tracker's other work.</p>
 <p data-anchor="health-pass" id="health-pass">The <code>repo-health</code> skill is the repo health pass, fired by hand by the fleet operator, at its own call or when the human asks for one, and never on a timer.
 The fleet operator starts one fresh agent for it on the target's main checkout; that agent changes no repository file and writes only health tickets.
 It reads the target's instructions, its specs' modular boundaries, the open health tickets, and the code, and looks across the whole repository for architecture, cleanliness, best-practice, and trimming issues, a deletion first wherever one would do.
