@@ -144,8 +144,8 @@ The installer never upgrades anything without the user's explicit consent.</p>
 <p data-anchor="install-consent" id="install-consent">With <code>--onboard</code>, the installer asks once whether agents may push, open pull requests, and file issues, and keeps the answers in octo-lite's one onboarding file, <code>$XDG_STATE_HOME/octo-lite/onboarding.toml</code>, beside its published onboarding status, done once answers are kept.
 Kept answers are not asked again; deleting that file asks afresh.</p>
 <p data-anchor="install-wake" id="install-wake">On a box with Herdr, the installer registers <code>herdr-wake</code> as Spec Chat's wake provider; a provider file someone else wrote is kept unchanged, and <code>--undo</code> leaves the registration in place because Spec Chat's review service depends on it.
-<code>herdr-wake</code>, and the <code>herdr-say</code> it runs, reach Herdr whatever search path their caller has, so a review service started by any launcher (a box user service, a timed job, a shell) wakes owners as a pane does.
-A failed <code>check</code> or <code>send</code> writes a one-line reason to its error output: Herdr not found, the owner pane not found in its session, or Herdr's own error.</p>
+<code>herdr-wake</code>, and the <code>herdr-say</code> it runs, reach Herdr on their caller's search path or in Herdr's install directory, <code>~/.local/bin</code>, so a review service started by any launcher (a box user service, a timed job, a shell) wakes owners as a pane does.
+A failed <code>check</code> or <code>send</code> writes a one-line reason to its error output: Herdr not found, naming the path searched; the owner pane not found in its session; Herdr not answering; or Herdr's own error.</p>
 </section>
 
 <section data-anchor="roles" id="roles">
