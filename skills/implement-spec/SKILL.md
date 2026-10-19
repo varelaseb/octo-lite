@@ -61,8 +61,9 @@ evidence still applies; human QA, code readiness and acceptance are separate.
    frontier.
 3. When exploration would remove duplicated implementation work, spawn one
    optional exploration agent through `herdr-comms`. Give it write access only
-   to a shared directory outside the repo. Its deliverable is concise Markdown
-   notes linked from the relevant tickets.
+   to the lane's notes directory, `$(octo-lite-state)/lanes/<lane record name>-notes/`
+   (spec `#delivery-notes`). Its deliverable is concise Markdown notes there,
+   linked from the relevant tickets.
 4. Continue the draft PR the orchestrator opened while shaping, else create the
    integration branch from the target base and open one draft PR.
    Push, open PRs, and file issues only as

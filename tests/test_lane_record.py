@@ -54,17 +54,25 @@ class LaneRecordTests(unittest.TestCase):
         for path in docs:
             self.assertNotRegex(path.read_text(encoding="utf-8"), r"octo-lite/(lanes|operator)", path)
 
-    def test_owner_archives_record_and_log_at_close(self) -> None:
-        # spec #acceptance-lane-archive: owner moves both files unchanged into
-        # archive/ after worker teardown, before its close report; the operator
-        # touches no record.
+    def test_owner_archives_record_log_and_notes_at_close(self) -> None:
+        # spec #acceptance-lane-archive, #delivery-notes: exploration notes live
+        # only in the lane's notes directory; the owner moves record, log, and
+        # notes unchanged into archive/ after worker teardown, before its close
+        # report; the operator touches no record.
+        explore = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
+        self.assertRegex(
+            explore,
+            r"exploration agent.*write access only\s+to the lane's notes directory, "
+            r"`\$\(octo-lite-state\)/lanes/<lane record name>-notes/`",
+        )
         owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         self.assertRegex(
             owner,
             r"tear down in order: review rows, worktrees, workers\. Last, after your last "
             r"hand-off line \(the final worker close\) and "
-            r"before your close report, move `<name>\.toml` and "
-            r"`<name>\.handoffs\.jsonl` unchanged into `archive/` in the lanes directory",
+            r"before your close report, move `<name>\.toml`, "
+            r"`<name>\.handoffs\.jsonl`, and `<name>-notes/` when present, "
+            r"unchanged into `archive/` in the lanes directory",
         )
         self.assertNotIn("archive state", owner)
         self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"delete the record")
@@ -77,12 +85,45 @@ class LaneRecordTests(unittest.TestCase):
         table = re.search(r'id="handoff-operator".*?<tbody>(.*?)</tbody>', html, flags=re.DOTALL)
         self.assertIsNotNone(table, "operator log table is missing")
         kinds = re.findall(r"<tr[^>]*><td><code>(\w+)</code>", table.group(1))
-        self.assertEqual(kinds, ["note", "prod"])
+        self.assertEqual(kinds, ["note", "prod", "start", "filed"])
         self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"gate relay|merge executed")
 
+    def test_operator_logs_start_and_filed_lines(self) -> None:
+        # spec #acceptance-operator-log-start, #acceptance-operator-log-filed:
+        # starting a lane or filing an issue for an action event appends one
+        # operator log line naming the event's id.
+        self.assertRegex(
+            OPERATOR.read_text(encoding="utf-8"),
+            r"sole writer of `operator\.handoffs\.jsonl`:\s+on each prod .*, note to the human .*, "
+            r"lane you start that an action\s+event asks for \(`start`\), and issue you file that one "
+            r"asks for \(`filed`\), each naming the event's id, append one JSON line per octo-lite spec "
+            r"`#handoff-operator`",
+        )
+
     def test_owner_posts_spec_receipt_on_accept_spec_handoff(self) -> None:
+        # spec #acceptance-receipt-paths: each spec by full path then at <commit>.
         text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
-        self.assertRegex(text, r"Accept spec hand-off.*gh pr comment.*Spec acceptance receipt: human")
+        self.assertRegex(
+            text,
+            r"Accept spec hand-off.*gh pr comment.*Spec acceptance receipt: human.*"
+            r"accepts <full repository path> at <exact commit>\.",
+        )
+
+    def test_chat_spec_acceptance_records_only_the_pr_receipt(self) -> None:
+        # spec #acceptance-chat-one-record, #gates-chat-acceptance: the operator
+        # records a chat spec acceptance only as the PR receipt; review-host
+        # reviewed moves the row base and records no acceptance.
+        contracts = [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/SKILL.md")]
+        for path in contracts:
+            self.assertNotIn("--accepted", path.read_text(encoding="utf-8"), path)
+        self.assertRegex(
+            OPERATOR.read_text(encoding="utf-8"),
+            r"spec acceptance the human gives the operator in chat is recorded .*the one record: "
+            r"`gh pr comment <pr> --body 'Spec acceptance receipt: human .*"
+            r"accepts <full repository path> at <commit>\..*"
+            r"`review-host\.py reviewed --id <resource id>` per accepted spec: "
+            r"it moves the row's base to the accepted commit and records no acceptance\.",
+        )
 
     def test_owner_logs_attempt_line_on_consuming_worker_result(self) -> None:
         # spec #acceptance-lane-log: consuming a worker's result appends one
