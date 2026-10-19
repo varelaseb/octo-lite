@@ -81,8 +81,29 @@ class LaneRecordTests(unittest.TestCase):
         self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"gate relay|merge executed")
 
     def test_owner_posts_spec_receipt_on_accept_spec_handoff(self) -> None:
+        # spec #acceptance-receipt-paths: each spec by full path then at <commit>.
         text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
-        self.assertRegex(text, r"Accept spec hand-off.*gh pr comment.*Spec acceptance receipt: human")
+        self.assertRegex(
+            text,
+            r"Accept spec hand-off.*gh pr comment.*Spec acceptance receipt: human.*"
+            r"accepts <full repository path> at <exact commit>\.",
+        )
+
+    def test_chat_spec_acceptance_records_only_the_pr_receipt(self) -> None:
+        # spec #acceptance-chat-one-record, #gates-chat-acceptance: the operator
+        # records a chat spec acceptance only as the PR receipt; review-host
+        # reviewed moves the row base and records no acceptance.
+        contracts = [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/SKILL.md")]
+        for path in contracts:
+            self.assertNotIn("--accepted", path.read_text(encoding="utf-8"), path)
+        self.assertRegex(
+            OPERATOR.read_text(encoding="utf-8"),
+            r"spec acceptance the human gives the operator in chat is recorded .*the one record: "
+            r"`gh pr comment <pr> --body 'Spec acceptance receipt: human .*"
+            r"accepts <full repository path> at <commit>\..*"
+            r"`review-host\.py reviewed --id <resource id>` per accepted spec: "
+            r"it moves the row's base to the accepted commit and records no acceptance\.",
+        )
 
     def test_owner_logs_attempt_line_on_consuming_worker_result(self) -> None:
         # spec #acceptance-lane-log: consuming a worker's result appends one
