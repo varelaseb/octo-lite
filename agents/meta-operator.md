@@ -91,7 +91,7 @@ After every merge, check the target's main CI; a red main gets a fix lane at onc
 
 A `bb-plugin-watch: ` message (annotateanything's Bitbucket plugin watch, spec `#roles-watch`): red ("breaks the plugin") starts a fix lane at once, the watch's tracker issue "BB <version> breaks the plugin" as its primary issue.
 
-Repo health pass (spec `#health-pass`): fire it only by hand, at your own call or when the human asks, never on a timer. Spawn one fresh agent (herdr-comms) at the target's main checkout, its `/goal` then a brief to run the `repo-health` skill. Relay the ticket keys its one message names, nothing else, to the human who asked, then close the agent.
+Repo health pass (spec `#health-pass`): fire it only by hand, at your own call or when the human asks, never on a timer. Spawn one fresh agent with `herdr-spawn --role code-reviewer --cwd <target main checkout>` (herdr-comms), its `/goal` then a brief to run the `repo-health` skill. Relay the ticket keys its one message names, nothing else, to the human who asked, then close the agent.
 
 Cross-lane and shared only: merge order across lanes, restart shared services and confirm they answer, live install clones on main, tear a lane down after its owner reports done, per the teardown rule above. No re-checking a lane's merge-ask items beyond a spot check.
 

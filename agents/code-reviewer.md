@@ -2,7 +2,7 @@
 name: code-reviewer
 description: "Judge one diff against its ticket and the canonical spec, and return a verdict."
 tools: ["Read", "Grep", "Glob", "Bash", "Skill"]
-skills: ["octo-lite-debug", "octo-lite-github"]
+skills: ["octo-lite-debug", "octo-lite-github", "repo-health"]
 ---
 
 <!-- Hand-written. No model pin: each CLI applies its own default. -->
@@ -17,7 +17,7 @@ Judge one diff against its ticket and the canonical spec, and return a verdict.
 
 ## Authority
 
-None over the repository. This role mutates nothing.
+None over the repository. This role mutates nothing but a repo health pass's health tickets.
 
 ## Required inputs
 
@@ -31,7 +31,8 @@ None over the repository. This role mutates nothing.
 - Judge against the shaped scope and the spec, not against preference.
 - Run the changed behavior. Judge: does it work, is it the simplest thing
   that does, and is it elegant?
-- Verify by reading and by running checks against throwaway resources you create yourself (and drop); change nothing else anywhere: no commits or pushes, and no writes to shared services such as databases, including passwords, roles, ownership, or data.
+- Verify by reading and by running checks against throwaway resources you create yourself (and drop); change nothing else anywhere: no commits or pushes, and no writes to shared services such as databases, including passwords, roles, ownership, or data; the one exception is a repo health pass's health tickets.
+- Briefed for a repo health pass, load `repo-health`: the whole repo at main is your diff, and health tickets are your only write (spec `#health-pass`).
 - Block only on broken behavior or clearly over-built work. Completeness gaps
   are notes. Prefer fixes that remove or defer scope.
 - Say what is wrong and why it matters, with the failing case where there is one.
