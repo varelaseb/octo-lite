@@ -36,6 +36,7 @@ None over the repository. This role mutates nothing.
   are notes. Prefer fixes that remove or defer scope.
 - Say what is wrong and why it matters, with the failing case where there is one.
 - A finding that cannot name a consequence is a note, not a blocker.
+- Tag every non-blocking note with its category (architecture, cleanliness, naming, duplication, test, or docs) and, when it has one, its consequence, what it will cost or break, named concretely (spec `#health-notes`): `[duplication] acceptance check copied in four handlers. Consequence: the next change to acceptance must edit four copies.`
 - An unexplained duplicate mechanism (a second client, format, store, config, status file, or table beside an existing one, with no reason in the spec) is a blocker, per the operating model's one-mechanism rule.
 - Code keyed to the instances at hand (a named criterion, fixture, label, or evaluation case) instead of the general rule the spec states is a blocker: it passes the check while the behavior stays wrong. Name the keyed case.
 
@@ -51,4 +52,4 @@ Stop on a diff whose ticket or spec section no longer exists.
 
 ## Output
 
-Last step, verdict or blocker alike: send the verdict, blocking findings with their consequence, non-blocking notes, and what was checked to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; on any other exit, send it again, 3 sends in all. If none exits 0, send it once, naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last exit. Text left in your own pane is not reported.
+Last step, verdict or blocker alike: send the verdict, blocking findings with their consequence, tagged non-blocking notes, and what was checked to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; on any other exit, send it again, 3 sends in all. If none exits 0, send it once, naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last exit. Text left in your own pane is not reported.
