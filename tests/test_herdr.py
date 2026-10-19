@@ -128,6 +128,8 @@ case "$sub" in
     # which is the window in which a prompt is silently lost.
     if gone "$3"; then
       not_found
+    elif [[ -n "${FAKE_AGENT_GET_ERROR:-}" ]]; then
+      echo "$FAKE_AGENT_GET_ERROR" >&2; exit 1
     elif [[ -n "${FAKE_AGENT_GET:-}" ]]; then
       echo "$FAKE_AGENT_GET"
     elif [[ -n "${FAKE_NEVER_READY:-}" ]]; then
@@ -789,6 +791,53 @@ class HerdrWrapperTest(unittest.TestCase):
         self.gone_file.write_text("w8:p1\n")
         self.assertEqual(self.wake("check", "s2/w8:p1", **here).returncode, 0)
         self.assertEqual(self.wake("check", "w8:p1", **here).returncode, 1)
+
+    def bare_path(self, herdr=True):
+        # A launcher's search path (cron: /usr/bin:/bin) lacks Herdr's dir;
+        # Herdr's installer puts it in ~/.local/bin.
+        home_bin = Path(self.env["HOME"]) / ".local/bin"
+        home_bin.mkdir(parents=True)
+        if herdr:
+            (home_bin / "herdr").symlink_to(Path(self.tmp.name) / "bin/herdr")
+        return {"PATH": "/usr/bin:/bin"}
+
+    def test_wake_reaches_herdr_outside_the_callers_search_path(self):
+        # acceptance-wake-search-path
+        bare = self.bare_path()
+        self.assertEqual(self.wake("check", "w1:p1", **bare).returncode, 0)
+        r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready", **bare)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("agent prompt w1:p1 hand-off ready", self.calls())
+
+    def test_wake_names_herdr_as_not_found(self):
+        # acceptance-wake-no-herdr
+        bare = self.bare_path(herdr=False)
+        for args in (("check", "w1:p1"), ("send", "w1:p1", "a.spec.html", "m")):
+            r = self.wake(*args, **bare)
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stderr.count("\n"), 1, r.stderr)
+            self.assertIn("herdr not found", r.stderr)
+
+    def test_wake_names_an_owner_pane_gone_from_its_session(self):
+        # acceptance-wake-owner-gone: gone from Herdr, or resolving elsewhere.
+        self.gone_file.write_text("w1:p9\n")
+        for owner, session in (("w1:p9", "default"), ("s2/w1:p9", "s2"), ("w1:p2", "default")):
+            for args in (("check", owner), ("send", owner, "a.spec.html", "m")):
+                r = self.wake(*args)
+                self.assertEqual(r.returncode, 1)
+                self.assertEqual(r.stderr, f"herdr-wake: owner pane {owner.split('/')[-1]} "
+                                           f"not found in Herdr session {session}\n")
+
+    def test_wake_passes_on_herdrs_own_error_in_one_line(self):
+        err = '{"error":{"code":"server_unavailable","message":"no server"}}'
+        r = self.wake("check", "w1:p1", FAKE_AGENT_GET_ERROR=err + "\nretry later")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stderr.count("\n"), 1, r.stderr)
+        self.assertIn("server_unavailable", r.stderr)
+        r = self.wake("send", "w1:p1", "a.spec.html", "m", FAKE_PROMPT_NOT_FOUND="1")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stderr.count("\n"), 1, r.stderr)
+        self.assertIn("agent_not_found", r.stderr)
 
     # --- session state ---------------------------------------------------
 

@@ -84,7 +84,10 @@ With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
 `${XDG_STATE_HOME:-~/.local/state}/spec-chat/hosting/default/providers/wake.toml`
 atomically, in the format Spec Chat owns. `herdr-wake check OWNER` exits 0 when
 the pane resolves; `herdr-wake send OWNER ARTIFACT MESSAGE` exits 0 sent, 75
-deferred, other failed. Install never replaces a `wake.toml` it did not
+deferred, other failed. It also finds Herdr in `~/.local/bin`, so a review
+service started by any launcher (user service, cron, shell) wakes owners, and a
+failed check or send writes a one-line reason to stderr: Herdr not found, owner
+pane not found in its session, or Herdr's error. Install never replaces a `wake.toml` it did not
 write, and `--undo` deletes that file only while it is unchanged.
 
 `--prefix PATH` is the one root for everything install writes: links, and the
