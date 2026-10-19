@@ -53,4 +53,4 @@ Stop on a diff whose ticket or spec section no longer exists.
 
 ## Output
 
-Last step, verdict or blocker alike: send the verdict, blocking findings with their consequence, tagged non-blocking notes, and what was checked to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; on any other exit, send it again, 3 sends in all. If none exits 0, send it once, naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last exit. Text left in your own pane is not reported.
+Last step, verdict or blocker alike: send the verdict, blocking findings with their consequence, tagged non-blocking notes, and what was checked to the owner pane your brief names with `herdr-say`; on a repo health pass, the last step instead sends the `repo-health` Pass step 5 message (ticket keys only), not a verdict. Only exit 0 confirms the send; on any other exit, send it again, 3 sends in all. If none exits 0, send it once, naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last exit. Text left in your own pane is not reported.

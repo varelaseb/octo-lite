@@ -35,19 +35,18 @@ A consequence is what the issue will cost or break, named concretely, such as
 Write tickets, comments, and states only as
 [consent](../octo-lite-github/SKILL.md#consent) `issues` allows; without it,
 file nothing and name that as the blocker in your report.
-Before any call: `set -a; . ~/.config/workbench/project.env; set +a`
-(missing file: stop, report a blocker).
 
 ```sh
-tid=$(linear api 'query($t:String!){team(id:$t){id}}' --variable t="$LINEAR_TEAM_ID" | jq -r .data.team.id)
+tid=$(linear api 'query($t:String!){team(id:$t){id}}' --variable t="$(linear team id)" | jq -r .data.team.id)
 # open health tickets
 linear api 'query($t:ID!){issues(first:250,filter:{team:{id:{eq:$t}},labels:{some:{parent:{name:{eq:"Health"}}}},state:{type:{nin:["completed","canceled","duplicate"]}}}){nodes{identifier title description url}}}' --variable t="$tid"
-# first use only, when the team has no Health label:
-# linear api 'query($t:String!){team(id:$t){labels(filter:{name:{eq:"Health"}}){nodes{id}}}}' --variable t="$tid"
-g=$(linear api 'mutation($t:String!){issueLabelCreate(input:{name:"Health",isGroup:true,teamId:$t}){issueLabel{id}}}' --variable t="$tid" | jq -r .data.issueLabelCreate.issueLabel.id)
-for c in architecture cleanliness naming duplication test docs; do
-  linear api 'mutation($t:String!,$g:String!,$n:String!){issueLabelCreate(input:{name:$n,parentId:$g,teamId:$t}){issueLabel{id}}}' --variable t="$tid" --variable g="$g" --variable n="$c" --silent
-done
+# Health label group, created only when the team has none
+if [ -z "$(linear api 'query($t:String!){team(id:$t){labels(filter:{name:{eq:"Health"}}){nodes{id}}}}' --variable t="$tid" | jq -r '.data.team.labels.nodes[0].id // empty')" ]; then
+  g=$(linear api 'mutation($t:String!){issueLabelCreate(input:{name:"Health",isGroup:true,teamId:$t}){issueLabel{id}}}' --variable t="$tid" | jq -r .data.issueLabelCreate.issueLabel.id)
+  for c in architecture cleanliness naming duplication test docs; do
+    linear api 'mutation($t:String!,$g:String!,$n:String!){issueLabelCreate(input:{name:$n,parentId:$g,teamId:$t}){issueLabel{id}}}' --variable t="$tid" --variable g="$g" --variable n="$c" --silent
+  done
+fi
 # file, comment, close
 linear issue create --no-interactive -t <title> -l <category> -p <2|3|4> --description-file <f>
 linear issue comment add <key> --body-file <f>
