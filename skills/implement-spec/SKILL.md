@@ -192,7 +192,10 @@ After every ticket is integrated:
    reviews only the fix delta (base = the last reviewed head) plus the surface
    it touches; never re-review unchanged code. Nits, wording, test-only, and
    cosmetic findings never cost a review round: they ride in a fix batch
-   already running, else ship as historical notes. A PR back from review with
+   already running, else ship as notes. List every non-blocking note, tagged
+   as the reviewer gave it, in the PR body under `## Review notes`; they are
+   filed at lane close by the [filing rule](../repo-health/SKILL.md#filing-rule).
+   A PR back from review with
    findings a second time gets a fresh step-back pass toward the simplest
    design that meets the spec, not another patch. A step-back pass ends
    step-backs: the next review's blockers get one fix batch and a fix-delta
@@ -235,6 +238,7 @@ Failed required checks still block merge until fixed or durably waived through
 a repository-approved path.
 
 The merge completes the worklane: reconcile the PR and worklane state together,
-reconcile the primary Linear issue to Done, tear down in the close order of
+reconcile the primary Linear issue to Done, file the PR's review notes by the
+[filing rule](../repo-health/SKILL.md#filing-rule), tear down in the close order of
 `agents/orchestrator.md` (review rows before any worktree, lane record archived
 last), and stop.
