@@ -125,7 +125,7 @@ number). Git holds the history.
 
 A repo-wide rule lives once, in its home spec, as an acceptance criterion
 stating it applies to every feature, marked `data-project-rule`. An ADR links
-that criterion (e.g. see annotateanything `peer-seams#rule-one-owner`), never
+that criterion (e.g. see `<home-spec>#<rule-anchor>`), never
 restates it: why in the ADR, what in the
 criterion, mechanics in code and the PR. Mechanics no caller depends on
 (tables, retry counts, internal keys, timeouts) appear in neither spec nor ADR.
