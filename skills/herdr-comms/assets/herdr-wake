@@ -13,15 +13,33 @@
 # Herdr session SESSION, so a review service of one session wakes an owner in
 # another. Herdr selects the session by HERDR_SESSION unless HERDR_SOCKET_PATH
 # pins one, so the socket is dropped.
+# A launcher's search path (cron: /usr/bin:/bin) may lack ~/.local/bin, where
+# Herdr installs; herdr-say and what it starts inherit this one.
+# A failed check or send writes a one-line reason to stderr.
 set -uo pipefail
+export PATH="$PATH:$HOME/.local/bin"
 
 usage() { echo "usage: herdr-wake check OWNER | send OWNER ARTIFACT MESSAGE" >&2; exit 64; }
 
-# Print the owner's agent_status; fail when the pane does not resolve.
+# Print the owner's agent_status, or parked for one herdr-say would resume;
+# fail with the reason on stderr.
 status() {
-  local out
-  out="$(timeout -k 1 5 herdr agent get "$1" 2>/dev/null)" || return 1
-  jq -er --arg p "$1" '.result.agent | select(.pane_id == $p) | .agent_status // "unknown"' <<<"$out" 2>/dev/null || return 1
+  local out err f rc=0
+  command -v herdr >/dev/null || { echo "herdr-wake: herdr not found on PATH $PATH" >&2; return 1; }
+  f="$(mktemp)"
+  out="$(timeout -k 1 5 herdr agent get "$1" 2>"$f")" || rc=$?
+  err="$(<"$f")"; rm -f "$f"
+  ((rc == 0)) && jq -er --arg p "$1" '.result.agent | select(.pane_id == $p)
+    | .agent_status // "unknown"' <<<"$out" 2>/dev/null && return
+  "$say" --parked "$1" >/dev/null 2>&1 && { echo parked; return; }
+  if ((rc == 0)) || [[ "$(jq -r '.error.code?' <<<"$err" 2>/dev/null)" == agent_not_found ]]; then
+    echo "herdr-wake: owner pane $1 not found in Herdr session ${HERDR_SESSION:-default}" >&2
+  elif ((rc == 124)); then
+    echo "herdr-wake: Herdr not answering: herdr agent get $1 timed out after 5s" >&2
+  else
+    echo "herdr-wake: herdr agent get $1: ${err//$'\n'/ }" >&2
+  fi
+  return 1
 }
 
 say="$(dirname "$(readlink -f "$0")")/herdr-say"
@@ -32,18 +50,21 @@ fi
 case "${1:-}" in
   check)
     (($# == 2)) || usage
-    status "$2" >/dev/null || "$say" --parked "$2" >/dev/null ;;
+    status "$2" >/dev/null ;;
   send)
     (($# == 4)) || usage
-    s="$(status "$2")" || { "$say" --parked "$2" >/dev/null || exit 1
+    s="$(status "$2")" || exit 1
+    if [[ "$s" == parked ]]; then
       setsid "$say" --kind command --artifact "$3" "$2" "$4" </dev/null >/dev/null 2>&1 &
-      exit 0; }
+      exit 0
+    fi
     [[ "$s" == working ]] && exit 75
     err="$("$say" --kind command --artifact "$3" "$2" "$4" 2>&1 >/dev/null)"
     rc=$?
     ((rc == 0 || rc == 75)) && exit "$rc"
     grep -q '"code": *"agent_prompt_stalled"' <<<"$err" && exit 0
-    printf '%s\n' "$err" >&2
+    err="${err:-herdr-say exited $rc}"
+    echo "herdr-wake: ${err//$'\n'/ }" >&2
     exit "$rc" ;;
   *) usage ;;
 esac
