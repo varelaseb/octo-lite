@@ -1,23 +1,28 @@
 // spec-chat runtime v0.1 — hydrates semantic islands and mounts the annotation layer.
-// spec-chat-capabilities: changed-root-focus custom-style-focus diff-visibility-control finish-review git-focus manual-resume-status mobile-pre-wrap mobile-review next-tbd reopen-thread semantic-islands shared-style-ownership spec-acceptance tbd-later
+// spec-chat-capabilities: answer-buttons changed-root-focus custom-style-focus diff-visibility-control finish-review git-focus manual-resume-status mobile-pre-wrap mobile-review next-tbd reopen-thread semantic-islands shared-style-ownership spec-acceptance tbd-later
 // Transports: FSA (file://, primary) | HTTP review-serve (http(s)://, secondary).
 // Same spools, same event schema either way. See DESIGN.md.
 // Classic script, NOT a module: browsers CORS-block module scripts on file:// pages,
 // and file:// is the primary transport. Specs load it with <script defer src=...>.
 // Embed mode: a host app (SPA or any live page) loads the same script with
 // data-review-dir="<repo-relative>.review" on the tag. That pins one spool for the whole
-// app (routes change location.pathname, which normally names the spool), skips the
+// app (routes change its address, which normally names the spool), skips the
 // document-presentation CSS (the host owns its look; only the hx-* overlay ships), and
 // disables spec-mtime watching (there is no spec file to go stale). HTTP transport only.
 (function () {
 'use strict';
 
-const SPEC_FILE = decodeURIComponent(location.pathname.split('/').pop());
+// review-service #served-own-address: the page's own address is its document's base address, fragment aside;
+// served directly, that is its location. Everything the page addresses comes from it, never from its location.
+// Its query follows what the page shows (#served-rewrite).
+const OWN_ADDRESS = new URL(document.baseURI);
+OWN_ADDRESS.hash = '';
+const SPEC_FILE = decodeURIComponent(OWN_ADDRESS.pathname.split('/').pop());
 // document.currentScript is only valid during the initial synchronous run — capture now.
 const EMBED_REVIEW_DIR = (document.currentScript && document.currentScript.dataset && document.currentScript.dataset.reviewDir) || null;
 const REVIEW_DIRNAME = SPEC_FILE + '.review';
 // The spool this page reviews; also keys its outbox and last-loaded events in browser storage.
-const REVIEW_DIR = EMBED_REVIEW_DIR || location.pathname.replace(/^\//, '') + '.review';
+const REVIEW_DIR = EMBED_REVIEW_DIR || OWN_ADDRESS.pathname.replace(/^\//, '') + '.review';
 const RUNTIME_URL = (document.currentScript && document.currentScript.src) || new URL('./.viz/runtime.js', document.baseURI).href;
 const VENDOR = { echarts: new URL('./vendor/echarts-5.5.1.min.js', RUNTIME_URL).href };
 
@@ -58,7 +63,7 @@ const state = {
   eventsRendered: false,
   lastTbd: null,         // open TBD marker focused by the last TBD open or Next TBD activation
   range: { baseline: null, loaded: null, loading: false, pickerOpen: false }, // loaded: anchor signatures of the page as served
-  jev: { status: 'idle', items: [], levels: {}, offer: null, candidateOffer: null, base: null, request: 0 }, // levels: the server's mark kind -> level table
+  jev: { status: 'idle', items: [], levels: {}, base: null, request: 0 }, // levels: the server's mark kind -> level table
   evidence: { criteria: null, levels: {} }, // criteria: anchor -> entry once /api/evidence answers, null shows nothing
   readingView: false,
   movingOrphans: new Set(),
@@ -97,7 +102,7 @@ function httpTransport() {
     },
     async specModified() {
       if (EMBED_REVIEW_DIR) return null; // no spec file behind a live app; watchSpec stays quiet
-      const r = await fetch(location.pathname, { method: 'HEAD' });
+      const r = await fetch(OWN_ADDRESS.pathname, { method: 'HEAD' });
       return new Date(r.headers.get('Last-Modified') || 0).getTime();
     },
   };
@@ -158,7 +163,7 @@ function rangeBarText(baseline) {
 }
 
 function baselineParams(base) {
-  const params = new URLSearchParams({ path: location.pathname.replace(/^\//, '') });
+  const params = new URLSearchParams({ path: OWN_ADDRESS.pathname.replace(/^\//, '') });
   if (base) params.set('base', base);
   return params;
 }
@@ -170,7 +175,7 @@ const JEV_TYPE_LABELS = {
 };
 
 function jevParams(base) {
-  const params = new URLSearchParams({ path: location.pathname.replace(/^\//, ''), base: String(base || '') });
+  const params = new URLSearchParams({ path: OWN_ADDRESS.pathname.replace(/^\//, ''), base: String(base || '') });
   if (state.readingView) params.set('view', 'reading');
   return params;
 }
@@ -192,22 +197,21 @@ async function fetchJev(base, signal) {
       side: item.side == null ? null : String(item.side),
       other: item.other == null ? null : String(item.other), // lane items name the other slug (#acceptance-cross-lane)
       word: item.word == null ? null : String(item.word),
-      text: item.text == null ? null : String(item.text), // a rule's criterion text, verbatim (project-rules #card)
-      name: item.name == null ? null : String(item.name), // its plain-words name, null while being written (#card-name-source)
-      rule: jevRuleOf(item.rule), // the confirmed rule a draft-check mark cites (#card-cites)
+      text: item.text == null ? null : String(item.text), // a rule's or candidate's criterion text, verbatim (project-rules #card)
+      name: item.name == null ? null : String(item.name), // the name its mark gives (#card-parts)
+      home: item.home == null ? null : String(item.home), // the rule's repo spec path and anchor, as Not for this spec names it
+      rule: jevRuleOf(item.rule), // the marked rule a draft-check mark cites (#card-variants)
       escalated: item.escalated === true,
     })) : [],
     levels: result ? result.levels : null, // the server's levels table (#markers-levels-source); markLevel reads it
-    offer: result && result.offer && typeof result.offer === 'object' && Number(result.offer.count) > 0 ? result.offer : null,
-    candidateOffer: result && result.candidate_offer && typeof result.candidate_offer === 'object'
-      && Number(result.candidate_offer.count) > 0 ? result.candidate_offer : null,
   };
 }
 
-// A rule as every card shows it: home target, verbatim criterion text, and name (project-rules #card).
+// A rule as every card shows it: served target, verbatim criterion text, its mark's name, and home (project-rules #card).
 function jevRuleOf(value) {
   if (!value || typeof value !== 'object' || !value.target || !value.text) return null;
-  return { target: String(value.target), text: String(value.text), name: value.name == null ? null : String(value.name) };
+  return { target: String(value.target), text: String(value.text), name: value.name == null ? null : String(value.name),
+    home: value.home == null ? null : String(value.home) };
 }
 
 function jevItem(kind, id) {
@@ -229,8 +233,6 @@ function clearJev() {
   state.jev.status = 'idle';
   state.jev.items = [];
   state.jev.levels = {};
-  state.jev.offer = null;
-  state.jev.candidateOffer = null;
   state.jev.base = null;
   scheduleJevPoll();
   renderJev();
@@ -258,7 +260,7 @@ document.addEventListener('visibilitychange', scheduleJevPoll);
 
 // refresh: a re-read for pending items; it shows only what changed and keeps the page as is when it fails.
 async function requestJev(base, refresh = false) {
-  if (!['http:', 'https:'].includes(location.protocol) || !base) return;
+  if (!['http:', 'https:'].includes(OWN_ADDRESS.protocol) || !base) return;
   const request = ++state.jev.request;
   if (!refresh) {
     state.jev.status = 'loading';
@@ -272,13 +274,10 @@ async function requestJev(base, refresh = false) {
     if (request !== state.jev.request) return;
     const status = result.jev === 'off' ? 'off' : 'on';
     const same = refresh && status === state.jev.status
-      && JSON.stringify([result.items, result.levels, result.offer, result.candidateOffer])
-      === JSON.stringify([state.jev.items, state.jev.levels, state.jev.offer, state.jev.candidateOffer]);
+      && JSON.stringify([result.items, result.levels]) === JSON.stringify([state.jev.items, state.jev.levels]);
     state.jev.status = status;
     state.jev.items = result.items;
     state.jev.levels = result.levels;
-    state.jev.offer = result.offer;
-    state.jev.candidateOffer = result.candidateOffer;
     scheduleJevPoll();
     if (same) return;
     renderJev();
@@ -290,8 +289,6 @@ async function requestJev(base, refresh = false) {
     state.jev.status = 'unavailable';
     state.jev.items = [];
     state.jev.levels = {};
-    state.jev.offer = null;
-    state.jev.candidateOffer = null;
     renderJev();
     renderPanel();
     renderPins();
@@ -303,7 +300,7 @@ async function requestJev(base, refresh = false) {
 // One evidence read per page, after it renders; any failure leaves the page without evidence notes.
 async function requestEvidence() {
   try {
-    const response = await fetch('/api/evidence?' + new URLSearchParams({ path: location.pathname.replace(/^\//, '') }));
+    const response = await fetch('/api/evidence?' + new URLSearchParams({ path: OWN_ADDRESS.pathname.replace(/^\//, '') }));
     const result = response.ok ? await response.json() : null;
     const criteria = result && result.criteria;
     if (!criteria || typeof criteria !== 'object' || Array.isArray(criteria)) return;
@@ -340,11 +337,11 @@ async function fetchBaseline(base, signal) {
 }
 
 async function applyIssueFocus() {
-  if (EMBED_REVIEW_DIR || location.protocol === 'file:') return;
+  if (EMBED_REVIEW_DIR || OWN_ADDRESS.protocol === 'file:') return;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
   try {
-    const requestedBase = new URLSearchParams(location.search).get('base');
+    const requestedBase = OWN_ADDRESS.searchParams.get('base');
     const baseline = await fetchBaseline(requestedBase, controller.signal);
     state.range.baseline = baseline;
     renderRangeBar(baseline);
@@ -353,7 +350,7 @@ async function applyIssueFocus() {
   } catch (error) {
     const copy = document.getElementById('hx-range-copy');
     if (copy) copy.textContent = 'Compared range unavailable.';
-    if (new URLSearchParams(location.search).get('focus') === 'changes') showFocusError();
+    if (OWN_ADDRESS.searchParams.get('focus') === 'changes') showFocusError();
   } finally {
     clearTimeout(timeout);
   }
@@ -444,6 +441,16 @@ function openRangePicker(open) {
   if (state.range.pickerOpen) setTimeout(() => document.getElementById('hx-range-input')?.focus(), 0);
 }
 
+// review-service #served-rewrite: the page rewrites its address only while its own address is its location,
+// fragment aside; served at another address it changes only what it shows, so a reload opens what the host served.
+function rewriteAddress(edit) {
+  const here = new URL(location.href);
+  here.hash = '';
+  const direct = here.href === OWN_ADDRESS.href;
+  edit(OWN_ADDRESS.searchParams);
+  if (direct) history.replaceState(null, '', OWN_ADDRESS.pathname + OWN_ADDRESS.search + location.hash);
+}
+
 async function selectRangeBase(value) {
   const requested = String(value || '').trim();
   if (!requested) return setRangeError('Enter a commit id.');
@@ -462,10 +469,7 @@ async function selectRangeBase(value) {
     markIssueFocus(state.range.loaded, baseline);
     renderRangeBar(baseline);
     requestJev(baseline.base || requested);
-    const url = new URL(location.href);
-    url.searchParams.set('focus', 'changes');
-    url.searchParams.set('base', baseline.base || requested);
-    history.replaceState(null, '', url.pathname + url.search + url.hash);
+    rewriteAddress(query => { query.set('focus', 'changes'); query.set('base', baseline.base || requested); });
     openRangePicker(false);
   } catch (error) {
     setRangeError(error.name === 'AbortError' ? 'Commit lookup timed out.' : 'That commit could not be resolved locally.');
@@ -477,7 +481,7 @@ async function selectRangeBase(value) {
 }
 
 function mountRangeBar() {
-  if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(location.protocol) || document.getElementById('hx-range-bar')) return;
+  if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(OWN_ADDRESS.protocol) || document.getElementById('hx-range-bar')) return;
   const bar = document.createElement('section');
   bar.className = 'hx-range-bar';
   bar.id = 'hx-range-bar';
@@ -548,7 +552,7 @@ function coverageFlags(items) {
 // Name the folder the user should grant: the first ancestor Chromium will accept
 // (it blocklists the home/Documents/Desktop/Downloads roots themselves).
 function suggestedGrant() {
-  const segs = decodeURIComponent(location.pathname).split('/').filter(Boolean);
+  const segs = decodeURIComponent(OWN_ADDRESS.pathname).split('/').filter(Boolean);
   segs.pop();
   let i = 0;
   if ((segs[0] === 'Users' || segs[0] === 'home') && segs.length > 2) i = 2; // past /Users/<name>
@@ -583,7 +587,7 @@ function fsaTransport() {
     async _toSpecDir(h) {
       try { await h.getFileHandle(SPEC_FILE); return h; } catch {}
       if (!h.getDirectoryHandle) return null;
-      const segs = decodeURIComponent(location.pathname).split('/').filter(Boolean);
+      const segs = decodeURIComponent(OWN_ADDRESS.pathname).split('/').filter(Boolean);
       segs.pop(); // the spec filename
       const walk = async at => {
         let d = h;
@@ -610,13 +614,13 @@ function fsaTransport() {
       root = specDir;
       pending = null;
       t.connected = true;
-      try { await store('readwrite', s => s.put(specDir, location.href)); } catch {}
+      try { await store('readwrite', s => s.put(specDir, OWN_ADDRESS.href)); } catch {}
       try { await store('readwrite', s => s.put(h, 'last-dir')); } catch {}
       if (alsoScope) try { await store('readwrite', s => s.put(h, 'scope-root')); } catch {}
     },
     async tryRestore() {
       try {
-        let h = await store('readonly', s => s.get(location.href));
+        let h = await store('readonly', s => s.get(OWN_ADDRESS.href));
         if (!h) h = await store('readonly', s => s.get('scope-root')); // broad grant covers new specs
         if (!h) return 'none';
         const p = await h.queryPermission({ mode: 'readwrite' });
@@ -660,7 +664,7 @@ function fsaTransport() {
       // clipboard for the native panel's Go-to-Folder (⌘⇧G on macOS).
       const opts = { mode: 'readwrite', id: 'spec-chat' };
       if (useLastDir) try { const last = await store('readonly', s => s.get('last-dir')); if (last) opts.startIn = last; } catch {}
-      const dir = decodeURIComponent(location.pathname).replace(/\/[^/]*$/, '');
+      const dir = decodeURIComponent(OWN_ADDRESS.pathname).replace(/\/[^/]*$/, '');
       // fire-and-forget: awaiting could burn the gesture's activation before the picker call
       try { navigator.clipboard.writeText(dir).then(() => toast(/Mac/.test(navigator.platform) ? 'Pick \u201c' + suggestedGrant() + '\u201d — or any folder above the spec. Exact path copied: \u2318\u21e7G + paste jumps there' : 'Pick \u201c' + suggestedGrant() + '\u201d or any folder above the spec (path copied)'), () => {}); } catch {}
       let picked;
@@ -970,7 +974,8 @@ function resolveSvgPath(holder, key) {
 }
 
 function onDocClick(e) {
-  if (!state.commentMode || e.target.closest('.hx-pin,.hx-jev-marker,.hx-jev-pop,.hx-panel,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
+  if (!state.commentMode) { pressAnswer(e); return; }
+  if (e.target.closest('.hx-pin,.hx-jev-marker,.hx-jev-pop,.hx-panel,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
   const holder = holderOf(e.target);
   if (!holder) return;
   if (e.target.tagName === 'CANVAS') return; // canvas clicks are the chart's business: marks via chart events, blanks via zrender
@@ -987,6 +992,50 @@ function onDocClick(e) {
   const desc = elementDescriptor(e.target, holder);
   if (desc) openComposer(holder.dataset.anchor, { type: 'element', key: desc.key }, desc.quote);
   else openComposer(holder.dataset.anchor, null, null);
+}
+
+/* ---------------- answer buttons (prompt-first-shaping #answer-buttons) ----------------
+ * A button with a non-empty data-spec-choice inside an anchored block. Its answer is an ordinary
+ * comment through the one comment save; the chosen mark derives from the review state.
+ */
+const ANSWER = 'button[data-spec-choice]';
+const answerButton = el => { // a button that is its own anchored block has no enclosing one: plain
+  const button = el && el.closest && el.closest(ANSWER);
+  const holder = button && button.dataset.specChoice.trim() && holderOf(button);
+  return holder && holder !== button ? button : null;
+};
+
+// Each block's answer buttons by target key, and its chosen one: the one the newest comment targets
+// where the service places it (placedMark), so the chosen mark sits where that comment's pin does.
+function answerBlocks() {
+  const blocks = new Map(); // anchorId -> { buttons: Map(key -> button), chosen }
+  for (const button of [...document.querySelectorAll(ANSWER)].filter(answerButton)) {
+    const holder = holderOf(button);
+    if (!blocks.has(holder.dataset.anchor)) blocks.set(holder.dataset.anchor, { buttons: new Map(), chosen: null });
+    blocks.get(holder.dataset.anchor).buttons.set(elementDescriptor(button, holder).key, button);
+  }
+  for (const th of state.threads.values()) { // fold order: the last is the newest comment
+    const b = placedMark(th.ev), block = blocks.get(b.anchorId);
+    if (block && b.target && b.target.type === 'element' && block.buttons.has(b.target.key)) block.chosen = block.buttons.get(b.target.key);
+  }
+  return blocks;
+}
+
+function renderChoices() {
+  for (const { buttons, chosen } of answerBlocks().values()) for (const b of buttons.values()) b.setAttribute('aria-pressed', String(b === chosen));
+}
+
+// Outside comment mode a press saves the answer on that button and opens nothing; the chosen
+// answer pressed again saves nothing. Until the review state loads the chosen answer is unknown,
+// so the press stays plain (a page that cannot comment never loads it).
+function pressAnswer(e) {
+  const button = answerButton(e.target);
+  if (!button || !state.eventsRendered) return;
+  e.preventDefault();
+  const holder = holderOf(button);
+  if (answerBlocks().get(holder.dataset.anchor).chosen === button) return;
+  const desc = elementDescriptor(button, holder);
+  saveMessage({ kind: 'comment', anchorId: holder.dataset.anchor, target: { type: 'element', key: desc.key }, quote: desc.quote }, button.dataset.specChoice.trim());
 }
 
 /* ---------------- events -> threads ---------------- */
@@ -1240,9 +1289,13 @@ function handoffObservation(events, nowMs) {
   return Number.isFinite(createdAt) && nowMs - createdAt >= 30000 ? 'queued' : 'waiting';
 }
 
+// wake is the X-Spec-Chat-Wake value: the host's wake state, and for failed "; " and its URI-encoded reason (host-wake #wake-states).
 function handoffAgentText(observation, wake, last) {
-  if (observation && wake === 'failed') return '· wake failed; send a new chat message to resume';
-  if (observation === 'waiting' || (observation === 'queued' && wake === 'deferred')) return '· handed off, waiting for agent';
+  const cut = wake ? wake.indexOf('; ') : -1;
+  const state = cut < 0 ? wake : wake.slice(0, cut);
+  const reason = cut < 0 ? '' : decodeURIComponent(wake.slice(cut + 2));
+  if (observation && state === 'failed') return '· wake failed' + (reason ? ': ' + reason : '') + '; send a new chat message to resume';
+  if (observation === 'waiting' || (observation === 'queued' && (state === 'deferred' || state === 'retrying'))) return '· handed off, waiting for agent';
   if (observation === 'queued') return '· automatic wake did not occur; send a new chat message to resume';
   return last ? '· agent last event ' + new Date(last.body.createdAt).toLocaleTimeString() : '· no agent events yet';
 }
@@ -1268,6 +1321,7 @@ function ingest(events, force = false) {
   renderPanel();
   renderPins();
   renderBadges();
+  renderChoices();
 }
 
 function jevDisplayLabel(item) {
@@ -1278,7 +1332,7 @@ function jevDisplayLabel(item) {
 }
 
 function corpusFlags(items) {
-  const labels = { contradicts: 'Contradicts', overlaps: 'Overlaps', oversteps: 'Oversteps' };
+  const labels = { contradicts: 'Contradicts', overlaps: 'Overlaps', 'partial-overlap': 'Partial overlap', oversteps: 'Oversteps' };
   const seenUnavailable = new Set();
   const result = [];
   for (const item of Array.isArray(items) ? items : []) {
@@ -1310,12 +1364,19 @@ function corpusTargetLink(target) {
 }
 
 function goToJevTarget(target) {
+  // review-service #served-move: another spec opens by following a link to its address, never by setting the
+  // location, so a host's link handling receives it as it does the reviewer's own taps.
   const value = String(target || '');
   const hash = value.indexOf('#');
   const path = hash < 0 ? '' : value.slice(0, hash);
   const anchor = hash < 0 ? value : value.slice(hash + 1);
-  if (path && path !== location.pathname.replace(/^\//, '')) {
-    location.href = (path.startsWith('/') ? path : '/' + path) + (anchor ? '#' + anchor : '');
+  if (path && path !== OWN_ADDRESS.pathname.replace(/^\//, '')) {
+    const link = document.createElement('a');
+    link.href = new URL((path.startsWith('/') ? path : '/' + path) + (anchor ? '#' + anchor : ''), OWN_ADDRESS).href;
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
     return;
   }
   scrollToJevAnchor(anchor || value);
@@ -1342,7 +1403,7 @@ function markLevel(source, kind) {
 }
 
 function jevGitFocus() {
-  return new URLSearchParams(location.search).get('focus') === 'changes' || document.body.classList.contains('hx-focus-active');
+  return OWN_ADDRESS.searchParams.get('focus') === 'changes' || document.body.classList.contains('hx-focus-active');
 }
 
 // Note buttons only open the existing composer with fixed text; nothing is written until the reviewer sends.
@@ -1382,9 +1443,9 @@ function jevNeutralNote(anchor, question) {
   return { anchor, group: 'neutral', state: 'unavailable', text: 'Jev unavailable', sentence: 'Jev could not check ' + JEV_QUESTIONS[question], level: null };
 }
 
-// project-rules #dismiss-where, #approval: one click that Jev is wrong, or a candidate confirmed. Changes what the page
-// shows at once, ends any read in flight, records through the offer's record route for this page, then re-reads
-// /api/jev and shows what the server returns: a recorded answer stays, a refused or failed one comes back.
+// project-rules #dismiss: one click that Jev is wrong. Changes what the page shows at once, ends any read in flight,
+// records through the Jev record route for this page, then re-reads /api/jev and shows what the server returns: a
+// recorded answer stays, a refused or failed one comes back.
 function jevRecordAction(label, body) {
   return { label, run: () => {
     const base = state.jev.base;
@@ -1392,38 +1453,17 @@ function jevRecordAction(label, body) {
     jevForget(body);
     renderJev();
     const reread = () => { if (base === state.jev.base) requestJev(base, true); };
-    fetch('/api/jev/offer?' + new URLSearchParams({ path: location.pathname.replace(/^\//, '') }),
+    fetch('/api/jev/offer?' + new URLSearchParams({ path: OWN_ADDRESS.pathname.replace(/^\//, '') }),
       { method: 'POST', body: JSON.stringify(body) }).then(reread, reread);
   } };
 }
 
-// What one recorded answer removes from the page (#dismiss): Not for this spec drops that one note, or, naming an
-// offer line's spec, that line's rule; Not a project rule drops every card and candidate of the rule text, leaves a
-// mark citing it a plain draft-check note, and takes it out of both offers; Confirm rule ends its candidate.
+// What one recorded answer removes from the page (#dismiss): Not for this spec drops the one note holding its record;
+// Not a project rule drops the candidate on its criterion.
 function jevForget(body) {
-  const text = body.rule;
-  const here = body.dismiss === 'here';
-  const line = body.spec;
-  const everywhere = body.dismiss === 'rule';
-  state.jev.items = state.jev.items.flatMap(item => {
-    const own = item.kind === 'rule' || item.kind === 'candidate' ? item.text === text : false;
-    if (here) return !line && body.record && item.record === body.record && (own || (item.rule && item.rule.text === text)) ? [] : [item];
-    if (own && (everywhere || item.kind === 'candidate')) return [];
-    if (everywhere && item.kind === 'corpus' && item.rule && item.rule.text === text) return [{ ...item, rule: null }];
-    return [item];
-  });
-  const offer = state.jev.offer;
-  if (offer && (everywhere || (here && line))) {
-    const specs = (Array.isArray(offer.specs) ? offer.specs : []).map(entry => ({ ...entry,
-      rules: (Array.isArray(entry.rules) ? entry.rules : []).filter(r => r.text !== text || (here && entry.spec !== line)) }))
-      .filter(entry => entry.rules.length);
-    state.jev.offer = specs.length ? { ...offer, count: specs.length, specs } : null;
-  }
-  const candidates = state.jev.candidateOffer;
-  if (candidates && (everywhere || body.confirm)) {
-    const left = (Array.isArray(candidates.candidates) ? candidates.candidates : []).filter(c => c.text !== text);
-    state.jev.candidateOffer = left.length ? { ...candidates, count: left.length, candidates: left } : null;
-  }
+  state.jev.items = state.jev.items.filter(item => body.dismiss === 'here'
+    ? item.record !== body.record
+    : !(item.kind === 'candidate' && item.id === body.anchor));
 }
 
 // A rule's source: its home file name without .spec.html, a middle dot, and the clause anchor (#card).
@@ -1436,59 +1476,34 @@ function jevRuleSource(target) {
   return { href: link.href, link: link.text, file, text: (stem ? stem + ' · ' : '') + link.text.slice(Math.max(hash, 0)) };
 }
 
-// The rule's plain-words name; home and anchor while the LLM still writes it (#card-name-source).
+// The rule's plain-words name, as its mark gives it; home and anchor when a mark gives none (#card-parts).
 function jevRuleTitle(rule) {
   const source = jevRuleSource(rule.target);
   return rule.name || (source ? source.text : '');
 }
 
-// The two rejects every rule card shares (#dismiss): left of the primary, each one click. Not for this spec holds
-// for the note's record on this page's spec, or on the repo spec an offer line names (#card-offer-row).
-function jevRuleRejects(rule, record, here = true, spec) {
-  return [...(here ? [jevRecordAction('Not for this spec', { dismiss: 'here', rule: rule.text, ...(record ? { record } : {}),
-    ...(spec ? { spec } : {}) })] : []),
-    jevRecordAction('Not a project rule', { dismiss: 'rule', rule: rule.text })];
-}
-
-// Confirm rule (#approval): the name sent only when the human corrected it (#card-name-source).
-function jevConfirmAction(rule) {
-  return { label: 'Confirm rule', primary: true, run: (note, card) => {
-    const field = card && card.querySelector('.hx-rule-card-name');
-    const name = field ? String(field.value || '').split(/\s+/).filter(Boolean).join(' ') : '';
-    const body = { confirm: true, rule: rule.text, ...(name && name !== (rule.name || '') ? { name } : {}) };
-    jevRecordAction('Confirm rule', body).run();
-  } };
+// Not for this spec (#dismiss): left of the primary on every rule card, one click, for the note's record on this
+// page's spec; on a mark citing the rule (anchor), for that flagged clause too.
+function jevNotForThisSpec(rule, record, anchor) {
+  return jevRecordAction('Not for this spec', { dismiss: 'here', home: rule.home, record, ...(anchor ? { anchor } : {}) });
 }
 
 // project-rules #card: every note about a project rule is one card, rendered the same wherever it shows. Label, the
-// rule's name as title (editable on a candidate), the full verbatim quote, the source link, then the rejects left and
-// the one primary rightmost after a hairline. A labelled group; buttons are real buttons in visual order.
+// title, the full verbatim quote, the source link, then the reject left and the one primary rightmost after a
+// hairline. A labelled group; buttons are real buttons in visual order.
 function jevRuleCard(card, note = null) {
   const box = document.createElement('div');
   box.className = 'hx-rule-card';
   box.setAttribute('role', 'group');
-  const title = jevRuleTitle(card.rule);
+  const title = card.title || jevRuleTitle(card.rule);
   box.setAttribute('aria-label', card.label + ': ' + title);
   box.appendChild(document.createElement('div')).className = 'hx-rule-card-label';
   box.lastElementChild.textContent = card.label;
-  if (card.editName) {
-    const field = box.appendChild(document.createElement('textarea'));
-    field.className = 'hx-rule-card-name';
-    field.rows = 1;
-    field.maxLength = 120;
-    field.value = card.rule.name || '';
-    field.placeholder = (jevRuleSource(card.rule.target) || { text: '' }).text;
-    field.setAttribute('aria-label', 'Rule name');
-    field.title = 'Correct the name before Confirm rule';
-    field.spellcheck = true;
-    field.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
-  } else {
-    box.appendChild(document.createElement('div')).className = 'hx-rule-card-title';
-    box.lastElementChild.textContent = title;
-  }
+  box.appendChild(document.createElement('div')).className = 'hx-rule-card-title';
+  box.lastElementChild.textContent = title;
   box.appendChild(document.createElement('blockquote')).className = 'hx-rule-card-quote';
   box.lastElementChild.textContent = card.rule.text;
-  const source = jevRuleSource(card.rule.target);
+  const source = card.source === false ? null : jevRuleSource(card.rule.target);
   if (source) {
     const link = box.appendChild(document.createElement('a'));
     link.className = 'hx-rule-card-source';
@@ -1514,24 +1529,28 @@ function jevRuleCard(card, note = null) {
 
 // A note holding one card: its text and sentence name the marker; the card is what the popover shows.
 function jevCardNote(anchor, group, level, sentence, card) {
-  return { anchor, group, state: 'label', level, sentence, text: card.label + ' ' + jevRuleTitle(card.rule), card };
+  return { anchor, group, state: 'label', level, sentence, text: card.label + ' ' + (card.title || jevRuleTitle(card.rule)), card };
 }
 
-// project-rules #marks, #approval: a confirmed rule the spec misses is the missed-rule card on the Acceptance criteria
-// heading; a candidate on its home criterion is the candidate card; a check escalated to the LLM and still unanswered
-// is a wheel in the marker's place; a failed LLM fallback is the neutral Jev unavailable note naming the rule
-// (#q-fallback); anything else, a candidate elsewhere included, shows nothing.
+// project-rules #marks, #card-variants: a marked rule the spec misses is the missed-rule card on the Acceptance
+// criteria heading; a candidate on its own criterion is the candidate card, its anchor in place of a name; a check
+// escalated to the LLM and still unanswered is a wheel in the marker's place; a failed LLM fallback is the neutral
+// Jev unavailable note naming the rule (#q-fallback); anything else, a candidate elsewhere included, shows nothing.
 function jevRuleNote(item) {
   if (!item.id || !item.text || !item.target) return null;
-  const rule = { target: item.target, text: item.text, name: item.name };
-  const title = jevRuleTitle(rule);
+  const rule = { target: item.target, text: item.text, name: item.name, home: item.home };
+  const candidate = item.kind === 'candidate';
+  const title = candidate ? '#' + item.id : jevRuleTitle(rule);
   if (item.state === 'pending') {
     return item.escalated ? { anchor: item.id, group: 'rule', state: 'pending', text: 'checking ' + title + '…' } : null;
   }
-  if (item.kind === 'candidate') {
+  if (candidate) {
     if (item.state !== 'label') return null;
+    // Mark as rule is a hand-off: a draft asking the criterion's owner to mark it (#card-mark-as-rule).
+    const mark = { ...jevDraftAction('Mark as rule', 'Mark this criterion as a project rule with a short name.'), primary: true };
     return jevCardNote(item.id, 'rule', item.level || null, 'Jev reads this as a rule for every feature',
-      { label: 'Possible project rule', rule, editName: true, actions: [...jevRuleRejects(rule, null, false), jevConfirmAction(rule)] });
+      { label: 'Possible project rule', title, rule, source: false,
+        actions: [jevRecordAction('Not a project rule', { dismiss: 'rule', anchor: item.id }), mark] });
   }
   if (item.state !== 'unavailable' && (item.state !== 'label' || item.label !== 'missed')) return null;
   const source = jevRuleSource(item.target);
@@ -1542,7 +1561,7 @@ function jevRuleNote(item) {
   }
   const ask = { ...jevDraftAction('Ask to cover', 'Cover ' + source.link + ' with a criterion, or add one line saying why it does not apply.'), primary: true };
   return jevCardNote(item.id, 'rule', item.level || null, 'This spec may need the rule ' + title + ' from ' + source.file,
-    { label: 'Missing project rule', rule, actions: [...jevRuleRejects(rule, item.record), ask] });
+    { label: 'Missing project rule', rule, actions: [jevNotForThisSpec(rule, item.record), ask] });
 }
 
 function jevSuggestionNotes() {
@@ -1592,11 +1611,11 @@ function jevSuggestionNotes() {
   for (const flag of gitFocus ? corpusFlags(state.jev.items) : []) {
     if (flag.state !== 'label') { notes.push(jevNeutralNote(flag.anchor, 'corpus')); continue; }
     if (flag.rule) {
-      // project-rules #card-cites: a mark whose other clause is a confirmed rule is that rule's card, in its place.
+      // project-rules #card-variants: a mark whose other clause is a marked rule is that rule's card, in its place.
       const source = jevRuleSource(flag.rule.target);
       const label = flag.label + ' project rule';
       notes.push(jevCardNote(flag.anchor, 'conflict', flag.level, label + ' ' + jevRuleTitle(flag.rule), { label, rule: flag.rule,
-        actions: [...jevRuleRejects(flag.rule, flag.record),
+        actions: [jevNotForThisSpec(flag.rule, flag.record, flag.anchor),
           { ...jevDraftAction('Ask agent to reconcile', 'Reconcile this clause with ' + (source ? source.link : flag.rule.target) + '.'), primary: true }] }));
       continue;
     }
@@ -1698,7 +1717,7 @@ function evidenceOpen(bundle, criterion) {
 }
 
 /* ---------------- host bridge (criterion-evidence #plugin-bridge) ----------------
- * Self-contained (window, document, location, navigator only): review-serve inlines this exact block
+ * Self-contained (window, document, navigator only): review-serve inlines this exact block
  * into the review index, so spec pages and the index run one bridge (#bridge-tab-pages). */
 // The parent frame's origin per step its hello offers; null keeps the browser's own behavior.
 const hostBridge = { evidence: null, tab: null };
@@ -1712,7 +1731,7 @@ function hostTabClick(event) {
   if (!link) return;
   let url;
   try { url = new URL(link.getAttribute('href'), document.baseURI); } catch (_) { return; }
-  if (url.origin !== location.origin) return;
+  if (url.origin !== new URL(document.baseURI).origin) return; // the page's own address (review-service #served-own-address)
   event.preventDefault();
   window.parent.postMessage({ type: 'spec-chat-open-tab', href: url.href }, hostBridge.tab);
 }
@@ -2034,7 +2053,7 @@ function wireJevPopover() {
       return;
     }
     if (event.key !== 'Tab') return;
-    const stops = pop.querySelectorAll('a,button,textarea');
+    const stops = pop.querySelectorAll('a,button');
     if (!stops.length) return;
     if (active === marker && !event.shiftKey) { event.preventDefault(); stops[0].focus(); }
     else if (active === stops[0] && event.shiftKey) { event.preventDefault(); marker.focus(); }
@@ -2046,112 +2065,6 @@ function wireJevPopover() {
     frame = requestAnimationFrame(placeJevPopover);
   }, true);
   window.addEventListener('resize', placeJevPopover);
-}
-
-// The existing disclosure button pattern: a toggle that shows and hides one region.
-function jevDisclosure(region, what) {
-  const toggle = document.createElement('button');
-  toggle.type = 'button';
-  toggle.className = 'hx-disclosure';
-  const set = expanded => {
-    region.hidden = !expanded;
-    toggle.setAttribute('aria-expanded', String(expanded));
-    toggle.setAttribute('aria-label', (expanded ? 'Hide ' : 'Show ') + what);
-    toggle.textContent = expanded ? '▾' : '▸';
-  };
-  set(false);
-  toggle.addEventListener('click', event => { event.stopPropagation(); set(region.hidden); });
-  return toggle;
-}
-
-// project-rules #bootstrap: both one-time offers are one page note, collapsed by default: a disclosure, the title,
-// then Dismiss and the offer's own primary rightmost; expanded, its detail below a hairline. Dismiss records the
-// offer, after which the server never returns it again for this project.
-function jevOfferShell(title, kind, what) {
-  const note = document.createElement('section');
-  note.className = 'hx-jev-note hx-jev-offer';
-  note.setAttribute('aria-label', title);
-  const head = note.appendChild(document.createElement('div'));
-  head.className = 'hx-jev-offer-head';
-  const detail = document.createElement('div');
-  detail.className = 'hx-jev-offer-detail';
-  head.appendChild(jevDisclosure(detail, what));
-  head.appendChild(document.createElement('span')).className = 'hx-jev-offer-title';
-  head.lastElementChild.textContent = title;
-  const record = action => {
-    if (kind === 'candidates') state.jev.candidateOffer = null;
-    else state.jev.offer = null;
-    renderJev();
-    fetch('/api/jev/offer?' + new URLSearchParams({ path: location.pathname.replace(/^\//, '') }),
-      { method: 'POST', body: JSON.stringify({ offer: action, ...(kind === 'candidates' ? { kind } : {}) }) }).catch(() => {});
-  };
-  const dismiss = head.appendChild(document.createElement('button'));
-  dismiss.type = 'button';
-  dismiss.className = 'hx-rule-card-reject';
-  dismiss.textContent = 'Dismiss';
-  dismiss.addEventListener('click', event => { event.stopPropagation(); record('dismissed'); });
-  note.appendChild(detail);
-  return { note, head, detail, record };
-}
-
-// #bootstrap-candidates: N possible project rules: confirm?, expanding to one candidate card per candidate.
-function jevCandidateOfferNote(offer) {
-  const candidates = (Array.isArray(offer.candidates) ? offer.candidates : []).map(jevRuleOf).filter(Boolean);
-  const count = candidates.length;
-  const { note, detail } = jevOfferShell(count + (count === 1 ? ' possible project rule' : ' possible project rules') + ': confirm?',
-    'candidates', 'possible project rules');
-  for (const rule of candidates) {
-    detail.appendChild(jevRuleCard({ label: 'Possible project rule', rule, editName: true,
-      actions: [...jevRuleRejects(rule, null, false), jevConfirmAction(rule)] }));
-  }
-  return note;
-}
-
-// #bootstrap-offer: N existing specs miss project rules; expanded, one line per spec, its name linking to it, then
-// misses and each missed rule's name; a line expands in place to one card per missed rule. Reconcile drafts one
-// comment, recorded only once sent. A line names its repo spec and the path this page's mount serves it at.
-function jevOfferNote(offer) {
-  const specs = (Array.isArray(offer.specs) ? offer.specs : []).map(entry => ({ spec: String(entry.spec || ''),
-    path: String(entry.path || ''),
-    rules: (Array.isArray(entry.rules) ? entry.rules : []).map(r => jevRuleOf(r) && { ...jevRuleOf(r), record: r.record || null })
-      .filter(Boolean) })).filter(entry => entry.rules.length);
-  const count = specs.length;
-  const { note, head, detail, record } = jevOfferShell(count + (count === 1 ? ' existing spec misses' : ' existing specs miss')
-    + ' project rules', 'reconcile', 'specs and the rules they miss');
-  for (const entry of specs) {
-    const row = detail.appendChild(document.createElement('div'));
-    row.className = 'hx-jev-offer-spec';
-    const line = row.appendChild(document.createElement('div'));
-    line.className = 'hx-jev-offer-line';
-    const cards = document.createElement('div');
-    cards.className = 'hx-jev-offer-cards';
-    const name = entry.spec.split('/').pop().replace(/\.spec\.html$/, '');
-    line.appendChild(jevDisclosure(cards, 'rules ' + name + ' misses'));
-    const link = line.appendChild(document.createElement('a'));
-    link.href = '/' + entry.path;
-    link.textContent = name;
-    line.appendChild(document.createElement('span')).className = 'hx-jev-offer-misses';
-    line.lastElementChild.textContent = 'misses';
-    line.appendChild(document.createElement('span')).className = 'hx-jev-offer-rules';
-    line.lastElementChild.textContent = entry.rules.map(jevRuleTitle).join(', ');
-    for (const rule of entry.rules) {
-      cards.appendChild(jevRuleCard({ label: 'Missing project rule', rule, actions: jevRuleRejects(rule, rule.record, true, entry.spec) }));
-    }
-    row.appendChild(cards);
-  }
-  const lines = specs.map(entry => entry.spec + ' misses '
-    + entry.rules.map(rule => jevRuleTitle(rule) + ' ' + (jevRuleSource(rule.target) || { link: rule.target }).link).join(', '));
-  const reconcile = head.appendChild(document.createElement('button'));
-  reconcile.type = 'button';
-  reconcile.className = 'hx-btn pri';
-  reconcile.textContent = 'Reconcile';
-  reconcile.addEventListener('click', event => {
-    event.stopPropagation();
-    const anchor = document.querySelector('[data-anchor]');
-    openComposer(anchor ? anchor.dataset.anchor : '', null, null,
-      ['Reconcile each spec with its missed rules:', ...lines].join('\n'), () => record('sent'));
-  });
-  return note;
 }
 
 function renderJev() {
@@ -2173,9 +2086,6 @@ function renderJev() {
     note.textContent = state.jev.status === 'off' ? 'Jev off' : 'Jev unavailable';
     pageNote(note);
   }
-  // The candidate offer comes first (#bootstrap-candidates); the server decides when each shows.
-  if (state.jev.status === 'on' && state.jev.candidateOffer) pageNote(jevCandidateOfferNote(state.jev.candidateOffer));
-  if (state.jev.status === 'on' && state.jev.offer) pageNote(jevOfferNote(state.jev.offer));
 
   // Dims are the only in-text Jev display: reading view internals and Git focus No behavior change sections.
   const gitFocus = jevGitFocus();
@@ -2201,6 +2111,7 @@ function renderJev() {
 // owns its own look, so embed mode ships the hx-* overlay CSS alone.
 const DOC_CSS = `
 /* document presentation — the spec file stays lean; the dialect's look lives here */
+:where(:root){--spec-muted:#586069}
 :where(body){margin:0;background:#faf9f6;color:#22242a;padding-bottom:100px}
 article.spec{max-width:720px;margin:0 auto;padding:40px 24px;font:16.5px/1.65 "Iowan Old Style","Palatino Linotype",Georgia,serif}
 article.spec header{border-bottom:1px solid #e2e0d8;padding-bottom:16px;margin-bottom:28px}
@@ -2233,7 +2144,6 @@ body.hx-focus-active .hx-tbd-open{position:relative;z-index:3}
 body.hx-focus-active .hx-tbd-open[data-hx-focus=unchanged]::after,body.hx-focus-active tr.hx-tbd-open[data-hx-focus=unchanged] > :is(td,th)::after{display:none!important}
 body.hx-focus-active [data-hx-focus=unchanged] .hx-pin,body.hx-focus-active [data-hx-focus=unchanged] .hx-badge{opacity:1;filter:none;z-index:700}
 body.hx-focus-active [data-hx-focus=unchanged] .hx-jev-marker{opacity:1;filter:none;z-index:700}
-.hx-focus-error{position:fixed;top:calc(12px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);max-width:calc(100vw - 24px);box-sizing:border-box;padding:8px 12px;border-radius:8px;background:#8b1a1a;color:#fff;font:600 12px system-ui;z-index:970;box-shadow:0 6px 20px rgba(30,30,40,.25)}
 @media(prefers-color-scheme:dark){
 body.hx-focus-active [data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])):not([data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])) *):not(tr):not(td):not(th):not(script):not(style)::after{background:rgba(0,0,0,calc(.6*var(--hx-veil,1)))}
 body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:not(:has([data-hx-focus=changed])) *) > :is(td,th)::after{background:rgba(0,0,0,calc(.6*var(--hx-veil,1)))}
@@ -2241,28 +2151,28 @@ body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:n
 `;
 const CSS = `
 /* ui tokens */
-:root{--ui-font:'Inter Variable',Inter,system-ui,sans-serif;--ui-mono:ui-monospace,SFMono-Regular,Menlo,monospace;--ui-text-xs:12px;--ui-text-sm:14px;--ui-text-md:16px;--ui-text-lg:20px;--ui-page:#ffffff;--ui-surface:#ffffff;--ui-ink:#333333;--ui-muted:#525252;--ui-border:#dfdfdf;--ui-focus:#262626;--ui-link:#333333;--ui-action:#262626;--ui-pass:#005c32;--ui-pass-soft:#e6efea;--ui-fail:#a5000f;--ui-fail-soft:#f6e6e7;--ui-attention:#b0540e;--ui-attention-soft:#faf4ef;--ui-draft:#b0540e;--ui-draft-soft:#faf4ef;--ui-ack:#1d4ed8;--ui-ack-soft:#eff3ff;--ui-resolved:#005c32;--ui-resolved-soft:#e6efea;--ui-error:#a5000f;--ui-marker:#767b85;--ui-marker-important:#d1242f;--ui-marker-pass:#1a7f37;--ui-pin-ring:rgba(176,84,14,0.25);--ui-shadow:rgba(51,51,51,0.14);--ui-radius:8px;--ui-radius-sm:6px;--ui-radius-pill:999px;--ui-space-1:4px;--ui-space-2:8px;--ui-space-3:12px;--ui-space-4:16px;--ui-space-5:24px;--ui-space-6:32px}
+:root{--ui-font:"Inter Variable",Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--ui-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--ui-text-xs:12px;--ui-text-sm:14px;--ui-text-md:16px;--ui-text-lg:20px;--ui-page:#ffffff;--ui-surface:#ffffff;--ui-ink:#333333;--ui-muted:#525252;--ui-border:#dfdfdf;--ui-focus:#262626;--ui-link:#333333;--ui-action:#262626;--ui-pass:#005c32;--ui-pass-soft:#e6efea;--ui-fail:#a5000f;--ui-fail-soft:#f6e6e7;--ui-attention:#b0540e;--ui-attention-soft:#faf4ef;--ui-muted-soft:#eeeeee;--ui-draft:#b0540e;--ui-draft-soft:#faf4ef;--ui-ack:#1d4ed8;--ui-ack-soft:#eff3ff;--ui-resolved:#005c32;--ui-resolved-soft:#e6efea;--ui-error:#a5000f;--ui-marker:#767b85;--ui-marker-important:#d1242f;--ui-marker-pass:#1a7f37;--ui-on-marker:#ffffff;--ui-marker-warning:#e5534b;--ui-pin-ring:rgba(176,84,14,0.25);--ui-shadow:rgba(51,51,51,0.14);--ui-radius:8px;--ui-radius-sm:6px;--ui-radius-pill:999px;--ui-space-1:4px;--ui-space-2:8px;--ui-space-3:12px;--ui-space-4:16px;--ui-space-5:24px;--ui-space-6:32px}
 /* range bar */
-.hx-range-bar{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-2) 10px;border:1px solid rgba(29,78,216,0.3);border-radius:var(--ui-radius);background:var(--ui-ack-soft);color:var(--ui-ink);font:var(--ui-text-sm)/1.4 var(--ui-font)}
-.hx-range-row{display:flex;align-items:center;gap:10px;min-width:0}
+.hx-range-bar{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:var(--ui-ack-soft);color:var(--ui-ink);font:var(--ui-text-sm)/1.4 var(--ui-font)}
+.hx-range-row{display:flex;align-items:center;gap:var(--ui-space-2);min-width:0}
 .hx-range-copy{flex:1 1 auto;min-width:0;margin:0;overflow-wrap:anywhere}
 .hx-range-id{font-weight:600;font-family:var(--ui-mono)}
 .hx-range-change{flex:0 0 auto;min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-ink);font:600 var(--ui-text-xs) var(--ui-font);cursor:pointer}
 .hx-range-change:hover{background:var(--ui-page)}
 .hx-range-change:focus-visible,.hx-range-commit:focus-visible,.hx-range-form input:focus-visible,.hx-range-form button:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
-.hx-range-picker{margin-top:var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid rgba(29,78,216,0.3)}
-.hx-range-commits{display:grid;gap:3px;max-height:270px;overflow:auto}
-.hx-range-commit{display:grid;grid-template-columns:5.5em 6.5em minmax(0,1fr);gap:var(--ui-space-2);align-items:baseline;width:100%;padding:var(--ui-space-1) var(--ui-space-2);border:1px solid transparent;border-radius:var(--ui-space-1);background:transparent;color:var(--ui-ink);text-align:left;font:var(--ui-text-xs)/1.35 var(--ui-font);cursor:pointer}
+.hx-range-picker{margin-top:var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid var(--ui-border)}
+.hx-range-commits{display:grid;gap:var(--ui-space-1);max-height:270px;overflow:auto}
+.hx-range-commit{display:grid;grid-template-columns:5.5em 6.5em minmax(0,1fr);gap:var(--ui-space-2);align-items:baseline;width:100%;padding:var(--ui-space-1) var(--ui-space-2);border:1px solid transparent;border-radius:var(--ui-radius-sm);background:transparent;color:var(--ui-ink);text-align:left;font:var(--ui-text-xs)/1.35 var(--ui-font);cursor:pointer}
 .hx-range-commit:hover,.hx-range-commit[data-selected=true]{border-color:var(--ui-resolved);background:var(--ui-resolved-soft)}
 .hx-range-commit strong{font:600 var(--ui-text-xs) var(--ui-mono)}
 .hx-range-commit time{color:var(--ui-muted);font-variant-numeric:tabular-nums}
 .hx-range-commit span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hx-range-empty{margin:0;padding:var(--ui-space-1) var(--ui-space-2);color:var(--ui-muted)}
-.hx-range-form{margin-top:var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid rgba(29,78,216,0.3)}
-.hx-range-form label{display:block;margin-bottom:var(--ui-space-1);font-size:11px;font-weight:600;color:var(--ui-ink)}
+.hx-range-form{margin-top:var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid var(--ui-border)}
+.hx-range-form label{display:block;margin-bottom:var(--ui-space-1);font-size:var(--ui-text-xs);font-weight:600;color:var(--ui-ink)}
 .hx-range-form>div{display:flex;gap:var(--ui-space-1)}
-.hx-range-form input{box-sizing:border-box;min-width:0;flex:1 1 auto;padding:7px var(--ui-space-2);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-ink);font:var(--ui-text-sm) var(--ui-mono)}
-.hx-range-form button{flex:0 0 auto;padding:7px var(--ui-space-3);border:1px solid var(--ui-ink);border-radius:var(--ui-radius-sm);background:var(--ui-ink);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);cursor:pointer}
+.hx-range-form input{box-sizing:border-box;min-width:0;flex:1 1 auto;padding:var(--ui-space-2);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-ink);font:var(--ui-text-sm) var(--ui-mono)}
+.hx-range-form button{flex:0 0 auto;min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-ink);border-radius:var(--ui-radius-sm);background:var(--ui-ink);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);cursor:pointer}
 .hx-range-form button:disabled{cursor:wait;opacity:.5}
 .hx-range-error{margin:var(--ui-space-1) 0 0;color:var(--ui-error);font-size:var(--ui-text-xs)}
 @media(prefers-color-scheme:dark){
@@ -2280,73 +2190,72 @@ const CSS = `
 .hx-range-form input{font-size:var(--ui-text-md)}
 }
 @media(max-width:800px){
-.hx-range-bar{margin-top:64px}
+.hx-range-bar{margin-top:calc(2 * var(--ui-space-6))}
 }
 /* toolbar */
 .hx-toolbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:var(--ui-space-1);align-items:center;background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);box-shadow:0 8px 28px var(--ui-shadow);padding:var(--ui-space-1);z-index:900;font:var(--ui-text-sm) var(--ui-font)}
-.hx-toolbar button{font:600 var(--ui-text-xs) var(--ui-font);border:none;background:transparent;border-radius:var(--ui-radius-sm);padding:var(--ui-space-2) var(--ui-space-3);cursor:pointer;color:var(--ui-ink)}
+.hx-toolbar button{font:600 var(--ui-text-xs) var(--ui-font);border:none;background:transparent;border-radius:var(--ui-radius-sm);padding:var(--ui-space-2) var(--ui-space-3);min-height:var(--ui-space-6);cursor:pointer;color:var(--ui-ink)}
 .hx-toolbar button:disabled{cursor:default;opacity:.45}
 .hx-mobile-handoff,.hx-mobile-next-tbd{display:none}
 .hx-toolbar button[aria-pressed=true]{background:var(--ui-draft-soft);color:var(--ui-draft)}
-.hx-toolbar .hx-status{color:var(--ui-muted);font-size:var(--ui-text-xs);padding:0 10px}
-.hx-toolbar .hx-offline{font-size:var(--ui-text-xs);font-weight:600;padding:0 10px}
+.hx-toolbar .hx-status{color:var(--ui-muted);font-size:var(--ui-text-xs);padding:0 var(--ui-space-2)}
+.hx-toolbar .hx-offline{font-size:var(--ui-text-xs);font-weight:600;padding:0 var(--ui-space-2)}
 /* index link */
-.hx-service-index-link{position:fixed;top:var(--ui-space-3);left:var(--ui-space-3);z-index:1000;display:inline-flex;align-items:center;min-height:44px;box-sizing:border-box;padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:rgba(255,255,255,.96);box-shadow:0 5px 18px var(--ui-shadow);color:var(--ui-resolved);font:600 var(--ui-text-xs)/1 var(--ui-font);text-decoration:none;backdrop-filter:blur(8px)}
+.hx-service-index-link{position:fixed;top:var(--ui-space-3);left:var(--ui-space-3);z-index:1000;display:inline-flex;align-items:center;min-height:44px;box-sizing:border-box;padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:var(--ui-surface);box-shadow:0 5px 18px var(--ui-shadow);color:var(--ui-resolved);font:600 var(--ui-text-xs)/1 var(--ui-font);text-decoration:none}
 .hx-service-index-link:hover{background:var(--ui-page);border-color:var(--ui-muted);color:var(--ui-resolved)}
 .hx-service-index-link:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
 /* panel */
 .hx-panel{position:fixed;top:0;right:0;width:330px;height:100vh;background:var(--ui-page);color:var(--ui-ink);border-left:1px solid var(--ui-border);z-index:800;display:none;flex-direction:column;font:var(--ui-text-sm) var(--ui-font);box-shadow:none}
 .hx-panel.open{display:flex;box-shadow:-8px 0 30px var(--ui-shadow)}
 body.hx-panel-open{padding-right:330px}
-.hx-panel-head{position:relative;min-height:44px;padding:14px var(--ui-space-4) 14px 52px;box-sizing:border-box;border-bottom:1px solid var(--ui-border);font-weight:600}
-.hx-panel-head .hx-sub{font-weight:400;font-size:11px;color:var(--ui-muted)}
-.hx-panel-toggle{position:absolute;top:var(--ui-space-2);left:7px;width:var(--ui-space-6);height:var(--ui-space-6);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;font:var(--ui-text-lg)/1 var(--ui-font);display:grid;place-items:center;padding:0}
+.hx-panel-head{position:relative;min-height:44px;padding:var(--ui-space-3) var(--ui-space-4) var(--ui-space-3) calc(var(--ui-space-6) + var(--ui-space-4));box-sizing:border-box;border-bottom:1px solid var(--ui-border);font-weight:600}
+.hx-panel-head .hx-sub{font-weight:400;font-size:var(--ui-text-xs);color:var(--ui-muted)}
+.hx-panel-toggle{position:absolute;top:var(--ui-space-2);left:var(--ui-space-2);width:var(--ui-space-6);height:var(--ui-space-6);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;font:var(--ui-text-lg)/1 var(--ui-font);display:grid;place-items:center;padding:0}
 .hx-panel-toggle:hover{background:var(--ui-page);color:var(--ui-ink)}
-.hx-panel-gear{position:absolute;top:var(--ui-space-2);right:10px;width:var(--ui-space-6);height:var(--ui-space-6);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;font:14px/1 var(--ui-font);display:grid;place-items:center;padding:0}
+.hx-panel-gear{position:absolute;top:var(--ui-space-2);right:var(--ui-space-2);width:var(--ui-space-6);height:var(--ui-space-6);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;font:var(--ui-text-sm)/1 var(--ui-font);display:grid;place-items:center;padding:0}
 .hx-panel-gear:hover{background:var(--ui-page);color:var(--ui-ink)}
 .hx-panel-gear[aria-expanded=true]{background:var(--ui-draft-soft);color:var(--ui-draft);border-color:var(--ui-draft)}
 .hx-settings{padding:var(--ui-space-3) var(--ui-space-4);border-bottom:1px solid var(--ui-border);background:var(--ui-surface)}
-.hx-set-row{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-ink)}
+.hx-set-row{display:grid;grid-template-columns:1fr auto;gap:var(--ui-space-1) var(--ui-space-2);align-items:center;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-ink)}
 .hx-set-row input[type=range]{grid-column:1/-1;width:100%;margin:var(--ui-space-1) 0 0;accent-color:var(--ui-resolved);min-height:24px;touch-action:manipulation}
 .hx-set-val{font:600 var(--ui-text-xs) var(--ui-mono);color:var(--ui-muted)}
-.hx-set-note{margin:7px 0 0;font:400 11px/1.45 var(--ui-font);color:var(--ui-muted)}
+.hx-set-note{margin:var(--ui-space-2) 0 0;font:400 var(--ui-text-xs)/1.45 var(--ui-font);color:var(--ui-muted)}
 .hx-panel-content{display:flex;flex:1;min-height:0;flex-direction:column}
 /* dock */
-.hx-thread-dock{position:fixed;top:var(--ui-space-3);right:var(--ui-space-3);z-index:850;display:flex;flex-direction:column;gap:var(--ui-space-1);padding:var(--ui-space-1);background:rgba(255,255,255,.94);border:1px solid var(--ui-border);border-radius:11px;box-shadow:0 5px 18px var(--ui-shadow);font:var(--ui-text-xs) var(--ui-font);transition:opacity .15s,transform .15s;backdrop-filter:blur(8px)}
+.hx-thread-dock{position:fixed;top:var(--ui-space-3);right:var(--ui-space-3);z-index:850;display:flex;flex-direction:column;gap:var(--ui-space-1);padding:var(--ui-space-1);background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);box-shadow:0 5px 18px var(--ui-shadow);font:var(--ui-text-xs) var(--ui-font);transition:opacity .15s,transform .15s}
 body.hx-panel-open .hx-thread-dock{opacity:0;transform:translateX(10px);pointer-events:none}
 .hx-dock-open,.hx-dock-thread{position:relative;width:var(--ui-space-6);height:var(--ui-space-6);box-sizing:border-box;border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;display:grid;place-items:center;padding:0}
 .hx-dock-open:hover,.hx-dock-thread:hover{background:var(--ui-page);border-color:var(--ui-muted);color:var(--ui-ink)}
 .hx-dock-open svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-.hx-unread-badge{position:absolute;top:-6px;right:-6px;min-width:17px;height:17px;box-sizing:border-box;border:2px solid var(--ui-page);border-radius:var(--ui-radius-pill);padding:0 3px;background:var(--ui-ack);color:var(--ui-page);display:grid;place-items:center;font:700 9px/1 var(--ui-font);box-shadow:0 1px 4px var(--ui-shadow)}
+.hx-unread-badge{position:absolute;top:-6px;right:-6px;min-width:20px;height:20px;box-sizing:border-box;border:2px solid var(--ui-page);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-1);background:var(--ui-ack);color:var(--ui-page);display:grid;place-items:center;font:600 var(--ui-text-xs)/1 var(--ui-font);box-shadow:0 1px 4px var(--ui-shadow)}
 .hx-unread-badge[hidden]{display:none}
 .hx-dock-threads{display:flex;flex-direction:column;gap:var(--ui-space-1);max-height:calc(100vh - 76px);overflow-y:auto;scrollbar-width:none}
 .hx-dock-threads:not(:empty){border-top:1px solid var(--ui-border);padding-top:var(--ui-space-1)}
 .hx-dock-threads::-webkit-scrollbar{display:none}
-.hx-dock-thread{font:600 11px/1 var(--ui-mono)}
+.hx-dock-thread{font:600 var(--ui-text-xs)/1 var(--ui-mono)}
 .hx-dock-thread[data-s=draft],.hx-dock-thread[data-s=pending]{border-color:var(--ui-draft);color:var(--ui-draft);background:var(--ui-draft-soft)}
 .hx-dock-thread[data-s=acknowledged]{border-color:var(--ui-ack);color:var(--ui-ack);background:var(--ui-ack-soft)}
 .hx-dock-thread[data-s=resolved]{border-color:var(--ui-resolved);color:var(--ui-resolved);background:var(--ui-resolved-soft)}
 .hx-dock-thread.active{box-shadow:0 0 0 2px var(--ui-pin-ring)}
 /* threads */
-.hx-threads{flex:1;overflow-y:auto;padding:10px var(--ui-space-3);display:flex;flex-direction:column;gap:var(--ui-space-2)}
-.hx-thread{background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);padding:10px var(--ui-space-3);cursor:pointer}
-.hx-thread.resolved-collapsed{padding:var(--ui-space-2) 10px}
+.hx-threads{flex:1;overflow-y:auto;padding:var(--ui-space-3);display:flex;flex-direction:column;gap:var(--ui-space-2)}
+.hx-thread{background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);padding:var(--ui-space-3);cursor:pointer}
+.hx-thread.resolved-collapsed{padding:var(--ui-space-2) var(--ui-space-3)}
 .hx-thread.active{border-color:var(--ui-draft);box-shadow:0 0 0 1px var(--ui-draft)}
 .hx-thread-summary{display:flex;align-items:center;gap:var(--ui-space-1);min-width:0}
 .hx-anchor{flex:1;font-family:var(--ui-mono);font-size:var(--ui-text-xs);color:var(--ui-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hx-pill{font-size:var(--ui-text-xs);font-weight:600;text-transform:uppercase;letter-spacing:.05em;border-radius:var(--ui-radius-pill);padding:2px var(--ui-space-2)}
-.hx-disclosure{border:0;background:transparent;color:var(--ui-muted);border-radius:var(--ui-radius-sm);padding:0 2px;cursor:pointer;font:15px/1 var(--ui-font)}
+.hx-pill{font-size:var(--ui-text-xs);font-weight:600;text-transform:uppercase;letter-spacing:.05em;border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6}
+.hx-disclosure{flex:0 0 auto;box-sizing:border-box;width:var(--ui-space-6);height:var(--ui-space-6);display:inline-grid;place-items:center;padding:0;border:1px solid var(--ui-border);background:var(--ui-surface);color:var(--ui-muted);border-radius:var(--ui-radius-sm);cursor:pointer;font:var(--ui-text-sm)/1 var(--ui-font)}
 .hx-disclosure:hover{background:var(--ui-page);color:var(--ui-ink)}
-.hx-thread-preview{margin-top:5px;color:var(--ui-muted);font-size:var(--ui-text-xs);line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hx-thread-preview{margin-top:var(--ui-space-1);color:var(--ui-muted);font-size:var(--ui-text-xs);line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hx-pill[data-s=draft],.hx-pill[data-s=pending]{color:var(--ui-draft);background:var(--ui-draft-soft)}
 .hx-pill[data-s=acknowledged]{color:var(--ui-ack);background:var(--ui-ack-soft)}
 .hx-pill[data-s=resolved]{color:var(--ui-resolved);background:var(--ui-resolved-soft)}
-.hx-msg{margin-top:7px;font-size:var(--ui-text-sm);line-height:1.45}
-.hx-who{font-size:10px;font-weight:600;color:var(--ui-muted);text-transform:uppercase}
-.hx-history{margin:4px 0 0;padding-left:18px;font-size:var(--ui-text-xs);color:var(--ui-muted)}
-.hx-quote{display:block;border-left:2px solid var(--ui-border);padding-left:7px;color:var(--ui-muted);font-style:italic;font-size:var(--ui-text-xs);margin:2px 0}
-.hx-msg-actions{display:flex;gap:var(--ui-space-1);margin-top:3px}
-.hx-msg-actions .hx-btn{font-size:var(--ui-text-xs);padding:3px var(--ui-space-2);margin-top:2px}
+.hx-msg{margin-top:var(--ui-space-2);font-size:var(--ui-text-sm);line-height:1.45}
+.hx-who{font-size:var(--ui-text-xs);font-weight:600;color:var(--ui-muted);text-transform:uppercase}
+.hx-history{margin:var(--ui-space-1) 0 0;padding-left:var(--ui-space-4);font-size:var(--ui-text-xs);color:var(--ui-muted)}
+.hx-quote{display:block;border-left:2px solid var(--ui-border);padding-left:var(--ui-space-2);color:var(--ui-muted);font-style:italic;font-size:var(--ui-text-xs);margin:var(--ui-space-1) 0}
+.hx-msg-actions{display:flex;gap:var(--ui-space-1);margin-top:var(--ui-space-1)}
 /* composer */
 .hx-composer textarea{width:100%;min-height:56px;font:var(--ui-text-sm) var(--ui-font);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);padding:var(--ui-space-1) var(--ui-space-2);box-sizing:border-box;margin-top:var(--ui-space-1);background:var(--ui-surface);color:var(--ui-ink)}
 /* buttons */
@@ -2357,84 +2266,66 @@ body.hx-panel-open .hx-thread-dock{opacity:0;transform:translateX(10px);pointer-
 .hx-handoff .hx-note{font-size:var(--ui-text-xs);color:var(--ui-muted)}
 .hx-handoff .hx-next-tbd{margin-left:auto}
 /* pins */
-.hx-pin{position:absolute;z-index:700;width:24px;height:24px;border-radius:50% 50% 50% 4px;border:none;cursor:pointer;font:600 var(--ui-text-xs) var(--ui-font);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px var(--ui-shadow)}
+.hx-pin{position:absolute;z-index:700;width:24px;height:24px;border-radius:50% 50% 50% 4px;border:none;cursor:pointer;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-page);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px var(--ui-shadow)}
 .hx-pin[data-s=draft],.hx-pin[data-s=pending]{background:var(--ui-draft)}
 .hx-pin[data-s=acknowledged]{background:var(--ui-ack)}
 .hx-pin[data-s=resolved]{background:var(--ui-surface);color:var(--ui-resolved);border:2px solid var(--ui-resolved)}
 .hx-pin.active{box-shadow:0 0 0 3px var(--ui-pin-ring),0 2px 8px var(--ui-shadow)}
 [data-anchor]{position:relative}
 /* A block with a marker and a corner pin reserves a right column: marker on the first line, pin below it. */
-[data-anchor]:has(> .hx-pin[data-column]){padding-right:30px;min-height:calc(.5lh + 42px)}
+[data-anchor]:has(> .hx-pin[data-column]){padding-right:var(--ui-space-6);min-height:calc(.5lh + 42px)}
 [data-anchor]:has(> .hx-pin[data-column]) > .hx-jev-marker,.hx-pin[data-column]{left:auto;right:0}
-tr[data-anchor]:has(> .hx-pin[data-column]) > :has(> .hx-jev-marker){box-sizing:content-box;padding-right:30px;height:calc(.5lh + 42px)}
+tr[data-anchor]:has(> .hx-pin[data-column]) > :has(> .hx-jev-marker){box-sizing:content-box;padding-right:var(--ui-space-6);height:calc(.5lh + 42px)}
 body.hx-comment [data-anchor]{cursor:copy}
 body.hx-comment [data-anchor]:hover:not(:has(:is(h1,h2,h3,h4,h5,h6,p,li,ul,ol,table,tr,td,th,blockquote,pre,code,nav,figcaption,button,input,select,textarea,label,a,output,summary,svg,[data-render-target]):hover)){outline:2px dashed var(--ui-draft);outline-offset:6px}
-body.hx-comment [data-anchor] :is(h1,h2,h3,h4,h5,h6,p,li,td,th,blockquote,pre,code,nav,figcaption,button,label,a,output,summary):hover{outline:1.5px dashed var(--ui-draft);outline-offset:4px;border-radius:2px}
+body.hx-comment [data-anchor] :is(h1,h2,h3,h4,h5,h6,p,li,td,th,blockquote,pre,code,nav,figcaption,button,label,a,output,summary):hover{outline:1.5px dashed var(--ui-draft);outline-offset:4px;border-radius:var(--ui-radius-sm)}
 body.hx-comment [data-anchor] svg, body.hx-comment [data-anchor] svg *{cursor:copy}
 body.hx-comment [data-anchor] :is(button,input,select,textarea,label,a,summary){cursor:copy}
 [data-render-target]{position:relative}
-.hx-ring{position:absolute;border:2px dashed var(--ui-draft);border-radius:var(--ui-space-1);pointer-events:none;z-index:650}
-.hx-thread-ring{position:fixed;border:2px solid var(--ui-draft);border-radius:5px;pointer-events:none;z-index:750;box-shadow:0 0 0 3px rgba(176,84,14,.18);transition:left .12s,top .12s,width .12s,height .12s}
+.hx-ring{position:absolute;border:2px dashed var(--ui-draft);border-radius:var(--ui-radius-sm);pointer-events:none;z-index:650}
+.hx-thread-ring{position:fixed;border:2px solid var(--ui-draft);border-radius:var(--ui-radius-sm);pointer-events:none;z-index:750;box-shadow:0 0 0 3px var(--ui-pin-ring);transition:left .12s,top .12s,width .12s,height .12s}
 body.hx-comment [data-render-target]:hover{border:1.5px dashed var(--ui-draft)}
 body.hx-comment [data-render-target] canvas{cursor:copy!important}
 .hx-tbd-open{outline:2px solid var(--ui-draft);outline-offset:var(--ui-space-1)}
+/* chosen answer button: pressed, checked, and outlined, not color alone; the check stays out of its name */
+button[data-spec-choice][aria-pressed=true]{border:2px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-ink);font-weight:600}
+button[data-spec-choice][aria-pressed=true]::before{content:"\\2713";content:"\\2713" / "";margin-right:var(--ui-space-1)}
 /* badge */
-.hx-badge{font:600 var(--ui-text-xs) var(--ui-font);text-transform:uppercase;letter-spacing:.04em;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:2px 7px;margin-left:var(--ui-space-2);vertical-align:middle}
+.hx-badge{font:600 var(--ui-text-xs) var(--ui-font);text-transform:uppercase;letter-spacing:.04em;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6;margin-left:var(--ui-space-2);vertical-align:middle}
 /* jev note */
-.hx-jev-note{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-1) 10px;border:1px solid rgba(176,84,14,0.4);border-radius:var(--ui-radius);background:var(--ui-draft-soft);color:var(--ui-draft);font:600 var(--ui-text-xs)/1.35 var(--ui-font)}
-[data-hx-jev-type=no-behavior-change]{color:#586069!important}
+.hx-jev-note{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-1) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:var(--ui-draft-soft);color:var(--ui-draft);font:600 var(--ui-text-xs)/1.35 var(--ui-font)}
+[data-hx-jev-type=no-behavior-change]{color:var(--spec-muted)!important}
 [data-hx-jev-type=no-behavior-change] :is(h1,h2,h3,h4,h5,h6,p,li,td,th,blockquote,code,strong,em,a){color:inherit!important}
 /* jev markers */
-.hx-jev-marker{position:absolute;top:.35em;left:calc(100% + 10px);z-index:640;box-sizing:border-box;width:10px;height:10px;margin:0;padding:0;border:0;border-radius:50%;background:var(--ui-marker);color:#ffffff;cursor:pointer;display:grid;place-items:center;font:800 10px/1 var(--ui-font)}
+.hx-jev-marker{position:absolute;top:.35em;left:calc(100% + 10px);z-index:640;box-sizing:border-box;width:10px;height:10px;margin:0;padding:0;border:0;border-radius:50%;background:var(--ui-marker);color:var(--ui-on-marker);cursor:pointer;display:grid;place-items:center;font:600 var(--ui-text-xs)/1 var(--ui-font)}
 .hx-jev-marker::before{content:"";position:absolute;inset:-10px 0 -10px -16px}
 .hx-jev-marker[data-attention=true]{width:14px;height:14px;background:var(--ui-marker-important)}
 .hx-jev-marker[data-attention=true]::after{content:"!"}
 .hx-jev-marker[data-passed=true]{width:14px;height:14px;background:var(--ui-marker-pass)}
-.hx-jev-marker[data-warning=true]{background:#e5534b}
+.hx-jev-marker[data-warning=true]{background:var(--ui-marker-warning)}
 .hx-jev-marker[data-passed=true]::after{content:"\\2713"}
 .hx-jev-marker[data-inset=true]{left:auto;right:0}
-.hx-jev-marker:hover,.hx-jev-marker[aria-expanded=true]{box-shadow:0 0 0 3px rgba(29,78,216,.22)}
+.hx-jev-marker:hover,.hx-jev-marker[aria-expanded=true]{box-shadow:0 0 0 3px var(--ui-pin-ring)}
 .hx-jev-marker:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
 .hx-jev-marker[data-pending=true]{background:transparent;border:2px solid var(--ui-marker);border-right-color:transparent;animation:hx-jev-spin 1s linear infinite}
 @keyframes hx-jev-spin{to{transform:rotate(360deg)}}
-/* jev offers (project-rules #bootstrap): one quiet panel, collapsed by default */
-.hx-jev-offer{display:block;padding:0;border:1px solid var(--ui-border);background:var(--ui-surface);color:var(--ui-ink);font:var(--ui-text-sm)/1.5 var(--ui-font);overflow:hidden}
-.hx-jev-offer+.hx-jev-offer{margin-top:var(--ui-space-2)}
-.hx-jev-offer-head{display:flex;align-items:center;flex-wrap:wrap;gap:var(--ui-space-2) var(--ui-space-3);padding:var(--ui-space-2) var(--ui-space-3)}
-.hx-jev-offer-title{flex:1 1 12em;font-weight:600;color:var(--ui-ink)}
-.hx-jev-offer-head .hx-btn{margin:0;white-space:nowrap}
-.hx-jev-offer-detail{border-top:1px solid var(--ui-border);padding:var(--ui-space-1) 0}
-.hx-jev-offer-detail[hidden],.hx-jev-offer-cards[hidden]{display:none}
-.hx-jev-offer-detail>.hx-rule-card{margin:var(--ui-space-2) var(--ui-space-3)}
-.hx-jev-offer-spec+.hx-jev-offer-spec{border-top:1px solid color-mix(in srgb,var(--ui-border) 55%,transparent)}
-.hx-jev-offer-line{display:flex;align-items:baseline;flex-wrap:wrap;gap:0 var(--ui-space-2);padding:var(--ui-space-2) var(--ui-space-3)}
-.hx-jev-offer-line .hx-disclosure{align-self:center}
-.hx-jev-offer-line a{font-weight:600;color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px}
-.hx-jev-offer-misses{color:var(--ui-muted)}
-.hx-jev-offer-rules{flex:1 1 14em;min-width:0;overflow-wrap:anywhere}
-.hx-jev-offer-cards{display:grid;gap:var(--ui-space-2);margin:0 var(--ui-space-3) var(--ui-space-3) calc(var(--ui-space-3) + 22px)}
-.hx-jev-offer .hx-rule-card{padding:var(--ui-space-3) var(--ui-space-4);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:color-mix(in srgb,var(--ui-ink) 3%,var(--ui-surface))}
 /* rule card (project-rules #card): label, title, verbatim quote, source, then rejects left and one primary rightmost */
 .hx-rule-card{display:grid;gap:var(--ui-space-2);min-width:0;color:var(--ui-ink);font:var(--ui-text-sm)/1.55 var(--ui-font)}
 .hx-rule-card-label{font:600 var(--ui-text-xs)/1.3 var(--ui-font);letter-spacing:.02em;color:var(--ui-muted)}
-.hx-rule-card-title,.hx-rule-card-name{font:600 var(--ui-text-md)/1.35 var(--ui-font);color:var(--ui-ink);overflow-wrap:anywhere}
-.hx-rule-card-name{box-sizing:border-box;display:block;width:calc(100% + 12px);margin:-3px -6px;padding:2px 5px;border:1px dashed var(--ui-border);border-radius:var(--ui-radius-sm);background:transparent;resize:none;field-sizing:content;min-height:0}
-.hx-rule-card-name:hover{border-color:var(--ui-muted)}
-.hx-rule-card-name:focus{outline:2px solid var(--ui-focus);outline-offset:1px;border-color:transparent}
-.hx-rule-card-name::placeholder{color:var(--ui-muted);font-weight:400}
+.hx-rule-card-title{font:600 var(--ui-text-md)/1.35 var(--ui-font);color:var(--ui-ink);overflow-wrap:anywhere}
 .hx-rule-card-quote{margin:var(--ui-space-1) 0 0;padding:0 0 0 var(--ui-space-3);border-left:3px solid var(--ui-border);border-radius:0;font:inherit;font-style:normal;color:var(--ui-ink);overflow-wrap:anywhere;white-space:normal}
 .hx-rule-card-source{justify-self:start;display:inline-flex;gap:var(--ui-space-1);align-items:baseline;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:none;overflow-wrap:anywhere}
 .hx-rule-card-source-text{text-decoration:underline;text-underline-offset:2px}
 .hx-rule-card-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--ui-space-2) var(--ui-space-4);margin-top:var(--ui-space-1);padding-top:var(--ui-space-3);border-top:1px solid var(--ui-border)}
 .hx-rule-card-actions button{white-space:nowrap}
 .hx-rule-card-actions .hx-btn.pri{margin:0 0 0 auto}
-.hx-rule-card-reject{margin:0;padding:var(--ui-space-1) 2px;min-height:var(--ui-space-6);border:0;background:none;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-ink);text-decoration:underline;text-decoration-color:var(--ui-border);text-decoration-thickness:1px;text-underline-offset:3px;cursor:pointer;border-radius:var(--ui-radius-sm)}
+.hx-rule-card-reject{margin:0;padding:var(--ui-space-1) 0;min-height:var(--ui-space-6);border:0;background:none;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-ink);text-decoration:underline;text-decoration-color:var(--ui-border);text-decoration-thickness:1px;text-underline-offset:3px;cursor:pointer;border-radius:var(--ui-radius-sm)}
 .hx-rule-card-reject:hover{text-decoration-color:currentColor}
 .hx-rule-card-reject:focus-visible,.hx-rule-card .hx-btn:focus-visible,.hx-rule-card-source:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
 .hx-jev-pop:has(.hx-rule-card){max-width:min(440px,calc(100vw - 16px));padding:var(--ui-space-4)}
 .hx-jev-pop-note:has(>.hx-rule-card)+.hx-jev-pop-note,.hx-jev-pop-note+.hx-jev-pop-note:has(>.hx-rule-card){margin-top:var(--ui-space-2);padding-top:var(--ui-space-3);border-top:1px solid var(--ui-border)}
 /* jev popover */
-.hx-jev-pop{position:fixed;z-index:880;box-sizing:border-box;width:max-content;min-width:180px;max-width:min(340px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:var(--ui-space-2) 10px;border:1px solid var(--ui-ink);border-radius:var(--ui-radius);background:var(--ui-surface);color:var(--ui-ink);box-shadow:0 8px 28px var(--ui-shadow);font:var(--ui-text-sm)/1.4 var(--ui-font)}
+.hx-jev-pop{position:fixed;z-index:880;box-sizing:border-box;width:max-content;min-width:180px;max-width:min(340px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto;padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-ink);border-radius:var(--ui-radius);background:var(--ui-surface);color:var(--ui-ink);box-shadow:0 8px 28px var(--ui-shadow);font:var(--ui-text-sm)/1.4 var(--ui-font)}
 .hx-jev-pop[hidden]{display:none}
 .hx-jev-pop-notes{margin:0;padding:0;list-style:none;display:grid;gap:var(--ui-space-1)}
 .hx-jev-pop-note{display:grid;gap:var(--ui-space-1)}
@@ -2445,48 +2336,44 @@ a.hx-jev-pop-text{text-decoration:underline;text-underline-offset:2px}
 .hx-jev-pop-quote{color:var(--ui-ink);overflow-wrap:anywhere}
 .hx-jev-pop-sentence{display:none;font-size:var(--ui-text-xs);color:var(--ui-muted);overflow-wrap:anywhere}
 .hx-jev-pop[data-measure] .hx-jev-pop-sentence,.hx-jev-pop-note:hover .hx-jev-pop-sentence,.hx-jev-pop-note:focus-within .hx-jev-pop-sentence{display:block}
-.hx-jev-pop-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--ui-space-1) 10px;font-size:var(--ui-text-xs);color:var(--ui-muted);overflow-wrap:anywhere}
+.hx-jev-pop-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--ui-space-1) var(--ui-space-2);font-size:var(--ui-text-xs);color:var(--ui-muted);overflow-wrap:anywhere}
 .hx-jev-pop-link{color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px}
 .hx-jev-pop-diff{font-size:var(--ui-text-xs);color:var(--ui-ink);overflow-wrap:anywhere}
-.hx-jev-pop-diff del{text-decoration:none;background:var(--ui-fail-soft);border-radius:2px;padding:0 1px}
-.hx-jev-pop-diff ins{text-decoration:none;background:var(--ui-pass-soft);border-radius:2px;padding:0 1px}
-.hx-jev-pop-diff-legend{font-size:10px;color:var(--ui-muted);margin-bottom:2px}
-.hx-jev-pop-diff-legend del{text-decoration:none;background:var(--ui-fail-soft);border-radius:2px;padding:0 2px}
-.hx-jev-pop-diff-legend ins{text-decoration:none;background:var(--ui-pass-soft);border-radius:2px;padding:0 2px}
+.hx-jev-pop-diff del{text-decoration:none;background:var(--ui-fail-soft)}
+.hx-jev-pop-diff ins{text-decoration:none;background:var(--ui-pass-soft)}
+.hx-jev-pop-diff-legend{font-size:var(--ui-text-xs);color:var(--ui-muted);margin-bottom:var(--ui-space-1)}
+.hx-jev-pop-diff-legend del{text-decoration:none;background:var(--ui-fail-soft);padding:0 var(--ui-space-1)}
+.hx-jev-pop-diff-legend ins{text-decoration:none;background:var(--ui-pass-soft);padding:0 var(--ui-space-1)}
 .hx-jev-pop-actions{display:flex;flex-wrap:wrap;gap:var(--ui-space-1)}
-.hx-jev-pop-actions .hx-btn{margin:0;font-size:var(--ui-text-xs);padding:var(--ui-space-1) var(--ui-space-2);border-color:var(--ui-ack);background:var(--ui-surface);color:var(--ui-ack)}
+.hx-jev-pop-actions .hx-btn{margin:0;border-color:var(--ui-ack);background:var(--ui-surface);color:var(--ui-ack)}
 .hx-jev-pop-batch{display:inline-flex;align-items:center;gap:var(--ui-space-1);white-space:nowrap}
-.hx-jev-pop-more{margin:0;padding:0 2px;border:0;background:none;font:inherit;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px;cursor:pointer;align-self:center}
+.hx-jev-pop-more{margin:0;min-height:var(--ui-space-6);padding:0;border:0;background:none;font:inherit;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px;cursor:pointer;align-self:center}
 /* jev thread label */
-.hx-jev-thread-label{flex:0 0 auto;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:2px var(--ui-space-1);font-size:9px;font-weight:600;white-space:nowrap}
-.hx-jev-thread-label[data-state=unsure]{color:var(--ui-draft);background:var(--ui-draft-soft)}
+.hx-jev-thread-label{flex:0 0 auto;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6;font-size:var(--ui-text-xs);font-weight:600;white-space:nowrap}
 .hx-jev-thread-label[data-state=unavailable]{color:var(--ui-error);background:var(--ui-fail-soft)}
 /* orphan hint */
-.hx-orphan-hint{display:flex;align-items:center;flex-wrap:wrap;gap:var(--ui-space-1);margin:7px 0;padding:7px var(--ui-space-2);border-left:3px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-draft);font-size:var(--ui-text-xs);line-height:1.35}
+.hx-orphan-hint{display:flex;align-items:center;flex-wrap:wrap;gap:var(--ui-space-1);margin:var(--ui-space-2) 0;padding:var(--ui-space-2);border-left:3px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-draft);font-size:var(--ui-text-xs);line-height:1.35}
 .hx-orphan-hint>span{flex:1 1 100%}
-.hx-place-notice{margin:7px 0;padding:7px var(--ui-space-2);border-left:3px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-draft);font-size:var(--ui-text-xs);line-height:1.35}
-.hx-orphan-hint .hx-btn{margin:0;font-size:var(--ui-text-xs);padding:var(--ui-space-1) var(--ui-space-2)}
-.hx-pin-jev{position:absolute;left:calc(100% + 4px);top:50%;transform:translateY(-50%);width:max-content;max-width:120px;color:var(--ui-resolved);background:var(--ui-resolved-soft);border:1px solid var(--ui-resolved);border-radius:var(--ui-radius-pill);padding:2px var(--ui-space-1);font:600 9px/1.1 var(--ui-font);white-space:nowrap;pointer-events:none}
+.hx-place-notice{margin:var(--ui-space-2) 0;padding:var(--ui-space-2);border-left:3px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-draft);font-size:var(--ui-text-xs);line-height:1.35}
+.hx-orphan-hint .hx-btn{margin:0}
+.hx-pin-jev{position:absolute;left:calc(100% + 4px);top:50%;transform:translateY(-50%);width:max-content;max-width:120px;color:var(--ui-resolved);background:var(--ui-resolved-soft);border:1px solid var(--ui-resolved);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-1);font:600 var(--ui-text-xs)/1.4 var(--ui-font);white-space:nowrap;pointer-events:none}
 /* banner */
-.hx-banner{position:fixed;top:0;left:0;right:0;background:var(--ui-pass);color:var(--ui-page);font:600 var(--ui-text-sm) var(--ui-font);padding:var(--ui-space-2) var(--ui-space-4);z-index:950;display:flex;gap:14px;align-items:center;justify-content:center}
+.hx-banner{position:fixed;top:0;left:0;right:0;background:var(--ui-pass);color:var(--ui-page);font:600 var(--ui-text-sm) var(--ui-font);padding:var(--ui-space-2) var(--ui-space-4);z-index:950;display:flex;gap:var(--ui-space-3);align-items:center;justify-content:center}
+/* focus error */
+.hx-focus-error{position:fixed;top:calc(var(--ui-space-3) + env(safe-area-inset-top));left:50%;transform:translateX(-50%);max-width:calc(100vw - 24px);box-sizing:border-box;padding:var(--ui-space-2) var(--ui-space-3);border-radius:var(--ui-radius);background:var(--ui-error);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);z-index:970;box-shadow:0 6px 20px var(--ui-shadow)}
 /* toast */
-.hx-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--ui-ink);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);border-radius:var(--ui-radius);padding:9px var(--ui-space-4);box-shadow:0 8px 28px var(--ui-shadow);z-index:960;opacity:0;transition:opacity .25s;pointer-events:none}
+.hx-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--ui-ink);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);border-radius:var(--ui-radius);padding:var(--ui-space-2) var(--ui-space-4);box-shadow:0 8px 28px var(--ui-shadow);z-index:960;opacity:0;transition:opacity .25s;pointer-events:none}
 .hx-toast.show{opacity:1}
-.hx-banner button{font:inherit;border:1px solid var(--ui-page);background:transparent;color:var(--ui-page);border-radius:var(--ui-radius-sm);padding:3px var(--ui-space-3);cursor:pointer}
-/* dark mode backdrop overrides */
-@media(prefers-color-scheme:dark){
-.hx-thread-dock{background:rgba(26,26,26,.94)}
-.hx-service-index-link{background:rgba(26,26,26,.96)}
-}
+.hx-banner button{font:600 var(--ui-text-xs) var(--ui-font);border:1px solid var(--ui-page);background:transparent;color:var(--ui-page);border-radius:var(--ui-radius-sm);min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);cursor:pointer}
 /* mobile */
 @media(max-width:640px){
 .hx-toolbar{left:var(--ui-space-3);right:var(--ui-space-3);bottom:calc(10px + env(safe-area-inset-bottom));transform:none;max-width:none;display:flex;flex-wrap:wrap;justify-content:stretch;gap:var(--ui-space-1);padding:var(--ui-space-1)}
 .hx-toolbar button{min-height:44px;flex:1 1 auto;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
 .hx-mobile-handoff,.hx-mobile-next-tbd:not([hidden]){display:block}
-.hx-toolbar .hx-status{flex:1 0 100%;min-width:0;padding:2px var(--ui-space-2) var(--ui-space-1);overflow:hidden;text-align:center;text-overflow:ellipsis;white-space:nowrap}
-.hx-panel{width:100vw;height:100dvh;max-height:100dvh;border-left:0;box-sizing:border-box;padding-bottom:calc(var(--hx-dock-space,0px) + 10px + env(safe-area-inset-bottom))}
+.hx-toolbar .hx-status{flex:1 0 100%;min-width:0;padding:0 var(--ui-space-2) var(--ui-space-1);overflow:hidden;text-align:center;text-overflow:ellipsis;white-space:nowrap}
+.hx-panel{width:100vw;height:100dvh;max-height:100dvh;border-left:0;box-sizing:border-box;padding-bottom:calc(var(--hx-dock-space,0px) + var(--ui-space-3) + env(safe-area-inset-bottom))}
 body.hx-panel-open{padding-right:0;overflow:hidden}
-.hx-panel-head{min-height:56px;padding:18px var(--ui-space-4) 14px 60px}
+.hx-panel-head{min-height:56px;padding:var(--ui-space-4) var(--ui-space-4) var(--ui-space-3) calc(var(--ui-space-6) + var(--ui-space-5))}
 .hx-panel-toggle{top:var(--ui-space-1);left:var(--ui-space-1);width:44px;height:44px;touch-action:manipulation}
 .hx-panel-gear{top:var(--ui-space-1);right:var(--ui-space-2);width:44px;height:44px;touch-action:manipulation}
 .hx-thread-dock{top:calc(var(--ui-space-2) + env(safe-area-inset-top));right:var(--ui-space-2);padding:var(--ui-space-1)}
@@ -2497,22 +2384,21 @@ body.hx-panel-open .hx-service-index-link{display:none}
 .hx-threads{padding:var(--ui-space-3);overscroll-behavior:contain}
 .hx-thread{padding:var(--ui-space-3)}
 .hx-disclosure{min-width:44px;min-height:44px;touch-action:manipulation}
-.hx-composer textarea{min-height:120px;font-size:var(--ui-text-md);padding:10px var(--ui-space-3)}
-.hx-btn,.hx-msg-actions .hx-btn{min-height:44px;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
-.hx-handoff{gap:var(--ui-space-2);flex-wrap:wrap;padding:10px var(--ui-space-3) calc(10px + env(safe-area-inset-bottom))}
+.hx-composer textarea{min-height:120px;font-size:var(--ui-text-md);padding:var(--ui-space-2) var(--ui-space-3)}
+.hx-btn{min-height:44px;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
+.hx-handoff{gap:var(--ui-space-2);flex-wrap:wrap;padding:var(--ui-space-3) var(--ui-space-3) calc(var(--ui-space-3) + env(safe-area-inset-bottom))}
 .hx-handoff .hx-note{flex:1 1 auto}
 .hx-handoff .hx-btn{flex:1 1 auto;margin:0}
 .hx-pin{width:44px;height:44px;font-size:var(--ui-text-xs);touch-action:manipulation}
-[data-anchor]:has(> .hx-pin[data-column]){padding-right:48px;min-height:calc(.5lh + 66px)}
-tr[data-anchor]:has(> .hx-pin[data-column]) > :has(> .hx-jev-marker){padding-right:48px;height:calc(.5lh + 66px)}
+[data-anchor]:has(> .hx-pin[data-column]){padding-right:calc(var(--ui-space-6) + var(--ui-space-4));min-height:calc(.5lh + 66px)}
+tr[data-anchor]:has(> .hx-pin[data-column]) > :has(> .hx-jev-marker){padding-right:calc(var(--ui-space-6) + var(--ui-space-4));height:calc(.5lh + 66px)}
 .hx-pin-jev{left:auto;right:calc(100% + 4px);max-width:110px;text-align:right}
 .hx-jev-note{margin:var(--ui-space-2) var(--ui-space-4) 0}
 .hx-jev-marker::before{inset:-14px 0 -14px -28px}
-.hx-jev-pop{left:var(--ui-space-3);right:var(--ui-space-3);top:auto;bottom:calc(10px + var(--hx-dock-space,64px) + var(--ui-space-2) + env(safe-area-inset-bottom));width:auto;max-width:none;max-height:40dvh;padding:10px var(--ui-space-3)}
+.hx-jev-pop{left:var(--ui-space-3);right:var(--ui-space-3);top:auto;bottom:calc(10px + var(--hx-dock-space,64px) + var(--ui-space-2) + env(safe-area-inset-bottom));width:auto;max-width:none;max-height:40dvh;padding:var(--ui-space-3)}
 .hx-jev-pop-actions .hx-btn,.hx-jev-pop-more{min-height:44px}
-.hx-rule-card-reject{min-height:44px;padding:var(--ui-space-2) 2px}
+.hx-rule-card-reject{min-height:44px;padding:var(--ui-space-2) 0}
 .hx-jev-pop:has(.hx-rule-card){max-width:none;padding:var(--ui-space-3)}
-.hx-jev-offer-cards{margin-left:var(--ui-space-3)}
 .hx-banner{align-items:flex-start;flex-wrap:wrap;padding:calc(var(--ui-space-2) + env(safe-area-inset-top)) var(--ui-space-3) var(--ui-space-2);text-align:center}
 .hx-banner button{min-height:44px;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
 .hx-toast{bottom:calc(112px + env(safe-area-inset-bottom));max-width:calc(100vw - 24px);box-sizing:border-box;text-align:center}
@@ -2567,10 +2453,10 @@ function mountUI() {
 
   mountRangeBar();
 
-  if (location.protocol === 'http:' || location.protocol === 'https:') {
+  if (OWN_ADDRESS.protocol === 'http:' || OWN_ADDRESS.protocol === 'https:') {
     const indexLink = document.createElement('a');
     indexLink.className = 'hx-service-index-link';
-    indexLink.href = new URL('/', location.href).href;
+    indexLink.href = new URL('/', OWN_ADDRESS).href;
     indexLink.textContent = 'Back to Spec Chat index';
     indexLink.setAttribute('aria-label', 'Back to Spec Chat index');
     indexLink.dataset.specChatNavigation = 'index';
@@ -2723,8 +2609,8 @@ function openPanel(open) {
 }
 function status(msg) { document.getElementById('hx-status').textContent = msg; }
 
-function openComposer(anchorId, target, quote, text = '', onSent = null) {
-  state.composer = { kind: 'comment', anchorId, target, quote, text, onSent };
+function openComposer(anchorId, target, quote, text = '') {
+  state.composer = { kind: 'comment', anchorId, target, quote, text };
   setCommentMode(false);
   openPanel(true);
   renderPanel();
@@ -2751,20 +2637,24 @@ function addComposer(parent, c) {
     e.stopPropagation();
     const text = textarea.value.trim();
     if (!text) return;
-    const common = { anchorId: c.anchorId, target: c.target, quote: c.quote || null, text, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 };
-    let body;
-    if (c.kind === 'reply') body = Object.assign(common, { id: humanId('u'), event: 'reply', respondsTo: c.respondsTo, threadId: c.threadId });
-    else if (c.kind === 'edit') body = Object.assign(common, { id: humanId('e'), event: 'edit', supersedes: c.supersedes, threadId: c.threadId });
-    else body = Object.assign(common, { id: humanId('u'), event: 'comment' });
     state.composer = null;
-    save(body);
-    if (c.onSent) c.onSent();
-    toast((c.kind === 'edit' ? 'Edit' : c.kind === 'reply' ? 'Reply' : 'Comment') + ' saved as draft — hand off when ready');
-    refresh();
+    saveMessage(c, text);
   });
   box.querySelector('[data-act=cancel]').addEventListener('click', e => { e.stopPropagation(); state.composer = null; renderPanel(); });
   parent.appendChild(box);
   setTimeout(() => textarea.focus(), 0);
+}
+
+// The one human message save: the composer and answer buttons write the same events.
+function saveMessage(c, text) {
+  const common = { anchorId: c.anchorId, target: c.target, quote: c.quote || null, text, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 };
+  let body;
+  if (c.kind === 'reply') body = Object.assign(common, { id: humanId('u'), event: 'reply', respondsTo: c.respondsTo, threadId: c.threadId });
+  else if (c.kind === 'edit') body = Object.assign(common, { id: humanId('e'), event: 'edit', supersedes: c.supersedes, threadId: c.threadId });
+  else body = Object.assign(common, { id: humanId('u'), event: 'comment' });
+  save(body);
+  toast((c.kind === 'edit' ? 'Edit' : c.kind === 'reply' ? 'Reply' : 'Comment') + ' saved as draft — hand off when ready');
+  refresh();
 }
 
 function startReply(th, agentMessage) {
@@ -2830,7 +2720,7 @@ function renderPanel() {
     // A resolved thread shows its own resolved indicator, never a resolved-in-spirit Jev label.
     const resolvedHint = th.status === 'resolved' ? null : jevItem('resolved', th.id);
     const orphanHint = openOrphanHint(th);
-    const threadJevState = [orphanHint, resolvedHint].find(item => item && ['unsure', 'unavailable'].includes(item.state));
+    const threadJevState = threadJevNotice(orphanHint, resolvedHint);
     d.innerHTML = '<div class="hx-thread-summary"><div class="hx-anchor">' + esc(label(b)) + '</div>' +
       '<span class="hx-pill" data-s="' + th.status + '">' + th.status + '</span>' +
       (looksResolved(th) ? '<span class="hx-jev-thread-label">Looks resolved</span>' : '') +
@@ -2982,6 +2872,11 @@ function scrollToJevAnchor(anchorId) {
 // A resolved orphan is settled (#settle-orphan): it shows only its resolved indicator, no Jev guess.
 function openOrphanHint(th) {
   return th.status === 'resolved' ? null : jevItem('orphan', th.id);
+}
+
+// An unsure orphan or resolved answer shows nothing (jev-suggestions #state-unsure); only Jev unavailable is named.
+function threadJevNotice(...items) {
+  return items.find(item => item && item.state === 'unavailable') || null;
 }
 
 function orphanHintElement(th, orphanHint) {
@@ -3426,10 +3321,10 @@ function renderOffline() {
   el.hidden = !el.textContent;
 }
 
-// The ETag of the spec text this page shows, from the browser's copy of this document.
+// The ETag of the spec text this page shows, from its own address; served directly, the browser's copy of this document.
 async function shownVersion() {
   try {
-    const tag = (await fetch(location.href.split('#')[0], { cache: 'force-cache' })).headers.get('ETag');
+    const tag = (await fetch(OWN_ADDRESS.href, { cache: 'force-cache' })).headers.get('ETag');
     return tag ? tag.replace(/^W\//, '').replace(/"/g, '') : null;
   } catch (_) { return null; }
 }
@@ -3478,7 +3373,7 @@ async function watchSpec() {
  * wins, and a reader who already moved is never re-scrolled. Every storage call
  * is wrapped: no storage means no kept place, never a broken page.
  */
-const PLACE_KEY = 'hx-place:' + location.pathname;
+const PLACE_KEY = 'hx-place:' + OWN_ADDRESS.pathname;
 
 function readPlace(storage) {
   try {
@@ -3537,7 +3432,7 @@ function keepPlace() {
 /* ---------------- boot ---------------- */
 (async function boot() {
   const restorePlace = keepPlace();
-  const httpPage = !EMBED_REVIEW_DIR && ['http:', 'https:'].includes(location.protocol);
+  const httpPage = !EMBED_REVIEW_DIR && ['http:', 'https:'].includes(OWN_ADDRESS.protocol);
   // Deferred script: the DOM is the served spec until mountUI; compare it, never refetch it.
   if (httpPage) state.range.loaded = anchorSignatures(document);
   mountUI();
@@ -3555,13 +3450,13 @@ function keepPlace() {
     clearTimeout(adoptTimer);
     adoptTimer = setTimeout(adoptForeignCharts, 200);
   }).observe(document.body, { childList: true, subtree: true });
-  if (location.protocol === 'file:' && !('showDirectoryPicker' in window)) {
+  if (OWN_ADDRESS.protocol === 'file:' && !('showDirectoryPicker' in window)) {
     document.getElementById('hx-mode').disabled = true;
     status('view-only — this browser cannot annotate file:// pages; use Chrome/Edge, or serve via review-serve.py over http://');
     console.warn('[spec-chat] showDirectoryPicker unavailable; file:// annotation needs the File System Access API (Chromium). Run review-serve.py and open the http://localhost URL instead.');
     return;
   }
-  state.transport = location.protocol === 'file:' ? fsaTransport() : httpTransport();
+  state.transport = OWN_ADDRESS.protocol === 'file:' ? fsaTransport() : httpTransport();
   state.reviewer = reviewerIdentity(reviewStorage(), Math.random);
   if (httpPage) state.version = await shownVersion();
 
@@ -3637,7 +3532,7 @@ function keepPlace() {
         });
       }
       // picker-free path: drag any ancestor folder (home, Documents, repo) onto the page
-      btn.title = 'Pick or drop \u201c' + suggestedGrant() + '\u201d (or any folder above the spec) \u2014 remembered for every spec beneath it. Spec lives in: ' + decodeURIComponent(location.pathname).replace(/\/[^/]*$/, '');
+      btn.title = 'Pick or drop \u201c' + suggestedGrant() + '\u201d (or any folder above the spec) \u2014 remembered for every spec beneath it. Spec lives in: ' + decodeURIComponent(OWN_ADDRESS.pathname).replace(/\/[^/]*$/, '');
       document.addEventListener('dragover', e => { if (!state.loopsStarted) e.preventDefault(); });
       document.addEventListener('drop', async e => {
         if (state.loopsStarted) return;
@@ -3690,11 +3585,7 @@ function clearGitFocusForReading() {
     delete el.dataset.hxFocusRoot;
   });
   document.querySelectorAll('.hx-focus-error').forEach(el => el.remove());
-  const url = new URL(location.href);
-  if (url.searchParams.get('focus') === 'changes') {
-    url.searchParams.delete('focus');
-    history.replaceState(null, '', url.pathname + url.search + url.hash);
-  }
+  if (OWN_ADDRESS.searchParams.get('focus') === 'changes') rewriteAddress(query => query.delete('focus'));
 }
 
 function setReadingView(on) {
@@ -3713,7 +3604,7 @@ function setReadingView(on) {
   }
   if (!next) clearReadingAudience();
   if (next) {
-    const base = (state.range.baseline && state.range.baseline.base) || new URLSearchParams(location.search).get('base');
+    const base = (state.range.baseline && state.range.baseline.base) || OWN_ADDRESS.searchParams.get('base');
     if (base) requestJev(base);
   } else {
     renderJev();
@@ -3721,7 +3612,7 @@ function setReadingView(on) {
 }
 
 function mountReadingView() {
-  if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(location.protocol) || document.getElementById('hx-reading')) return;
+  if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(OWN_ADDRESS.protocol) || document.getElementById('hx-reading')) return;
   const toolbar = document.querySelector('.hx-toolbar');
   if (!toolbar) return;
   const style = document.createElement('style');
