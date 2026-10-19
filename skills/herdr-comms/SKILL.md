@@ -12,7 +12,7 @@ idle Claude agent so it holds no memory while it waits.
 Every wrapper acts only in the caller's Herdr session,
 `${HERDR_SESSION:-default}`: pane, tab, and space ids repeat across sessions.
 `octo-lite-state` prints the caller's session state directory, holding `lanes/`
-(lane records, hand-off logs, `archive/`), `operator.toml`, and
+(lane records, hand-off logs, notes, `archive/`), `operator.toml`, and
 `operator.handoffs.jsonl` (spec `#session-state`).
 
 ## Spawn an agent

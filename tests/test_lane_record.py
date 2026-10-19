@@ -54,17 +54,25 @@ class LaneRecordTests(unittest.TestCase):
         for path in docs:
             self.assertNotRegex(path.read_text(encoding="utf-8"), r"octo-lite/(lanes|operator)", path)
 
-    def test_owner_archives_record_and_log_at_close(self) -> None:
-        # spec #acceptance-lane-archive: owner moves both files unchanged into
-        # archive/ after worker teardown, before its close report; the operator
-        # touches no record.
+    def test_owner_archives_record_log_and_notes_at_close(self) -> None:
+        # spec #acceptance-lane-archive, #delivery-notes: exploration notes live
+        # only in the lane's notes directory; the owner moves record, log, and
+        # notes unchanged into archive/ after worker teardown, before its close
+        # report; the operator touches no record.
+        explore = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
+        self.assertRegex(
+            explore,
+            r"exploration agent.*write access only\s+to the lane's notes directory, "
+            r"`\$\(octo-lite-state\)/lanes/<lane record name>-notes/`",
+        )
         owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         self.assertRegex(
             owner,
             r"tear down in order: review rows, worktrees, workers\. Last, after your last "
             r"hand-off line \(the final worker close\) and "
-            r"before your close report, move `<name>\.toml` and "
-            r"`<name>\.handoffs\.jsonl` unchanged into `archive/` in the lanes directory",
+            r"before your close report, move `<name>\.toml`, "
+            r"`<name>\.handoffs\.jsonl`, and `<name>-notes/` when present, "
+            r"unchanged into `archive/` in the lanes directory",
         )
         self.assertNotIn("archive state", owner)
         self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"delete the record")
@@ -77,8 +85,20 @@ class LaneRecordTests(unittest.TestCase):
         table = re.search(r'id="handoff-operator".*?<tbody>(.*?)</tbody>', html, flags=re.DOTALL)
         self.assertIsNotNone(table, "operator log table is missing")
         kinds = re.findall(r"<tr[^>]*><td><code>(\w+)</code>", table.group(1))
-        self.assertEqual(kinds, ["note", "prod"])
+        self.assertEqual(kinds, ["note", "prod", "start", "filed"])
         self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"gate relay|merge executed")
+
+    def test_operator_logs_start_and_filed_lines(self) -> None:
+        # spec #acceptance-operator-log-start, #acceptance-operator-log-filed:
+        # starting a lane or filing an issue for an action event appends one
+        # operator log line naming the event's id.
+        self.assertRegex(
+            OPERATOR.read_text(encoding="utf-8"),
+            r"sole writer of `operator\.handoffs\.jsonl`:\s+on each prod .*, note to the human .*, "
+            r"lane you start that an action\s+event asks for \(`start`\), and issue you file that one "
+            r"asks for \(`filed`\), each naming the event's id, append one JSON line per octo-lite spec "
+            r"`#handoff-operator`",
+        )
 
     def test_owner_posts_spec_receipt_on_accept_spec_handoff(self) -> None:
         # spec #acceptance-receipt-paths: each spec by full path then at <commit>.

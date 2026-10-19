@@ -51,8 +51,8 @@ lanes, with overlap between streams, and with gating, not with producing the
 change. Its only state writes, outside the repository: at its own launch, write
 `$(octo-lite-state)/operator.toml` with one key, `pane`,
 its own Herdr pane id. Beside it, it is sole writer of `operator.handoffs.jsonl`:
-on each prod (waking or redirecting an owner) and note to the human worth keeping, append one JSON line per
-octo-lite spec `#handoff-operator` (`spec/domains/octo-lite.spec.html`). Parking an owner appends its parked line to that lane's handoffs log (Behavior).
+on each prod (waking or redirecting an owner), note to the human worth keeping, lane you start that an action
+event asks for (`start`), and issue you file that one asks for (`filed`), each naming the event's id, append one JSON line per octo-lite spec `#handoff-operator` (`spec/domains/octo-lite.spec.html`). Parking an owner appends its parked line to that lane's handoffs log (Behavior).
 After spawning a lane orchestrator, create its lane record from the spawn output, exactly like this; at teardown of the finished
 lane and its children, derive its space id (the owner pane id's prefix, `w5` in
 `w5:pP8`). Close the space with `herdr-close <space id>` only when it is the lane's
