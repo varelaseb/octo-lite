@@ -98,6 +98,9 @@ For each ready ticket:
 3. Spawn a Herdr implementer in that worktree, under the `implementer` role
    contract. Prompt it with pointers to the ticket, spec, target `AGENTS.md`,
    optional research notes, integration branch, and relevant prior commits.
+   Cite each repo-wide rule the ticket bears on by its marked criterion's spec
+   and anchor (spec `#roles-repo-wide-rule`); an `AGENTS.md` line is only a
+   pointer to it.
 4. The contract declares the skills available to it and the bounds it works in,
    so neither has to be restated here or kept in step by hand. A Claude worker
    loads it with `--agent implementer`; a Codex worker gets it as developer

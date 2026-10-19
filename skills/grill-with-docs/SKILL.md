@@ -67,7 +67,10 @@ Use these shaping patterns:
 - Classify acceptance criteria as `clear`, `gap`, or `not needed`.
 - Ask only about gaps or ambiguities that durable context cannot resolve.
 - Record durable product or system behavior in specs, not only in chat.
-- Record a repo-wide rule once, as an acceptance criterion in its home spec.
+- Record a repo-wide rule once, as an every-feature acceptance criterion in
+  its home spec marked
+  [`data-project-rule`](https://github.com/0xTomDaniel/spec-chat/blob/main/docs/specs/project-rules.spec.html#declare-mark)
+  (octo-lite spec `#roles-repo-wide-rule`).
   Surface ADR-worthy decisions before readiness.
 - Propose follow-up issues only when the work is independently valuable or a
   real prerequisite. Create one only on explicit operator instruction.
@@ -121,7 +124,8 @@ new ADR naming the one it supersedes; the old ADR gains only the line
 number). Git holds the history.
 
 A repo-wide rule lives once, in its home spec, as an acceptance criterion
-stating it applies to every feature. An ADR links that criterion (e.g. see
-`peer-seams#acceptance-ci`), never restates it: why in the ADR, what in the
+stating it applies to every feature, marked `data-project-rule`. An ADR links
+that criterion (e.g. see `<home-spec>#<rule-anchor>`), never
+restates it: why in the ADR, what in the
 criterion, mechanics in code and the PR. Mechanics no caller depends on
 (tables, retry counts, internal keys, timeouts) appear in neither spec nor ADR.
