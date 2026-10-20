@@ -109,6 +109,18 @@ class LaneRecordTests(unittest.TestCase):
             r"accepts <full repository path> at <exact commit>\.",
         )
 
+    def test_owner_leaves_relayed_spec_acceptance_to_operator(self) -> None:
+        # spec #gates-chat-acceptance, #acceptance-chat-acceptance: a spec
+        # acceptance the operator relays is the operator's receipt, never the owner's.
+        text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        self.assertRegex(
+            text,
+            r"spec acceptance the operator relays \(chat, standing pre-acceptance, a brief\) "
+            r"is the operator's to record: send the operator the review link \(or spec head\), "
+            r"build once its receipt is on the PR, never post that receipt yourself "
+            r"\(spec `#gates-chat-acceptance`\)\.",
+        )
+
     def test_chat_spec_acceptance_records_only_the_pr_receipt(self) -> None:
         # spec #acceptance-chat-one-record, #gates-chat-acceptance: the operator
         # records a chat spec acceptance only as the PR receipt; review-host
