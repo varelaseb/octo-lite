@@ -18,6 +18,8 @@ live Herdr 0.9.0:
   * a detached child outlives its closed tab unless `herdr-close` reaps it
   * a parked agent must hold no process, refuse when working or Codex, and
     resume once under its name when messaged
+  * a pane's Claude session record may be one an ended Claude left at a pid
+    since reused, or belong to a spare Claude claimed into the pane
   * Herdr ids repeat across sessions, so state, parking, waking, and closing
     must stay in the caller's Herdr session
 """
@@ -38,6 +40,7 @@ SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
 WAKE = ROOT / "skills/herdr-comms/assets/herdr-wake"
 CLOSE = ROOT / "skills/herdr-comms/assets/herdr-close"
+SESSION = ROOT / "skills/herdr-comms/assets/herdr-claude-session"
 STATE = ROOT / "scripts/octo-lite-state"
 
 # A stand-in for the `herdr` binary. Behaviour is driven entirely by environment
@@ -552,25 +555,43 @@ class HerdrWrapperTest(unittest.TestCase):
 
     # --- park ------------------------------------------------------------
 
-    def claude(self, pane, tab, space, sid, **env):
+    def claude(self, pane, tab, space, sid, replies=(), stale=False, sidechain=None, **env):
         # A detached stand-in for an agent's Claude process in a pane, with
-        # Claude's own session file for its pid unless sid is None.
+        # Claude's own session file for its pid unless sid is None, recording
+        # the process start time, or another one when stale: an ended Claude's
+        # record at a pid a process of the pane reuses. replies are the
+        # timestamps of the replies in its transcript; none, no transcript yet.
+        # sidechain is the timestamp of a subagent's assistant record after them.
         p = subprocess.Popen(["sleep", "600"], start_new_session=True, env={
             **self.env, "HERDR_PANE_ID": pane, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": space, **env})
         self.addCleanup(lambda: (p.kill(), p.wait()))
         if sid:
-            sessions = Path(self.env["HOME"]) / ".claude/sessions"
+            home = Path(self.env["HOME"])
+            sessions = home / ".claude/sessions"
             sessions.mkdir(parents=True, exist_ok=True)
+            start = int(Path(f"/proc/{p.pid}/stat").read_text().split()[21]) + stale
             (sessions / f"{p.pid}.json").write_text(json.dumps({
                 "pid": p.pid, "sessionId": sid, "cwd": str(self.cwd),
-                "agent": "implementer"}))
+                "procStart": str(start), "agent": "implementer"}))
+            if replies:
+                project = home / ".claude/projects" / f"-p-{sid}"
+                project.mkdir(parents=True, exist_ok=True)
+                (project / f"{sid}.jsonl").write_text("".join(json.dumps(r) + "\n" for at in replies for r in (
+                    {"type": "user", "isSidechain": False, "timestamp": at},
+                    {"type": "assistant", "isSidechain": False, "timestamp": at})) + "".join(
+                    json.dumps({"type": "assistant", "isSidechain": True, "timestamp": sidechain}) + "\n"
+                    for _ in [sidechain] if sidechain))
         return p
 
-    def park(self, status="idle", session=True, name="implementer-ann-1", tabs=2, twin=None, **env):
-        # twin names another Herdr session holding an agent under the same ids.
+    def park(self, status="idle", session=True, name="implementer-ann-1", tabs=2, twin=None,
+             replies=(), beside=(), **env):
+        # twin names another Herdr session holding an agent under the same ids;
+        # beside holds (session id, claude kwargs) of more Claude records in the pane.
         space = f"w-{uuid.uuid4()}"
         tab, pane = f"{space}:t1", f"{space}:p1"
-        p = self.claude(pane, tab, space, "s-1" if session else None)
+        for sid, kw in beside:
+            self.claude(pane, tab, space, sid, **kw)
+        p = self.claude(pane, tab, space, "s-1" if session else None, replies)
         if twin:
             self.twin = self.claude(pane, tab, space, "s-twin", HERDR_SESSION=twin)
         agent = {"result": {"agent": {"name": name, "pane_id": pane, "tab_id": tab,
@@ -642,6 +663,42 @@ class HerdrWrapperTest(unittest.TestCase):
             mine, theirs = (p, self.twin) if not caller else (self.twin, p)
             self.assertTrue(self.gone(mine), "the parked agent's process survived")
             self.assertIsNone(theirs.poll(), "parking stopped another session's agent")
+
+    def test_park_never_reads_a_record_left_at_a_reused_pid(self):
+        # acceptance-park-stale-record: the ended Claude's record holds the
+        # pane's newest reply, but its pid now runs another process of the pane.
+        p, r, *_ = self.park(replies=["2026-10-21T09:00:00.000Z"],
+                             beside=[("s-ended", {"stale": True, "replies": ["2026-10-21T10:00:00.000Z"]})])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["session"], "s-1")
+
+    def test_park_names_the_conversation_held_in_the_pane(self):
+        # acceptance-park-claimed-spare: a spare Claude claimed into the pane
+        # beside an idle foreground one; the one holding the latest reply is
+        # the pane's, whichever started first; a subagent's (sidechain) is none.
+        for mine, other, sid in (("2026-10-21T09:00:00.000Z", "2026-10-21T08:00:00.000Z", "s-1"),
+                                 ("2026-10-21T08:00:00.000Z", "2026-10-21T09:00:00.000Z", "s-spare")):
+            p, r, *_ = self.park(replies=[mine], beside=[("s-spare", {
+                "replies": [other], "sidechain": "2026-10-21T11:00:00.000Z"})])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads(r.stdout)["session"], sid)
+
+    def test_claude_session_prints_the_panes_record_and_its_transcript(self):
+        # The lookup herdr-say and herdr-close --park share.
+        space = f"w-{uuid.uuid4()}"
+        p = self.claude(f"{space}:p1", f"{space}:t1", space, "s-1", ["2026-10-21T09:00:00.000Z"])
+        fresh = self.claude(f"{space}:p2", f"{space}:t2", space, "s-2")
+        run = lambda pane: subprocess.run([str(SESSION), pane], capture_output=True, text=True, env=self.env)
+        r = run(f"{space}:p1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
+        record = json.loads(r.stdout)
+        self.assertEqual((record["pid"], record["sessionId"], record["agent"]), (p.pid, "s-1", "implementer"))
+        self.assertEqual(record["transcript"], f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl")
+        r = run(f"{space}:p2")
+        self.assertEqual((r.returncode, json.loads(r.stdout)["transcript"]), (0, None), r.stderr)
+        r = run(f"{space}:p3")
+        self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
 
     # --- say -------------------------------------------------------------
 
