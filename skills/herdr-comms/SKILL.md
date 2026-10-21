@@ -178,7 +178,11 @@ new `pane=`. `herdr-say --parked TARGET` prints that line, or exits 1.
 `herdr-wake check` counts a parked owner as present, so a spec review hand-off
 resumes it. `herdr-wake send` runs `herdr-say` in a session of its own, so a
 send outliving Spec Chat's send bound (a resume, a rate-limit wait) keeps
-delivering after Spec Chat counts it sent.
+delivering after Spec Chat counts it sent. Spec Chat then no longer waits on
+it, so when it ends deferred or failed, `herdr-wake` sends its one-line reason,
+naming the owner, once to the operator pane (`pane` in
+`$(octo-lite-state)/operator.toml` of the owner's session). Within the bound
+the reason goes to Spec Chat, which retries.
 
 The review service may run in another Herdr session, so register a review row
 with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks

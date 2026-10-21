@@ -8,10 +8,11 @@
 # but did not see land (agent_prompt_stalled) counts as sent so the same batch
 # is never retyped. A parked owner counts as present.
 # Spec Chat bounds send, kills its process group at that bound, and counts it
-# sent. send runs herdr-say in a session of its own, so a send outliving the
-# bound (a parked resume, a rate-limit wait) keeps delivering. herdr-say's
-# stderr goes to an unlinked file, not a pipe: a killed reader would end
-# herdr-say on its next write, and nothing is left behind in TMPDIR.
+# sent. send runs herdr-say, and the reader of its stderr, in a session of its
+# own, so a send outliving the bound (a parked resume, a rate-limit wait) keeps
+# delivering. Spec Chat no longer waits on it, so when it then ends deferred or
+# failed, its reason goes once to the operator pane of the owner's session
+# (operator.toml); within the bound it goes to Spec Chat, which retries.
 # OWNER is a pane of the caller's Herdr session, or SESSION/PANE: a pane of
 # Herdr session SESSION, so a review service of one session wakes an owner in
 # another. Herdr selects the session by HERDR_SESSION unless HERDR_SOCKET_PATH
@@ -45,7 +46,26 @@ status() {
   return 1
 }
 
-say="$(dirname "$(readlink -f "$0")")/herdr-say"
+# send's own step, run as herdr-wake deliver in a session of its own: herdr-say
+# to owner $1 for artifact $2 with message $3, ending with its exit. The send
+# that started it gone (this one's parent changed) means Spec Chat's bound
+# killed it.
+deliver() {
+  local err rc=0
+  err="$("$say" --kind command --artifact "$2" "$1" "$3" 2>&1 >/dev/null)" || rc=$?
+  ((rc == 0)) || grep -q '"code": *"agent_prompt_stalled"' <<<"$err" && return
+  err="${err:-herdr-say exited $rc}"; err="${err//$'\n'/ }"
+  if [[ "$(cut -d' ' -f4 /proc/$$/stat)" == "$PPID" ]]; then
+    ((rc == 75)) || echo "herdr-wake: $err" >&2
+  else
+    "$say" "$(sed -n 's/^pane *= *"\(.*\)"$/\1/p' "$("$state")/operator.toml")" \
+      "herdr-wake: $2 hand-off to owner $1, counted sent by Spec Chat, not processed: $err" >/dev/null 2>&1
+  fi
+  return "$rc"
+}
+
+here="$(dirname "$(readlink -f "$0")")"
+say="$here/herdr-say" state="$here/../../../scripts/octo-lite-state"
 if [[ "${2:-}" == */* ]]; then
   export HERDR_SESSION="${2%%/*}"; unset HERDR_SOCKET_PATH
   set -- "$1" "${2#*/}" "${@:3}"
@@ -58,14 +78,7 @@ case "${1:-}" in
     (($# == 4)) || usage
     s="$(status "$2")" || exit 1
     [[ "$s" == working ]] && exit 75
-    f="$(mktemp)"; exec 3>"$f" 4<"$f"; rm -f "$f"
-    setsid -w "$say" --kind command --artifact "$3" "$2" "$4" </dev/null >/dev/null 2>&3
-    rc=$?
-    ((rc == 0 || rc == 75)) && exit "$rc"
-    err="$(cat <&4)"
-    grep -q '"code": *"agent_prompt_stalled"' <<<"$err" && exit 0
-    err="${err:-herdr-say exited $rc}"
-    echo "herdr-wake: ${err//$'\n'/ }" >&2
-    exit "$rc" ;;
+    setsid -w "$0" deliver "$2" "$3" "$4" </dev/null ;;
+  deliver) deliver "${@:2}" ;;
   *) usage ;;
 esac
