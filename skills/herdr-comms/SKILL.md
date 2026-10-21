@@ -174,7 +174,8 @@ by pane or name, in any lane hand-off log in `$lanes` decides: a live agent
 under the line's name gets the message; otherwise the agent is resumed (an
 owner, the line named after its log, in a new lane space; a worker in the
 caller's `$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its
-new `pane=`. `herdr-say --parked TARGET` prints that line, or exits 1.
+new `pane=`. Every re-send does the same, so a target parked during a wait is
+resumed. `herdr-say --parked TARGET` prints that line, or exits 1.
 `herdr-wake check` counts a parked owner as present, so a spec review hand-off
 resumes it. `herdr-wake send` runs `herdr-say` in a session of its own, so a
 send outliving Spec Chat's send bound (a resume, a rate-limit wait) keeps

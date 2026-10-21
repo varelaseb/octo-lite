@@ -762,10 +762,11 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.say("--kind", "command", "--artifact", "x.spec.html", "a1", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", **env):
+    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", on_wait="", **env):
         # A Claude agent in pane, under the name target, whose reply to each
         # send is the next of replies; its transcript starts once the first
-        # message lands. sleep is a stand-in that records each wait.
+        # message lands. sleep is a stand-in that records each wait, then runs
+        # on_wait.
         space = pane.split(":")[0]
         self.claude(pane, f"{space}:t1", space, "s-1")
         d = Path(self.tmp.name)
@@ -773,7 +774,7 @@ class HerdrWrapperTest(unittest.TestCase):
         bindir = d / "sleepbin"
         bindir.mkdir(exist_ok=True)
         self.waits = d / "waits"
-        (bindir / "sleep").write_text(f'#!/bin/sh\necho "$1" >>"{self.waits}"\n')
+        (bindir / "sleep").write_text(f'#!/bin/sh\necho "$1" >>"{self.waits}"\n{on_wait}\n')
         (bindir / "sleep").chmod(0o755)
         agent = {"result": {"agent": {"name": target, "pane_id": pane, "agent_status": "idle"}}}
         return self.say(target, "review ANN-1", PATH=f"{bindir}:{self.env['PATH']}",
@@ -829,6 +830,24 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "pane=w1:p1\n")
         self.assertEqual(self.sends("w1:p1"), 2)
+
+    def test_say_resends_through_the_resume_to_a_worker_parked_during_its_wait(self):
+        # acceptance-say-rate-limit-parked: the worker is parked while the send
+        # waits out a rate limit, so the re-send resumes it as a first send to
+        # a parked worker does. The fake's new tab reuses pane id w1:p1.
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w1:p1", name="implementer-ann-1", role="implementer")
+        log = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes/ann45.handoffs.jsonl"
+        held = log.rename(log.with_suffix(".held"))
+        park = f'[ ! -e "{held}" ] || {{ mv "{held}" "{log}"; echo implementer-ann-1 >"{self.gone_file}"; }}'
+        r = self.say_to_claude("rate_limit", "ok", on_wait=park, HERDR_WORKSPACE_ID="w1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "pane=w1:p1\n")
+        argv = self.start_argv()
+        self.assertEqual(argv[2], "implementer-ann-1")
+        self.assertEqual(argv[-4:], ["--agent", "implementer", "--resume", "s-1"])
+        self.assertIn("tab create --workspace w1 ", self.calls())
+        self.assertEqual((self.sends("implementer-ann-1"), self.sends("w1:p1")), (2, 1))
 
     def parked_line(self, lane, at="2026-10-14T10:00:00Z", session=None, **fields):
         state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
