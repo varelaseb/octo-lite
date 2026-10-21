@@ -14,13 +14,22 @@
 # transcript's latest reply is its last one, read from its end: a transcript
 # grows to hundreds of MB, and the lookup's cost must not grow with it.
 set -uo pipefail
+# True when the process behind environ file $1 carries the line $2 and runs in
+# the caller's Herdr session, HERDR_SESSION unset in both for the default one.
+# Unreadable entries are silently not ours. The one session-membership check:
+# herdr-close sources this script for it, and only it.
+ours() {
+  local vars
+  vars="$(tr '\0' '\n' 2>/dev/null <"$1")" && grep -qxF "$2" <<<"$vars" &&
+    [[ "$(sed -n 's/^HERDR_SESSION=//p' <<<"$vars")" == "${HERDR_SESSION:-}" ]]
+}
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 (($# == 1)) || { echo "usage: herdr-claude-session PANE" >&2; exit 64; }
 
 best=""; latest=""
 for file in "$HOME"/.claude/sessions/[0-9]*.json; do
   pid="${file##*/}"; pid="${pid%.json}"
-  vars="$(tr '\0' '\n' 2>/dev/null </proc/"$pid"/environ)" && grep -qxF "HERDR_PANE_ID=$1" <<<"$vars" &&
-    [[ "$(sed -n 's/^HERDR_SESSION=//p' <<<"$vars")" == "${HERDR_SESSION:-}" ]] || continue
+  ours /proc/"$pid"/environ "HERDR_PANE_ID=$1" || continue
   [[ "$(jq -r .procStart "$file")" == "$(cut -d' ' -f22 /proc/"$pid"/stat 2>/dev/null)" ]] || continue
   transcripts=("$HOME"/.claude/projects/*/"$(jq -r .sessionId "$file")".jsonl)
   transcript=""; at=""
