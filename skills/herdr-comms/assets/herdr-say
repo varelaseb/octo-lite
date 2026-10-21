@@ -13,18 +13,22 @@
 # A Claude agent whose turn dies at once on an API rate limit (credentials
 # cooling down) has not processed the message, though Herdr saw it work. After
 # each send the pane's Claude session (herdr-claude-session) decides: the
-# message is processed unless the first reply after the send, within a few
-# seconds, is a rate-limit error. Otherwise the same message is sent again,
-# waits doubling from a minute, capped, about two hours in all. The error names
-# no time it clears. Codex and pi keep no Claude session: the state change alone
-# confirms.
+# message is processed unless its own reply, within a few seconds, is a
+# rate-limit error. Its own reply is the first after the transcript record
+# carrying it: Herdr does not track turns, so for a target already working the
+# state change and the reply after it are the running turn's, and a message
+# enqueued behind that turn waits until taken in, within the one bound.
+# Otherwise the same message is sent again, waits doubling from a minute,
+# capped, about two hours in all, the bound. The error names no time it clears.
+# Codex and pi keep no Claude session: the state change alone confirms.
 #
 # Exit codes are the contract callers rely on, including
 # `herdr-wake`, Spec Chat's wake provider:
 #   0   delivered, and Herdr observed the agent change state; a Claude agent
 #       also processed it
 #   69  not processed: a Claude agent's turn died on an API rate limit at every
-#       send; stderr names the target, the number of sends, the last API error
+#       send; stderr names the target, the number of sends, the last API error;
+#       every re-send is already spent, so the caller never sends it again
 #   75  not delivered now because the target is blocked on interactive input;
 #       the caller should retry once the target is free
 #   >0  anything else
@@ -34,7 +38,8 @@
 # decides; another session's lanes repeat its ids. A live agent under the
 # line's name gets the message; otherwise the agent is resumed first (an owner,
 # the lane's name, in a new lane space; a worker in the caller's space), and its
-# new pane= is printed.
+# new pane= is printed. Every re-send does the same, so a target parked during
+# a wait is resumed.
 # `herdr-say --parked TARGET` prints that line, or exits 1 when there is none.
 set -euo pipefail
 
@@ -80,48 +85,68 @@ landed() {
   printf '%s\n' "$out" >&2
   exit "$rc"
 }
-# The first reply since the last send in the transcript of pane $1's Claude
-# session, waiting a few seconds: a rate-limit refusal lands within 1.4s. Fails
-# for no reply or no Claude session. A transcript is null until a fresh agent's
-# first message lands, and is read from its tail: it grows to hundreds of MB.
+# The last send's reply in the transcript of pane $1's Claude session: the
+# first reply after the record carrying the message since the send, a user
+# record or the queued_command a running turn took it in by, either may wrap
+# it. File order decides: a queued_command is stamped before replies written
+# ahead of it. Waits a few seconds, as a rate-limit refusal lands within 1.4s,
+# and while the message is enqueued behind a running turn, within the bound.
+# Fails for no reply or no Claude session. A transcript is null until a fresh
+# agent's first message lands, and is read from its tail: it grows to hundreds
+# of MB, and a take-in lands within 20 lines of its enqueue.
 reply() {
-  local transcript="" r
-  for _ in {1..10}; do
+  local transcript="" r n=0
+  while ((n < 10)); do
     [[ -n "$transcript" ]] || transcript="$("$here/herdr-claude-session" "$1" | jq -r '.transcript // empty')" || return 1
-    r="$(tail -n 100 "$transcript" 2>/dev/null | jq -cn --arg at "$at" 'first(inputs
-      | select(.type == "assistant" and .isSidechain == false and .timestamp >= $at)) // empty' 2>/dev/null)"
-    [[ -n "$r" ]] && { printf '%s\n' "$r"; return; }
+    r="$(tail -n 100 "$transcript" 2>/dev/null | jq -cn --arg at "$at" --arg m "$message" '
+      [inputs | select(.timestamp >= $at)] as $t
+      | ($t | map(.type == "user" and (.message.content | type == "string" and contains($m))
+          or .attachment.type == "queued_command" and (.attachment.prompt | contains($m))) | index(true)) as $i
+      | if $i then first($t[$i:][] | select(.type == "assistant" and .isSidechain == false)) // empty
+        elif any($t[]; .operation == "enqueue" and (.content | contains($m))) then "queued" else empty end' 2>/dev/null)"
+    case "$r" in
+      '') n=$((n + 1)) ;;
+      '"queued"') ((SECONDS < bound)) || return 1 ;;
+      *) printf '%s\n' "$r"; return ;;
+    esac
     sleep 0.5
   done
   return 1
 }
 limited() { r="$(reply "$pane")" && [[ "$(jq -r .error <<<"$r")" == rate_limit ]]; }
 
-name="$target"
-prompt "$name"
-if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$target")"; then
-  name="$(jq -r .name <<<"$line")"
-  if ! herdr agent get "$name" >/dev/null 2>&1; then
-    resume=(--cwd "$(jq -r .cwd <<<"$line")" --name "$name" --resume "$(jq -r .session <<<"$line")")
-    if [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
-      started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
-    else
-      started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
-        --role "$(jq -r '.role // empty' <<<"$line")" "${resume[@]}" -- claude)"
-    fi
-    name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
-    echo "pane=$name"
-  fi
+# One send, the first and every re-send: the message goes to $name, resuming
+# first a target Herdr does not find that a parked line names (one parked
+# during a wait is named by its pane or name); $pane is then its pane.
+send() {
   prompt "$name"
-fi
-landed
+  if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$name")"; then
+    name="$(jq -r .name <<<"$line")"
+    if ! herdr agent get "$name" >/dev/null 2>&1; then
+      resume=(--cwd "$(jq -r .cwd <<<"$line")" --name "$name" --resume "$(jq -r .session <<<"$line")")
+      if [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
+        started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
+      else
+        started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
+          --role "$(jq -r '.role // empty' <<<"$line")" "${resume[@]}" -- claude)"
+      fi
+      name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
+      echo "pane=$name"
+    fi
+    prompt "$name"
+  fi
+  landed
+  pane="$(herdr agent get "$name" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" || exit 0
+}
 
-pane="$(herdr agent get "$name" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" || exit 0
+name="$target"
+send
 waits=(60 120 240 480 960 1800 1800 1800) sends=1
+bound="$(IFS=+; echo "$((${waits[*]}))")" # the one bound, about two hours; holds a queued wait too
 while limited; do
   ((sends <= ${#waits[@]})) || {
     echo "herdr-say: $target not processed: API rate limit at all $sends sends; last error: $(jq -r '.message.content[0].text' <<<"$r")" >&2
     exit 69; }
   sleep "${waits[sends - 1]}"
-  prompt "$name"; landed; sends=$((sends + 1))
+  send; sends=$((sends + 1))
 done

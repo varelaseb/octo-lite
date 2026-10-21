@@ -24,6 +24,8 @@ live Herdr 0.9.0:
     must stay in the caller's Herdr session
   * a Claude agent's turn may die at once on an API rate limit, so Herdr sees
     it work though it never processed the message
+  * a wake send outliving Spec Chat's bound fails after Spec Chat counted it
+    sent, so only the operator can be told
 """
 
 import json
@@ -160,16 +162,39 @@ case "$sub" in
       echo '{"error":{"code":"agent_not_found","message":"not found"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
     # FAKE_REPLIES: one line per prompt, the Claude agent's reply that its
-    # transcript FAKE_TRANSCRIPT records after the message: rate_limit, ok, or none.
+    # transcript FAKE_TRANSCRIPT records after the record carrying the message,
+    # as Claude does: rate_limit, ok, or none. Two words pose a target already
+    # working: the message is enqueued, the running turn's reply (the first)
+    # lands at once, and the message is taken in later, its reply the second:
+    # mid-turn after an ok, at the turn's end after a rate_limit.
+    # FAKE_TRANSCRIPT.later holds what lands later, one line per wait (sleep),
+    # a blank line the running turn's time.
     if [[ -n "${FAKE_REPLIES:-}" ]]; then
-      reply="$(head -1 "$FAKE_REPLIES")"; sed -i 1d "$FAKE_REPLIES"
+      read -r first second <"$FAKE_REPLIES" || true; sed -i 1d "$FAKE_REPLIES"
       mkdir -p "$(dirname "$FAKE_TRANSCRIPT")"
       at() { date -u +%FT%T.%3NZ; }
-      { printf '{"type":"user","isSidechain":false,"timestamp":"%s"}\n' "$(at)"
-        case "$reply" in
-          rate_limit) printf '{"type":"assistant","isSidechain":false,"timestamp":"%s","isApiErrorMessage":true,"error":"rate_limit","apiErrorStatus":429,"message":{"content":[{"type":"text","text":"API Error: Request rejected (429) \xc2\xb7 All credentials are cooling down"}]}}\n' "$(at)" ;;
-          ok) printf '{"type":"assistant","isSidechain":false,"timestamp":"%s","message":{"content":[{"type":"text","text":"on it"}]}}\n' "$(at)" ;;
-        esac; } >>"$FAKE_TRANSCRIPT"
+      record() { jq -nc --arg m "$text" --arg at "$(at)" "{isSidechain: false, timestamp: \$at} + $1"; }
+      reply() { case "$1" in
+          rate_limit) record '{type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429, message: {content: [{type: "text", text: "API Error: Request rejected (429) · All credentials are cooling down"}]}}' ;;
+          ok) record '{type: "assistant", message: {content: [{type: "text", text: "on it"}]}}' ;;
+        esac; }
+      text="$4"
+      if [[ -z "$second" ]]; then
+        { record '{type: "user", message: {role: "user", content: $m}}'; reply "$first"; } >>"$FAKE_TRANSCRIPT"
+      else
+        submitted="$(at)"
+        { record '{type: "queue-operation", operation: "enqueue", content: $m}'; reply "$first"; } >>"$FAKE_TRANSCRIPT"
+        { printf '\n%.0s' {1..12}
+          if [[ "$first" == ok ]]; then
+            record '{type: "queue-operation", operation: "remove", reason: "absorbed_mid_turn", content: $m}'
+            record '{type: "user", message: {role: "user", content: [{type: "tool_result", content: "done"}]}}'
+            record "{type: \"attachment\", attachment: {type: \"queued_command\", prompt: \$m}, timestamp: \"$submitted\"}"
+          else
+            record '{type: "queue-operation", operation: "dequeue"}'
+            record '{type: "user", message: {role: "user", content: $m}}'
+          fi
+          reply "$second"; } >>"$FAKE_TRANSCRIPT.later"
+      fi
     fi
     echo '{"result":{"agent":{"agent_status":"working"}}}' ;;
   *)
@@ -762,10 +787,11 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.say("--kind", "command", "--artifact", "x.spec.html", "a1", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", **env):
-        # A Claude agent in pane, under the name target, whose reply to each
-        # send is the next of replies; its transcript starts once the first
-        # message lands. sleep is a stand-in that records each wait.
+    def replying(self, *replies, pane="w1:p1", on_wait=""):
+        # The env posing a Claude agent in pane whose reply to each send is the
+        # next of replies; its transcript starts once the first message lands.
+        # sleep is a stand-in that records each wait, lands the next line a
+        # working agent writes later, then runs on_wait.
         space = pane.split(":")[0]
         self.claude(pane, f"{space}:t1", space, "s-1")
         d = Path(self.tmp.name)
@@ -773,15 +799,26 @@ class HerdrWrapperTest(unittest.TestCase):
         bindir = d / "sleepbin"
         bindir.mkdir(exist_ok=True)
         self.waits = d / "waits"
-        (bindir / "sleep").write_text(f'#!/bin/sh\necho "$1" >>"{self.waits}"\n')
+        transcript = f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl"
+        (bindir / "sleep").write_text(
+            f'#!/bin/sh\necho "$1" >>"{self.waits}"\n'
+            f'[ ! -s "{transcript}.later" ] || {{ head -1 "{transcript}.later" | grep . >>"{transcript}"; '
+            f'sed -i 1d "{transcript}.later"; }}\n{on_wait}\n')
         (bindir / "sleep").chmod(0o755)
+        return {"PATH": f"{bindir}:{self.env['PATH']}", "FAKE_REPLIES": str(d / "replies"),
+                "FAKE_TRANSCRIPT": transcript}
+
+    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", on_wait="", **env):
+        # A Claude agent in pane, under the name target, replying replies.
         agent = {"result": {"agent": {"name": target, "pane_id": pane, "agent_status": "idle"}}}
-        return self.say(target, "review ANN-1", PATH=f"{bindir}:{self.env['PATH']}",
-                        FAKE_REPLIES=str(d / "replies"), FAKE_AGENT_GET=json.dumps(agent),
-                        FAKE_TRANSCRIPT=f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl", **env)
+        return self.say(target, "review ANN-1", **self.replying(*replies, pane=pane, on_wait=on_wait),
+                        FAKE_AGENT_GET=json.dumps(agent), **env)
 
     def sends(self, target):
         return self.calls().count(f"agent prompt {target} review ANN-1 ")
+
+    def sends_to(self, pane):
+        return self.calls().count(f"agent prompt {pane} hand-off ready ")
 
     def slept(self):
         return [float(w) for w in self.waits.read_text().split()] if self.waits.exists() else []
@@ -821,6 +858,22 @@ class HerdrWrapperTest(unittest.TestCase):
             self.log.unlink()
             self.waits.unlink(missing_ok=True)
 
+    def test_say_resends_a_message_queued_behind_a_running_turn_whose_own_turn_died(self):
+        # acceptance-say-rate-limit-queued: the running turn's ok lands inside
+        # the reply window; the message, taken in past it, dies on a 429.
+        r = self.say_to_claude("ok rate_limit", "ok", "rate_limit")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(self.sends("implementer-ann-1"), 2)
+        self.assertEqual([w for w in self.slept() if w >= 30], [60])
+
+    def test_say_judges_a_message_queued_behind_a_turn_dying_on_a_rate_limit_by_its_own_reply(self):
+        # acceptance-say-running-turn-limited: the running turn's 429 is not
+        # this message's; its own reply is ok, so it is sent once.
+        r = self.say_to_claude("rate_limit ok", "rate_limit")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(self.sends("implementer-ann-1"), 1)
+        self.assertEqual([w for w in self.slept() if w >= 30], [])
+
     def test_say_resends_to_a_resumed_worker_whose_turn_died_on_a_rate_limit(self):
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
@@ -829,6 +882,24 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "pane=w1:p1\n")
         self.assertEqual(self.sends("w1:p1"), 2)
+
+    def test_say_resends_through_the_resume_to_a_worker_parked_during_its_wait(self):
+        # acceptance-say-rate-limit-parked: the worker is parked while the send
+        # waits out a rate limit, so the re-send resumes it as a first send to
+        # a parked worker does. The fake's new tab reuses pane id w1:p1.
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w1:p1", name="implementer-ann-1", role="implementer")
+        log = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes/ann45.handoffs.jsonl"
+        held = log.rename(log.with_suffix(".held"))
+        park = f'[ ! -e "{held}" ] || {{ mv "{held}" "{log}"; echo implementer-ann-1 >"{self.gone_file}"; }}'
+        r = self.say_to_claude("rate_limit", "ok", on_wait=park, HERDR_WORKSPACE_ID="w1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "pane=w1:p1\n")
+        argv = self.start_argv()
+        self.assertEqual(argv[2], "implementer-ann-1")
+        self.assertEqual(argv[-4:], ["--agent", "implementer", "--resume", "s-1"])
+        self.assertIn("tab create --workspace w1 ", self.calls())
+        self.assertEqual((self.sends("implementer-ann-1"), self.sends("w1:p1")), (2, 1))
 
     def parked_line(self, lane, at="2026-10-14T10:00:00Z", session=None, **fields):
         state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
@@ -900,36 +971,65 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.wake("check", "w1:p1").returncode, 0)
         self.assertEqual(self.wake("check", "w1:p2").returncode, 1)
 
+    def operator(self, pane="w5:p2"):
+        # The operator pane of the default session's state, as it writes it.
+        state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "operator.toml").write_text(f'pane = "{pane}"\n')
+        return f"agent prompt {pane} "
+
     def test_wake_send_keeps_delivering_past_its_send_bound(self):
-        # transport-wake-bound: Spec Chat runs send in its own session, kills
-        # that process group at its bound, and counts it sent (review-serve.py
-        # run_wake). This resume is held past the kill, then still delivers.
+        # transport-wake-bound, acceptance-wake-rate-limit-persistent: Spec
+        # Chat runs send in its own session, kills that process group at its
+        # bound, and counts it sent (review-serve.py run_wake). This resume is
+        # held past the kill, then still delivers; the resumed owner's every
+        # turn dies on a rate limit, so the operator is told, once.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\nann45\n")
+        told = self.operator()
         gate = Path(self.tmp.name) / "gate"
         self.addCleanup(gate.touch)
         tmpdir = Path(self.tmp.name) / "tmp"
         tmpdir.mkdir()
+        agent = '{"result":{"agent":{"pane_id":"w1:p1","agent_status":"idle"}}}'
         with tempfile.TemporaryFile() as err:
             p = subprocess.Popen([str(WAKE), "send", "w9:p2", "a.spec.html", "hand-off ready"],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
-                                 env={**self.env, "FAKE_START_GATE": str(gate), "TMPDIR": str(tmpdir)},
+                                 env={**self.env, "FAKE_START_GATE": str(gate), "TMPDIR": str(tmpdir),
+                                      **self.replying(*["rate_limit"] * 9), "FAKE_AGENT_GET": agent},
                                  start_new_session=True)
             for _ in range(100):
                 if "agent start" in self.calls():
                     break
                 time.sleep(0.1)
             self.assertIsNone(p.poll(), "send returned before its herdr-say ended")
+            send = Path(f"/proc/{p.pid}/task/{p.pid}/children").read_text().split()
             os.killpg(p.pid, signal.SIGKILL)
             p.wait()
         self.assertEqual(list(tmpdir.iterdir()), [])
         gate.touch()
-        for _ in range(100):
-            if "agent prompt w1:p1 hand-off ready" in self.calls():
+        for _ in range(300):
+            if not any(Path(f"/proc/{pid}/stat").exists() and Path(f"/proc/{pid}/stat").read_text()
+                       .split(")")[-1].split()[0] != "Z" for pid in send):
                 break
             time.sleep(0.1)
         self.assertIn("agent prompt w1:p1 hand-off ready", self.calls())
+        self.assertEqual(self.sends_to("w1:p1"), 9)
+        prompts = [l for l in self.calls().splitlines() if l.startswith(told)]
+        self.assertEqual(len(prompts), 1, prompts)
+        self.assertIn("w9:p2", prompts[0])
+        self.assertIn("a.spec.html", prompts[0])
+        self.assertIn("not processed: API rate limit", prompts[0])
+
+    def test_wake_send_failing_within_its_send_bound_tells_only_spec_chat(self):
+        # transport-wake-bound: Spec Chat holds a failure within its bound and
+        # retries it, so the operator hears of none of its attempts.
+        told = self.operator()
+        r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready", **self.replying(*["rate_limit"] * 9))
+        self.assertEqual(r.returncode, 69, r.stderr)
+        self.assertRegex(r.stderr, r"^herdr-wake: herdr-say: w1:p1 not processed: API rate limit .*\n$")
+        self.assertNotIn(told, self.calls())
 
     def test_wake_check_counts_a_parked_owner_as_present(self):
         self.parked_line("ann45", pane="w1:p2")

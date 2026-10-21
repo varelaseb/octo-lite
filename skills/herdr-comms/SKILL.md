@@ -146,7 +146,7 @@ Exit codes are the contract:
 | code | meaning |
 |---|---|
 | 0 | delivered, and Herdr observed the agent change state; a Claude agent also processed it |
-| 69 | not processed: a Claude agent's turn died on an API rate limit at every send for about two hours; stderr names the target, the number of sends, and the last API error |
+| 69 | not processed: a Claude agent's turn died on an API rate limit at every send for about two hours; stderr names the target, the number of sends, and the last API error; every re-send is already spent, so never send it again |
 | 75 | target is blocked on interactive input; retry when it frees |
 | other | anything else |
 
@@ -161,8 +161,12 @@ typed into.
 A Claude agent whose turn dies at once on an API rate limit (credentials
 cooling down) has not processed the message, though Herdr saw it work (spec
 `#transport-say-rate-limit`). After each send, the transcript of the pane's
-Claude session (`herdr-claude-session`) decides: processed unless the first
-reply after the send, within a few seconds, is a rate-limit error. Otherwise
+Claude session (`herdr-claude-session`) decides: processed unless the
+message's own reply, within a few seconds, is a rate-limit error. Its own reply
+is the first reply after the record carrying it: Herdr does not track turns, so
+for a target already working, the state change and the reply after it are the
+running turn's. A message enqueued behind a running turn waits until that turn
+takes it in or ends, within the same two-hour bound. Otherwise
 `herdr-say` sends the same message again, waits doubling from a minute,
 capped, until processed (exit 0) or about two hours pass (exit 69). The retry
 lives in that one send, so a caller bounded tighter does not hold it in the
@@ -174,11 +178,16 @@ by pane or name, in any lane hand-off log in `$lanes` decides: a live agent
 under the line's name gets the message; otherwise the agent is resumed (an
 owner, the line named after its log, in a new lane space; a worker in the
 caller's `$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its
-new `pane=`. `herdr-say --parked TARGET` prints that line, or exits 1.
+new `pane=`. Every re-send does the same, so a target parked during a wait is
+resumed. `herdr-say --parked TARGET` prints that line, or exits 1.
 `herdr-wake check` counts a parked owner as present, so a spec review hand-off
 resumes it. `herdr-wake send` runs `herdr-say` in a session of its own, so a
 send outliving Spec Chat's send bound (a resume, a rate-limit wait) keeps
-delivering after Spec Chat counts it sent.
+delivering after Spec Chat counts it sent. Spec Chat then no longer waits on
+it, so when it ends deferred or failed, `herdr-wake` sends its one-line reason,
+naming the owner, once to the operator pane (`pane` in
+`$(octo-lite-state)/operator.toml` of the owner's session). Within the bound
+the reason goes to Spec Chat, which retries.
 
 The review service may run in another Herdr session, so register a review row
 with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks
