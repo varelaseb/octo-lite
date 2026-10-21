@@ -21,13 +21,7 @@ set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 
 usage() { echo "usage: herdr-close TAB|SPACE | --park PANE" >&2; exit 64; }
-# True when the process behind environ file $1 carries the line $2 and runs in
-# the caller's Herdr session. Unreadable entries are silently not ours.
-ours() {
-  local vars
-  vars="$(tr '\0' '\n' 2>/dev/null <"$1")" && grep -qxF "$2" <<<"$vars" &&
-    [[ "$(sed -n 's/^HERDR_SESSION=//p' <<<"$vars")" == "${HERDR_SESSION:-}" ]]
-}
+. "$here/herdr-claude-session" # ours ENVIRON LINE: the caller's session membership
 line=""
 if [[ "${1:-}" == --park ]]; then
   (($# == 2)) && [[ "$2" == *:* ]] || usage

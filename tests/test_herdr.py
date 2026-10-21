@@ -745,7 +745,9 @@ class HerdrWrapperTest(unittest.TestCase):
         # The operator's transcript grows past 200MB; a whole read took 7s, so
         # every herdr-say paid it and a wake outlived Spec Chat's 10s bound.
         # Beside a spare whose reply is older, the pane's session holds ~110MB
-        # of earlier turns and its latest reply near its end.
+        # of earlier turns and its latest reply near its end. The bound is this
+        # machine's own whole jq read of that transcript, so it holds at any
+        # machine speed: a whole read costs that, a read from the end a sliver.
         space = f"w-{uuid.uuid4()}"
         pane, tab = f"{space}:p1", f"{space}:t1"
         self.claude(pane, tab, space, "s-spare", ["2026-10-21T09:00:00.000Z"])
@@ -758,11 +760,14 @@ class HerdrWrapperTest(unittest.TestCase):
             "assistant", "2026-10-21T08:00:00.000Z")) * 25000 + turn(
             "assistant", "2026-10-21T10:00:00.000Z") + turn("user", "2026-10-21T10:00:01.000Z"))
         start = time.monotonic()
+        subprocess.run(["jq", "empty", str(transcript)], check=True)
+        whole = time.monotonic() - start
+        start = time.monotonic()
         r = subprocess.run([str(SESSION), pane], capture_output=True, text=True, env=self.env)
         elapsed = time.monotonic() - start
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["sessionId"], "s-1")
-        self.assertLess(elapsed, 1.0)
+        self.assertLess(elapsed, whole / 2)
 
     # --- say -------------------------------------------------------------
 
