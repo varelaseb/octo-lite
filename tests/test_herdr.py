@@ -22,6 +22,8 @@ live Herdr 0.9.0:
     since reused, or belong to a spare Claude claimed into the pane
   * Herdr ids repeat across sessions, so state, parking, waking, and closing
     must stay in the caller's Herdr session
+  * a Claude agent's turn may die at once on an API rate limit, so Herdr sees
+    it work though it never processed the message
 """
 
 import json
@@ -156,6 +158,18 @@ case "$sub" in
     fi
     if [[ -n "${FAKE_PROMPT_NOT_FOUND:-}" ]]; then
       echo '{"error":{"code":"agent_not_found","message":"not found"},"id":"cli:agent:prompt"}' >&2; exit 1
+    fi
+    # FAKE_REPLIES: one line per prompt, the Claude agent's reply that its
+    # transcript FAKE_TRANSCRIPT records after the message: rate_limit, ok, or none.
+    if [[ -n "${FAKE_REPLIES:-}" ]]; then
+      reply="$(head -1 "$FAKE_REPLIES")"; sed -i 1d "$FAKE_REPLIES"
+      mkdir -p "$(dirname "$FAKE_TRANSCRIPT")"
+      at() { date -u +%FT%T.%3NZ; }
+      { printf '{"type":"user","isSidechain":false,"timestamp":"%s"}\n' "$(at)"
+        case "$reply" in
+          rate_limit) printf '{"type":"assistant","isSidechain":false,"timestamp":"%s","isApiErrorMessage":true,"error":"rate_limit","apiErrorStatus":429,"message":{"content":[{"type":"text","text":"API Error: Request rejected (429) \xc2\xb7 All credentials are cooling down"}]}}\n' "$(at)" ;;
+          ok) printf '{"type":"assistant","isSidechain":false,"timestamp":"%s","message":{"content":[{"type":"text","text":"on it"}]}}\n' "$(at)" ;;
+        esac; } >>"$FAKE_TRANSCRIPT"
     fi
     echo '{"result":{"agent":{"agent_status":"working"}}}' ;;
   *)
@@ -722,6 +736,74 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_say_accepts_the_caller_compatibility_flags(self):
         r = self.say("--kind", "command", "--artifact", "x.spec.html", "a1", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", **env):
+        # A Claude agent in pane, under the name target, whose reply to each
+        # send is the next of replies; its transcript starts once the first
+        # message lands. sleep is a stand-in that records each wait.
+        space = pane.split(":")[0]
+        self.claude(pane, f"{space}:t1", space, "s-1")
+        d = Path(self.tmp.name)
+        (d / "replies").write_text("".join(f"{r}\n" for r in replies))
+        bindir = d / "sleepbin"
+        bindir.mkdir(exist_ok=True)
+        self.waits = d / "waits"
+        (bindir / "sleep").write_text(f'#!/bin/sh\necho "$1" >>"{self.waits}"\n')
+        (bindir / "sleep").chmod(0o755)
+        agent = {"result": {"agent": {"name": target, "pane_id": pane, "agent_status": "idle"}}}
+        return self.say(target, "review ANN-1", PATH=f"{bindir}:{self.env['PATH']}",
+                        FAKE_REPLIES=str(d / "replies"), FAKE_AGENT_GET=json.dumps(agent),
+                        FAKE_TRANSCRIPT=f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl", **env)
+
+    def sends(self, target):
+        return self.calls().count(f"agent prompt {target} review ANN-1 ")
+
+    def slept(self):
+        return [float(w) for w in self.waits.read_text().split()] if self.waits.exists() else []
+
+    def test_say_resends_a_message_its_turn_died_on_a_rate_limit_until_processed(self):
+        # acceptance-say-rate-limit, -confirmed: the first two turns die on a
+        # 429, the third is a reply; each wait is longer than the last.
+        r = self.say_to_claude("rate_limit", "rate_limit", "ok")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(self.sends("implementer-ann-1"), 3)
+        waits = self.slept()
+        self.assertEqual(len(waits), 2, waits)
+        self.assertGreaterEqual(waits[0], 30)
+        self.assertGreater(waits[1], waits[0])
+
+    def test_say_exits_69_when_every_turn_dies_on_a_rate_limit(self):
+        # acceptance-say-rate-limit-persistent: about two hours, then not processed.
+        r = self.say_to_claude(*["rate_limit"] * 20)
+        self.assertEqual(r.returncode, 69, r.stderr)
+        n = self.sends("implementer-ann-1")
+        waits = self.slept()
+        self.assertEqual(len(waits), n - 1, waits)
+        self.assertEqual(waits, sorted(waits))
+        self.assertTrue(5400 <= sum(waits) <= 9000, waits)
+        self.assertIn("implementer-ann-1", r.stderr)
+        self.assertIn(f"{n} sends", r.stderr)
+        self.assertIn("API Error: Request rejected (429)", r.stderr)
+        self.assertEqual(r.stderr.count("\n"), 1, r.stderr)
+
+    def test_say_is_done_at_a_reply_or_none_within_a_few_seconds(self):
+        # The message is processed unless its first reply is a rate-limit error.
+        for reply in ("ok", "none"):
+            r = self.say_to_claude(reply, "rate_limit", pane=f"w-{reply}:p1")
+            self.assertEqual((r.returncode, r.stderr), (0, ""))
+            self.assertEqual(self.sends("implementer-ann-1"), 1)
+            self.assertLessEqual(sum(self.slept()), 10)
+            self.log.unlink()
+            self.waits.unlink(missing_ok=True)
+
+    def test_say_resends_to_a_resumed_worker_whose_turn_died_on_a_rate_limit(self):
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
+        self.gone_file.write_text("w1:p7\nimplementer-ann-1\n")
+        r = self.say_to_claude("rate_limit", "ok", target="w1:p7")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "pane=w1:p1\n")
+        self.assertEqual(self.sends("w1:p1"), 2)
 
     def parked_line(self, lane, at="2026-10-14T10:00:00Z", session=None, **fields):
         state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
