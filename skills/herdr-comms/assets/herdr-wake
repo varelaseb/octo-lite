@@ -6,9 +6,12 @@
 #   herdr-wake send OWNER ARTIFACT MESSAGE  0 sent, 75 deferred, other failed
 # send keeps host-wake's states: a working owner defers; a prompt Herdr typed
 # but did not see land (agent_prompt_stalled) counts as sent so the same batch
-# is never retyped. Spec Chat bounds send and treats its timeout as sent.
-# A parked owner counts as present. Its resume outlasts that bound, so send
-# starts herdr-say detached in its own session and counts it as sent.
+# is never retyped. A parked owner counts as present.
+# Spec Chat bounds send, kills its process group at that bound, and counts it
+# sent. send runs herdr-say in a session of its own, so a send outliving the
+# bound (a parked resume, a rate-limit wait) keeps delivering. herdr-say's
+# stderr goes to an unlinked file, not a pipe: a killed reader would end
+# herdr-say on its next write, and nothing is left behind in TMPDIR.
 # OWNER is a pane of the caller's Herdr session, or SESSION/PANE: a pane of
 # Herdr session SESSION, so a review service of one session wakes an owner in
 # another. Herdr selects the session by HERDR_SESSION unless HERDR_SOCKET_PATH
@@ -54,14 +57,12 @@ case "${1:-}" in
   send)
     (($# == 4)) || usage
     s="$(status "$2")" || exit 1
-    if [[ "$s" == parked ]]; then
-      setsid "$say" --kind command --artifact "$3" "$2" "$4" </dev/null >/dev/null 2>&1 &
-      exit 0
-    fi
     [[ "$s" == working ]] && exit 75
-    err="$("$say" --kind command --artifact "$3" "$2" "$4" 2>&1 >/dev/null)"
+    f="$(mktemp)"; exec 3>"$f" 4<"$f"; rm -f "$f"
+    setsid -w "$say" --kind command --artifact "$3" "$2" "$4" </dev/null >/dev/null 2>&3
     rc=$?
     ((rc == 0 || rc == 75)) && exit "$rc"
+    err="$(cat <&4)"
     grep -q '"code": *"agent_prompt_stalled"' <<<"$err" && exit 0
     err="${err:-herdr-say exited $rc}"
     echo "herdr-wake: ${err//$'\n'/ }" >&2

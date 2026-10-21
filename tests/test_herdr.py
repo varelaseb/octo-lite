@@ -736,25 +736,30 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.wake("check", "w1:p1").returncode, 0)
         self.assertEqual(self.wake("check", "w1:p2").returncode, 1)
 
-    def test_wake_send_resumes_a_parked_owner_outside_its_send_bound(self):
-        # Spec Chat kills the send's process group after 10 s (review-serve.py
-        # run_wake); a resume takes longer, so this resume is held until after.
+    def test_wake_send_keeps_delivering_past_its_send_bound(self):
+        # transport-wake-bound: Spec Chat runs send in its own session, kills
+        # that process group at its bound, and counts it sent (review-serve.py
+        # run_wake). This resume is held past the kill, then still delivers.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\nann45\n")
         gate = Path(self.tmp.name) / "gate"
         self.addCleanup(gate.touch)
-        p = subprocess.Popen([str(WAKE), "send", "w9:p2", "a.spec.html", "hand-off ready"],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                             env={**self.env, "FAKE_START_GATE": str(gate)},
-                             start_new_session=True)
-        try:
-            _, err = p.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
+        tmpdir = Path(self.tmp.name) / "tmp"
+        tmpdir.mkdir()
+        with tempfile.TemporaryFile() as err:
+            p = subprocess.Popen([str(WAKE), "send", "w9:p2", "a.spec.html", "hand-off ready"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                 env={**self.env, "FAKE_START_GATE": str(gate), "TMPDIR": str(tmpdir)},
+                                 start_new_session=True)
+            for _ in range(100):
+                if "agent start" in self.calls():
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(p.poll(), "send returned before its herdr-say ended")
             os.killpg(p.pid, signal.SIGKILL)
-            p.communicate()
-            self.fail("send waited on the resume")
-        self.assertEqual(p.returncode, 0, err)
+            p.wait()
+        self.assertEqual(list(tmpdir.iterdir()), [])
         gate.touch()
         for _ in range(100):
             if "agent prompt w1:p1 hand-off ready" in self.calls():

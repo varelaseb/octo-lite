@@ -147,7 +147,9 @@ owner, the line named after its log, in a new lane space; a worker in the
 caller's `$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its
 new `pane=`. `herdr-say --parked TARGET` prints that line, or exits 1.
 `herdr-wake check` counts a parked owner as present, so a spec review hand-off
-resumes it.
+resumes it. `herdr-wake send` runs `herdr-say` in a session of its own, so a
+send outliving Spec Chat's send bound (a resume, a rate-limit wait) keeps
+delivering after Spec Chat counts it sent.
 
 The review service may run in another Herdr session, so register a review row
 with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks
