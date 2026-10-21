@@ -148,7 +148,7 @@ Exit codes are the contract:
 | 0 | delivered, and Herdr observed the agent change state; a Claude agent also processed it |
 | 69 | not processed: a Claude agent's turn died on an API rate limit at every send for about two hours; stderr names the target, the number of sends, and the last API error; every re-send is already spent, so never send it again |
 | 75 | target is blocked on interactive input; retry when it frees |
-| other | anything else |
+| other | anything else; 1 for a message never taken in, stderr naming the target |
 
 There is no acknowledgement step. `--wait --until` returns only on a state
 change Herdr observed itself, which is stronger evidence than an agent
@@ -163,10 +163,12 @@ cooling down) has not processed the message, though Herdr saw it work (spec
 `#transport-say-rate-limit`). After each send, the transcript of the pane's
 Claude session (`herdr-claude-session`) decides: processed unless the
 message's own reply, within a few seconds, is a rate-limit error. Its own reply
-is the first reply after the record carrying it: Herdr does not track turns, so
-for a target already working, the state change and the reply after it are the
-running turn's. A message enqueued behind a running turn waits until that turn
-takes it in or ends, within the same two-hour bound. Otherwise
+is the first reply after the record carrying it, a slash command's as Claude
+records it, its name and args: Herdr does not track turns, so for a target
+already working, the state change and the reply after it are the running
+turn's. A message enqueued behind a running turn waits until taken in, however
+long that turn runs; one still not taken in once that turn has ended or Claude
+has exited never reached the agent, and `herdr-say` exits 1. Otherwise
 `herdr-say` sends the same message again, waits doubling from a minute,
 capped, until processed (exit 0) or about two hours pass (exit 69). The retry
 lives in that one send, so a caller bounded tighter does not hold it in the

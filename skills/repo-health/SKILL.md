@@ -1,6 +1,6 @@
 ---
 name: repo-health
-description: Run the repo health pass, fired by hand, that files a repo's real architecture and cleanliness issues as ranked health tickets; and hold the one filing rule for review notes and findings.
+description: Run the repo health pass, fired by hand, that files a repo's real architecture and cleanliness issues as ranked health tickets; and file review notes and findings by the one filing rule.
 ---
 
 # Repo Health
@@ -20,12 +20,12 @@ One tracker ticket per real issue:
   `health pass at <main sha>`).
 - Label: one category label of the `Health` group: `architecture`,
   `cleanliness`, `naming`, `duplication`, `test`, `docs`.
-- Priority from rank, by consequence: high `-p 2` (will cause wrong behavior
-  or block a change), medium `-p 3` (makes the next change there cost more:
-  a duplicate, a dead store, a misleading name), low `-p 4` (costs only
+- Priority from rank, by consequence: high `2` (will cause wrong behavior
+  or block a change), medium `3` (makes the next change there cost more:
+  a duplicate, a dead store, a misleading name), low `4` (costs only
   reading time).
-- Unassigned, no parent, not started: no `-a`, `--parent`, `--state`, or
-  `--start`, so it lands in the team's default state.
+- Unassigned, no parent, not started: no `assigneeId`, `parentId`, or
+  `stateId`, so it lands in the team's default state.
 
 A consequence is what the issue will cost or break, named concretely, such as
 "the next change to acceptance must edit four copies".
@@ -47,56 +47,36 @@ if [ -z "$(linear api 'query($t:String!){team(id:$t){labels(filter:{name:{eq:"He
     linear api 'mutation($t:String!,$g:String!,$n:String!){issueLabelCreate(input:{name:$n,parentId:$g,teamId:$t}){issueLabel{id}}}' --variable t="$tid" --variable g="$g" --variable n="$c" --silent
   done
 fi
-# file, comment, close
-linear issue create --no-interactive -t <title> -l <category> -p <2|3|4> --description-file <f>
+# file: the category label resolved inside the Health group, never by bare
+# name, which can pick a workspace or team `docs` or `test` label instead
+l=$(linear api 'query($t:String!,$n:String!){team(id:$t){labels(filter:{name:{eq:$n},parent:{name:{eq:"Health"}}}){nodes{id}}}}' --variable t="$tid" --variable n=<category> | jq -r '.data.team.labels.nodes[0].id')
+linear api 'mutation($t:String!,$l:String!,$ti:String!,$p:Int!,$d:String!){issueCreate(input:{teamId:$t,labelIds:[$l],title:$ti,priority:$p,description:$d}){issue{identifier url}}}' --variable t="$tid" --variable l="$l" --variable ti=<title> --variable p=<2|3|4> --variable d=@<f>
+# comment, close
 linear issue comment add <key> --body-file <f>
 linear issue update <key> --state completed
 ```
 
 ## Filing rule
 
-One rule for every filing: one PR's notes at lane close, many PRs' notes in
-one batch, and a health pass's findings. Notes come tagged from each PR body
-(`gh pr view <pr> --json url,body`), as the reviewer gave them.
+The rule is spec `#health-filing`: what each note or finding gets, and what a
+filing checks against main. This skill holds only how:
 
-1. Read every open health ticket, and main: `git fetch origin`; main is
-   `origin/main`, checked at `git rev-parse --short origin/main`.
-2. An open health ticket you find gone from main: comment naming that main
-   commit and why the issue is gone, then close it as done.
-3. Give each note or finding the first disposition that fits:
-
-| The note or finding | Disposition |
-| --- | --- |
-| Names no consequence | Stays history; nothing is filed. |
-| Names an issue main no longer has | Nothing is filed. |
-| Names the same issue as an open health ticket | Comment on that ticket naming the new source; no second ticket. |
-| Names the same issue as another note or finding in the batch | One new ticket for all of them, naming every source. |
-| Any other | One new health ticket. |
-
-Two notes name the same issue when one fix would remove both, whatever their
-wording. One ticket per real issue, however many notes, PRs, or passes raise it.
+1. Read each PR's notes, tagged as the reviewer gave them, from its body:
+   `gh pr view <pr> --json url,body`.
+2. Read the open health tickets (Tracker), and main: `git fetch origin`; main
+   is `origin/main`, checked at `git rev-parse --short origin/main`.
+3. File, or comment naming the new source, with the Tracker commands.
 
 ## Pass
 
-Fired by hand by the fleet operator, at its own call or when the human asks,
-never on a timer: one fresh agent per pass, on the target's main checkout,
-loading this skill. The fleet operator relays the pass's ticket keys to the
-human who asked.
+The pass is spec `#health-pass`: who fires it, what it reads, looks for,
+checks, and files, and its one message. This skill holds only how:
 
-The pass agent changes no repository file (no pull, checkout, or commit) and
-writes only health tickets. Read main in the checkout when its `HEAD` is
-`origin/main`, else through `git show` and `git grep` at `origin/main`.
-
-1. Read the target's instructions (`AGENTS.md`), its specs' modular
-   boundaries, the open health tickets, and the code.
-2. Look across the whole repository for architecture, cleanliness,
-   best-practice, and trimming issues, a deletion first wherever one would do.
-   Each finding names its category, consequence, where, and rank.
-3. Check every open health ticket against main, closing each one main fixed
-   (Filing rule step 2).
-4. File findings by the Filing rule, source `health pass at <main sha>`: at
-   most five new tickets per pass, highest rank first; the rest wait for a
-   later pass that still finds them.
-5. Result is the tickets, never a report: send the fleet operator one
-   `herdr-say` message naming each ticket filed, commented on, or closed, by
-   key, and no finding outside them. Then stop.
+- Read main without changing a repository file (no pull, checkout, or
+  commit): in the checkout when its `HEAD` is `origin/main`, else through
+  `git show` and `git grep` at `origin/main`.
+- Close each open health ticket main fixed with the Tracker comment and
+  close commands.
+- File findings by the Filing rule, source `health pass at <main sha>`.
+- Send the fleet operator the one message with `herdr-say`: each ticket key
+  filed, commented on, or closed. Then stop.

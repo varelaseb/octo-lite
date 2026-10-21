@@ -6,7 +6,10 @@ from __future__ import annotations
 
 from html import unescape
 from pathlib import Path
+import os
 import re
+import subprocess
+import tempfile
 import tomllib
 import unittest
 
@@ -111,15 +114,16 @@ class LaneRecordTests(unittest.TestCase):
 
     def test_owner_leaves_relayed_spec_acceptance_to_operator(self) -> None:
         # spec #gates-chat-acceptance, #acceptance-chat-acceptance: a spec
-        # acceptance the operator relays is the operator's receipt, never the owner's.
-        text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
-        self.assertRegex(
-            text,
-            r"spec acceptance the operator relays \(chat, standing pre-acceptance, a brief\) "
-            r"is the operator's to record: send the operator the review link \(or spec head\), "
-            r"build once its receipt is on the PR, never post that receipt yourself "
-            r"\(spec `#gates-chat-acceptance`\)\.",
-        )
+        # acceptance the operator relays is the operator's receipt; the owner
+        # posts a receipt only for a review-page Accept spec hand-off.
+        lines = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").splitlines()
+        relayed = [line for line in lines if "#gates-chat-acceptance" in line]
+        self.assertEqual(len(relayed), 1, relayed)
+        self.assertRegex(relayed[0], r"operator relays is the operator's to record.*never post")
+        posts = [line for line in lines if "gh pr comment" in line]
+        self.assertTrue(posts)
+        for line in posts:
+            self.assertIn("Accept spec hand-off from the review page", line)
 
     def test_chat_spec_acceptance_records_only_the_pr_receipt(self) -> None:
         # spec #acceptance-chat-one-record, #gates-chat-acceptance: the operator
@@ -130,11 +134,55 @@ class LaneRecordTests(unittest.TestCase):
             self.assertNotIn("--accepted", path.read_text(encoding="utf-8"), path)
         self.assertRegex(
             OPERATOR.read_text(encoding="utf-8"),
-            r"spec acceptance the human gives the operator in chat is recorded .*the one record: "
-            r"`gh pr comment <pr> --body 'Spec acceptance receipt: human .*"
-            r"accepts <full repository path> at <commit>\..*"
             r"`review-host\.py reviewed --id <resource id>` per accepted spec: "
             r"it moves the row's base to the accepted commit and records no acceptance\.",
+        )
+
+    def test_chat_spec_receipt_command_keeps_the_humans_words(self) -> None:
+        # spec #acceptance-receipt-spec-example: the operator's receipt command,
+        # run as written, posts the human's words verbatim, apostrophe included.
+        text = OPERATOR.read_text(encoding="utf-8")
+        match = re.search(r"in chat is recorded .*?```sh\n(.*?)```", text, flags=re.DOTALL)
+        self.assertIsNotNone(match, "chat receipt command is missing")
+        fill = {
+            "<pr>": "208",
+            "<words>": "your goal is to merge all this stuff. you're preauthorized",
+            "<date>": "2026-10-21",
+            "<full repository path>": "spec/domains/octo-lite.spec.html",
+            "<commit>": "1a2b3c4",
+        }
+        command = match.group(1)
+        for slot, value in fill.items():
+            command = command.replace(slot, value)
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body"
+            gh = Path(tmp) / "gh"
+            gh.write_text(
+                "#!/bin/sh\n"
+                "while [ $# -gt 0 ]; do\n"
+                '  case $1 in --body) printf %s "$2" > "$BODY";; --body-file) cat "$2" > "$BODY";; esac\n'
+                "  shift\n"
+                "done\n",
+                encoding="utf-8",
+            )
+            gh.chmod(0o755)
+            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "BODY": str(body)}
+            run = subprocess.run(["sh", "-c", command], env=env, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(
+                body.read_text(encoding="utf-8").strip(),
+                'Spec acceptance receipt: human "your goal is to merge all this stuff. '
+                "you're preauthorized\" (2026-10-21) accepts spec/domains/octo-lite.spec.html "
+                "at 1a2b3c4. Recorded by meta-operator.",
+            )
+
+    def test_standing_spec_acceptance_recorded_on_owner_send(self) -> None:
+        # spec #gates-chat-acceptance, #acceptance-standing-acceptance: a standing
+        # acceptance is recorded at once when the owner sends the spec head.
+        self.assertRegex(
+            OPERATOR.read_text(encoding="utf-8"),
+            r"standing acceptance .* before the spec head exists is recorded the same way, at once, "
+            r"when the owner sends you that spec's review link or head, quoting the human's standing words",
         )
 
     def test_owner_logs_attempt_line_on_consuming_worker_result(self) -> None:
