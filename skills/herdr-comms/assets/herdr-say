@@ -35,7 +35,8 @@
 # decides; another session's lanes repeat its ids. A live agent under the
 # line's name gets the message; otherwise the agent is resumed first (an owner,
 # the lane's name, in a new lane space; a worker in the caller's space), and its
-# new pane= is printed.
+# new pane= is printed. Every re-send does the same, so a target parked during
+# a wait is resumed.
 # `herdr-say --parked TARGET` prints that line, or exits 1 when there is none.
 set -euo pipefail
 
@@ -98,31 +99,37 @@ reply() {
 }
 limited() { r="$(reply "$pane")" && [[ "$(jq -r .error <<<"$r")" == rate_limit ]]; }
 
-name="$target"
-prompt "$name"
-if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$target")"; then
-  name="$(jq -r .name <<<"$line")"
-  if ! herdr agent get "$name" >/dev/null 2>&1; then
-    resume=(--cwd "$(jq -r .cwd <<<"$line")" --name "$name" --resume "$(jq -r .session <<<"$line")")
-    if [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
-      started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
-    else
-      started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
-        --role "$(jq -r '.role // empty' <<<"$line")" "${resume[@]}" -- claude)"
-    fi
-    name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
-    echo "pane=$name"
-  fi
+# One send, the first and every re-send: the message goes to $name, resuming
+# first a target Herdr does not find that a parked line names (one parked
+# during a wait is named by its pane or name); $pane is then its pane.
+send() {
   prompt "$name"
-fi
-landed
+  if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$name")"; then
+    name="$(jq -r .name <<<"$line")"
+    if ! herdr agent get "$name" >/dev/null 2>&1; then
+      resume=(--cwd "$(jq -r .cwd <<<"$line")" --name "$name" --resume "$(jq -r .session <<<"$line")")
+      if [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
+        started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
+      else
+        started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
+          --role "$(jq -r '.role // empty' <<<"$line")" "${resume[@]}" -- claude)"
+      fi
+      name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
+      echo "pane=$name"
+    fi
+    prompt "$name"
+  fi
+  landed
+  pane="$(herdr agent get "$name" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" || exit 0
+}
 
-pane="$(herdr agent get "$name" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" || exit 0
+name="$target"
+send
 waits=(60 120 240 480 960 1800 1800 1800) sends=1
 while limited; do
   ((sends <= ${#waits[@]})) || {
     echo "herdr-say: $target not processed: API rate limit at all $sends sends; last error: $(jq -r '.message.content[0].text' <<<"$r")" >&2
     exit 69; }
   sleep "${waits[sends - 1]}"
-  prompt "$name"; landed; sends=$((sends + 1))
+  send; sends=$((sends + 1))
 done
