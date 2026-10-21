@@ -24,6 +24,8 @@ live Herdr 0.9.0:
     must stay in the caller's Herdr session
   * a Claude agent's turn may die at once on an API rate limit, so Herdr sees
     it work though it never processed the message
+  * a message queued behind a running turn may never be taken in, and Claude
+    records a slash command transformed, never as typed
   * a wake send outliving Spec Chat's bound fails after Spec Chat counted it
     sent, so only the operator can be told
 """
@@ -142,7 +144,12 @@ case "$sub" in
     elif [[ -n "${FAKE_AGENT_GET:-}" ]]; then
       # FAKE_AGENT_GET_WARN: a successful get that also warns on stderr.
       [[ -z "${FAKE_AGENT_GET_WARN:-}" ]] || echo "$FAKE_AGENT_GET_WARN" >&2
-      echo "$FAKE_AGENT_GET"
+      # Working while a running turn's time (a blank line) is still to land.
+      if [[ -n "${FAKE_TRANSCRIPT:-}" && -s "$FAKE_TRANSCRIPT.later" && -z "$(head -1 "$FAKE_TRANSCRIPT.later")" ]]; then
+        jq -c '.result.agent.agent_status = "working"' <<<"$FAKE_AGENT_GET"
+      else
+        echo "$FAKE_AGENT_GET"
+      fi
     elif [[ -n "${FAKE_NEVER_READY:-}" ]]; then
       echo '{"result":{"agent":{}}}'
     elif [[ -n "${FAKE_NO_SESSION:-}" ]]; then
@@ -166,32 +173,42 @@ case "$sub" in
     # as Claude does: rate_limit, ok, or none. Two words pose a target already
     # working: the message is enqueued, the running turn's reply (the first)
     # lands at once, and the message is taken in later, its reply the second:
-    # mid-turn after an ok, at the turn's end after a rate_limit.
+    # mid-turn after an ok, at the turn's end after a rate_limit; a second
+    # exit: the turn ends, or Claude exits, before taking it in.
     # FAKE_TRANSCRIPT.later holds what lands later, one line per wait (sleep),
     # a blank line the running turn's time.
+    # A slash command's user record is Claude's: its name and args in tags.
     if [[ -n "${FAKE_REPLIES:-}" ]]; then
       read -r first second <"$FAKE_REPLIES" || true; sed -i 1d "$FAKE_REPLIES"
       mkdir -p "$(dirname "$FAKE_TRANSCRIPT")"
       at() { date -u +%FT%T.%3NZ; }
-      record() { jq -nc --arg m "$text" --arg at "$(at)" "{isSidechain: false, timestamp: \$at} + $1"; }
+      record() { jq -nc --arg m "$text" --arg s "$said" --arg at "$(at)" "{isSidechain: false, timestamp: \$at} + $1"; }
       reply() { case "$1" in
           rate_limit) record '{type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429, message: {content: [{type: "text", text: "API Error: Request rejected (429) · All credentials are cooling down"}]}}' ;;
           ok) record '{type: "assistant", message: {content: [{type: "text", text: "on it"}]}}' ;;
         esac; }
-      text="$4"
+      text="$4" said="$4"
+      if [[ "$text" == /* ]]; then
+        cmd="${text%% *}" args="${text#"${text%% *}"}"
+        said="<command-name>$cmd</command-name>
+            <command-message>${cmd#/}</command-message>
+            <command-args>${args# }</command-args>"
+      fi
       if [[ -z "$second" ]]; then
-        { record '{type: "user", message: {role: "user", content: $m}}'; reply "$first"; } >>"$FAKE_TRANSCRIPT"
+        { record '{type: "user", message: {role: "user", content: $s}}'; reply "$first"; } >>"$FAKE_TRANSCRIPT"
       else
         submitted="$(at)"
         { record '{type: "queue-operation", operation: "enqueue", content: $m}'; reply "$first"; } >>"$FAKE_TRANSCRIPT"
         { printf '\n%.0s' {1..12}
-          if [[ "$first" == ok ]]; then
+          if [[ "$second" == exit ]]; then
+            :
+          elif [[ "$first" == ok ]]; then
             record '{type: "queue-operation", operation: "remove", reason: "absorbed_mid_turn", content: $m}'
             record '{type: "user", message: {role: "user", content: [{type: "tool_result", content: "done"}]}}'
             record "{type: \"attachment\", attachment: {type: \"queued_command\", prompt: \$m}, timestamp: \"$submitted\"}"
           else
             record '{type: "queue-operation", operation: "dequeue"}'
-            record '{type: "user", message: {role: "user", content: $m}}'
+            record '{type: "user", message: {role: "user", content: $s}}'
           fi
           reply "$second"; } >>"$FAKE_TRANSCRIPT.later"
       fi
@@ -813,14 +830,15 @@ class HerdrWrapperTest(unittest.TestCase):
         return {"PATH": f"{bindir}:{self.env['PATH']}", "FAKE_REPLIES": str(d / "replies"),
                 "FAKE_TRANSCRIPT": transcript}
 
-    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", on_wait="", **env):
+    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", on_wait="",
+                      message="review ANN-1", **env):
         # A Claude agent in pane, under the name target, replying replies.
         agent = {"result": {"agent": {"name": target, "pane_id": pane, "agent_status": "idle"}}}
-        return self.say(target, "review ANN-1", **self.replying(*replies, pane=pane, on_wait=on_wait),
+        return self.say(target, message, **self.replying(*replies, pane=pane, on_wait=on_wait),
                         FAKE_AGENT_GET=json.dumps(agent), **env)
 
-    def sends(self, target):
-        return self.calls().count(f"agent prompt {target} review ANN-1 ")
+    def sends(self, target, message="review ANN-1"):
+        return self.calls().count(f"agent prompt {target} {message} ")
 
     def sends_to(self, pane):
         return self.calls().count(f"agent prompt {pane} hand-off ready ")
@@ -878,6 +896,26 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stderr), (0, ""))
         self.assertEqual(self.sends("implementer-ann-1"), 1)
         self.assertEqual([w for w in self.slept() if w >= 30], [])
+
+    def test_say_fails_a_queued_message_never_taken_in(self):
+        # acceptance-say-never-taken-in: the running turn ends, or the agent's
+        # Claude exits (Herdr finds no agent), before taking the message in.
+        for end in ("ended", "exited"):
+            pane = f"w-{end}:p1"
+            later = f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl.later"
+            exit = f'[ -s "{later}" ] || echo {pane} >"{self.gone_file}"' if end == "exited" else ""
+            r = self.say_to_claude("ok exit", pane=pane, on_wait=exit)
+            self.assertNotIn(r.returncode, (0, 69, 75), end)
+            self.assertRegex(r.stderr, r"^herdr-say: implementer-ann-1: message never taken in\b[^\n]*\n$")
+            self.assertEqual(self.sends("implementer-ann-1"), 1)
+            self.log.unlink()
+
+    def test_say_judges_a_slash_command_by_the_record_claude_makes_of_it(self):
+        # Claude records /goal ARGS as its name and args in tags, so a /goal
+        # whose turn dies on a rate limit is sent again like any message.
+        r = self.say_to_claude("rate_limit", "ok", message="/goal ship ANN-1")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(self.sends("implementer-ann-1", "/goal ship ANN-1"), 2)
 
     def test_say_resends_to_a_resumed_worker_whose_turn_died_on_a_rate_limit(self):
         self.dialog.write_text("none\n")
@@ -1029,11 +1067,12 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def test_wake_send_failing_within_its_send_bound_tells_only_spec_chat(self):
         # transport-wake-bound: Spec Chat holds a failure within its bound and
-        # retries it, so the operator hears of none of its attempts.
+        # retries it, so the operator hears of none of its attempts. The owner
+        # gone between check and send fails at once; a 69 takes hours.
         told = self.operator()
-        r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready", **self.replying(*["rate_limit"] * 9))
-        self.assertEqual(r.returncode, 69, r.stderr)
-        self.assertRegex(r.stderr, r"^herdr-wake: herdr-say: w1:p1 not processed: API rate limit .*\n$")
+        r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready", FAKE_PROMPT_NOT_FOUND="1")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertRegex(r.stderr, r'^herdr-wake: [^\n]*"agent_not_found"[^\n]*\n$')
         self.assertNotIn(told, self.calls())
 
     def test_wake_check_counts_a_parked_owner_as_present(self):
