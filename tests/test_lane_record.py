@@ -161,10 +161,13 @@ class LaneRecordTests(unittest.TestCase):
         # spec #roles-goal, #acceptance-worker-owner-gone(-stops): 3 sends to
         # the owner, then one to the operator pane, then stop; the operator
         # forwards to the owner pane and relaunches only a gone, unparked owner.
+        # #acceptance-worker-owner-rate-limited: exit 69 already re-sent, so it
+        # goes to the operator at once, never re-sent.
         for role in ("implementer", "integrator", "code-reviewer"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; "
+                "on exit 69, which `herdr-say` already re-sent for hours, send it no more; "
                 "on any other exit, send it again, 3 sends in all. If none exits 0, send it once, "
                 "naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). "
                 "Then stop, whatever the last exit.",

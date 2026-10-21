@@ -146,7 +146,7 @@ Exit codes are the contract:
 | code | meaning |
 |---|---|
 | 0 | delivered, and Herdr observed the agent change state; a Claude agent also processed it |
-| 69 | not processed: a Claude agent's turn died on an API rate limit at every send for about two hours; stderr names the target, the number of sends, and the last API error |
+| 69 | not processed: a Claude agent's turn died on an API rate limit at every send for about two hours; stderr names the target, the number of sends, and the last API error; every re-send is already spent, so never send it again |
 | 75 | target is blocked on interactive input; retry when it frees |
 | other | anything else |
 
