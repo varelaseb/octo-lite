@@ -18,8 +18,12 @@ live Herdr 0.9.0:
   * a detached child outlives its closed tab unless `herdr-close` reaps it
   * a parked agent must hold no process, refuse when working or Codex, and
     resume once under its name when messaged
+  * a pane's Claude session record may be one an ended Claude left at a pid
+    since reused, or belong to a spare Claude claimed into the pane
   * Herdr ids repeat across sessions, so state, parking, waking, and closing
     must stay in the caller's Herdr session
+  * a Claude agent's turn may die at once on an API rate limit, so Herdr sees
+    it work though it never processed the message
 """
 
 import json
@@ -38,6 +42,7 @@ SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
 WAKE = ROOT / "skills/herdr-comms/assets/herdr-wake"
 CLOSE = ROOT / "skills/herdr-comms/assets/herdr-close"
+SESSION = ROOT / "skills/herdr-comms/assets/herdr-claude-session"
 STATE = ROOT / "scripts/octo-lite-state"
 
 # A stand-in for the `herdr` binary. Behaviour is driven entirely by environment
@@ -154,6 +159,18 @@ case "$sub" in
     if [[ -n "${FAKE_PROMPT_NOT_FOUND:-}" ]]; then
       echo '{"error":{"code":"agent_not_found","message":"not found"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
+    # FAKE_REPLIES: one line per prompt, the Claude agent's reply that its
+    # transcript FAKE_TRANSCRIPT records after the message: rate_limit, ok, or none.
+    if [[ -n "${FAKE_REPLIES:-}" ]]; then
+      reply="$(head -1 "$FAKE_REPLIES")"; sed -i 1d "$FAKE_REPLIES"
+      mkdir -p "$(dirname "$FAKE_TRANSCRIPT")"
+      at() { date -u +%FT%T.%3NZ; }
+      { printf '{"type":"user","isSidechain":false,"timestamp":"%s"}\n' "$(at)"
+        case "$reply" in
+          rate_limit) printf '{"type":"assistant","isSidechain":false,"timestamp":"%s","isApiErrorMessage":true,"error":"rate_limit","apiErrorStatus":429,"message":{"content":[{"type":"text","text":"API Error: Request rejected (429) \xc2\xb7 All credentials are cooling down"}]}}\n' "$(at)" ;;
+          ok) printf '{"type":"assistant","isSidechain":false,"timestamp":"%s","message":{"content":[{"type":"text","text":"on it"}]}}\n' "$(at)" ;;
+        esac; } >>"$FAKE_TRANSCRIPT"
+    fi
     echo '{"result":{"agent":{"agent_status":"working"}}}' ;;
   *)
     echo "{}" ;;
@@ -198,8 +215,10 @@ class HerdrWrapperTest(unittest.TestCase):
         }
         self.gone_file = d / "gone"
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
-        # The suite runs in the default Herdr session unless a test names one.
-        self.env.pop("HERDR_SESSION", None)
+        # The suite runs in the default Herdr session, from no pane, unless a
+        # test names one: a Herdr pane's caller env must not reach a wrapper.
+        for var in ("HERDR_SESSION", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"):
+            self.env.pop(var, None)
 
     def spawn(self, extra=(), **env):
         return subprocess.run(
@@ -552,25 +571,43 @@ class HerdrWrapperTest(unittest.TestCase):
 
     # --- park ------------------------------------------------------------
 
-    def claude(self, pane, tab, space, sid, **env):
+    def claude(self, pane, tab, space, sid, replies=(), stale=False, sidechain=None, **env):
         # A detached stand-in for an agent's Claude process in a pane, with
-        # Claude's own session file for its pid unless sid is None.
+        # Claude's own session file for its pid unless sid is None, recording
+        # the process start time, or another one when stale: an ended Claude's
+        # record at a pid a process of the pane reuses. replies are the
+        # timestamps of the replies in its transcript; none, no transcript yet.
+        # sidechain is the timestamp of a subagent's assistant record after them.
         p = subprocess.Popen(["sleep", "600"], start_new_session=True, env={
             **self.env, "HERDR_PANE_ID": pane, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": space, **env})
         self.addCleanup(lambda: (p.kill(), p.wait()))
         if sid:
-            sessions = Path(self.env["HOME"]) / ".claude/sessions"
+            home = Path(self.env["HOME"])
+            sessions = home / ".claude/sessions"
             sessions.mkdir(parents=True, exist_ok=True)
+            start = int(Path(f"/proc/{p.pid}/stat").read_text().split()[21]) + stale
             (sessions / f"{p.pid}.json").write_text(json.dumps({
                 "pid": p.pid, "sessionId": sid, "cwd": str(self.cwd),
-                "agent": "implementer"}))
+                "procStart": str(start), "agent": "implementer"}))
+            if replies:
+                project = home / ".claude/projects" / f"-p-{sid}"
+                project.mkdir(parents=True, exist_ok=True)
+                (project / f"{sid}.jsonl").write_text("".join(json.dumps(r) + "\n" for at in replies for r in (
+                    {"type": "user", "isSidechain": False, "timestamp": at},
+                    {"type": "assistant", "isSidechain": False, "timestamp": at})) + "".join(
+                    json.dumps({"type": "assistant", "isSidechain": True, "timestamp": sidechain}) + "\n"
+                    for _ in [sidechain] if sidechain))
         return p
 
-    def park(self, status="idle", session=True, name="implementer-ann-1", tabs=2, twin=None, **env):
-        # twin names another Herdr session holding an agent under the same ids.
+    def park(self, status="idle", session=True, name="implementer-ann-1", tabs=2, twin=None,
+             replies=(), beside=(), **env):
+        # twin names another Herdr session holding an agent under the same ids;
+        # beside holds (session id, claude kwargs) of more Claude records in the pane.
         space = f"w-{uuid.uuid4()}"
         tab, pane = f"{space}:t1", f"{space}:p1"
-        p = self.claude(pane, tab, space, "s-1" if session else None)
+        for sid, kw in beside:
+            self.claude(pane, tab, space, sid, **kw)
+        p = self.claude(pane, tab, space, "s-1" if session else None, replies)
         if twin:
             self.twin = self.claude(pane, tab, space, "s-twin", HERDR_SESSION=twin)
         agent = {"result": {"agent": {"name": name, "pane_id": pane, "tab_id": tab,
@@ -643,6 +680,65 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertTrue(self.gone(mine), "the parked agent's process survived")
             self.assertIsNone(theirs.poll(), "parking stopped another session's agent")
 
+    def test_park_never_reads_a_record_left_at_a_reused_pid(self):
+        # acceptance-park-stale-record: the ended Claude's record holds the
+        # pane's newest reply, but its pid now runs another process of the pane.
+        p, r, *_ = self.park(replies=["2026-10-21T09:00:00.000Z"],
+                             beside=[("s-ended", {"stale": True, "replies": ["2026-10-21T10:00:00.000Z"]})])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["session"], "s-1")
+
+    def test_park_names_the_conversation_held_in_the_pane(self):
+        # acceptance-park-claimed-spare: a spare Claude claimed into the pane
+        # beside an idle foreground one; the one holding the latest reply is
+        # the pane's, whichever started first; a subagent's (sidechain) is none.
+        for mine, other, sid in (("2026-10-21T09:00:00.000Z", "2026-10-21T08:00:00.000Z", "s-1"),
+                                 ("2026-10-21T08:00:00.000Z", "2026-10-21T09:00:00.000Z", "s-spare")):
+            p, r, *_ = self.park(replies=[mine], beside=[("s-spare", {
+                "replies": [other], "sidechain": "2026-10-21T11:00:00.000Z"})])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads(r.stdout)["session"], sid)
+
+    def test_claude_session_prints_the_panes_record_and_its_transcript(self):
+        # The lookup herdr-say and herdr-close --park share.
+        space = f"w-{uuid.uuid4()}"
+        p = self.claude(f"{space}:p1", f"{space}:t1", space, "s-1", ["2026-10-21T09:00:00.000Z"])
+        fresh = self.claude(f"{space}:p2", f"{space}:t2", space, "s-2")
+        run = lambda pane: subprocess.run([str(SESSION), pane], capture_output=True, text=True, env=self.env)
+        r = run(f"{space}:p1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
+        record = json.loads(r.stdout)
+        self.assertEqual((record["pid"], record["sessionId"], record["agent"]), (p.pid, "s-1", "implementer"))
+        self.assertEqual(record["transcript"], f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl")
+        r = run(f"{space}:p2")
+        self.assertEqual((r.returncode, json.loads(r.stdout)["transcript"]), (0, None), r.stderr)
+        r = run(f"{space}:p3")
+        self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+
+    def test_claude_session_cost_does_not_grow_with_the_transcript(self):
+        # The operator's transcript grows past 200MB; a whole read took 7s, so
+        # every herdr-say paid it and a wake outlived Spec Chat's 10s bound.
+        # Beside a spare whose reply is older, the pane's session holds ~110MB
+        # of earlier turns and its latest reply near its end.
+        space = f"w-{uuid.uuid4()}"
+        pane, tab = f"{space}:p1", f"{space}:t1"
+        self.claude(pane, tab, space, "s-spare", ["2026-10-21T09:00:00.000Z"])
+        self.claude(pane, tab, space, "s-1")
+        turn = lambda kind, at: json.dumps({"type": kind, "isSidechain": False, "timestamp": at, "message": {
+            "content": [{"type": "text", "text": "word " * 4, "n": n} for n in range(40)]}}) + "\n"
+        transcript = Path(self.env["HOME"]) / ".claude/projects/-p-s-1/s-1.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text((turn("user", "2026-10-21T08:00:00.000Z") + turn(
+            "assistant", "2026-10-21T08:00:00.000Z")) * 25000 + turn(
+            "assistant", "2026-10-21T10:00:00.000Z") + turn("user", "2026-10-21T10:00:01.000Z"))
+        start = time.monotonic()
+        r = subprocess.run([str(SESSION), pane], capture_output=True, text=True, env=self.env)
+        elapsed = time.monotonic() - start
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["sessionId"], "s-1")
+        self.assertLess(elapsed, 1.0)
+
     # --- say -------------------------------------------------------------
 
     def test_say_delivers_through_the_native_prompt_and_waits(self):
@@ -665,6 +761,74 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_say_accepts_the_caller_compatibility_flags(self):
         r = self.say("--kind", "command", "--artifact", "x.spec.html", "a1", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", **env):
+        # A Claude agent in pane, under the name target, whose reply to each
+        # send is the next of replies; its transcript starts once the first
+        # message lands. sleep is a stand-in that records each wait.
+        space = pane.split(":")[0]
+        self.claude(pane, f"{space}:t1", space, "s-1")
+        d = Path(self.tmp.name)
+        (d / "replies").write_text("".join(f"{r}\n" for r in replies))
+        bindir = d / "sleepbin"
+        bindir.mkdir(exist_ok=True)
+        self.waits = d / "waits"
+        (bindir / "sleep").write_text(f'#!/bin/sh\necho "$1" >>"{self.waits}"\n')
+        (bindir / "sleep").chmod(0o755)
+        agent = {"result": {"agent": {"name": target, "pane_id": pane, "agent_status": "idle"}}}
+        return self.say(target, "review ANN-1", PATH=f"{bindir}:{self.env['PATH']}",
+                        FAKE_REPLIES=str(d / "replies"), FAKE_AGENT_GET=json.dumps(agent),
+                        FAKE_TRANSCRIPT=f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl", **env)
+
+    def sends(self, target):
+        return self.calls().count(f"agent prompt {target} review ANN-1 ")
+
+    def slept(self):
+        return [float(w) for w in self.waits.read_text().split()] if self.waits.exists() else []
+
+    def test_say_resends_a_message_its_turn_died_on_a_rate_limit_until_processed(self):
+        # acceptance-say-rate-limit, -confirmed: the first two turns die on a
+        # 429, the third is a reply; each wait is longer than the last.
+        r = self.say_to_claude("rate_limit", "rate_limit", "ok")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(self.sends("implementer-ann-1"), 3)
+        waits = self.slept()
+        self.assertEqual(len(waits), 2, waits)
+        self.assertGreaterEqual(waits[0], 30)
+        self.assertGreater(waits[1], waits[0])
+
+    def test_say_exits_69_when_every_turn_dies_on_a_rate_limit(self):
+        # acceptance-say-rate-limit-persistent: about two hours, then not processed.
+        r = self.say_to_claude(*["rate_limit"] * 20)
+        self.assertEqual(r.returncode, 69, r.stderr)
+        n = self.sends("implementer-ann-1")
+        waits = self.slept()
+        self.assertEqual(len(waits), n - 1, waits)
+        self.assertEqual(waits, sorted(waits))
+        self.assertTrue(5400 <= sum(waits) <= 9000, waits)
+        self.assertIn("implementer-ann-1", r.stderr)
+        self.assertIn(f"{n} sends", r.stderr)
+        self.assertIn("API Error: Request rejected (429)", r.stderr)
+        self.assertEqual(r.stderr.count("\n"), 1, r.stderr)
+
+    def test_say_is_done_at_a_reply_or_none_within_a_few_seconds(self):
+        # The message is processed unless its first reply is a rate-limit error.
+        for reply in ("ok", "none"):
+            r = self.say_to_claude(reply, "rate_limit", pane=f"w-{reply}:p1")
+            self.assertEqual((r.returncode, r.stderr), (0, ""))
+            self.assertEqual(self.sends("implementer-ann-1"), 1)
+            self.assertLessEqual(sum(self.slept()), 10)
+            self.log.unlink()
+            self.waits.unlink(missing_ok=True)
+
+    def test_say_resends_to_a_resumed_worker_whose_turn_died_on_a_rate_limit(self):
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
+        self.gone_file.write_text("w1:p7\nimplementer-ann-1\n")
+        r = self.say_to_claude("rate_limit", "ok", target="w1:p7", HERDR_WORKSPACE_ID="w1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "pane=w1:p1\n")
+        self.assertEqual(self.sends("w1:p1"), 2)
 
     def parked_line(self, lane, at="2026-10-14T10:00:00Z", session=None, **fields):
         state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
@@ -736,25 +900,30 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.wake("check", "w1:p1").returncode, 0)
         self.assertEqual(self.wake("check", "w1:p2").returncode, 1)
 
-    def test_wake_send_resumes_a_parked_owner_outside_its_send_bound(self):
-        # Spec Chat kills the send's process group after 10 s (review-serve.py
-        # run_wake); a resume takes longer, so this resume is held until after.
+    def test_wake_send_keeps_delivering_past_its_send_bound(self):
+        # transport-wake-bound: Spec Chat runs send in its own session, kills
+        # that process group at its bound, and counts it sent (review-serve.py
+        # run_wake). This resume is held past the kill, then still delivers.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\nann45\n")
         gate = Path(self.tmp.name) / "gate"
         self.addCleanup(gate.touch)
-        p = subprocess.Popen([str(WAKE), "send", "w9:p2", "a.spec.html", "hand-off ready"],
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                             env={**self.env, "FAKE_START_GATE": str(gate)},
-                             start_new_session=True)
-        try:
-            _, err = p.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
+        tmpdir = Path(self.tmp.name) / "tmp"
+        tmpdir.mkdir()
+        with tempfile.TemporaryFile() as err:
+            p = subprocess.Popen([str(WAKE), "send", "w9:p2", "a.spec.html", "hand-off ready"],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                 env={**self.env, "FAKE_START_GATE": str(gate), "TMPDIR": str(tmpdir)},
+                                 start_new_session=True)
+            for _ in range(100):
+                if "agent start" in self.calls():
+                    break
+                time.sleep(0.1)
+            self.assertIsNone(p.poll(), "send returned before its herdr-say ended")
             os.killpg(p.pid, signal.SIGKILL)
-            p.communicate()
-            self.fail("send waited on the resume")
-        self.assertEqual(p.returncode, 0, err)
+            p.wait()
+        self.assertEqual(list(tmpdir.iterdir()), [])
         gate.touch()
         for _ in range(100):
             if "agent prompt w1:p1 hand-off ready" in self.calls():

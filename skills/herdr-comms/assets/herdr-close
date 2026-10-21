@@ -11,13 +11,14 @@
 # session count: those whose HERDR_SESSION equals the caller's, unset in both
 # for the default session.
 #
-# --park PANE reads the session of the Claude process in PANE from Claude's own
-# ~/.claude/sessions/<pid>.json, closes its tab, or its space when that tab is
-# the space's only one (a lane owner in its own space), and prints one parked
-# hand-off line, even when the close fails. An agent Herdr does not report idle
-# or done (Herdr 0.9.0 reports a Claude agent waiting at its prompt as done), or
-# one with no Claude session file (Codex, pi), is refused with nothing closed.
+# --park PANE reads the pane's Claude session (herdr-claude-session), closes its
+# tab, or its space when that tab is the space's only one (a lane owner in its
+# own space), and prints one parked hand-off line, even when the close fails.
+# An agent Herdr does not report idle or done (Herdr 0.9.0 reports a Claude
+# agent waiting at its prompt as done), or one with no Claude session file
+# (Codex, pi), is refused with nothing closed.
 set -uo pipefail
+here="$(dirname "$(readlink -f "$0")")"
 
 usage() { echo "usage: herdr-close TAB|SPACE | --park PANE" >&2; exit 64; }
 # True when the process behind environ file $1 carries the line $2 and runs in
@@ -30,12 +31,9 @@ ours() {
 line=""
 if [[ "${1:-}" == --park ]]; then
   (($# == 2)) && [[ "$2" == *:* ]] || usage
-  pane="$2"; session=""
-  for file in "$HOME"/.claude/sessions/[0-9]*.json; do
-    pid="${file##*/}"; pid="${pid%.json}"
-    ours /proc/"$pid"/environ "HERDR_PANE_ID=$pane" && { session="$file"; break; }
-  done
-  [[ -n "$session" ]] || { echo "herdr-close: no Claude session in $pane; parking is Claude only" >&2; exit 65; }
+  pane="$2"
+  session="$("$here/herdr-claude-session" "$pane")" ||
+    { echo "herdr-close: no Claude session in $pane; parking is Claude only" >&2; exit 65; }
   agent="$(herdr agent get "$pane")" || { printf '%s\n' "$agent" >&2; exit 1; }
   [[ "$(jq -r .result.agent.agent_status <<<"$agent")" == @(idle|done) ]] || { echo "herdr-close: $pane is not idle; not parked" >&2; exit 75; }
   name="$(jq -r .result.agent.name <<<"$agent")"
@@ -43,7 +41,7 @@ if [[ "${1:-}" == --park ]]; then
   tabs="$(herdr workspace get "$space" 2>/dev/null | jq -r '.result.workspace.tab_count // empty')"
   [[ "$tabs" == 1 ]] && set -- "$space" || set -- "$(jq -r '.result.agent.tab_id // empty' <<<"$agent")"
   line="$(jq -c --arg at "$(date -u +%FT%TZ)" --arg pane "$pane" --arg name "$name" \
-    '{at: $at, kind: "parked", pane: $pane, name: $name, role: .agent, cwd, session: .sessionId}' "$session")"
+    '{at: $at, kind: "parked", pane: $pane, name: $name, role: .agent, cwd, session: .sessionId}' <<<"$session")"
 fi
 
 id="${1:-}"

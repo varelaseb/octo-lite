@@ -107,14 +107,31 @@ exits with the close status.
 herdr-close --park PANE >>"$lanes/<lane>.handoffs.jsonl"
 ```
 
-`$lanes` is `$(octo-lite-state)/lanes`. Reads the Claude session of the process
-in PANE, a pane of the caller's session, from `~/.claude/sessions/<pid>.json`,
-closes its tab, or its whole space when that tab is the space's only one (a
-lane owner in its own space), and prints one parked line (`at kind pane name
-role cwd session`) on stdout, even when the close fails; the close report goes
-to stderr. The parker appends the line: the operator for an owner, the owner
-for a worker. An agent Herdr does not report idle is refused with exit 75, a
-Codex or pi agent (no Claude session file) with 65; nothing is closed.
+`$lanes` is `$(octo-lite-state)/lanes`. Reads the Claude session of PANE, a
+pane of the caller's session, by `herdr-claude-session` (below), closes its
+tab, or its whole space when that tab is the space's only one (a lane owner in
+its own space), and prints one parked line (`at kind pane name role cwd
+session`) on stdout, even when the close fails; the close report goes to
+stderr. The parker appends the line: the operator for an owner, the owner for a
+worker. An agent Herdr does not report idle is refused with exit 75, a Codex or
+pi agent (no Claude session file) with 65; nothing is closed.
+
+## Find a pane's Claude session
+
+```
+herdr-claude-session PANE
+```
+
+The one lookup `herdr-close --park` and `herdr-say` share (spec
+`#transport-claude-session`). Prints one JSON line: Claude's own record
+`~/.claude/sessions/<pid>.json` plus `transcript`, the path of
+`~/.claude/projects/*/<sessionId>.jsonl`, `null` before its first message.
+Exits 1 when no record counts. A record counts when its live process carries
+`HERDR_PANE_ID=PANE` and the caller's `HERDR_SESSION`, foreground or not (a
+spare Claude claimed into the pane), and its `procStart` is that process's
+start time, so a record left at a reused pid is never read. Of those, the one
+whose transcript holds the latest reply (an assistant record off any sidechain)
+wins.
 
 ## Send a message
 
@@ -128,7 +145,8 @@ Exit codes are the contract:
 
 | code | meaning |
 |---|---|
-| 0 | delivered, and Herdr observed the agent change state |
+| 0 | delivered, and Herdr observed the agent change state; a Claude agent also processed it |
+| 69 | not processed: a Claude agent's turn died on an API rate limit at every send for about two hours; stderr names the target, the number of sends, and the last API error |
 | 75 | target is blocked on interactive input; retry when it frees |
 | other | anything else |
 
@@ -140,6 +158,17 @@ is either delivered now or reported as not delivered.
 Native Herdr refuses to prompt a blocked agent, so an open dialog is never
 typed into.
 
+A Claude agent whose turn dies at once on an API rate limit (credentials
+cooling down) has not processed the message, though Herdr saw it work (spec
+`#transport-say-rate-limit`). After each send, the transcript of the pane's
+Claude session (`herdr-claude-session`) decides: processed unless the first
+reply after the send, within a few seconds, is a rate-limit error. Otherwise
+`herdr-say` sends the same message again, waits doubling from a minute,
+capped, until processed (exit 0) or about two hours pass (exit 69). The retry
+lives in that one send, so a caller bounded tighter does not hold it in the
+foreground. Codex and pi keep no Claude session: the state change alone
+confirms.
+
 A target Herdr does not find may be parked. The latest parked line naming it,
 by pane or name, in any lane hand-off log in `$lanes` decides: a live agent
 under the line's name gets the message; otherwise the agent is resumed (an
@@ -147,7 +176,9 @@ owner, the line named after its log, in a new lane space; a worker in the
 caller's `$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its
 new `pane=`. `herdr-say --parked TARGET` prints that line, or exits 1.
 `herdr-wake check` counts a parked owner as present, so a spec review hand-off
-resumes it.
+resumes it. `herdr-wake send` runs `herdr-say` in a session of its own, so a
+send outliving Spec Chat's send bound (a resume, a rate-limit wait) keeps
+delivering after Spec Chat counts it sent.
 
 The review service may run in another Herdr session, so register a review row
 with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks
