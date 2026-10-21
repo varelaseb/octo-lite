@@ -24,6 +24,8 @@ live Herdr 0.9.0:
     must stay in the caller's Herdr session
   * a Claude agent's turn may die at once on an API rate limit, so Herdr sees
     it work though it never processed the message
+  * a wake send outliving Spec Chat's bound fails after Spec Chat counted it
+    sent, so only the operator can be told
 """
 
 import json
@@ -762,11 +764,10 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.say("--kind", "command", "--artifact", "x.spec.html", "a1", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
 
-    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", on_wait="", **env):
-        # A Claude agent in pane, under the name target, whose reply to each
-        # send is the next of replies; its transcript starts once the first
-        # message lands. sleep is a stand-in that records each wait, then runs
-        # on_wait.
+    def replying(self, *replies, pane="w1:p1", on_wait=""):
+        # The env posing a Claude agent in pane whose reply to each send is the
+        # next of replies; its transcript starts once the first message lands.
+        # sleep is a stand-in that records each wait, then runs on_wait.
         space = pane.split(":")[0]
         self.claude(pane, f"{space}:t1", space, "s-1")
         d = Path(self.tmp.name)
@@ -776,13 +777,20 @@ class HerdrWrapperTest(unittest.TestCase):
         self.waits = d / "waits"
         (bindir / "sleep").write_text(f'#!/bin/sh\necho "$1" >>"{self.waits}"\n{on_wait}\n')
         (bindir / "sleep").chmod(0o755)
+        return {"PATH": f"{bindir}:{self.env['PATH']}", "FAKE_REPLIES": str(d / "replies"),
+                "FAKE_TRANSCRIPT": f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl"}
+
+    def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", on_wait="", **env):
+        # A Claude agent in pane, under the name target, replying replies.
         agent = {"result": {"agent": {"name": target, "pane_id": pane, "agent_status": "idle"}}}
-        return self.say(target, "review ANN-1", PATH=f"{bindir}:{self.env['PATH']}",
-                        FAKE_REPLIES=str(d / "replies"), FAKE_AGENT_GET=json.dumps(agent),
-                        FAKE_TRANSCRIPT=f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl", **env)
+        return self.say(target, "review ANN-1", **self.replying(*replies, pane=pane, on_wait=on_wait),
+                        FAKE_AGENT_GET=json.dumps(agent), **env)
 
     def sends(self, target):
         return self.calls().count(f"agent prompt {target} review ANN-1 ")
+
+    def sends_to(self, pane):
+        return self.calls().count(f"agent prompt {pane} hand-off ready ")
 
     def slept(self):
         return [float(w) for w in self.waits.read_text().split()] if self.waits.exists() else []
@@ -919,36 +927,65 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.wake("check", "w1:p1").returncode, 0)
         self.assertEqual(self.wake("check", "w1:p2").returncode, 1)
 
+    def operator(self, pane="w5:p2"):
+        # The operator pane of the default session's state, as it writes it.
+        state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "operator.toml").write_text(f'pane = "{pane}"\n')
+        return f"agent prompt {pane} "
+
     def test_wake_send_keeps_delivering_past_its_send_bound(self):
-        # transport-wake-bound: Spec Chat runs send in its own session, kills
-        # that process group at its bound, and counts it sent (review-serve.py
-        # run_wake). This resume is held past the kill, then still delivers.
+        # transport-wake-bound, acceptance-wake-rate-limit-persistent: Spec
+        # Chat runs send in its own session, kills that process group at its
+        # bound, and counts it sent (review-serve.py run_wake). This resume is
+        # held past the kill, then still delivers; the resumed owner's every
+        # turn dies on a rate limit, so the operator is told, once.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\nann45\n")
+        told = self.operator()
         gate = Path(self.tmp.name) / "gate"
         self.addCleanup(gate.touch)
         tmpdir = Path(self.tmp.name) / "tmp"
         tmpdir.mkdir()
+        agent = '{"result":{"agent":{"pane_id":"w1:p1","agent_status":"idle"}}}'
         with tempfile.TemporaryFile() as err:
             p = subprocess.Popen([str(WAKE), "send", "w9:p2", "a.spec.html", "hand-off ready"],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
-                                 env={**self.env, "FAKE_START_GATE": str(gate), "TMPDIR": str(tmpdir)},
+                                 env={**self.env, "FAKE_START_GATE": str(gate), "TMPDIR": str(tmpdir),
+                                      **self.replying(*["rate_limit"] * 9), "FAKE_AGENT_GET": agent},
                                  start_new_session=True)
             for _ in range(100):
                 if "agent start" in self.calls():
                     break
                 time.sleep(0.1)
             self.assertIsNone(p.poll(), "send returned before its herdr-say ended")
+            send = Path(f"/proc/{p.pid}/task/{p.pid}/children").read_text().split()
             os.killpg(p.pid, signal.SIGKILL)
             p.wait()
         self.assertEqual(list(tmpdir.iterdir()), [])
         gate.touch()
-        for _ in range(100):
-            if "agent prompt w1:p1 hand-off ready" in self.calls():
+        for _ in range(300):
+            if not any(Path(f"/proc/{pid}/stat").exists() and Path(f"/proc/{pid}/stat").read_text()
+                       .split(")")[-1].split()[0] != "Z" for pid in send):
                 break
             time.sleep(0.1)
         self.assertIn("agent prompt w1:p1 hand-off ready", self.calls())
+        self.assertEqual(self.sends_to("w1:p1"), 9)
+        prompts = [l for l in self.calls().splitlines() if l.startswith(told)]
+        self.assertEqual(len(prompts), 1, prompts)
+        self.assertIn("w9:p2", prompts[0])
+        self.assertIn("a.spec.html", prompts[0])
+        self.assertIn("not processed: API rate limit", prompts[0])
+
+    def test_wake_send_failing_within_its_send_bound_tells_only_spec_chat(self):
+        # transport-wake-bound: Spec Chat holds a failure within its bound and
+        # retries it, so the operator hears of none of its attempts.
+        told = self.operator()
+        r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready", **self.replying(*["rate_limit"] * 9))
+        self.assertEqual(r.returncode, 69, r.stderr)
+        self.assertRegex(r.stderr, r"^herdr-wake: herdr-say: w1:p1 not processed: API rate limit .*\n$")
+        self.assertNotIn(told, self.calls())
 
     def test_wake_check_counts_a_parked_owner_as_present(self):
         self.parked_line("ann45", pane="w1:p2")
