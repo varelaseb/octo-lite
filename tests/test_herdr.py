@@ -215,8 +215,10 @@ class HerdrWrapperTest(unittest.TestCase):
         }
         self.gone_file = d / "gone"
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
-        # The suite runs in the default Herdr session unless a test names one.
-        self.env.pop("HERDR_SESSION", None)
+        # The suite runs in the default Herdr session, from no pane, unless a
+        # test names one: a Herdr pane's caller env must not reach a wrapper.
+        for var in ("HERDR_SESSION", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"):
+            self.env.pop(var, None)
 
     def spawn(self, extra=(), **env):
         return subprocess.run(
@@ -800,7 +802,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
         self.gone_file.write_text("w1:p7\nimplementer-ann-1\n")
-        r = self.say_to_claude("rate_limit", "ok", target="w1:p7")
+        r = self.say_to_claude("rate_limit", "ok", target="w1:p7", HERDR_WORKSPACE_ID="w1")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "pane=w1:p1\n")
         self.assertEqual(self.sends("w1:p1"), 2)
