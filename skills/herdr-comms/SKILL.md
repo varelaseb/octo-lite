@@ -107,14 +107,31 @@ exits with the close status.
 herdr-close --park PANE >>"$lanes/<lane>.handoffs.jsonl"
 ```
 
-`$lanes` is `$(octo-lite-state)/lanes`. Reads the Claude session of the process
-in PANE, a pane of the caller's session, from `~/.claude/sessions/<pid>.json`,
-closes its tab, or its whole space when that tab is the space's only one (a
-lane owner in its own space), and prints one parked line (`at kind pane name
-role cwd session`) on stdout, even when the close fails; the close report goes
-to stderr. The parker appends the line: the operator for an owner, the owner
-for a worker. An agent Herdr does not report idle is refused with exit 75, a
-Codex or pi agent (no Claude session file) with 65; nothing is closed.
+`$lanes` is `$(octo-lite-state)/lanes`. Reads the Claude session of PANE, a
+pane of the caller's session, by `herdr-claude-session` (below), closes its
+tab, or its whole space when that tab is the space's only one (a lane owner in
+its own space), and prints one parked line (`at kind pane name role cwd
+session`) on stdout, even when the close fails; the close report goes to
+stderr. The parker appends the line: the operator for an owner, the owner for a
+worker. An agent Herdr does not report idle is refused with exit 75, a Codex or
+pi agent (no Claude session file) with 65; nothing is closed.
+
+## Find a pane's Claude session
+
+```
+herdr-claude-session PANE
+```
+
+The one lookup `herdr-close --park` and `herdr-say` share (spec
+`#transport-claude-session`). Prints one JSON line: Claude's own record
+`~/.claude/sessions/<pid>.json` plus `transcript`, the path of
+`~/.claude/projects/*/<sessionId>.jsonl`, `null` before its first message.
+Exits 1 when no record counts. A record counts when its live process carries
+`HERDR_PANE_ID=PANE` and the caller's `HERDR_SESSION`, foreground or not (a
+spare Claude claimed into the pane), and its `procStart` is that process's
+start time, so a record left at a reused pid is never read. Of those, the one
+whose transcript holds the latest reply (an assistant record off any sidechain)
+wins.
 
 ## Send a message
 
