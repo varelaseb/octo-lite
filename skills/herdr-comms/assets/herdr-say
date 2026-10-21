@@ -10,9 +10,21 @@
 # an observed state change, so delivery is confirmed by Herdr rather than by an
 # acknowledgement the agent sends about itself.
 #
+# A Claude agent whose turn dies at once on an API rate limit (credentials
+# cooling down) has not processed the message, though Herdr saw it work. After
+# each send the pane's Claude session (herdr-claude-session) decides: the
+# message is processed unless the first reply after the send, within a few
+# seconds, is a rate-limit error. Otherwise the same message is sent again,
+# waits doubling from a minute, capped, about two hours in all. The error names
+# no time it clears. Codex and pi keep no Claude session: the state change alone
+# confirms.
+#
 # Exit codes are the contract callers rely on, including
 # `herdr-wake`, Spec Chat's wake provider:
-#   0   delivered, and Herdr observed the agent change state
+#   0   delivered, and Herdr observed the agent change state; a Claude agent
+#       also processed it
+#   69  not processed: a Claude agent's turn died on an API rate limit at every
+#       send; stderr names the target, the number of sends, the last API error
 #   75  not delivered now because the target is blocked on interactive input;
 #       the caller should retry once the target is free
 #   >0  anything else
@@ -54,10 +66,39 @@ done
 (($# == 2)) || { usage; exit 64; }
 target="$1"; message="$2"
 
-prompt() { rc=0; out="$(herdr agent prompt "$1" "$message" --wait --until working --until idle 2>&1)" || rc=$?; }
+prompt() {
+  rc=0; at="$(date -u +%FT%T.%3NZ)"
+  out="$(herdr agent prompt "$1" "$message" --wait --until working --until idle 2>&1)" || rc=$?
+}
 code() { jq -r '.error.code // empty' <<<"$out" 2>/dev/null || true; }
+# Exit unless the last prompt landed. A blocked target is a retry, not a
+# failure: it is sitting on a dialog and Herdr correctly declined to type past it.
+landed() {
+  [[ "$rc" == 0 ]] && return
+  [[ "$(code)" == agent_blocked ]] && {
+    echo "herdr-say: $target is blocked on interactive input; not delivered" >&2; exit 75; }
+  printf '%s\n' "$out" >&2
+  exit "$rc"
+}
+# The first reply since the last send in the transcript of pane $1's Claude
+# session, waiting a few seconds: a rate-limit refusal lands within 1.4s. Fails
+# for no reply or no Claude session. A transcript is null until a fresh agent's
+# first message lands, and is read from its tail: it grows to hundreds of MB.
+reply() {
+  local transcript="" r
+  for _ in {1..10}; do
+    [[ -n "$transcript" ]] || transcript="$("$here/herdr-claude-session" "$1" | jq -r '.transcript // empty')" || return 1
+    r="$(tail -n 100 "$transcript" 2>/dev/null | jq -cn --arg at "$at" 'first(inputs
+      | select(.type == "assistant" and .isSidechain == false and .timestamp >= $at)) // empty' 2>/dev/null)"
+    [[ -n "$r" ]] && { printf '%s\n' "$r"; return; }
+    sleep 0.5
+  done
+  return 1
+}
+limited() { r="$(reply "$pane")" && [[ "$(jq -r .error <<<"$r")" == rate_limit ]]; }
 
-prompt "$target"
+name="$target"
+prompt "$name"
 if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$target")"; then
   name="$(jq -r .name <<<"$line")"
   if ! herdr agent get "$name" >/dev/null 2>&1; then
@@ -73,12 +114,14 @@ if [[ "$rc" != 0 && "$(code)" == agent_not_found ]] && line="$(parked "$target")
   fi
   prompt "$name"
 fi
-[[ "$rc" == 0 ]] && exit 0
+landed
 
-# A blocked target is a retry, not a failure: it is sitting on a dialog and
-# Herdr correctly declined to type past it.
-[[ "$(code)" == agent_blocked ]] && {
-  echo "herdr-say: $target is blocked on interactive input; not delivered" >&2; exit 75; }
-
-printf '%s\n' "$out" >&2
-exit "${rc:-1}"
+pane="$(herdr agent get "$name" 2>/dev/null | jq -r '.result.agent.pane_id // empty')" || exit 0
+waits=(60 120 240 480 960 1800 1800 1800) sends=1
+while limited; do
+  ((sends <= ${#waits[@]})) || {
+    echo "herdr-say: $target not processed: API rate limit at all $sends sends; last error: $(jq -r '.message.content[0].text' <<<"$r")" >&2
+    exit 69; }
+  sleep "${waits[sends - 1]}"
+  prompt "$name"; landed; sends=$((sends + 1))
+done

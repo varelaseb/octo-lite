@@ -145,7 +145,8 @@ Exit codes are the contract:
 
 | code | meaning |
 |---|---|
-| 0 | delivered, and Herdr observed the agent change state |
+| 0 | delivered, and Herdr observed the agent change state; a Claude agent also processed it |
+| 69 | not processed: a Claude agent's turn died on an API rate limit at every send for about two hours; stderr names the target, the number of sends, and the last API error |
 | 75 | target is blocked on interactive input; retry when it frees |
 | other | anything else |
 
@@ -156,6 +157,17 @@ is either delivered now or reported as not delivered.
 
 Native Herdr refuses to prompt a blocked agent, so an open dialog is never
 typed into.
+
+A Claude agent whose turn dies at once on an API rate limit (credentials
+cooling down) has not processed the message, though Herdr saw it work (spec
+`#transport-say-rate-limit`). After each send, the transcript of the pane's
+Claude session (`herdr-claude-session`) decides: processed unless the first
+reply after the send, within a few seconds, is a rate-limit error. Otherwise
+`herdr-say` sends the same message again, waits doubling from a minute,
+capped, until processed (exit 0) or about two hours pass (exit 69). The retry
+lives in that one send, so a caller bounded tighter does not hold it in the
+foreground. Codex and pi keep no Claude session: the state change alone
+confirms.
 
 A target Herdr does not find may be parked. The latest parked line naming it,
 by pane or name, in any lane hand-off log in `$lanes` decides: a live agent
