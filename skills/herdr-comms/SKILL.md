@@ -161,8 +161,12 @@ typed into.
 A Claude agent whose turn dies at once on an API rate limit (credentials
 cooling down) has not processed the message, though Herdr saw it work (spec
 `#transport-say-rate-limit`). After each send, the transcript of the pane's
-Claude session (`herdr-claude-session`) decides: processed unless the first
-reply after the send, within a few seconds, is a rate-limit error. Otherwise
+Claude session (`herdr-claude-session`) decides: processed unless the
+message's own reply, within a few seconds, is a rate-limit error. Its own reply
+is the first reply after the record carrying it: Herdr does not track turns, so
+for a target already working, the state change and the reply after it are the
+running turn's. A message enqueued behind a running turn waits until that turn
+takes it in or ends, within the same two-hour bound. Otherwise
 `herdr-say` sends the same message again, waits doubling from a minute,
 capped, until processed (exit 0) or about two hours pass (exit 69). The retry
 lives in that one send, so a caller bounded tighter does not hold it in the

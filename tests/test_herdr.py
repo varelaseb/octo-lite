@@ -162,16 +162,39 @@ case "$sub" in
       echo '{"error":{"code":"agent_not_found","message":"not found"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
     # FAKE_REPLIES: one line per prompt, the Claude agent's reply that its
-    # transcript FAKE_TRANSCRIPT records after the message: rate_limit, ok, or none.
+    # transcript FAKE_TRANSCRIPT records after the record carrying the message,
+    # as Claude does: rate_limit, ok, or none. Two words pose a target already
+    # working: the message is enqueued, the running turn's reply (the first)
+    # lands at once, and the message is taken in later, its reply the second:
+    # mid-turn after an ok, at the turn's end after a rate_limit.
+    # FAKE_TRANSCRIPT.later holds what lands later, one line per wait (sleep),
+    # a blank line the running turn's time.
     if [[ -n "${FAKE_REPLIES:-}" ]]; then
-      reply="$(head -1 "$FAKE_REPLIES")"; sed -i 1d "$FAKE_REPLIES"
+      read -r first second <"$FAKE_REPLIES" || true; sed -i 1d "$FAKE_REPLIES"
       mkdir -p "$(dirname "$FAKE_TRANSCRIPT")"
       at() { date -u +%FT%T.%3NZ; }
-      { printf '{"type":"user","isSidechain":false,"timestamp":"%s"}\n' "$(at)"
-        case "$reply" in
-          rate_limit) printf '{"type":"assistant","isSidechain":false,"timestamp":"%s","isApiErrorMessage":true,"error":"rate_limit","apiErrorStatus":429,"message":{"content":[{"type":"text","text":"API Error: Request rejected (429) \xc2\xb7 All credentials are cooling down"}]}}\n' "$(at)" ;;
-          ok) printf '{"type":"assistant","isSidechain":false,"timestamp":"%s","message":{"content":[{"type":"text","text":"on it"}]}}\n' "$(at)" ;;
-        esac; } >>"$FAKE_TRANSCRIPT"
+      record() { jq -nc --arg m "$text" --arg at "$(at)" "{isSidechain: false, timestamp: \$at} + $1"; }
+      reply() { case "$1" in
+          rate_limit) record '{type: "assistant", isApiErrorMessage: true, error: "rate_limit", apiErrorStatus: 429, message: {content: [{type: "text", text: "API Error: Request rejected (429) · All credentials are cooling down"}]}}' ;;
+          ok) record '{type: "assistant", message: {content: [{type: "text", text: "on it"}]}}' ;;
+        esac; }
+      text="$4"
+      if [[ -z "$second" ]]; then
+        { record '{type: "user", message: {role: "user", content: $m}}'; reply "$first"; } >>"$FAKE_TRANSCRIPT"
+      else
+        submitted="$(at)"
+        { record '{type: "queue-operation", operation: "enqueue", content: $m}'; reply "$first"; } >>"$FAKE_TRANSCRIPT"
+        { printf '\n%.0s' {1..12}
+          if [[ "$first" == ok ]]; then
+            record '{type: "queue-operation", operation: "remove", reason: "absorbed_mid_turn", content: $m}'
+            record '{type: "user", message: {role: "user", content: [{type: "tool_result", content: "done"}]}}'
+            record "{type: \"attachment\", attachment: {type: \"queued_command\", prompt: \$m}, timestamp: \"$submitted\"}"
+          else
+            record '{type: "queue-operation", operation: "dequeue"}'
+            record '{type: "user", message: {role: "user", content: $m}}'
+          fi
+          reply "$second"; } >>"$FAKE_TRANSCRIPT.later"
+      fi
     fi
     echo '{"result":{"agent":{"agent_status":"working"}}}' ;;
   *)
@@ -767,7 +790,8 @@ class HerdrWrapperTest(unittest.TestCase):
     def replying(self, *replies, pane="w1:p1", on_wait=""):
         # The env posing a Claude agent in pane whose reply to each send is the
         # next of replies; its transcript starts once the first message lands.
-        # sleep is a stand-in that records each wait, then runs on_wait.
+        # sleep is a stand-in that records each wait, lands the next line a
+        # working agent writes later, then runs on_wait.
         space = pane.split(":")[0]
         self.claude(pane, f"{space}:t1", space, "s-1")
         d = Path(self.tmp.name)
@@ -775,10 +799,14 @@ class HerdrWrapperTest(unittest.TestCase):
         bindir = d / "sleepbin"
         bindir.mkdir(exist_ok=True)
         self.waits = d / "waits"
-        (bindir / "sleep").write_text(f'#!/bin/sh\necho "$1" >>"{self.waits}"\n{on_wait}\n')
+        transcript = f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl"
+        (bindir / "sleep").write_text(
+            f'#!/bin/sh\necho "$1" >>"{self.waits}"\n'
+            f'[ ! -s "{transcript}.later" ] || {{ head -1 "{transcript}.later" | grep . >>"{transcript}"; '
+            f'sed -i 1d "{transcript}.later"; }}\n{on_wait}\n')
         (bindir / "sleep").chmod(0o755)
         return {"PATH": f"{bindir}:{self.env['PATH']}", "FAKE_REPLIES": str(d / "replies"),
-                "FAKE_TRANSCRIPT": f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl"}
+                "FAKE_TRANSCRIPT": transcript}
 
     def say_to_claude(self, *replies, target="implementer-ann-1", pane="w1:p1", on_wait="", **env):
         # A Claude agent in pane, under the name target, replying replies.
@@ -829,6 +857,22 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertLessEqual(sum(self.slept()), 10)
             self.log.unlink()
             self.waits.unlink(missing_ok=True)
+
+    def test_say_resends_a_message_queued_behind_a_running_turn_whose_own_turn_died(self):
+        # acceptance-say-rate-limit-queued: the running turn's ok lands inside
+        # the reply window; the message, taken in past it, dies on a 429.
+        r = self.say_to_claude("ok rate_limit", "ok", "rate_limit")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(self.sends("implementer-ann-1"), 2)
+        self.assertEqual([w for w in self.slept() if w >= 30], [60])
+
+    def test_say_judges_a_message_queued_behind_a_turn_dying_on_a_rate_limit_by_its_own_reply(self):
+        # acceptance-say-running-turn-limited: the running turn's 429 is not
+        # this message's; its own reply is ok, so it is sent once.
+        r = self.say_to_claude("rate_limit ok", "rate_limit")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertEqual(self.sends("implementer-ann-1"), 1)
+        self.assertEqual([w for w in self.slept() if w >= 30], [])
 
     def test_say_resends_to_a_resumed_worker_whose_turn_died_on_a_rate_limit(self):
         self.dialog.write_text("none\n")
