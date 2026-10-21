@@ -716,6 +716,29 @@ class HerdrWrapperTest(unittest.TestCase):
         r = run(f"{space}:p3")
         self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
 
+    def test_claude_session_cost_does_not_grow_with_the_transcript(self):
+        # The operator's transcript grows past 200MB; a whole read took 7s, so
+        # every herdr-say paid it and a wake outlived Spec Chat's 10s bound.
+        # Beside a spare whose reply is older, the pane's session holds ~110MB
+        # of earlier turns and its latest reply near its end.
+        space = f"w-{uuid.uuid4()}"
+        pane, tab = f"{space}:p1", f"{space}:t1"
+        self.claude(pane, tab, space, "s-spare", ["2026-10-21T09:00:00.000Z"])
+        self.claude(pane, tab, space, "s-1")
+        turn = lambda kind, at: json.dumps({"type": kind, "isSidechain": False, "timestamp": at, "message": {
+            "content": [{"type": "text", "text": "word " * 4, "n": n} for n in range(40)]}}) + "\n"
+        transcript = Path(self.env["HOME"]) / ".claude/projects/-p-s-1/s-1.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text((turn("user", "2026-10-21T08:00:00.000Z") + turn(
+            "assistant", "2026-10-21T08:00:00.000Z")) * 25000 + turn(
+            "assistant", "2026-10-21T10:00:00.000Z") + turn("user", "2026-10-21T10:00:01.000Z"))
+        start = time.monotonic()
+        r = subprocess.run([str(SESSION), pane], capture_output=True, text=True, env=self.env)
+        elapsed = time.monotonic() - start
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["sessionId"], "s-1")
+        self.assertLess(elapsed, 1.0)
+
     # --- say -------------------------------------------------------------
 
     def test_say_delivers_through_the_native_prompt_and_waits(self):

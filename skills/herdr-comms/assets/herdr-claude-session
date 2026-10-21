@@ -10,7 +10,9 @@
 # procStart must be that process's start time, field 22 of /proc/<pid>/stat,
 # so a record an ended Claude left at a pid since reused is never read. Of
 # those, the pane's session is the one whose transcript holds the latest reply,
-# an assistant record off any sidechain.
+# an assistant record off any sidechain. Claude appends in order, so a
+# transcript's latest reply is its last one, read from its end: a transcript
+# grows to hundreds of MB, and the lookup's cost must not grow with it.
 set -uo pipefail
 (($# == 1)) || { echo "usage: herdr-claude-session PANE" >&2; exit 64; }
 
@@ -24,7 +26,8 @@ for file in "$HOME"/.claude/sessions/[0-9]*.json; do
   transcript=""; at=""
   if [[ -f "${transcripts[0]}" ]]; then
     transcript="${transcripts[0]}"
-    at="$(jq -rn '[inputs | select(.type == "assistant" and .isSidechain == false) | .timestamp] | max // ""' "$transcript")"
+    at="$(tac "$transcript" 2>/dev/null |
+      jq -rn 'first(inputs | select(.type == "assistant" and .isSidechain == false) | .timestamp) // ""')"
   fi
   [[ -z "$best" || "$at" > "$latest" ]] && { best="$file"; latest="$at"; path="$transcript"; }
 done
