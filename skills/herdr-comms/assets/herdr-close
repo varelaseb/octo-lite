@@ -11,8 +11,11 @@
 # session count: those whose HERDR_SESSION equals the caller's, unset in both
 # for the default session.
 # Herdr leaves `herdr agent wait` on an agent running when the agent's tab
-# closes, so it also ends every wait of the caller's session on an agent in
-# what it closes, by name or pane id, noted from Herdr before the close.
+# closes; herdr-await bounds its every wait, so another caller's wait on an
+# agent in what it closes ends as gone at its bound. The caller's own
+# herdr-awaits on one, by name or pane id noted from Herdr, it ends whole before
+# the close, waking no one: the caller closed it, so a gone would read as news
+# of an agent spawned again under the same name.
 #
 # --park PANE reads the pane's Claude session (herdr-claude-session), closes its
 # tab, or its space when that tab is the space's only one (a lane owner in its
@@ -50,26 +53,34 @@ else kind=space; tag=HERDR_WORKSPACE_ID; field=workspace_id; cmd=(workspace clos
 # The names and pane ids of the agents in it, one per line.
 agents="$(herdr agent list 2>/dev/null | jq -r --arg f "$field" --arg id "$id" \
   '.result.agents[]? | select(.[$f] == $id) | (.name // empty), .pane_id' 2>/dev/null)"
-# True when process $1 runs `herdr agent wait TARGET` on one of them.
-waits() {
-  local argv i
-  mapfile -d '' argv 2>/dev/null <"/proc/$1/cmdline" || return
-  for ((i = 0; i + 3 < ${#argv[@]}; i++)); do
-    [[ "${argv[i]##*/}" == herdr && "${argv[i+1]}" == agent && "${argv[i+2]}" == wait ]] &&
-      grep -qxF -e "${argv[i+3]}" <<<"$agents" && return
+# True when process $1 is a herdr-await of the caller's pane on one of them:
+# it leads its process group and carries HERDR_AWAIT_ON=<that name or pane id>.
+awaits() {
+  local vars v
+  mapfile -d '' vars 2>/dev/null <"/proc/$1/environ" || return
+  for v in "${vars[@]}"; do
+    [[ "$v" == HERDR_AWAIT_ON=* ]] && grep -qxF -e "${v#*=}" <<<"$agents" &&
+      ours "/proc/$1/environ" "HERDR_PANE_ID=${HERDR_PANE_ID:-}" && return
   done
   return 1
 }
 
+# End each process $1 picks; given -, all of its process group.
+killed=0
+sweep() {
+  local env pid
+  for env in /proc/[0-9]*/environ; do
+    pid="${env#/proc/}"; pid="${pid%/environ}"
+    "$1" "$pid" && kill -TERM -- "${2:-}$pid" 2>/dev/null && killed=$((killed + 1))
+  done
+}
+tagged() { ours "/proc/$1/environ" "$tag=$id"; }
+
+# Its own awaits end before the close, so none waits again on a closed agent.
+sweep awaits -
 rc=0
 herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
-
-killed=0
-for env in /proc/[0-9]*/environ; do
-  pid="${env#/proc/}"; pid="${pid%/environ}"
-  ours "$env" "$tag=$id" || { waits "$pid" && ours "$env"; } || continue
-  kill -TERM "$pid" 2>/dev/null && killed=$((killed + 1))
-done
+sweep tagged
 
 report="$kind=$id ${kind}_close_rc=$rc killed=$killed"
 if [[ -z "$line" ]]; then echo "$report"
