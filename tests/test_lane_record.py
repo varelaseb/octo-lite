@@ -238,10 +238,11 @@ class LaneRecordTests(unittest.TestCase):
         # message wakes an owner on any runtime, never a background herdr agent
         # wait of its own (its end invokes only Claude), and no check-in poll; on
         # that message it consumes a result, resumes an API-error turn through
-        # herdr-await, re-waits on one still at its task only after it works
-        # again (a plain wait on an agent idle on its own background command
-        # returns at once), else recovers. The fleet operator does the same per
-        # owner it awaits, never on every owner.
+        # herdr-await, re-waits on one still at its task through herdr-await
+        # given the stop it read, so it wakes only once the worker works and
+        # stops again, even before that wait starts (#acceptance-worker-moved-
+        # unseen), and no role runs herdr agent wait; else recovers. The fleet
+        # operator does the same per owner it awaits, never on every owner.
         owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         skill = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
         operator = OPERATOR.read_text(encoding="utf-8")
@@ -250,6 +251,7 @@ class LaneRecordTests(unittest.TestCase):
             self.assertNotIn("agent_not_running", text, path)
             self.assertNotRegex(text, r"start one `herdr agent wait", path)
             self.assertNotIn("continue && herdr agent wait", text, path)
+            self.assertNotRegex(text, r"herdr agent wait <", path)
         wait = r"\(brief, resume,? (?:or )?repair\)[^.]*`herdr-await <name> <message>`[^.]*by (?:agent )?name[^.]*never `herdr agent wait`"
         self.assertRegex(owner, wait)
         self.assertRegex(" ".join(skill.split()), wait + r".*`agents/orchestrator\.md`")
@@ -258,7 +260,7 @@ class LaneRecordTests(unittest.TestCase):
         rules = (
             r"When that message comes.*read `herdr agent get <name>` and its pane.*API error: resume it with "
             r"`herdr-await <name> continue`, whose `stop=send-failed` means it is blocked; "
-            r"still at its task.*one background command, `herdr agent wait <name> --until working && herdr agent wait <name>`.*; "
+            r"still at its task.*`herdr-await --since <seq> <name>`, `<seq>` the one that message named.*; "
             r"otherwise .*recover or respawn"
         )
         self.assertRegex(owner, rules)
@@ -268,7 +270,7 @@ class LaneRecordTests(unittest.TestCase):
             r"owner work whose reply you await, send it with `herdr-await <lane name> <message>` by name, never `herdr agent wait` yourself "
             r"and never a standing wait on every owner.*read `herdr agent get <lane name>` and its pane.*API error: "
             r"`herdr-await <lane name> continue`, whose `stop=send-failed` means it is blocked; "
-            r"still at its task: one background command, `herdr agent wait <lane name> --until working && herdr agent wait <lane name>`",
+            r"still at its task: `herdr-await --since <seq> <lane name>`, `<seq>` the one that message named;",
         )
 
     def test_operator_launch_example_writes_started_at(self) -> None:

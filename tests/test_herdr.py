@@ -226,12 +226,22 @@ case "$sub" in
     # Herdr's wait without --until: it ends on idle, done, or blocked, its
     # state FAKE_WAIT_STATUS; FAKE_WAIT_EXITED poses the agent exiting first.
     # FAKE_WAIT_GATE holds the wait until the test creates that file.
+    # The agent stops at state_change_seq 42, or 44 once FAKE_WORKED exists:
+    # it worked (43) and stopped again. A wait --until working ends once it
+    # works, and on one that worked and stopped already, only on its next work.
     gone "$3" && not_found
     while [[ -n "${FAKE_WAIT_GATE:-}" && ! -e "$FAKE_WAIT_GATE" ]]; do sleep 0.05; done
     [[ -z "${FAKE_WAIT_EXITED:-}" ]] ||
       { echo '{"error":{"code":"agent_not_running","message":"agent exited"}}' >&2; exit 1; }
-    jq -nc --arg n "$3" --arg s "${FAKE_WAIT_STATUS:-idle}" \
-      '{result: {agent: {name: $n, agent_status: $s, state_change_seq: 42}}, type: "agent_info"}' ;;
+    s="${FAKE_WAIT_STATUS:-idle}" seq=42
+    [[ -e "$FAKE_WORKED" ]] && seq=44
+    if [[ "${5:-}" == working ]]; then
+      [[ -e "$FAKE_WORKED" ]] && exec sleep 30
+      while [[ ! -e "$FAKE_WORKED" ]]; do sleep 0.05; done
+      s=working seq=43
+    fi
+    jq -nc --arg n "$3" --arg s "$s" --argjson seq "$seq" \
+      '{result: {agent: {name: $n, agent_status: $s, state_change_seq: $seq}}, type: "agent_info"}' ;;
   *)
     echo "{}" ;;
 esac
@@ -272,6 +282,7 @@ class HerdrWrapperTest(unittest.TestCase):
             "HOME": str(d),
             "XDG_STATE_HOME": str(d / "state"),
             "FAKE_GONE": str(d / "gone"),
+            "FAKE_WORKED": str(d / "worked"),
         }
         self.gone_file = d / "gone"
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
@@ -1137,6 +1148,23 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=42")
         self.assertNotIn("agent prompt implementer-ann-1", self.calls())
 
+    def test_await_since_a_stop_ends_only_once_the_agent_worked_and_stopped_again(self):
+        # roles-goal, transport-await: a worker still at its task (idle on its
+        # own background command) at the stop its owner read never wakes the
+        # owner again until it has worked and stopped.
+        r = self.awaits("--since", "42", "implementer-ann-1")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertIsNone(self.woken(within=0.5), "woke on a worker that has not moved")
+        Path(self.env["FAKE_WORKED"]).touch()
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=44")
+
+    def test_await_since_a_stop_ends_at_once_on_an_agent_that_moved_before_it_started(self):
+        # acceptance-worker-moved-unseen: a worker that works and stops before
+        # the wait starts still ends it, where a wait for its next work hangs.
+        Path(self.env["FAKE_WORKED"]).touch()
+        self.awaits("--since", "42", "implementer-ann-1")
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=44")
+
     def test_await_returns_at_once_and_ends_with_its_callers_tab(self):
         # The wait runs apart from its caller, yet as a process of the caller's
         # tab, so closing or parking the caller ends it, waking no one.
@@ -1183,6 +1211,7 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def test_await_needs_a_name_and_a_caller_pane(self):
         for args, env in (((), {}), (("-h",), {}), (("a", "b", "c"), {}),
+                          (("--since", "42"), {}), (("--since", "seq=42", "a"), {}),
                           (("implementer-ann-1",), {"HERDR_PANE_ID": ""})):
             r = self.awaits(*args, **env)
             self.assertEqual(r.returncode, 64, (args, r.stderr))

@@ -203,7 +203,7 @@ and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
 ## Wait on an agent
 
 ```
-herdr-await NAME [MESSAGE]
+herdr-await [--since SEQ] NAME [MESSAGE]
 ```
 
 The one wait on a lane agent (spec `#transport-await`): never run `herdr agent
@@ -221,7 +221,11 @@ herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   the send did not
 
 A message wakes a Claude, Codex, or pi caller the same way, so no runtime needs
 a background command's end to invoke it, and a send that waits out a rate limit
-holds no caller in the foreground. Wait by agent name: a parked worker
+holds no caller in the foreground. Given `--since SEQ`, the `seq` of the stop
+the caller last read, the wait ends only once NAME has changed state since that
+stop and stopped again, or is gone: a re-wait on an agent still at its task
+never wakes its caller before it moves, and one that works and stops before the
+wait starts still ends it at once. Wait by agent name: a parked worker
 `herdr-say` resumes gets a new pane, never a new name. The wait keeps the
 caller's environ, so `herdr-close` of the caller's tab, parking included, ends
 it with the caller's other processes, waking no one.
