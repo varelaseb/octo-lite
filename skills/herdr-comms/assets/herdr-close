@@ -13,8 +13,8 @@
 # Herdr leaves `herdr agent wait` on an agent running when the agent's tab
 # closes; herdr-await bounds its every wait, so another caller's wait on an
 # agent in what it closes ends as gone at its bound. The caller's own
-# herdr-awaits on one, by name or pane id noted from Herdr before the close, it
-# ends whole, waking no one: the caller closed it, so a gone would read as news
+# herdr-awaits on one, by name or pane id noted from Herdr, it ends whole before
+# the close, waking no one: the caller closed it, so a gone would read as news
 # of an agent spawned again under the same name.
 #
 # --park PANE reads the pane's Claude session (herdr-claude-session), closes its
@@ -65,17 +65,22 @@ awaits() {
   return 1
 }
 
+# End each process $1 picks; given -, all of its process group.
+killed=0
+sweep() {
+  local env pid
+  for env in /proc/[0-9]*/environ; do
+    pid="${env#/proc/}"; pid="${pid%/environ}"
+    "$1" "$pid" && kill -TERM -- "${2:-}$pid" 2>/dev/null && killed=$((killed + 1))
+  done
+}
+tagged() { ours "/proc/$1/environ" "$tag=$id"; }
+
+# Its own awaits end before the close, so none waits again on a closed agent.
+sweep awaits -
 rc=0
 herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
-
-killed=0
-for env in /proc/[0-9]*/environ; do
-  pid="${env#/proc/}"; pid="${pid%/environ}"
-  if ours "$env" "$tag=$id"; then group=
-  elif awaits "$pid"; then group=- # all of it, so it wakes no one
-  else continue; fi
-  kill -TERM -- "$group$pid" 2>/dev/null && killed=$((killed + 1))
-done
+sweep tagged
 
 report="$kind=$id ${kind}_close_rc=$rc killed=$killed"
 if [[ -z "$line" ]]; then echo "$report"

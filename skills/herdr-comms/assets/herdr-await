@@ -50,12 +50,14 @@ unset HERDR_AWAIT_ON
 
 name="$1"
 # One Herdr wait, bounded: its result in $out, else its exit in $rc and Herdr's
-# error code in $code, timeout at the bound, where a caller gone ends it all.
-# Herdr's result goes to stdout, its error to stderr, either beside warnings.
+# error code in $code, timeout at the bound, where a caller Herdr finds no agent
+# for ends it all. Herdr's result goes to stdout, its error to stderr, either
+# beside warnings.
+code() { jq -Rr 'fromjson? | .error.code // empty' <<<"$1"; }
 bounded() {
   out="$(herdr agent wait "$@" --timeout "$bound" 2>&1)" && return
-  rc=$?; code="$(jq -Rr 'fromjson? | .error.code // empty' <<<"$out")"
-  [[ "$code" != timeout ]] || herdr agent get "$caller" >/dev/null 2>&1 || exit
+  rc=$?; code="$(code "$out")"
+  [[ "$code" != timeout || "$(code "$(herdr agent get "$caller" 2>&1)")" != agent_not_found ]] || exit
   return 1
 }
 # One wake per stop: a caller blocked on interactive input (herdr-say exit 75)
