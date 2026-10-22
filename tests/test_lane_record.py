@@ -230,6 +230,33 @@ class LaneRecordTests(unittest.TestCase):
             r"`#roles-park`\), then forward\.",
         )
 
+    def test_waiter_keeps_one_herdr_wait_on_each_agent_it_sets_to_work(self) -> None:
+        # spec #roles-goal, #acceptance-worker-ended, #acceptance-worker-api-error(-resumed),
+        # #acceptance-owner-api-error-resumed: the owner starts one background
+        # herdr agent wait per worker it sets to work, no check-in poll; on its end
+        # it consumes a result, resumes an API-error turn on the same pane and
+        # waits again, waits again on one still at its task, else recovers. The
+        # fleet operator does the same per owner it awaits, never on every owner.
+        owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        skill = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
+        operator = OPERATOR.read_text(encoding="utf-8")
+        for path, text in (("orchestrator", owner), ("implement-spec", skill)):
+            self.assertNotRegex(text, r"check-in,? reads?", path)
+            self.assertNotIn("herdr agent get", text, path)
+        wait = r"\(brief, resume,? (?:or )?repair\)[^.]*returns(?=[^.]*background)[^.]*`herdr agent wait <pane>`"
+        self.assertRegex(owner, wait)
+        self.assertRegex(" ".join(skill.split()), wait + r".*`agents/orchestrator\.md`")
+        self.assertRegex(owner, r"resumed, start one on each worker you still await")
+        rules = r"API error: resume it with `herdr-say <pane>[^`]*` and wait again; still at its task.*: wait again; otherwise .*recover or respawn"
+        self.assertRegex(owner, rules)
+        self.assertRegex(owner, r"Except for one still at its task, tell the operator which worker ended without reporting")
+        self.assertRegex(
+            operator,
+            r"owner work whose reply you await.*returns start one `herdr agent wait <owner pane>`.*background command, "
+            r"never a standing wait on every owner.*API error: `herdr-say <owner pane>[^`]*` and wait again; "
+            r"still at its task: wait again",
+        )
+
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")
         match = re.search(r"```toml\n(.*?)```", text, flags=re.DOTALL)

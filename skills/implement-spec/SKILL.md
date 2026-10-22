@@ -111,7 +111,10 @@ commit plus terse evidence. It does not merge, push, or update unrelated
 tickets.
 
 Use `herdr-say` for commands. It returns only once Herdr has observed the
-target change state, so delivery needs no separate acknowledgement. Keep
+target change state, so delivery needs no separate acknowledgement. Once each
+send that sets a worker to work (brief, resume, repair) returns, start one
+background `herdr agent wait <pane>` on that worker: its end wakes you, and
+`agents/orchestrator.md` says what to do then (spec `#roles-goal`). Keep
 messages sparse. A status pointer or commit is better than a recap.
 
 ## Integrate and advance
@@ -139,8 +142,8 @@ when they do not install dependencies, change branches or generate files there.
 Consume completed results at the next owner wake, before optional status work,
 and continue integration or the next ready task in that turn. Keep one integrator
 owner for the lane's integration branch. Every worker brief names the owner pane.
-The owner waits for the worker's result message; between messages, each goal
-check-in reads the awaited workers' Herdr state (`agents/orchestrator.md`).
+The owner waits for the worker's result message, or for its one wait on that
+worker to end (`agents/orchestrator.md`).
 Record one truthful current state, next action and dependency.
 Do not end delivery at startup, dispatch, worker completion or review forwarding.
 
