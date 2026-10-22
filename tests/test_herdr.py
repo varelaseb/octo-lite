@@ -16,6 +16,8 @@ live Herdr 0.9.0:
   * a Codex contract sent as a prompt is worked as a task, and a Codex thread
     on the shared daemon outlives its tab
   * a detached child outlives its closed tab unless `herdr-close` reaps it
+  * `herdr agent wait` on an agent outlives the agent's closed tab unless
+    `herdr-close` ends it
   * a parked agent must hold no process, refuse when working or Codex, and
     resume once under its name when messaged
   * a pane's Claude session record may be one an ended Claude left at a pid
@@ -69,6 +71,8 @@ case "$sub" in
     echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
   "workspace get")
     echo "${FAKE_WORKSPACE_GET:-{\}}" ;;
+  "agent list")
+    echo "${FAKE_AGENT_LIST:-{\}}" ;;
   "tab close"|"workspace close")
     echo "CLOSED" >>"$FAKE_CLOSED"; echo '{"result":{}}' ;;
   "agent start")
@@ -605,6 +609,47 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("killed=1", r.stdout)
         self.assertTrue(self.gone(there), "a named session's process survived herdr-close")
 
+    def waiting(self, target, **env):
+        # A `herdr agent wait TARGET` of the caller's tab, which Herdr 0.9.0
+        # leaves running forever once the target's tab closes.
+        waiter = Path(self.tmp.name) / "waiter/herdr"
+        waiter.parent.mkdir(exist_ok=True)
+        waiter.write_text("#!/usr/bin/env bash\nwhile :; do sleep 0.1; done\n")
+        waiter.chmod(0o755)
+        p = subprocess.Popen([str(waiter), "agent", "wait", target], start_new_session=True,
+                             env={**self.env, **env})
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        return p
+
+    def test_close_ends_every_wait_of_its_session_on_an_agent_it_closes(self):
+        # acceptance-worker-closed-no-wait: a wait by name or pane id, whoever waits.
+        other = f"s-{uuid.uuid4()}"
+        for close in ("tab", "space"):
+            space, n = f"w-{uuid.uuid4()}", f"-{close}"
+            tab = f"{space}:t1"
+            agents = [("implementer-ann-1" + n, f"{space}:p1", tab, space),
+                      (None, f"{space}:p2", tab, space),  # unnamed, waited on by pane id
+                      ("implementer-ann-3" + n, f"{space}:p3", f"{space}:t3", space),
+                      ("implementer-ann-2" + n, "w-open:p1", "w-open:t1", "w-open")]
+            listed = json.dumps({"result": {"agents": [
+                {"name": a, "pane_id": p, "tab_id": t, "workspace_id": w} for a, p, t, w in agents]}})
+            in_tab = [self.waiting("implementer-ann-1" + n), self.waiting(f"{space}:p1"),
+                      self.waiting(f"{space}:p2")]
+            in_space = [self.waiting("implementer-ann-3" + n), self.waiting(f"{space}:p3")]
+            kept = [self.waiting("implementer-ann-2" + n), self.waiting("w-open:p1"),
+                    self.waiting("implementer-ann-1" + n, HERDR_SESSION=other)]
+            ended = in_tab if close == "tab" else in_tab + in_space
+            kept += in_space if close == "tab" else []
+            r = subprocess.run([str(CLOSE), tab if close == "tab" else space], capture_output=True,
+                               text=True, env={**self.env, "FAKE_AGENT_LIST": listed})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"killed={len(ended)}", r.stdout)
+            for w in ended:
+                self.assertTrue(self.gone(w), f"a wait on an agent of the closed {close} survived")
+                self.assertEqual(w.returncode, -signal.SIGTERM)
+            for w in kept:
+                self.assertIsNone(w.poll(), "ended a wait on an agent still open, or of another session")
+
     def test_close_rejects_an_option_as_a_tab(self):
         for arg in ("--help", "-h"):
             r = subprocess.run([str(CLOSE), arg], capture_output=True, text=True, env=self.env)
@@ -657,9 +702,11 @@ class HerdrWrapperTest(unittest.TestCase):
         # The space is the lane's, labelled with its name; only its tab count decides.
         ws = {"result": {"workspace": {"workspace_id": space, "label": "ann45",
                                        "tab_count": tabs}}}
+        listed = {"result": {"agents": [agent["result"]["agent"]]}}
         r = subprocess.run([str(CLOSE), "--park", pane], capture_output=True, text=True,
                            env={**self.env, "FAKE_AGENT_GET": json.dumps(agent),
-                                "FAKE_WORKSPACE_GET": json.dumps(ws), **env})
+                                "FAKE_WORKSPACE_GET": json.dumps(ws),
+                                "FAKE_AGENT_LIST": json.dumps(listed), **env})
         return p, r, pane, tab, space
 
     def calls(self):
@@ -685,6 +732,14 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertTrue(self.gone(p), "a process of the parked owner is still running")
         self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
         self.assertEqual(json.loads(r.stdout)["session"], "s-1")
+
+    def test_parking_ends_every_wait_on_the_parked_agent(self):
+        # transport-close-waits: parking included.
+        mine, theirs = self.waiting("implementer-ann-1"), self.waiting("implementer-ann-2")
+        p, r, *_ = self.park(name="implementer-ann-1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.gone(mine), "a wait on the parked agent survived")
+        self.assertIsNone(theirs.poll(), "ended a wait on an agent still open")
 
     def test_parking_an_owner_in_a_shared_space_closes_only_its_tab(self):
         # The space's other tabs are agents that may be working.

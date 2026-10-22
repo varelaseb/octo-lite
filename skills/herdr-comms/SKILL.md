@@ -95,7 +95,11 @@ herdr-close SPACE
 The teardown step. An id with a colon (`w5:t2`) is a tab, one without (`w5`) is
 a space. Closes it, then sends TERM to every process of the caller's session
 whose environ carries `HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which
-catches detached children that close alone leaves running. Run it from outside
+catches detached children that close alone leaves running, and to every
+`herdr agent wait` of the caller's session on an agent in it, by name or pane
+id, read from `herdr agent list` before the close: Herdr leaves such a wait
+running once the agent's tab closes (spec `#transport-close-waits`). Parking
+(below) closes the same way. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
 own space, or only its owner tab when the lane started in a shared space.
 Prints `tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and
