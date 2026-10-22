@@ -233,28 +233,36 @@ class LaneRecordTests(unittest.TestCase):
     def test_waiter_keeps_one_herdr_wait_on_each_agent_it_sets_to_work(self) -> None:
         # spec #roles-goal, #acceptance-worker-ended, #acceptance-worker-api-error(-resumed),
         # #acceptance-owner-api-error-resumed: the owner starts one background
-        # herdr agent wait per worker it sets to work, no check-in poll; on its end
-        # it consumes a result, resumes an API-error turn on the same pane and
-        # waits again, waits again on one still at its task, else recovers. The
-        # fleet operator does the same per owner it awaits, never on every owner.
+        # herdr agent wait by name per worker it sets to work, no check-in poll; on
+        # its end it consumes a result, resumes an API-error turn and waits in one
+        # background command, re-waits on one still at its task only after it works
+        # again (a plain wait on an agent idle on its own background command returns
+        # at once), else recovers. The fleet operator does the same per owner it
+        # awaits, never on every owner.
         owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         skill = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
         operator = OPERATOR.read_text(encoding="utf-8")
         for path, text in (("orchestrator", owner), ("implement-spec", skill)):
             self.assertNotRegex(text, r"check-in,? reads?", path)
-            self.assertNotIn("herdr agent get", text, path)
-        wait = r"\(brief, resume,? (?:or )?repair\)[^.]*returns(?=[^.]*background)[^.]*`herdr agent wait <pane>`"
+            self.assertNotIn("agent_not_running", text, path)
+        wait = r"\(brief, resume,? (?:or )?repair\)[^.]*returns(?=[^.]*background)[^.]*`herdr agent wait <name>`[^.]*by (?:agent )?name"
         self.assertRegex(owner, wait)
         self.assertRegex(" ".join(skill.split()), wait + r".*`agents/orchestrator\.md`")
-        self.assertRegex(owner, r"resumed, start one on each worker you still await")
-        rules = r"API error: resume it with `herdr-say <pane>[^`]*` and wait again; still at its task.*: wait again; otherwise .*recover or respawn"
+        self.assertRegex(owner, r"When relaunched from a park, start one on each worker you still await")
+        rules = (
+            r"ends, read `herdr agent get <name>` and its pane.*API error: resume it with one background command, "
+            r"`herdr-say <name> continue && herdr agent wait <name>`, whose non-0 exit means it is blocked; "
+            r"still at its task.*one background command, `herdr agent wait <name> --until working && herdr agent wait <name>`.*; "
+            r"otherwise .*recover or respawn"
+        )
         self.assertRegex(owner, rules)
         self.assertRegex(owner, r"Except for one still at its task, tell the operator which worker ended without reporting")
         self.assertRegex(
             operator,
-            r"owner work whose reply you await.*returns start one `herdr agent wait <owner pane>`.*background command, "
-            r"never a standing wait on every owner.*API error: `herdr-say <owner pane>[^`]*` and wait again; "
-            r"still at its task: wait again",
+            r"owner work whose reply you await.*returns start one `herdr agent wait <lane name>` on it by name as a background command, "
+            r"never a standing wait on every owner.*read `herdr agent get <lane name>` and its pane.*API error: one background command, "
+            r"`herdr-say <lane name> continue && herdr agent wait <lane name>`, whose non-0 exit means it is blocked; "
+            r"still at its task: one background command, `herdr agent wait <lane name> --until working && herdr agent wait <lane name>`",
         )
 
     def test_operator_launch_example_writes_started_at(self) -> None:

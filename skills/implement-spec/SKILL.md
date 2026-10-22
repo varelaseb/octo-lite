@@ -113,7 +113,7 @@ tickets.
 Use `herdr-say` for commands. It returns only once Herdr has observed the
 target change state, so delivery needs no separate acknowledgement. Once each
 send that sets a worker to work (brief, resume, repair) returns, start one
-background `herdr agent wait <pane>` on that worker: its end wakes you, and
+background `herdr agent wait <name>` on that worker by name: its end wakes you, and
 `agents/orchestrator.md` says what to do then (spec `#roles-goal`). Keep
 messages sparse. A status pointer or commit is better than a recap.
 
