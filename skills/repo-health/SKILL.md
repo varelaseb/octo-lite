@@ -8,7 +8,7 @@ description: Run the repo health pass, fired by hand, that files a repo's real a
 Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
-Spec: octo-lite `spec/domains/octo-lite.spec.html#health`.
+Spec: octo-lite [`spec/domains/octo-lite.spec.html#health`](https://github.com/varelaseb/octo-lite/blob/main/spec/domains/octo-lite.spec.html#health).
 The tracker is the only store of health issues: no file, report, or table holds them.
 
 ## Health ticket
@@ -58,7 +58,7 @@ linear issue update <key> --state completed
 
 ## Filing rule
 
-The rule is spec `#health-filing`: what each note or finding gets, and what a
+The rule is spec [`#health-filing`](https://github.com/varelaseb/octo-lite/blob/main/spec/domains/octo-lite.spec.html#health-filing): what each note or finding gets, and what a
 filing checks against main. This skill holds only how:
 
 1. Read each PR's notes, tagged as the reviewer gave them, from its body:
@@ -69,7 +69,7 @@ filing checks against main. This skill holds only how:
 
 ## Pass
 
-The pass is spec `#health-pass`: who fires it, what it reads, looks for,
+The pass is spec [`#health-pass`](https://github.com/varelaseb/octo-lite/blob/main/spec/domains/octo-lite.spec.html#health-pass): who fires it, what it reads, looks for,
 checks, and files, and its one message. This skill holds only how:
 
 - Read main without changing a repository file (no pull, checkout, or
