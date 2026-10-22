@@ -230,6 +230,28 @@ wait starts still ends it at once. Wait by agent name: a parked worker
 caller's environ, so `herdr-close` of the caller's tab, parking included, ends
 it with the caller's other processes, waking no one.
 
+The wait recipe (spec `#roles-goal`), for an owner on each worker it sets to
+work and the operator on an owner it awaits a reply from. The stop message is
+your only wake: no timer or poll. When relaunched from a park, run
+`herdr-await <name>`, sending nothing, on each agent you still await: your
+earlier waits ended with your process. When a stop message comes for an agent
+whose result or reply you still await, read its screen with
+`herdr agent read <name>`; the message already names its state.
+
+- A finished result or reply there is its report: consume it.
+- A turn ended on an API error: resume it with `herdr-await <name> continue`,
+  which sends again while a rate limit lasts; its `stop=send-failed` means it
+  is blocked.
+- Still at its task, such as on its own background command:
+  `herdr-await --since <seq> <name>`, `<seq>` the one the message named, so
+  you wake only once it has worked and stopped again, even if it did so before
+  that wait starts.
+- Otherwise it is blocked: recover it as your role contract says.
+
+Except for a worker still at its task, an owner tells the operator which
+worker ended without reporting and what it did: the result consumed, the
+worker resumed, or the worker started in its place.
+
 ## Reading a pane
 
 `herdr pane read` returns raw text. `herdr agent get` returns JSON. Use the
