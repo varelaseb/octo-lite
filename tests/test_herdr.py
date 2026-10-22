@@ -67,6 +67,8 @@ dialog_state() { [[ -f "$FAKE_DIALOG" ]] && cat "$FAKE_DIALOG" || echo none; }
 # FAKE_GONE lists targets Herdr finds no agent for; a started name leaves it.
 gone() { [[ -f "${FAKE_GONE:-}" ]] && grep -qxF "$1" "$FAKE_GONE"; }
 not_found() { echo '{"error":{"code":"agent_not_found","message":"not found"}}' >&2; exit 1; }
+# FAKE_BLOCKED lists targets blocked on interactive input until the test frees them.
+blocked() { [[ -f "${FAKE_BLOCKED:-}" ]] && grep -qxF "$1" "$FAKE_BLOCKED"; }
 
 case "$sub" in
   "workspace create")
@@ -167,7 +169,7 @@ case "$sub" in
     fi ;;
   "agent prompt")
     gone "$3" && not_found
-    if [[ -n "${FAKE_PROMPT_BLOCKED:-}" ]]; then
+    if [[ -n "${FAKE_PROMPT_BLOCKED:-}" ]] || blocked "$3"; then
       echo '{"error":{"code":"agent_blocked","message":"requires interactive input"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
     if [[ -n "${FAKE_PROMPT_STALLED:-}" ]]; then
@@ -229,7 +231,9 @@ case "$sub" in
     # The agent stops at state_change_seq 42, or 44 once FAKE_WORKED exists:
     # it worked (43) and stopped again. A wait --until working ends once it
     # works, and on one that worked and stopped already, only on its next work.
+    # A wait --until idle, done, or working on a blocked target holds till it frees.
     gone "$3" && not_found
+    while [[ "${5:-}" == idle ]] && blocked "$3"; do sleep 0.05; done
     while [[ -n "${FAKE_WAIT_GATE:-}" && ! -e "$FAKE_WAIT_GATE" ]]; do sleep 0.05; done
     [[ -z "${FAKE_WAIT_EXITED:-}" ]] ||
       { echo '{"error":{"code":"agent_not_running","message":"agent exited"}}' >&2; exit 1; }
@@ -282,9 +286,11 @@ class HerdrWrapperTest(unittest.TestCase):
             "HOME": str(d),
             "XDG_STATE_HOME": str(d / "state"),
             "FAKE_GONE": str(d / "gone"),
+            "FAKE_BLOCKED": str(d / "blocked"),
             "FAKE_WORKED": str(d / "worked"),
         }
         self.gone_file = d / "gone"
+        self.blocked_file = d / "blocked"
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
         # The suite runs in the default Herdr session, from no pane, unless a
         # test names one: a Herdr pane's caller env must not reach a wrapper.
@@ -636,11 +642,13 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def waiting(self, target, **env):
         # A `herdr agent wait TARGET` of the caller's tab, which Herdr 0.9.0
-        # leaves running forever once the target's tab closes.
+        # leaves running forever once the target's tab closes. Written once: a
+        # rewrite truncates the script under a running waiter's bash.
         waiter = Path(self.tmp.name) / "waiter/herdr"
-        waiter.parent.mkdir(exist_ok=True)
-        waiter.write_text("#!/usr/bin/env bash\nwhile :; do sleep 0.1; done\n")
-        waiter.chmod(0o755)
+        if not waiter.exists():
+            waiter.parent.mkdir()
+            waiter.write_text("#!/usr/bin/env bash\nwhile :; do sleep 0.1; done\n")
+            waiter.chmod(0o755)
         p = subprocess.Popen([str(waiter), "agent", "wait", target], start_new_session=True,
                              env={**self.env, **env})
         self.addCleanup(lambda: (p.kill(), p.wait()))
@@ -1200,6 +1208,29 @@ class HerdrWrapperTest(unittest.TestCase):
         for pid in waits:
             os.kill(pid, signal.SIGTERM)
         self.assertEqual(self.woken(), "herdr-await: implementer-ann-3 stop=gone (herdr agent wait exit 143)")
+
+    def test_await_wakes_a_caller_blocked_on_a_dialog_once_it_frees(self):
+        # transport-await: a caller at a dialog (a Codex approval, any Claude
+        # dialog) as its worker stops refuses the wake (herdr-say exit 75),
+        # which lands once the caller frees.
+        self.blocked_file.write_text("w5:p2\n")
+        self.awaits("implementer-ann-1")
+        held = "agent wait w5:p2 --until idle --until done --until working"
+        wake = "agent prompt w5:p2 herdr-await: implementer-ann-1 stop=idle seq=42 --wait "
+
+        def steps(n):
+            # The wakes sent to the caller and waits on it, once n are logged.
+            end = time.monotonic() + 5
+            while True:
+                s = ["wake" if c.startswith(wake) else "held" for c in self.calls().splitlines()
+                     if c.startswith(wake) or c == held]
+                if len(s) >= n or time.monotonic() > end:
+                    return s
+                time.sleep(0.05)
+
+        self.assertEqual(steps(2), ["wake", "held"])
+        self.blocked_file.write_text("")
+        self.assertEqual(steps(3), ["wake", "held", "wake"])
 
     def test_await_ends_at_once_on_a_send_that_fails(self):
         # A send not exiting 0 ends the wait before it starts, naming the failure.

@@ -8,7 +8,8 @@
 # when given, then waits (`herdr agent wait NAME`) until NAME is idle, done, or
 # blocked on interactive input, or gone: its agent exited, or Herdr finds no
 # agent by that name. Then it sends the caller's pane ($HERDR_PANE_ID) one
-# message naming NAME and the stop it ended on:
+# message naming NAME and the stop it ended on, sent again each time a caller
+# blocked on interactive input frees:
 #   herdr-await: NAME stop=STATE seq=N      stopped in STATE, Herdr's state_change_seq N
 #   herdr-await: NAME stop=gone (REASON)    Herdr's error code, or the wait's exit
 #   herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   no wait ran
@@ -39,7 +40,13 @@ fi
 unset HERDR_AWAIT_APART
 
 name="$1"
-stop() { "$here/herdr-say" "$caller" "herdr-await: $name stop=$1" >/dev/null 2>&1; exit; }
+# A caller blocked on interactive input (herdr-say exit 75) gets it once it frees.
+stop() {
+  until "$here/herdr-say" "$caller" "herdr-await: $name stop=$1" >/dev/null 2>&1; (($? != 75)); do
+    herdr agent wait "$caller" --until idle --until done --until working >/dev/null 2>&1 || break
+  done
+  exit
+}
 if (($# == 2)); then
   err="$("$here/herdr-say" "$name" "$2" 2>&1 >/dev/null)" ||
     { rc=$?; stop "send-failed (herdr-say exit $rc: ${err//$'\n'/ })"; }
