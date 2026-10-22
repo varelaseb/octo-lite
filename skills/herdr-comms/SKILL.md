@@ -30,7 +30,8 @@ A lane worker spawns into its lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
 named `<role>-<ticket>` lowercase (`implementer-ann-64`). A pane never moves
 between spaces: Herdr rewrites its ids.
 
-Spawn bare, then send the brief with `herdr-say`. Nothing follows the runtime:
+Spawn bare, then send the brief with `herdr-say`, or with `herdr-await` to wait
+on the agent (below). Nothing follows the runtime:
 with an inline prompt, `herdr agent start` times out waiting for readiness.
 
 One tab, one pane, one agent, at an explicit worktree. Prints:
@@ -95,7 +96,11 @@ herdr-close SPACE
 The teardown step. An id with a colon (`w5:t2`) is a tab, one without (`w5`) is
 a space. Closes it, then sends TERM to every process of the caller's session
 whose environ carries `HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which
-catches detached children that close alone leaves running. Run it from outside
+catches detached children that close alone leaves running, and to every
+`herdr agent wait` of the caller's session on an agent in it, by name or pane
+id, read from `herdr agent list` before the close: Herdr leaves such a wait
+running once the agent's tab closes (spec `#transport-close-waits`). Parking
+(below) closes the same way. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
 own space, or only its owner tab when the lane started in a shared space.
 Prints `tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and
@@ -194,6 +199,36 @@ the reason goes to Spec Chat, which retries.
 The review service may run in another Herdr session, so register a review row
 with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks
 and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
+
+## Wait on an agent
+
+```
+herdr-await [--since SEQ] NAME [MESSAGE]
+```
+
+The one wait on a lane agent (spec `#transport-await`): never run `herdr agent
+wait` yourself. Returns at once. Apart from its caller, it sends MESSAGE to NAME
+with `herdr-say` when given, then waits until NAME is idle, done, or blocked on
+interactive input, or gone: its agent exited, its tab closed, or no agent has
+that name. Then it sends the caller's pane (`$HERDR_PANE_ID`) one message
+naming NAME and the stop:
+
+```
+herdr-await: NAME stop=STATE seq=N                     stopped in STATE at Herdr's state_change_seq N
+herdr-await: NAME stop=gone (REASON)                   Herdr's error code, or the wait's exit
+herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   the send did not exit 0; no wait ran
+```
+
+A message wakes a Claude, Codex, or pi caller the same way, so no runtime needs
+a background command's end to invoke it, and a send that waits out a rate limit
+holds no caller in the foreground. Given `--since SEQ`, the `seq` of the stop
+the caller last read, the wait ends only once NAME has changed state since that
+stop and stopped again, or is gone: a re-wait on an agent still at its task
+never wakes its caller before it moves, and one that works and stops before the
+wait starts still ends it at once. Wait by agent name: a parked worker
+`herdr-say` resumes gets a new pane, never a new name. The wait keeps the
+caller's environ, so `herdr-close` of the caller's tab, parking included, ends
+it with the caller's other processes, waking no one.
 
 ## Reading a pane
 

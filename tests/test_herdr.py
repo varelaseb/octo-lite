@@ -16,6 +16,8 @@ live Herdr 0.9.0:
   * a Codex contract sent as a prompt is worked as a task, and a Codex thread
     on the shared daemon outlives its tab
   * a detached child outlives its closed tab unless `herdr-close` reaps it
+  * `herdr agent wait` on an agent outlives the agent's closed tab unless
+    `herdr-close` ends it
   * a parked agent must hold no process, refuse when working or Codex, and
     resume once under its name when messaged
   * a pane's Claude session record may be one an ended Claude left at a pid
@@ -28,10 +30,13 @@ live Herdr 0.9.0:
     records a slash command transformed, never as typed
   * a wake send outliving Spec Chat's bound fails after Spec Chat counted it
     sent, so only the operator can be told
+  * a background command's end invokes only a Claude caller, so a wait on an
+    agent must wake its caller by message, and end with the caller's tab
 """
 
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -46,6 +51,7 @@ SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
 WAKE = ROOT / "skills/herdr-comms/assets/herdr-wake"
 CLOSE = ROOT / "skills/herdr-comms/assets/herdr-close"
+AWAIT = ROOT / "skills/herdr-comms/assets/herdr-await"
 SESSION = ROOT / "skills/herdr-comms/assets/herdr-claude-session"
 STATE = ROOT / "scripts/octo-lite-state"
 
@@ -61,6 +67,8 @@ dialog_state() { [[ -f "$FAKE_DIALOG" ]] && cat "$FAKE_DIALOG" || echo none; }
 # FAKE_GONE lists targets Herdr finds no agent for; a started name leaves it.
 gone() { [[ -f "${FAKE_GONE:-}" ]] && grep -qxF "$1" "$FAKE_GONE"; }
 not_found() { echo '{"error":{"code":"agent_not_found","message":"not found"}}' >&2; exit 1; }
+# FAKE_BLOCKED lists targets blocked on interactive input until the test frees them.
+blocked() { [[ -f "${FAKE_BLOCKED:-}" ]] && grep -qxF "$1" "$FAKE_BLOCKED"; }
 
 case "$sub" in
   "workspace create")
@@ -69,6 +77,8 @@ case "$sub" in
     echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
   "workspace get")
     echo "${FAKE_WORKSPACE_GET:-{\}}" ;;
+  "agent list")
+    echo "${FAKE_AGENT_LIST:-{\}}" ;;
   "tab close"|"workspace close")
     echo "CLOSED" >>"$FAKE_CLOSED"; echo '{"result":{}}' ;;
   "agent start")
@@ -159,7 +169,7 @@ case "$sub" in
     fi ;;
   "agent prompt")
     gone "$3" && not_found
-    if [[ -n "${FAKE_PROMPT_BLOCKED:-}" ]]; then
+    if [[ -n "${FAKE_PROMPT_BLOCKED:-}" ]] || blocked "$3"; then
       echo '{"error":{"code":"agent_blocked","message":"requires interactive input"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
     if [[ -n "${FAKE_PROMPT_STALLED:-}" ]]; then
@@ -214,6 +224,28 @@ case "$sub" in
       fi
     fi
     echo '{"result":{"agent":{"agent_status":"working"}}}' ;;
+  "agent wait")
+    # Herdr's wait without --until: it ends on idle, done, or blocked, its
+    # state FAKE_WAIT_STATUS; FAKE_WAIT_EXITED poses the agent exiting first.
+    # FAKE_WAIT_GATE holds the wait until the test creates that file.
+    # The agent stops at state_change_seq 42, or 44 once FAKE_WORKED exists:
+    # it worked (43) and stopped again. A wait --until working ends once it
+    # works, and on one that worked and stopped already, only on its next work.
+    # A wait --until idle, done, or working on a blocked target holds till it frees.
+    gone "$3" && not_found
+    while [[ "${5:-}" == idle ]] && blocked "$3"; do sleep 0.05; done
+    while [[ -n "${FAKE_WAIT_GATE:-}" && ! -e "$FAKE_WAIT_GATE" ]]; do sleep 0.05; done
+    [[ -z "${FAKE_WAIT_EXITED:-}" ]] ||
+      { echo '{"error":{"code":"agent_not_running","message":"agent exited"}}' >&2; exit 1; }
+    s="${FAKE_WAIT_STATUS:-idle}" seq=42
+    [[ -e "$FAKE_WORKED" ]] && seq=44
+    if [[ "${5:-}" == working ]]; then
+      [[ -e "$FAKE_WORKED" ]] && exec sleep 30
+      while [[ ! -e "$FAKE_WORKED" ]]; do sleep 0.05; done
+      s=working seq=43
+    fi
+    jq -nc --arg n "$3" --arg s "$s" --argjson seq "$seq" \
+      '{result: {agent: {name: $n, agent_status: $s, state_change_seq: $seq}}, type: "agent_info"}' ;;
   *)
     echo "{}" ;;
 esac
@@ -254,8 +286,11 @@ class HerdrWrapperTest(unittest.TestCase):
             "HOME": str(d),
             "XDG_STATE_HOME": str(d / "state"),
             "FAKE_GONE": str(d / "gone"),
+            "FAKE_BLOCKED": str(d / "blocked"),
+            "FAKE_WORKED": str(d / "worked"),
         }
         self.gone_file = d / "gone"
+        self.blocked_file = d / "blocked"
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
         # The suite runs in the default Herdr session, from no pane, unless a
         # test names one: a Herdr pane's caller env must not reach a wrapper.
@@ -605,6 +640,49 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("killed=1", r.stdout)
         self.assertTrue(self.gone(there), "a named session's process survived herdr-close")
 
+    def waiting(self, target, **env):
+        # A `herdr agent wait TARGET` of the caller's tab, which Herdr 0.9.0
+        # leaves running forever once the target's tab closes. Written once: a
+        # rewrite truncates the script under a running waiter's bash.
+        waiter = Path(self.tmp.name) / "waiter/herdr"
+        if not waiter.exists():
+            waiter.parent.mkdir()
+            waiter.write_text("#!/usr/bin/env bash\nwhile :; do sleep 0.1; done\n")
+            waiter.chmod(0o755)
+        p = subprocess.Popen([str(waiter), "agent", "wait", target], start_new_session=True,
+                             env={**self.env, **env})
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        return p
+
+    def test_close_ends_every_wait_of_its_session_on_an_agent_it_closes(self):
+        # acceptance-worker-closed-no-wait: a wait by name or pane id, whoever waits.
+        other = f"s-{uuid.uuid4()}"
+        for close in ("tab", "space"):
+            space, n = f"w-{uuid.uuid4()}", f"-{close}"
+            tab = f"{space}:t1"
+            agents = [("implementer-ann-1" + n, f"{space}:p1", tab, space),
+                      (None, f"{space}:p2", tab, space),  # unnamed, waited on by pane id
+                      ("implementer-ann-3" + n, f"{space}:p3", f"{space}:t3", space),
+                      ("implementer-ann-2" + n, "w-open:p1", "w-open:t1", "w-open")]
+            listed = json.dumps({"result": {"agents": [
+                {"name": a, "pane_id": p, "tab_id": t, "workspace_id": w} for a, p, t, w in agents]}})
+            in_tab = [self.waiting("implementer-ann-1" + n), self.waiting(f"{space}:p1"),
+                      self.waiting(f"{space}:p2")]
+            in_space = [self.waiting("implementer-ann-3" + n), self.waiting(f"{space}:p3")]
+            kept = [self.waiting("implementer-ann-2" + n), self.waiting("w-open:p1"),
+                    self.waiting("implementer-ann-1" + n, HERDR_SESSION=other)]
+            ended = in_tab if close == "tab" else in_tab + in_space
+            kept += in_space if close == "tab" else []
+            r = subprocess.run([str(CLOSE), tab if close == "tab" else space], capture_output=True,
+                               text=True, env={**self.env, "FAKE_AGENT_LIST": listed})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(f"killed={len(ended)}", r.stdout)
+            for w in ended:
+                self.assertTrue(self.gone(w), f"a wait on an agent of the closed {close} survived")
+                self.assertEqual(w.returncode, -signal.SIGTERM)
+            for w in kept:
+                self.assertIsNone(w.poll(), "ended a wait on an agent still open, or of another session")
+
     def test_close_rejects_an_option_as_a_tab(self):
         for arg in ("--help", "-h"):
             r = subprocess.run([str(CLOSE), arg], capture_output=True, text=True, env=self.env)
@@ -657,9 +735,11 @@ class HerdrWrapperTest(unittest.TestCase):
         # The space is the lane's, labelled with its name; only its tab count decides.
         ws = {"result": {"workspace": {"workspace_id": space, "label": "ann45",
                                        "tab_count": tabs}}}
+        listed = {"result": {"agents": [agent["result"]["agent"]]}}
         r = subprocess.run([str(CLOSE), "--park", pane], capture_output=True, text=True,
                            env={**self.env, "FAKE_AGENT_GET": json.dumps(agent),
-                                "FAKE_WORKSPACE_GET": json.dumps(ws), **env})
+                                "FAKE_WORKSPACE_GET": json.dumps(ws),
+                                "FAKE_AGENT_LIST": json.dumps(listed), **env})
         return p, r, pane, tab, space
 
     def calls(self):
@@ -685,6 +765,14 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertTrue(self.gone(p), "a process of the parked owner is still running")
         self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
         self.assertEqual(json.loads(r.stdout)["session"], "s-1")
+
+    def test_parking_ends_every_wait_on_the_parked_agent(self):
+        # transport-close-waits: parking included.
+        mine, theirs = self.waiting("implementer-ann-1"), self.waiting("implementer-ann-2")
+        p, r, *_ = self.park(name="implementer-ann-1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.gone(mine), "a wait on the parked agent survived")
+        self.assertIsNone(theirs.poll(), "ended a wait on an agent still open")
 
     def test_parking_an_owner_in_a_shared_space_closes_only_its_tab(self):
         # The space's other tabs are agents that may be working.
@@ -1002,6 +1090,164 @@ class HerdrWrapperTest(unittest.TestCase):
         self.parked_line("ann46", pane="w8:p1", session="s2")
         self.assertEqual(self.say("--parked", "w8:p1").returncode, 1)
         self.assertEqual(self.say("--parked", "w8:p1", HERDR_SESSION="s2").returncode, 0)
+
+    # --- await -----------------------------------------------------------
+
+    def awaits(self, *args, **env):
+        # herdr-await run by the owner in pane w5:p2 of its own tab, which a
+        # cleanup reaps with whatever the wait left running.
+        tab = f"w5:t-{uuid.uuid4()}"
+        self.addCleanup(self.reap, tab)
+        start = time.monotonic()
+        r = subprocess.run([str(AWAIT), *args], capture_output=True, text=True, timeout=10,
+                           env={**self.env, "HERDR_PANE_ID": "w5:p2", "HERDR_TAB_ID": tab,
+                                "HERDR_WORKSPACE_ID": "w5", **env})
+        r.elapsed, r.tab = time.monotonic() - start, tab
+        return r
+
+    def reap(self, tab):
+        for pid in self.tagged_pids(tab):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def tagged_pids(self, tab, argv=""):
+        # Live processes carrying HERDR_TAB_ID=tab whose argv holds argv.
+        pids = []
+        for env in Path("/proc").glob("[0-9]*/environ"):
+            try:
+                tags = env.read_bytes().split(b"\0")
+                cmd = (env.parent / "cmdline").read_bytes().replace(b"\0", b" ").decode()
+            except OSError:
+                continue
+            if f"HERDR_TAB_ID={tab}".encode() in tags and argv in cmd:
+                pids.append(int(env.parent.name))
+        return pids
+
+    def woken(self, within=5.0):
+        # The message herdr-await sent its caller's pane, or None.
+        end = time.monotonic() + within
+        while True:
+            m = re.search(r"^agent prompt w5:p2 (herdr-await: .*) --wait ", self.calls(), re.M)
+            if m or time.monotonic() > end:
+                return m and m.group(1)
+            time.sleep(0.05)
+
+    def test_await_sends_the_work_then_wakes_its_caller_naming_the_stop(self):
+        # transport-await, roles-goal: the wake is a message to the caller's
+        # pane, so it reaches a Codex or pi owner as it does a Claude one
+        # (acceptance-codex-owner-worker-ended, -pi-owner-worker-ended). The
+        # stop names Herdr's state_change_seq, so a re-wait can pass it back.
+        r = self.awaits("implementer-ann-1", "brief ANN-1", FAKE_WAIT_STATUS="blocked")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=blocked seq=42")
+        calls = self.calls().splitlines()
+        brief = calls.index(next(c for c in calls if c.startswith("agent prompt implementer-ann-1 brief ANN-1 ")))
+        # by name, with no --until: Herdr's own idle, done, or blocked
+        wait = calls.index("agent wait implementer-ann-1")
+        wake = calls.index(next(c for c in calls if c.startswith("agent prompt w5:p2 ")))
+        self.assertLess(brief, wait)
+        self.assertLess(wait, wake)
+
+    def test_await_without_a_message_only_waits(self):
+        # An owner relaunched from a park re-waits on a worker, sending nothing.
+        self.awaits("implementer-ann-1")
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=42")
+        self.assertNotIn("agent prompt implementer-ann-1", self.calls())
+
+    def test_await_since_a_stop_ends_only_once_the_agent_worked_and_stopped_again(self):
+        # roles-goal, transport-await: a worker still at its task (idle on its
+        # own background command) at the stop its owner read never wakes the
+        # owner again until it has worked and stopped.
+        r = self.awaits("--since", "42", "implementer-ann-1")
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertIsNone(self.woken(within=0.5), "woke on a worker that has not moved")
+        Path(self.env["FAKE_WORKED"]).touch()
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=44")
+
+    def test_await_since_a_stop_ends_at_once_on_an_agent_that_moved_before_it_started(self):
+        # acceptance-worker-moved-unseen: a worker that works and stops before
+        # the wait starts still ends it, where a wait for its next work hangs.
+        Path(self.env["FAKE_WORKED"]).touch()
+        self.awaits("--since", "42", "implementer-ann-1")
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=44")
+
+    def test_await_returns_at_once_and_ends_with_its_callers_tab(self):
+        # The wait runs apart from its caller, yet as a process of the caller's
+        # tab, so closing or parking the caller ends it, waking no one.
+        gate = Path(self.tmp.name) / "gate"
+        r = self.awaits("implementer-ann-1", "brief ANN-1", FAKE_WAIT_GATE=str(gate))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(r.elapsed, 3)
+        self.assertIsNone(self.woken(within=0.5), "woke its caller before the agent stopped")
+        self.assertTrue(self.tagged_pids(r.tab, "herdr-await"), "the wait left its caller's tab")
+        close = subprocess.run([str(CLOSE), r.tab], capture_output=True, text=True, env=self.env)
+        self.assertEqual(close.returncode, 0, close.stderr)
+        gate.touch()
+        self.assertIsNone(self.woken(within=0.5), "a closed caller's wait still ran")
+        self.assertEqual(self.tagged_pids(r.tab, "herdr-await"), [])
+
+    def test_await_wakes_its_caller_on_an_agent_gone(self):
+        # Its agent exited, no agent has its name, or its wait was ended (as
+        # herdr-close ends the waits on what it closes): each ends as gone.
+        self.awaits("implementer-ann-1", "brief ANN-1", FAKE_WAIT_EXITED="1")
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=gone (agent_not_running)")
+        self.log.unlink()
+        self.gone_file.write_text("implementer-ann-2\n")
+        self.awaits("implementer-ann-2")
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-2 stop=gone (agent_not_found)")
+        self.log.unlink()
+        gate = Path(self.tmp.name) / "gate"
+        r = self.awaits("implementer-ann-3", FAKE_WAIT_GATE=str(gate))
+        for _ in range(100):
+            waits = self.tagged_pids(r.tab, "agent wait implementer-ann-3")
+            if waits:
+                break
+            time.sleep(0.05)
+        for pid in waits:
+            os.kill(pid, signal.SIGTERM)
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-3 stop=gone (herdr agent wait exit 143)")
+
+    def test_await_wakes_a_caller_blocked_on_a_dialog_once_it_frees(self):
+        # transport-await: a caller at a dialog (a Codex approval, any Claude
+        # dialog) as its worker stops refuses the wake (herdr-say exit 75),
+        # which lands once the caller frees.
+        self.blocked_file.write_text("w5:p2\n")
+        self.awaits("implementer-ann-1")
+        held = "agent wait w5:p2 --until idle --until done --until working"
+        wake = "agent prompt w5:p2 herdr-await: implementer-ann-1 stop=idle seq=42 --wait "
+
+        def steps(n):
+            # The wakes sent to the caller and waits on it, once n are logged.
+            end = time.monotonic() + 5
+            while True:
+                s = ["wake" if c.startswith(wake) else "held" for c in self.calls().splitlines()
+                     if c.startswith(wake) or c == held]
+                if len(s) >= n or time.monotonic() > end:
+                    return s
+                time.sleep(0.05)
+
+        self.assertEqual(steps(2), ["wake", "held"])
+        self.blocked_file.write_text("")
+        self.assertEqual(steps(3), ["wake", "held", "wake"])
+
+    def test_await_ends_at_once_on_a_send_that_fails(self):
+        # A send not exiting 0 ends the wait before it starts, naming the failure.
+        self.gone_file.write_text("implementer-ann-1\n")
+        self.awaits("implementer-ann-1", "brief ANN-1")
+        woken = self.woken()
+        self.assertRegex(woken, r"^herdr-await: implementer-ann-1 stop=send-failed \(herdr-say exit 1: .*agent_not_found.*\)$")
+        self.assertNotIn("agent wait", self.calls())
+
+    def test_await_needs_a_name_and_a_caller_pane(self):
+        for args, env in (((), {}), (("-h",), {}), (("a", "b", "c"), {}),
+                          (("--since", "42"), {}), (("--since", "seq=42", "a"), {}),
+                          (("implementer-ann-1",), {"HERDR_PANE_ID": ""})):
+            r = self.awaits(*args, **env)
+            self.assertEqual(r.returncode, 64, (args, r.stderr))
+        self.assertIsNone(self.woken(within=0.3))
+        self.assertNotIn("agent", self.calls())
 
     # --- wake provider (Spec Chat's wake protocol) -------------------------
 
