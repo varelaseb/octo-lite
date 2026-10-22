@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from html import unescape
 from pathlib import Path
+import json
 import os
 import re
 import subprocess
@@ -204,6 +205,106 @@ class LaneRecordTests(unittest.TestCase):
             r"At each hand-off moment, append one line to `<lane record name>\.handoffs\.jsonl`"
             r"\s+beside it, per spec `#handoff-fields`",
         )
+
+    def gate_examples(self) -> dict[str, dict]:
+        # The owner's gate lines, read against the spec's gate row: every
+        # example uses only the gates, verbs, and fields that row declares.
+        html = unescape(SPEC.read_text(encoding="utf-8"))
+        row = re.search(r'<tr data-anchor="handoff-kind-gate">(.*?)</tr>', html)
+        self.assertIsNotNone(row, "gate row is missing")
+        gates = re.search(r"<code>gate</code> \((.*?)\)", row.group(1)).group(1)
+        gates = {g.split(":")[0].strip() for g in gates.split(", ")}
+        verbs = re.search(r"<code>verb</code>, the one action \((.*?)\)", row.group(1)).group(1)
+        verbs = set(verbs.split(", "))
+        owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        block = re.search(r"```jsonl\n(.*?)```", owner, flags=re.DOTALL)
+        self.assertIsNotNone(block, "gate line example is missing")
+        lines = [json.loads(line) for line in block.group(1).splitlines() if line.strip()]
+        for line in lines:
+            self.assertRegex(line["at"], UTC)
+            self.assertEqual((line["kind"], line["event"]), ("gate", "asked"))
+            self.assertIn(line["gate"], gates)
+            self.assertIn(line["verb"], verbs)
+            self.assertTrue(line["link"])
+        return {line["gate"]: line for line in lines}
+
+    def test_owner_writes_one_gate_line_per_ask(self) -> None:
+        # spec #acceptance-lane-gate, #handoff-kind-gate: a review link for a
+        # choice to answer goes out with one gate line asked: gate answer,
+        # verb Answer, that link.
+        self.assertRegex(
+            (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"),
+            r"Each ask you make of the human \(.*a choice or pick to answer on a page.*\) is one gate line "
+            r"in that file, appended as the ask goes out: `link` where the human answers, `verb` the one action",
+        )
+        answer = self.gate_examples()["answer"]
+        self.assertEqual(answer["verb"], "Answer")
+        self.assertNotIn("qa", answer)
+
+    def test_merge_ask_gate_line_carries_pr_and_qa_call(self) -> None:
+        # spec #acceptance-lane-gate-merge: a merge ask with QA skipped goes out
+        # with one gate line asked: gate merge, verb Accept and merge, the PR
+        # as its link, its QA call in words.
+        merge = self.gate_examples()["merge"]
+        self.assertEqual(merge["verb"], "Accept and merge")
+        self.assertRegex(merge["link"], r"^https://github\.com/[^/]+/[^/]+/pull/")
+        self.assertRegex(merge["qa"], r"^QA skipped: \w")
+        self.assertRegex(
+            (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"),
+            r"on a merge `qa`, the QA call the merge ask states, in words",
+        )
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        self.assertIn(
+            "one merge ask that carries the review result, that evidence, and its QA call, "
+            "and goes out with its gate line (`agents/orchestrator.md`",
+            skill,
+        )
+
+    def test_close_links_each_report_kept_outside_main_before_rows_go(self) -> None:
+        # spec #acceptance-close-report-link, #roles-teardown: before review
+        # rows go, the PR body gains a permalink to each report kept outside
+        # main, at the last commit holding it.
+        owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        close = re.search(
+            r"add to the PR body a permalink to each report the lane kept outside main, "
+            r"`https://github\.com/<owner>/<repo>/blob/<commit>/<path>` at the last commit holding it, "
+            r"`(git log [^`]*)` on the branch that removed it.*tear down in order: review rows, worktrees, workers\.",
+            owner,
+        )
+        self.assertIsNotNone(close, "report permalink step is missing or after review rows")
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        self.assertRegex(skill, r"add to the PR body a permalink to each report the lane kept outside main, "
+                         r"tear down .*\(report permalinks before review rows")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args: str) -> str:
+                return subprocess.run(
+                    ["git", "-C", tmp, *args], check=True, capture_output=True, text=True
+                ).stdout.strip()
+
+            def commit(message: str) -> str:
+                git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message)
+                return git("rev-parse", "HEAD")
+
+            git("init", "-q", "-b", "lane")
+            report = Path(tmp) / "reports/qa.report.html"
+            report.parent.mkdir()
+            for text in ("draft", "final"):
+                report.write_text(text, encoding="utf-8")
+                git("add", "-A")
+                commit(text)
+            (Path(tmp) / "code.py").write_text("x = 1\n", encoding="utf-8")
+            git("add", "-A")
+            holding = commit("code")
+            git("rm", "-q", str(report))
+            commit("drop report before merge")
+            (Path(tmp) / "code.py").write_text("x = 2\n", encoding="utf-8")
+            git("add", "-A")
+            commit("more code")
+            command = close.group(1).replace("<branch>", "lane").replace("<path>", "reports/qa.report.html")
+            found = subprocess.run(command, shell=True, cwd=tmp, check=True, capture_output=True, text=True)
+            self.assertEqual(found.stdout.strip(), holding)
+            self.assertEqual(git("show", f"{holding}:reports/qa.report.html"), "final")
 
     def test_worker_result_send_is_bounded_then_goes_to_operator(self) -> None:
         # spec #roles-goal, #acceptance-worker-owner-gone(-stops): 3 sends to
