@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# The one wait on a lane agent (spec #transport-await): roles never run
+# `herdr agent wait` themselves.
+#
+#   herdr-await NAME [MESSAGE]
+#
+# Returns at once. Apart from its caller, it sends MESSAGE to NAME by herdr-say
+# when given, then waits (`herdr agent wait NAME`) until NAME is idle, done, or
+# blocked on interactive input, or gone: its agent exited, or Herdr finds no
+# agent by that name. Then it sends the caller's pane ($HERDR_PANE_ID) one
+# message naming NAME and the stop it ended on:
+#   herdr-await: NAME stop=STATE seq=N      stopped in STATE, Herdr's state_change_seq N
+#   herdr-await: NAME stop=gone (REASON)    Herdr's error code, or the wait's exit
+#   herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   no wait ran
+# A message wakes a Claude, Codex, or pi caller the same way, and a send that
+# waits out a rate limit holds no caller in the foreground. The detached wait
+# keeps the caller's environ, HERDR_TAB_ID included, so herdr-close of the
+# caller's tab, parking included, ends it with the caller's other processes.
+set -uo pipefail
+here="$(dirname "$(readlink -f "$0")")"
+
+usage() { echo "usage: herdr-await NAME [MESSAGE]" >&2; exit 64; }
+(($# == 1 || $# == 2)) && [[ -n "$1" && "$1" != -* ]] || usage
+caller="${HERDR_PANE_ID:-}"
+[[ -n "$caller" ]] || { echo "herdr-await: no caller pane (HERDR_PANE_ID) to wake" >&2; exit 64; }
+
+if [[ -z "${HERDR_AWAIT_APART:-}" ]]; then
+  HERDR_AWAIT_APART=1 setsid -f "$here/herdr-await" "$@" </dev/null >/dev/null 2>&1
+  exit
+fi
+unset HERDR_AWAIT_APART
+
+name="$1"
+stop() { "$here/herdr-say" "$caller" "herdr-await: $name stop=$1" >/dev/null 2>&1; exit; }
+if (($# == 2)); then
+  err="$("$here/herdr-say" "$name" "$2" 2>&1 >/dev/null)" ||
+    { rc=$?; stop "send-failed (herdr-say exit $rc: ${err//$'\n'/ })"; }
+fi
+# Herdr's result goes to stdout, its error to stderr, either beside warnings.
+out="$(herdr agent wait "$name" 2>&1)" || {
+  rc=$?; code="$(jq -Rr 'fromjson? | .error.code // empty' <<<"$out")"
+  stop "gone (${code:-herdr agent wait exit $rc})"; }
+stop "$(jq -Rr 'fromjson? | .result.agent // empty | "\(.agent_status) seq=\(.state_change_seq)"' <<<"$out")"

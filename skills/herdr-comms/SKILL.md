@@ -30,7 +30,8 @@ A lane worker spawns into its lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
 named `<role>-<ticket>` lowercase (`implementer-ann-64`). A pane never moves
 between spaces: Herdr rewrites its ids.
 
-Spawn bare, then send the brief with `herdr-say`. Nothing follows the runtime:
+Spawn bare, then send the brief with `herdr-say`, or with `herdr-await` to wait
+on the agent (below). Nothing follows the runtime:
 with an inline prompt, `herdr agent start` times out waiting for readiness.
 
 One tab, one pane, one agent, at an explicit worktree. Prints:
@@ -198,6 +199,32 @@ the reason goes to Spec Chat, which retries.
 The review service may run in another Herdr session, so register a review row
 with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks
 and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
+
+## Wait on an agent
+
+```
+herdr-await NAME [MESSAGE]
+```
+
+The one wait on a lane agent (spec `#transport-await`): never run `herdr agent
+wait` yourself. Returns at once. Apart from its caller, it sends MESSAGE to NAME
+with `herdr-say` when given, then waits until NAME is idle, done, or blocked on
+interactive input, or gone: its agent exited, its tab closed, or no agent has
+that name. Then it sends the caller's pane (`$HERDR_PANE_ID`) one message
+naming NAME and the stop:
+
+```
+herdr-await: NAME stop=STATE seq=N                     stopped in STATE at Herdr's state_change_seq N
+herdr-await: NAME stop=gone (REASON)                   Herdr's error code, or the wait's exit
+herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   the send did not exit 0; no wait ran
+```
+
+A message wakes a Claude, Codex, or pi caller the same way, so no runtime needs
+a background command's end to invoke it, and a send that waits out a rate limit
+holds no caller in the foreground. Wait by agent name: a parked worker
+`herdr-say` resumes gets a new pane, never a new name. The wait keeps the
+caller's environ, so `herdr-close` of the caller's tab, parking included, ends
+it with the caller's other processes, waking no one.
 
 ## Reading a pane
 

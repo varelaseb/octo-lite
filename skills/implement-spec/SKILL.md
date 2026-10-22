@@ -111,11 +111,13 @@ commit plus terse evidence. It does not merge, push, or update unrelated
 tickets.
 
 Use `herdr-say` for commands. It returns only once Herdr has observed the
-target change state, so delivery needs no separate acknowledgement. Once each
-send that sets a worker to work (brief, resume, repair) returns, start one
-background `herdr agent wait <name>` on that worker by name: its end wakes you, and
-`agents/orchestrator.md` says what to do then (spec `#roles-goal`). Keep
-messages sparse. A status pointer or commit is better than a recap.
+target change state, so delivery needs no separate acknowledgement. Send each
+message that sets a worker to work (brief, resume, repair) with
+`herdr-await <name> <message>` instead, by name, never `herdr agent wait`
+yourself: it returns at once, and its message to your pane when the worker
+stops wakes you, and `agents/orchestrator.md` says what to do then (spec
+`#roles-goal`, `#transport-await`). Keep messages sparse. A status pointer or
+commit is better than a recap.
 
 ## Integrate and advance
 

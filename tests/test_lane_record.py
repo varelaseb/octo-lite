@@ -231,27 +231,33 @@ class LaneRecordTests(unittest.TestCase):
         )
 
     def test_waiter_keeps_one_herdr_wait_on_each_agent_it_sets_to_work(self) -> None:
-        # spec #roles-goal, #acceptance-worker-ended, #acceptance-worker-api-error(-resumed),
-        # #acceptance-owner-api-error-resumed: the owner starts one background
-        # herdr agent wait by name per worker it sets to work, no check-in poll; on
-        # its end it consumes a result, resumes an API-error turn and waits in one
-        # background command, re-waits on one still at its task only after it works
-        # again (a plain wait on an agent idle on its own background command returns
-        # at once), else recovers. The fleet operator does the same per owner it
-        # awaits, never on every owner.
+        # spec #roles-goal, #transport-await, #acceptance-worker-ended,
+        # #acceptance-codex-owner-worker-ended, #acceptance-pi-owner-worker-ended,
+        # #acceptance-worker-api-error(-resumed), #acceptance-owner-api-error-resumed:
+        # the owner sends each worker its work with herdr-await by name, whose
+        # message wakes an owner on any runtime, never a background herdr agent
+        # wait of its own (its end invokes only Claude), and no check-in poll; on
+        # that message it consumes a result, resumes an API-error turn through
+        # herdr-await, re-waits on one still at its task only after it works
+        # again (a plain wait on an agent idle on its own background command
+        # returns at once), else recovers. The fleet operator does the same per
+        # owner it awaits, never on every owner.
         owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         skill = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
         operator = OPERATOR.read_text(encoding="utf-8")
-        for path, text in (("orchestrator", owner), ("implement-spec", skill)):
+        for path, text in (("orchestrator", owner), ("implement-spec", skill), ("meta-operator", operator)):
             self.assertNotRegex(text, r"check-in,? reads?", path)
             self.assertNotIn("agent_not_running", text, path)
-        wait = r"\(brief, resume,? (?:or )?repair\)[^.]*returns(?=[^.]*background)[^.]*`herdr agent wait <name>`[^.]*by (?:agent )?name"
+            self.assertNotRegex(text, r"start one `herdr agent wait", path)
+            self.assertNotIn("continue && herdr agent wait", text, path)
+        wait = r"\(brief, resume,? (?:or )?repair\)[^.]*`herdr-await <name> <message>`[^.]*by (?:agent )?name[^.]*never `herdr agent wait`"
         self.assertRegex(owner, wait)
         self.assertRegex(" ".join(skill.split()), wait + r".*`agents/orchestrator\.md`")
-        self.assertRegex(owner, r"When relaunched from a park, start one on each worker you still await")
+        self.assertRegex(owner, r"whatever runtime you run on")
+        self.assertRegex(owner, r"When relaunched from a park, run `herdr-await <name>`, sending nothing, on each worker you still await")
         rules = (
-            r"ends, read `herdr agent get <name>` and its pane.*API error: resume it with one background command, "
-            r"`herdr-say <name> continue && herdr agent wait <name>`, whose non-0 exit means it is blocked; "
+            r"When that message comes.*read `herdr agent get <name>` and its pane.*API error: resume it with "
+            r"`herdr-await <name> continue`, whose `stop=send-failed` means it is blocked; "
             r"still at its task.*one background command, `herdr agent wait <name> --until working && herdr agent wait <name>`.*; "
             r"otherwise .*recover or respawn"
         )
@@ -259,9 +265,9 @@ class LaneRecordTests(unittest.TestCase):
         self.assertRegex(owner, r"Except for one still at its task, tell the operator which worker ended without reporting")
         self.assertRegex(
             operator,
-            r"owner work whose reply you await.*returns start one `herdr agent wait <lane name>` on it by name as a background command, "
-            r"never a standing wait on every owner.*read `herdr agent get <lane name>` and its pane.*API error: one background command, "
-            r"`herdr-say <lane name> continue && herdr agent wait <lane name>`, whose non-0 exit means it is blocked; "
+            r"owner work whose reply you await, send it with `herdr-await <lane name> <message>` by name, never `herdr agent wait` yourself "
+            r"and never a standing wait on every owner.*read `herdr agent get <lane name>` and its pane.*API error: "
+            r"`herdr-await <lane name> continue`, whose `stop=send-failed` means it is blocked; "
             r"still at its task: one background command, `herdr agent wait <lane name> --until working && herdr agent wait <lane name>`",
         )
 

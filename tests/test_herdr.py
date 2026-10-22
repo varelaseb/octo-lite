@@ -30,10 +30,13 @@ live Herdr 0.9.0:
     records a slash command transformed, never as typed
   * a wake send outliving Spec Chat's bound fails after Spec Chat counted it
     sent, so only the operator can be told
+  * a background command's end invokes only a Claude caller, so a wait on an
+    agent must wake its caller by message, and end with the caller's tab
 """
 
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -48,6 +51,7 @@ SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 SAY = ROOT / "skills/herdr-comms/assets/herdr-say"
 WAKE = ROOT / "skills/herdr-comms/assets/herdr-wake"
 CLOSE = ROOT / "skills/herdr-comms/assets/herdr-close"
+AWAIT = ROOT / "skills/herdr-comms/assets/herdr-await"
 SESSION = ROOT / "skills/herdr-comms/assets/herdr-claude-session"
 STATE = ROOT / "scripts/octo-lite-state"
 
@@ -218,6 +222,16 @@ case "$sub" in
       fi
     fi
     echo '{"result":{"agent":{"agent_status":"working"}}}' ;;
+  "agent wait")
+    # Herdr's wait without --until: it ends on idle, done, or blocked, its
+    # state FAKE_WAIT_STATUS; FAKE_WAIT_EXITED poses the agent exiting first.
+    # FAKE_WAIT_GATE holds the wait until the test creates that file.
+    gone "$3" && not_found
+    while [[ -n "${FAKE_WAIT_GATE:-}" && ! -e "$FAKE_WAIT_GATE" ]]; do sleep 0.05; done
+    [[ -z "${FAKE_WAIT_EXITED:-}" ]] ||
+      { echo '{"error":{"code":"agent_not_running","message":"agent exited"}}' >&2; exit 1; }
+    jq -nc --arg n "$3" --arg s "${FAKE_WAIT_STATUS:-idle}" \
+      '{result: {agent: {name: $n, agent_status: $s, state_change_seq: 42}}, type: "agent_info"}' ;;
   *)
     echo "{}" ;;
 esac
@@ -1057,6 +1071,123 @@ class HerdrWrapperTest(unittest.TestCase):
         self.parked_line("ann46", pane="w8:p1", session="s2")
         self.assertEqual(self.say("--parked", "w8:p1").returncode, 1)
         self.assertEqual(self.say("--parked", "w8:p1", HERDR_SESSION="s2").returncode, 0)
+
+    # --- await -----------------------------------------------------------
+
+    def awaits(self, *args, **env):
+        # herdr-await run by the owner in pane w5:p2 of its own tab, which a
+        # cleanup reaps with whatever the wait left running.
+        tab = f"w5:t-{uuid.uuid4()}"
+        self.addCleanup(self.reap, tab)
+        start = time.monotonic()
+        r = subprocess.run([str(AWAIT), *args], capture_output=True, text=True, timeout=10,
+                           env={**self.env, "HERDR_PANE_ID": "w5:p2", "HERDR_TAB_ID": tab,
+                                "HERDR_WORKSPACE_ID": "w5", **env})
+        r.elapsed, r.tab = time.monotonic() - start, tab
+        return r
+
+    def reap(self, tab):
+        for pid in self.tagged_pids(tab):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def tagged_pids(self, tab, argv=""):
+        # Live processes carrying HERDR_TAB_ID=tab whose argv holds argv.
+        pids = []
+        for env in Path("/proc").glob("[0-9]*/environ"):
+            try:
+                tags = env.read_bytes().split(b"\0")
+                cmd = (env.parent / "cmdline").read_bytes().replace(b"\0", b" ").decode()
+            except OSError:
+                continue
+            if f"HERDR_TAB_ID={tab}".encode() in tags and argv in cmd:
+                pids.append(int(env.parent.name))
+        return pids
+
+    def woken(self, within=5.0):
+        # The message herdr-await sent its caller's pane, or None.
+        end = time.monotonic() + within
+        while True:
+            m = re.search(r"^agent prompt w5:p2 (herdr-await: .*) --wait ", self.calls(), re.M)
+            if m or time.monotonic() > end:
+                return m and m.group(1)
+            time.sleep(0.05)
+
+    def test_await_sends_the_work_then_wakes_its_caller_naming_the_stop(self):
+        # transport-await, roles-goal: the wake is a message to the caller's
+        # pane, so it reaches a Codex or pi owner as it does a Claude one
+        # (acceptance-codex-owner-worker-ended, -pi-owner-worker-ended). The
+        # stop names Herdr's state_change_seq, so a re-wait can pass it back.
+        r = self.awaits("implementer-ann-1", "brief ANN-1", FAKE_WAIT_STATUS="blocked")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=blocked seq=42")
+        calls = self.calls().splitlines()
+        brief = calls.index(next(c for c in calls if c.startswith("agent prompt implementer-ann-1 brief ANN-1 ")))
+        # by name, with no --until: Herdr's own idle, done, or blocked
+        wait = calls.index("agent wait implementer-ann-1")
+        wake = calls.index(next(c for c in calls if c.startswith("agent prompt w5:p2 ")))
+        self.assertLess(brief, wait)
+        self.assertLess(wait, wake)
+
+    def test_await_without_a_message_only_waits(self):
+        # An owner relaunched from a park re-waits on a worker, sending nothing.
+        self.awaits("implementer-ann-1")
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=42")
+        self.assertNotIn("agent prompt implementer-ann-1", self.calls())
+
+    def test_await_returns_at_once_and_ends_with_its_callers_tab(self):
+        # The wait runs apart from its caller, yet as a process of the caller's
+        # tab, so closing or parking the caller ends it, waking no one.
+        gate = Path(self.tmp.name) / "gate"
+        r = self.awaits("implementer-ann-1", "brief ANN-1", FAKE_WAIT_GATE=str(gate))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(r.elapsed, 3)
+        self.assertIsNone(self.woken(within=0.5), "woke its caller before the agent stopped")
+        self.assertTrue(self.tagged_pids(r.tab, "herdr-await"), "the wait left its caller's tab")
+        close = subprocess.run([str(CLOSE), r.tab], capture_output=True, text=True, env=self.env)
+        self.assertEqual(close.returncode, 0, close.stderr)
+        gate.touch()
+        self.assertIsNone(self.woken(within=0.5), "a closed caller's wait still ran")
+        self.assertEqual(self.tagged_pids(r.tab, "herdr-await"), [])
+
+    def test_await_wakes_its_caller_on_an_agent_gone(self):
+        # Its agent exited, no agent has its name, or its wait was ended (as
+        # herdr-close ends the waits on what it closes): each ends as gone.
+        self.awaits("implementer-ann-1", "brief ANN-1", FAKE_WAIT_EXITED="1")
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=gone (agent_not_running)")
+        self.log.unlink()
+        self.gone_file.write_text("implementer-ann-2\n")
+        self.awaits("implementer-ann-2")
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-2 stop=gone (agent_not_found)")
+        self.log.unlink()
+        gate = Path(self.tmp.name) / "gate"
+        r = self.awaits("implementer-ann-3", FAKE_WAIT_GATE=str(gate))
+        for _ in range(100):
+            waits = self.tagged_pids(r.tab, "agent wait implementer-ann-3")
+            if waits:
+                break
+            time.sleep(0.05)
+        for pid in waits:
+            os.kill(pid, signal.SIGTERM)
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-3 stop=gone (herdr agent wait exit 143)")
+
+    def test_await_ends_at_once_on_a_send_that_fails(self):
+        # A send not exiting 0 ends the wait before it starts, naming the failure.
+        self.gone_file.write_text("implementer-ann-1\n")
+        self.awaits("implementer-ann-1", "brief ANN-1")
+        woken = self.woken()
+        self.assertRegex(woken, r"^herdr-await: implementer-ann-1 stop=send-failed \(herdr-say exit 1: .*agent_not_found.*\)$")
+        self.assertNotIn("agent wait", self.calls())
+
+    def test_await_needs_a_name_and_a_caller_pane(self):
+        for args, env in (((), {}), (("-h",), {}), (("a", "b", "c"), {}),
+                          (("implementer-ann-1",), {"HERDR_PANE_ID": ""})):
+            r = self.awaits(*args, **env)
+            self.assertEqual(r.returncode, 64, (args, r.stderr))
+        self.assertIsNone(self.woken(within=0.3))
+        self.assertNotIn("agent", self.calls())
 
     # --- wake provider (Spec Chat's wake protocol) -------------------------
 
