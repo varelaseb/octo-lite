@@ -96,11 +96,12 @@ herdr-close SPACE
 The teardown step. An id with a colon (`w5:t2`) is a tab, one without (`w5`) is
 a space. Closes it, then sends TERM to every process of the caller's session
 whose environ carries `HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which
-catches detached children that close alone leaves running, and to every
-`herdr agent wait` of the caller's session on an agent in it, by name or pane
-id, read from `herdr agent list` before the close: Herdr leaves such a wait
-running once the agent's tab closes (spec `#transport-close-waits`). Parking
-(below) closes the same way. Run it from outside
+catches detached children that close alone leaves running, and ends whole each
+`herdr-await` of the caller's own pane on an agent in it, by name or pane id,
+read from `herdr agent list` before the close, waking no one: you closed it, so
+no stop message reads as news of an agent spawned again under the same name
+(spec `#transport-close-waits`). Another caller's wait on it ends as gone at
+its bound. Parking (below) closes the same way. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
 own space, or only its owner tab when the lane started in a shared space.
 Prints `tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and
@@ -226,9 +227,15 @@ the caller last read, the wait ends only once NAME has changed state since that
 stop and stopped again, or is gone: a re-wait on an agent still at its task
 never wakes its caller before it moves, and one that works and stops before the
 wait starts still ends it at once. Wait by agent name: a parked worker
-`herdr-say` resumes gets a new pane, never a new name. The wait keeps the
-caller's environ, so `herdr-close` of the caller's tab, parking included, ends
-it with the caller's other processes, waking no one.
+`herdr-say` resumes gets a new pane, never a new name. Each Herdr wait it runs
+is bounded, and at the bound it waits again, given `--since` reading the stop
+first, so it ends within the bound once the agent is gone, its tab closed
+however it closed (Herdr leaves its own wait running), or has worked and
+stopped between two waits. The wait keeps the caller's environ, so
+`herdr-close` of the caller's tab, parking included, ends it with the caller's
+other processes, waking no one; a wait whose caller is gone otherwise ends at
+its bound, waking no one. `herdr-close` of the agent by the caller, parking
+included, ends the caller's waits on it, waking no one.
 
 The wait recipe (spec `#roles-goal`), for an owner on each worker it sets to
 work and the operator on an owner it awaits a reply from. The stop message is
