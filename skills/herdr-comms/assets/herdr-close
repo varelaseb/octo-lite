@@ -17,9 +17,15 @@
 # the close, waking no one: the caller closed it, so a gone would read as news
 # of an agent spawned again under the same name.
 #
+# A close or park that runs prints only hand-off lines: one closed line ({at,
+# kind, tab|space, close_rc, killed}), which the owner closing a consumed worker
+# appends to the lane's hand-off log. A refusal or usage text is plain stderr.
+#
 # --park PANE reads the pane's Claude session (herdr-claude-session), closes its
 # tab, or its space when that tab is the space's only one (a lane owner in its
-# own space), and prints one parked hand-off line, even when the close fails.
+# own space), and prints one parked hand-off line, even when the close fails;
+# its closed line goes to stderr. The role is the record's, else the one a
+# worker's spawn name <role>-<ticket> carries; a name not of that form, none.
 # An agent Herdr does not report idle or done (Herdr 0.9.0 reports a Claude
 # agent waiting at its prompt as done), or one with no Claude session file
 # (Codex, pi), is refused with nothing closed.
@@ -41,7 +47,8 @@ if [[ "${1:-}" == --park ]]; then
   tabs="$(herdr workspace get "$space" 2>/dev/null | jq -r '.result.workspace.tab_count // empty')"
   [[ "$tabs" == 1 ]] && set -- "$space" || set -- "$(jq -r '.result.agent.tab_id // empty' <<<"$agent")"
   line="$(jq -c --arg at "$(date -u +%FT%TZ)" --arg pane "$pane" --arg name "$name" \
-    '{at: $at, kind: "parked", pane: $pane, name: $name, role: .agent, cwd, session: .sessionId}' <<<"$session")"
+    '{at: $at, kind: "parked", pane: $pane, name: $name,
+      role: (.agent // ($name | capture("^(?<r>.+)-[a-z0-9]+-[0-9]+$").r) // null), cwd, session: .sessionId}' <<<"$session")"
 fi
 
 id="${1:-}"
@@ -82,7 +89,8 @@ rc=0
 herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
 sweep tagged
 
-report="$kind=$id ${kind}_close_rc=$rc killed=$killed"
-if [[ -z "$line" ]]; then echo "$report"
-else echo "$report" >&2; echo "$line"; fi
+closed="$(jq -nc --arg at "$(date -u +%FT%TZ)" --arg kind "$kind" --arg id "$id" --argjson rc "$rc" \
+  --argjson killed "$killed" '{at: $at, kind: "closed", ($kind): $id, close_rc: $rc, killed: $killed}')"
+if [[ -z "$line" ]]; then echo "$closed"
+else echo "$closed" >&2; echo "$line"; fi
 exit "$rc"

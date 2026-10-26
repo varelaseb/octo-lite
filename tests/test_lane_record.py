@@ -205,6 +205,16 @@ class LaneRecordTests(unittest.TestCase):
             r"\s+beside it, per spec `#handoff-fields`",
         )
 
+    def test_owner_logs_closed_line_on_closing_a_consumed_worker(self) -> None:
+        # spec #acceptance-lane-log-close, #transport-close-line: the owner
+        # appends what herdr-close prints, its closed line, to the lane's log.
+        deliver = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
+        self.assertRegex(
+            deliver,
+            r"Close each consumed worker with\s+`herdr-close TAB >> "
+            r"\$\(octo-lite-state\)/lanes/<lane record name>\.handoffs\.jsonl`",
+        )
+
     def test_worker_result_send_is_bounded_then_goes_to_operator(self) -> None:
         # spec #roles-goal, #acceptance-worker-owner-gone(-stops): 3 sends to
         # the owner, then one to the operator pane, then stop; the operator

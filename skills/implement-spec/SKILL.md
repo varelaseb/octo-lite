@@ -215,8 +215,10 @@ After every ticket is integrated:
    (ANN-373): ready means the merge ask is out; draft means work is still in
    progress. Otherwise keep it draft and report the blocker. Keep the spec
    issue open until human review or repository automation closes it.
-5. Close each consumed worker with `herdr-close TAB`, which also ends its
-   detached processes. A worker you would keep idle through a long wait (human
+5. Close each consumed worker with
+   `herdr-close TAB >> $(octo-lite-state)/lanes/<lane record name>.handoffs.jsonl`,
+   which also ends its detached processes and appends its closed line (spec
+   `#transport-close-line`). A worker you would keep idle through a long wait (human
    gate, another lane) is parked instead, never a consumed one:
    `herdr-close --park <pane> >> $(octo-lite-state)/lanes/<lane record name>.handoffs.jsonl`;
    `herdr-say <name>` resumes it. Remove every temporary worker worktree only after it is
