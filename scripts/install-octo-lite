@@ -5,6 +5,7 @@ prefix=""
 check=false
 onboard=false
 undo=false
+after_pull=false
 project=""
 while (($#)); do
   case "$1" in
@@ -12,21 +13,26 @@ while (($#)); do
     --check) check=true; shift ;;
     --onboard) onboard=true; shift ;;
     --undo) undo=true; shift ;;
+    --after-pull) after_pull=true; shift ;;
     --project) project="$(cd "${2:?}" && pwd -P)"; shift 2 ;;
-    *) echo "usage: install-octo-lite [--prefix PATH] [--project CHECKOUT] [--check | --onboard | --undo]" >&2; exit 64 ;;
+    *) echo "usage: install-octo-lite [--prefix PATH] [--project CHECKOUT] [--check | --onboard | --after-pull | --undo]" >&2; exit 64 ;;
   esac
 done
 
 root="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 # One root: --prefix owns every path it writes, state and config included;
-# without it, XDG decides under $HOME.
+# without it, XDG decides under $HOME. scope keeps this run's prefix and
+# project for the after-pull step it publishes.
+scope=()
 if [[ -n "$prefix" ]]; then
   prefix="$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)"
   state_home="$prefix/.local/state"
+  scope+=(--prefix "$prefix")
 else
   prefix="$HOME"
   state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
 fi
+[[ -n "$project" ]] && scope+=(--project "$project")
 
 # octo-lite registers herdr-wake as Spec Chat's `wake` provider (Spec Chat owns
 # the format: review-service.spec.html#providers). Written only with Herdr on
@@ -395,7 +401,8 @@ fi
 # Onboarding: octo-lite asks its own consent questions and keeps the answers
 # as the [consent] table of its one onboarding file, beside the status it
 # publishes for any reader. Kept answers are not asked again; delete the file
-# to be asked afresh.
+# to be asked afresh. after_pull is the argv a host runs, no shell, after
+# fast-forwarding this clone; every run rewrites it from this run's scope.
 onboarding="$state_home/octo-lite/onboarding.toml"
 consent="$(sed -n '/^\[consent\]$/,$p' "$onboarding" 2>/dev/null || true)"
 if [[ "$onboard" == true && -z "$consent" ]]; then
@@ -408,7 +415,14 @@ if [[ "$onboard" == true && -z "$consent" ]]; then
 fi
 status=pending
 [[ -n "$consent" ]] && status=done && consent=$'\n'"$consent"$'\n'
+step="$(printf ', "%s"' "$root/scripts/install-octo-lite" --after-pull "${scope[@]}")"
 mkdir -p "$(dirname "$onboarding")"
-printf 'status = "%s"\ndoc = "%s"\n%s' "$status" \
-  "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" "$consent" >"$onboarding"
+printf 'status = "%s"\ndoc = "%s"\nafter_pull = [%s]\n%s' "$status" \
+  "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" "${step:2}" "$consent" >"$onboarding"
 echo "onboarding $status: $onboarding"
+
+# --after-pull verifies the install it just made; a failed check exits at once,
+# so its reason is the last line of error output.
+if [[ "$after_pull" == true ]]; then
+  exec "$root/scripts/install-octo-lite" --check "${scope[@]}"
+fi

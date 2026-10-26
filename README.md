@@ -39,11 +39,18 @@ Install or verify all links:
 ```bash
 scripts/install-octo-lite
 scripts/install-octo-lite --check
+scripts/install-octo-lite --after-pull
 ```
 
 `--check` also reports version floors for each tool octo-lite uses at runtime
 (git, herdr, jq, gh, and at least one of claude or codex), printing ok,
 missing, or too old with the upgrade source.
+
+`--after-pull` installs as a plain run does, asking nothing, then verifies as
+`--check` does. It exits non-zero when the verification fails, the last line of
+stderr naming the first failed check. A host runs it after fast-forwarding this
+clone: every install publishes it as `after_pull` in the
+[onboarding file](#onboarding).
 
 `--project CHECKOUT` also links the skills a project declares on its
 `AGENTS.md` [`Repo skills:` line](#repo-skills) from that checkout, the
@@ -67,6 +74,10 @@ octo-lite's one onboarding file,
 kept answers as a `[consent]` table (see
 [consent](skills/octo-lite-github/SKILL.md#consent)). Kept answers are not asked
 again, and a plain install keeps them; delete the file to answer afresh.
+`after_pull` is the argument list a host runs, with no shell, after
+fast-forwarding this clone: `install-octo-lite --after-pull` from this clone
+with the `--prefix` and `--project` the last install ran with. Every install
+rewrites it, so the step a host runs next is the pulled clone's.
 
 `octo-lite-start`, installed on `PATH`, creates a Herdr space labelled with the
 lane name and starts the lane's orchestrator alone in it at the worktree,
