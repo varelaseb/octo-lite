@@ -818,6 +818,12 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["role"], "code-reviewer")
 
+    def test_park_takes_no_role_from_a_name_not_of_spawn_form(self):
+        # transport-spawn-name: a name not <role>-<ticket> carries no role.
+        p, r, *_ = self.park(name="ann45", tabs=1, agent=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIsNone(json.loads(r.stdout)["role"])
+
     def test_parking_a_lane_owner_frees_its_whole_space(self):
         # acceptance-park-owner-free: the owner's tab is the only one in its space.
         p, r, pane, tab, space = self.park(name="ann45", tabs=1)
@@ -1139,6 +1145,20 @@ class HerdrWrapperTest(unittest.TestCase):
         argv = self.start_argv()
         self.assertEqual(argv[2], "implementer-ann-1")
         self.assertEqual(argv[-4:], ["--agent", "implementer", "--resume", "s-1"])
+
+    def test_parked_lookup_numbers_a_cut_off_last_line_in_its_own_log(self):
+        # handoff-lines-json: a log's last line cut off before its newline is
+        # named by its own number, and hides no line of the next log.
+        self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
+        cut = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes/ann45.handoffs.jsonl"
+        with open(cut, "a") as f:
+            f.write('{"at": "2026-10-14T11')
+        named = f"herdr-say: {cut}: line 2 is not a JSON object; skipped\n"
+        r = self.say("--parked", "implementer-ann-1")
+        self.assertEqual((r.returncode, json.loads(r.stdout)["pane"], r.stderr), (0, "w1:p7", named))
+        self.parked_line("ann46", pane="w2:p3", name="implementer-ann-2", role="implementer")
+        r = self.say("--parked", "implementer-ann-2")
+        self.assertEqual((r.returncode, json.loads(r.stdout)["pane"], r.stderr), (0, "w2:p3", named))
 
     def test_say_resumes_a_parked_worker_whose_line_names_no_role(self):
         # acceptance-park-no-role, transport-resume: the role its spawn name carries.

@@ -17,15 +17,15 @@
 # the close, waking no one: the caller closed it, so a gone would read as news
 # of an agent spawned again under the same name.
 #
-# Prints one closed hand-off line ({at, kind, tab|space, close_rc, killed}),
-# which the owner closing a consumed worker appends to the lane's hand-off log:
-# every line it prints on either stream is one a hand-off log can hold.
+# A close or park that runs prints only hand-off lines: one closed line ({at,
+# kind, tab|space, close_rc, killed}), which the owner closing a consumed worker
+# appends to the lane's hand-off log. A refusal or usage text is plain stderr.
 #
 # --park PANE reads the pane's Claude session (herdr-claude-session), closes its
 # tab, or its space when that tab is the space's only one (a lane owner in its
 # own space), and prints one parked hand-off line, even when the close fails;
 # its closed line goes to stderr. The role is the record's, else the one a
-# worker's spawn name <role>-<ticket> carries.
+# worker's spawn name <role>-<ticket> carries; a name not of that form, none.
 # An agent Herdr does not report idle or done (Herdr 0.9.0 reports a Claude
 # agent waiting at its prompt as done), or one with no Claude session file
 # (Codex, pi), is refused with nothing closed.
@@ -48,7 +48,7 @@ if [[ "${1:-}" == --park ]]; then
   [[ "$tabs" == 1 ]] && set -- "$space" || set -- "$(jq -r '.result.agent.tab_id // empty' <<<"$agent")"
   line="$(jq -c --arg at "$(date -u +%FT%TZ)" --arg pane "$pane" --arg name "$name" \
     '{at: $at, kind: "parked", pane: $pane, name: $name,
-      role: (.agent // ($name | sub("-[a-z0-9]+-[0-9]+$"; ""))), cwd, session: .sessionId}' <<<"$session")"
+      role: (.agent // ($name | capture("^(?<r>.+)-[a-z0-9]+-[0-9]+$").r) // null), cwd, session: .sessionId}' <<<"$session")"
 fi
 
 id="${1:-}"

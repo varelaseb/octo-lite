@@ -51,19 +51,22 @@ usage() { echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE |
 here="$(dirname "$(readlink -f "$0")")"
 
 # The latest parked line naming TARGET by pane or name. A line without name is
-# the lane owner: the lane's name, its log's stem. Each line that is not one
+# the lane owner: the lane's name, its log's stem. Each log is read on its own
+# and numbered by its own lines, so a line cut off before its newline is named
+# by its number and joins no line of the next log. Each line that is not one
 # JSON object is named once on stderr and skipped, so it hides nothing else.
 parked() {
-  local out logs=("$("$here/../../../scripts/octo-lite-state")"/lanes/*.handoffs.jsonl)
+  local log out logs=("$("$here/../../../scripts/octo-lite-state")"/lanes/*.handoffs.jsonl)
   [[ -f "${logs[0]}" ]] || return 1
-  out="$(jq -nRr --arg t "$1" '[inputs | (try fromjson catch null) as $o
+  out="$(for log in "${logs[@]}"; do
+    jq -nRr --arg log "$log" '[inputs] | to_entries[] | (.value | try fromjson catch null) as $o
       | if $o | type == "object"
-        then $o | .lane = (input_filename | split("/") | last | rtrimstr(".handoffs.jsonl"))
-        else "herdr-say: \(input_filename): line \(input_line_number) is not a JSON object; skipped" end]
-    | (.[] | strings), ([.[] | objects | select(.kind == "parked") | .name //= .lane
-      | select(.pane == $t or .name == $t)] | sort_by(.at) | last // empty | tojson)' "${logs[@]}")"
+        then $o | .lane = ($log | split("/") | last | rtrimstr(".handoffs.jsonl")) | tojson
+        else "herdr-say: \($log): line \(.key + 1) is not a JSON object; skipped" end' "$log"
+  done)"
   sed -n '/^herdr-say: /p' <<<"$out" >&2
-  grep '^{' <<<"$out"
+  grep '^{' <<<"$out" | jq -sc --arg t "$1" '[.[] | select(.kind == "parked") | .name //= .lane
+    | select(.pane == $t or .name == $t)] | sort_by(.at) | last // empty' | grep .
 }
 
 while (($#)); do
@@ -148,7 +151,7 @@ send() {
         started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
       else
         started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
-          --role "$(jq -r '.role // (.name | sub("-[a-z0-9]+-[0-9]+$"; ""))' <<<"$line")" "${resume[@]}" -- claude)"
+          --role "$(jq -r '.role // (.name | capture("^(?<r>.+)-[a-z0-9]+-[0-9]+$").r)' <<<"$line")" "${resume[@]}" -- claude)"
       fi
       name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
       echo "pane=$name"
