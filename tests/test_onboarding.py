@@ -3,6 +3,7 @@ consent asked and kept, onboarding.toml published in octo-lite's own state,
 and the start command installed on PATH."""
 
 import os
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -49,6 +50,17 @@ class OnboardingTest(unittest.TestCase):
         state = self.install()
         self.assertEqual((state["status"], state["consent"]), ("done", kept))
         self.assertFalse((self.prefix / ".config/octo-lite").exists())
+
+    def test_after_pull_runs_this_clone_with_the_last_prefix_and_project(self):
+        checkout = self.prefix.parent / "project"
+        checkout.mkdir()
+        (checkout / "AGENTS.md").write_text("# project\n")
+        step = [str(INSTALLER.resolve()), "--after-pull", "--prefix", str(self.prefix.resolve())]
+        state = self.install("--onboard", "--project", str(checkout), answers="y\ny\ny\n")
+        self.assertEqual(state["after_pull"], [*step, "--project", str(checkout.resolve())])
+        # every run rewrites it, below a kept [consent] table
+        state = self.install()
+        self.assertEqual((state["after_pull"], state["status"]), (step, "done"))
 
     def test_check_writes_no_state(self):
         self.install()
@@ -229,6 +241,66 @@ class OnboardingTest(unittest.TestCase):
         r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
                            capture_output=True, text=True, env=self.env)
         self.assertIn("checked", r.stdout)
+
+
+class AfterPullTest(unittest.TestCase):
+    """A host fast-forwards an installed clone, then runs the published
+    after_pull argv with no shell (#install-after-pull)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        self.prefix = base / "prefix"
+        self.env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        self.upstream = base / "upstream"
+        (self.upstream / "scripts").mkdir(parents=True)
+        (self.upstream / "agents").mkdir()
+        (self.upstream / "agents/role.md").write_text("role\n")
+        shutil.copy2(INSTALLER, self.upstream / "scripts/install-octo-lite")
+        self.git(self.upstream, "init", "-q")
+        self.commit("installer")
+        self.clone = base / "clone"
+        self.git(base, "clone", "-q", str(self.upstream), str(self.clone))
+        self.run_ok([str(self.clone / "scripts/install-octo-lite"), "--prefix", str(self.prefix)])
+        # upstream ships a new helper; the host fast-forwards the clone
+        helper = self.upstream / "scripts/new-helper"
+        helper.write_text("#!/bin/sh\n")
+        helper.chmod(0o755)
+        self.commit("new helper")
+        self.git(self.clone, "pull", "-q", "--ff-only")
+        self.linked = self.prefix / ".local/bin/new-helper"
+
+    def git(self, cwd, *args):
+        subprocess.run(["git", "-C", str(cwd), *args], check=True, env=self.env)
+
+    def commit(self, message):
+        self.git(self.upstream, "add", "-A")
+        self.git(self.upstream, "commit", "-q", "-m", message)
+
+    def run_ok(self, argv):
+        r = subprocess.run(argv, capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def after_pull(self):
+        onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
+        argv = tomllib.loads(onboarding.read_text())["after_pull"]
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, env=self.env)
+
+    def test_after_pull_links_the_new_helper(self):
+        r = self.after_pull()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.linked.resolve(), (self.clone / "scripts/new-helper").resolve())
+
+    def test_after_pull_fails_naming_the_failed_check(self):
+        leftover = self.prefix / "elsewhere"
+        leftover.write_text("")
+        self.linked.symlink_to(leftover)
+        r = self.after_pull()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(r.stderr.splitlines()[-1], f"bad link: {self.linked}")
 
 
 if __name__ == "__main__":
