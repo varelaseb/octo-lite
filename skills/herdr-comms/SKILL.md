@@ -30,7 +30,8 @@ A lane worker spawns into its lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
 named `<role>-<ticket>` lowercase (`implementer-ann-64`). A pane never moves
 between spaces: Herdr rewrites its ids.
 
-Spawn bare, then send the brief with `herdr-say`. Nothing follows the runtime:
+Spawn bare, then send the brief with `herdr-say`, or with `herdr-await` to wait
+on the agent (below). Nothing follows the runtime:
 with an inline prompt, `herdr agent start` times out waiting for readiness.
 
 One tab, one pane, one agent, at an explicit worktree. Prints:
@@ -95,11 +96,17 @@ herdr-close SPACE
 The teardown step. An id with a colon (`w5:t2`) is a tab, one without (`w5`) is
 a space. Closes it, then sends TERM to every process of the caller's session
 whose environ carries `HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which
-catches detached children that close alone leaves running. Run it from outside
+catches detached children that close alone leaves running, and ends whole each
+`herdr-await` of the caller's own pane on an agent in it, by name or pane id,
+read from `herdr agent list` before the close, waking no one: you closed it, so
+no stop message reads as news of an agent spawned again under the same name
+(spec `#transport-close-waits`). Another caller's wait on it ends as gone at
+its bound. Parking (below) closes the same way. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
 own space, or only its owner tab when the lane started in a shared space.
-Prints `tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and
-exits with the close status.
+Prints one closed hand-off line (`at kind tab|space close_rc killed`; spec
+`#transport-close-line`), which an owner closing a consumed worker appends to
+the lane's hand-off log, and exits with the close status.
 
 ## Park an idle agent
 
@@ -111,10 +118,12 @@ herdr-close --park PANE >>"$lanes/<lane>.handoffs.jsonl"
 pane of the caller's session, by `herdr-claude-session` (below), closes its
 tab, or its whole space when that tab is the space's only one (a lane owner in
 its own space), and prints one parked line (`at kind pane name role cwd
-session`) on stdout, even when the close fails; the close report goes to
-stderr. The parker appends the line: the operator for an owner, the owner for a
-worker. An agent Herdr does not report idle is refused with exit 75, a Codex or
-pi agent (no Claude session file) with 65; nothing is closed.
+session`) on stdout, even when the close fails; its closed line goes to
+stderr. The role is the session record's, else the one a worker's spawn name
+`<role>-<ticket>` carries. The parker appends the line: the operator for an
+owner, the owner for a worker. An agent Herdr does not report idle is refused
+with exit 75, a Codex or pi agent (no Claude session file) with 65; nothing is
+closed.
 
 ## Find a pane's Claude session
 
@@ -179,9 +188,12 @@ A target Herdr does not find may be parked. The latest parked line naming it,
 by pane or name, in any lane hand-off log in `$lanes` decides: a live agent
 under the line's name gets the message; otherwise the agent is resumed (an
 owner, the line named after its log, in a new lane space; a worker in the
-caller's `$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its
-new `pane=`. Every re-send does the same, so a target parked during a wait is
-resumed. `herdr-say --parked TARGET` prints that line, or exits 1.
+caller's `$HERDR_WORKSPACE_ID` under the line's role, else its spawn name's),
+gets the message, and `herdr-say` prints its new `pane=`. Every re-send does
+the same, so a target parked during a wait is resumed. `herdr-say --parked
+TARGET` prints that line, or exits 1. A log line that is not one JSON object
+is skipped and named once on stderr by its log and line number (spec
+`#handoff-lines-json`).
 `herdr-wake check` counts a parked owner as present, so a spec review hand-off
 resumes it. `herdr-wake send` runs `herdr-say` in a session of its own, so a
 send outliving Spec Chat's send bound (a resume, a rate-limit wait) keeps
@@ -194,6 +206,64 @@ the reason goes to Spec Chat, which retries.
 The review service may run in another Herdr session, so register a review row
 with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks
 and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
+
+## Wait on an agent
+
+```
+herdr-await [--since SEQ] NAME [MESSAGE]
+```
+
+The one wait on a lane agent (spec `#transport-await`): never run `herdr agent
+wait` yourself. Returns at once. Apart from its caller, it sends MESSAGE to NAME
+with `herdr-say` when given, then waits until NAME is idle, done, or blocked on
+interactive input, or gone: its agent exited, its tab closed, or no agent has
+that name. Then it sends the caller's pane (`$HERDR_PANE_ID`) one message
+naming NAME and the stop:
+
+```
+herdr-await: NAME stop=STATE seq=N                     stopped in STATE at Herdr's state_change_seq N
+herdr-await: NAME stop=gone (REASON)                   Herdr's error code, or the wait's exit
+herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   the send did not exit 0; no wait ran
+```
+
+A message wakes a Claude, Codex, or pi caller the same way, so no runtime needs
+a background command's end to invoke it, and a send that waits out a rate limit
+holds no caller in the foreground. Given `--since SEQ`, the `seq` of the stop
+the caller last read, the wait ends only once NAME has changed state since that
+stop and stopped again, or is gone: a re-wait on an agent still at its task
+never wakes its caller before it moves, and one that works and stops before the
+wait starts still ends it at once. Wait by agent name: a parked worker
+`herdr-say` resumes gets a new pane, never a new name. Each Herdr wait it runs
+is bounded, and at the bound it waits again, given `--since` reading the stop
+first, so it ends within the bound once the agent is gone, its tab closed
+however it closed (Herdr leaves its own wait running), or has worked and
+stopped between two waits. The wait keeps the caller's environ, so
+`herdr-close` of the caller's tab, parking included, ends it with the caller's
+other processes, waking no one; a wait whose caller is gone otherwise ends at
+its bound, waking no one. `herdr-close` of the agent by the caller, parking
+included, ends the caller's waits on it, waking no one.
+
+The wait recipe (spec `#roles-goal`), for an owner on each worker it sets to
+work and the operator on an owner it awaits a reply from. The stop message is
+your only wake: no timer or poll. When relaunched from a park, run
+`herdr-await <name>`, sending nothing, on each agent you still await: your
+earlier waits ended with your process. When a stop message comes for an agent
+whose result or reply you still await, read its screen with
+`herdr agent read <name>`; the message already names its state.
+
+- A finished result or reply there is its report: consume it.
+- A turn ended on an API error: resume it with `herdr-await <name> continue`,
+  which sends again while a rate limit lasts; its `stop=send-failed` means it
+  is blocked.
+- Still at its task, such as on its own background command:
+  `herdr-await --since <seq> <name>`, `<seq>` the one the message named, so
+  you wake only once it has worked and stopped again, even if it did so before
+  that wait starts.
+- Otherwise it is blocked: recover it as your role contract says.
+
+Except for a worker still at its task, an owner tells the operator which
+worker ended without reporting and what it did: the result consumed, the
+worker resumed, or the worker started in its place.
 
 ## Reading a pane
 

@@ -306,10 +306,21 @@ class LaneRecordTests(unittest.TestCase):
             self.assertEqual(found.stdout.strip(), holding)
             self.assertEqual(git("show", f"{holding}:reports/qa.report.html"), "final")
 
+    def test_owner_logs_closed_line_on_closing_a_consumed_worker(self) -> None:
+        # spec #acceptance-lane-log-close, #transport-close-line: the owner
+        # appends what herdr-close prints, its closed line, to the lane's log.
+        deliver = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
+        self.assertRegex(
+            deliver,
+            r"Close each consumed worker with\s+`herdr-close TAB >> "
+            r"\$\(octo-lite-state\)/lanes/<lane record name>\.handoffs\.jsonl`",
+        )
+
     def test_worker_result_send_is_bounded_then_goes_to_operator(self) -> None:
         # spec #roles-goal, #acceptance-worker-owner-gone(-stops): 3 sends to
         # the owner, then one to the operator pane, then stop; the operator
-        # forwards to the owner pane and relaunches only a gone, unparked owner.
+        # forwards to that pane's lane by name and relaunches only a gone,
+        # unparked owner.
         # #acceptance-worker-owner-rate-limited: exit 69 already re-sent, so it
         # goes to the operator at once, never re-sent.
         for role in ("implementer", "integrator", "code-reviewer"):
@@ -326,45 +337,36 @@ class LaneRecordTests(unittest.TestCase):
         self.assertRegex(
             OPERATOR.read_text(encoding="utf-8"),
             r"A worker result sent to you names its unreachable owner pane.*"
-            r"forward it with `herdr-say <owner pane> <result>`.*; "
-            r"only when that pane is gone and no parked line names it, relaunch fresh.*"
+            r"forward it with `herdr-say <lane name> <result>`, the lane whose record's `owner` is that pane.*; "
+            r"only when no live or parked owner has that name, relaunch fresh.*"
             r"`#roles-park`\), then forward\.",
         )
 
     def test_waiter_keeps_one_herdr_wait_on_each_agent_it_sets_to_work(self) -> None:
-        # spec #roles-goal, #acceptance-worker-ended, #acceptance-worker-api-error(-resumed),
-        # #acceptance-owner-api-error-resumed: the owner starts one background
-        # herdr agent wait by name per worker it sets to work, no check-in poll; on
-        # its end it consumes a result, resumes an API-error turn and waits in one
-        # background command, re-waits on one still at its task only after it works
-        # again (a plain wait on an agent idle on its own background command returns
-        # at once), else recovers. The fleet operator does the same per owner it
-        # awaits, never on every owner.
-        owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
-        skill = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
-        operator = OPERATOR.read_text(encoding="utf-8")
-        for path, text in (("orchestrator", owner), ("implement-spec", skill)):
+        # spec #roles-goal, #transport-await, #acceptance-worker-ended,
+        # #acceptance-codex-owner-worker-ended, #acceptance-pi-owner-worker-ended,
+        # #acceptance-worker-api-error(-resumed), #acceptance-owner-api-error-resumed,
+        # #acceptance-worker-moved-unseen: the owner (orchestrator, implement-spec)
+        # and the fleet operator send work with herdr-await and link the one wait
+        # recipe herdr-comms states (#roles-goal, last sentence): read the screen
+        # by name, resume an API-error turn, re-wait --since on one still at its
+        # task; no role runs herdr agent wait or a get-based check-in poll.
+        recipe = (ROOT / "skills/herdr-comms/SKILL.md").read_text(encoding="utf-8")
+        recipe = recipe.split("\n## Wait on an agent\n", 1)[1].split("\n## ", 1)[0]
+        for token in ("`herdr agent read <name>`", "`herdr-await <name> continue`", "`stop=send-failed`", "--since <seq>"):
+            self.assertIn(token, recipe)
+        callers = {
+            "orchestrator": (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"),
+            "implement-spec": (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8"),
+            "meta-operator": OPERATOR.read_text(encoding="utf-8"),
+        }
+        for path, text in callers.items():
+            self.assertIn("herdr-comms/SKILL.md#wait-on-an-agent)", text, path)
+            self.assertIn("`herdr-await <", text, path)
+            self.assertNotIn("herdr agent get", text, path)
             self.assertNotRegex(text, r"check-in,? reads?", path)
-            self.assertNotIn("agent_not_running", text, path)
-        wait = r"\(brief, resume,? (?:or )?repair\)[^.]*returns(?=[^.]*background)[^.]*`herdr agent wait <name>`[^.]*by (?:agent )?name"
-        self.assertRegex(owner, wait)
-        self.assertRegex(" ".join(skill.split()), wait + r".*`agents/orchestrator\.md`")
-        self.assertRegex(owner, r"When relaunched from a park, start one on each worker you still await")
-        rules = (
-            r"ends, read `herdr agent get <name>` and its pane.*API error: resume it with one background command, "
-            r"`herdr-say <name> continue && herdr agent wait <name>`, whose non-0 exit means it is blocked; "
-            r"still at its task.*one background command, `herdr agent wait <name> --until working && herdr agent wait <name>`.*; "
-            r"otherwise .*recover or respawn"
-        )
-        self.assertRegex(owner, rules)
-        self.assertRegex(owner, r"Except for one still at its task, tell the operator which worker ended without reporting")
-        self.assertRegex(
-            operator,
-            r"owner work whose reply you await.*returns start one `herdr agent wait <lane name>` on it by name as a background command, "
-            r"never a standing wait on every owner.*read `herdr agent get <lane name>` and its pane.*API error: one background command, "
-            r"`herdr-say <lane name> continue && herdr agent wait <lane name>`, whose non-0 exit means it is blocked; "
-            r"still at its task: one background command, `herdr agent wait <lane name> --until working && herdr agent wait <lane name>`",
-        )
+            self.assertNotRegex(text, r"herdr agent wait <", path)
+        self.assertIn("never a standing wait on every owner", callers["meta-operator"])
 
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")

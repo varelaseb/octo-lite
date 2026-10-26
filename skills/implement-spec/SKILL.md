@@ -111,11 +111,13 @@ commit plus terse evidence. It does not merge, push, or update unrelated
 tickets.
 
 Use `herdr-say` for commands. It returns only once Herdr has observed the
-target change state, so delivery needs no separate acknowledgement. Once each
-send that sets a worker to work (brief, resume, repair) returns, start one
-background `herdr agent wait <name>` on that worker by name: its end wakes you, and
-`agents/orchestrator.md` says what to do then (spec `#roles-goal`). Keep
-messages sparse. A status pointer or commit is better than a recap.
+target change state, so delivery needs no separate acknowledgement. Send each
+message that sets a worker to work (brief, resume, repair) with
+`herdr-await <name> <message>` instead, by name, never `herdr agent wait`
+yourself, and on its stop message follow the
+[wait recipe](../herdr-comms/SKILL.md#wait-on-an-agent) (spec `#roles-goal`,
+`#transport-await`). Keep messages sparse. A status pointer or
+commit is better than a recap.
 
 ## Integrate and advance
 
@@ -213,8 +215,10 @@ After every ticket is integrated:
    (ANN-373): ready means the merge ask is out; draft means work is still in
    progress. Otherwise keep it draft and report the blocker. Keep the spec
    issue open until human review or repository automation closes it.
-5. Close each consumed worker with `herdr-close TAB`, which also ends its
-   detached processes. A worker you would keep idle through a long wait (human
+5. Close each consumed worker with
+   `herdr-close TAB >> $(octo-lite-state)/lanes/<lane record name>.handoffs.jsonl`,
+   which also ends its detached processes and appends its closed line (spec
+   `#transport-close-line`). A worker you would keep idle through a long wait (human
    gate, another lane) is parked instead, never a consumed one:
    `herdr-close --park <pane> >> $(octo-lite-state)/lanes/<lane record name>.handoffs.jsonl`;
    `herdr-say <name>` resumes it. Remove every temporary worker worktree only after it is
