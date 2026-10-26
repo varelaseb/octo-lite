@@ -176,7 +176,7 @@ independent work and report the exact remaining dependency.
 
 ## Review and finish
 
-Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head; then one merge ask that carries the review result and that evidence. A merge ask never goes out ahead of a step it needs.
+Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head; then one merge ask that carries the review result, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`). A merge ask never goes out ahead of a step it needs.
 
 The merge ask lists each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
 
@@ -246,6 +246,7 @@ a repository-approved path.
 
 The merge completes the worklane: reconcile the PR and worklane state together,
 reconcile the primary Linear issue to Done, file the PR's review notes by the
-[filing rule](../repo-health/SKILL.md#filing-rule), tear down in the close order of
-`agents/orchestrator.md` (review rows before any worktree, lane record archived
-last), and stop.
+[filing rule](../repo-health/SKILL.md#filing-rule), add to the PR body a permalink
+to each report the lane kept outside main, tear down in the close order of
+`agents/orchestrator.md` (report permalinks before review rows, review rows before
+any worktree, lane record archived last; spec `#roles-teardown`), and stop.
