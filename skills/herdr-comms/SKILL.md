@@ -104,8 +104,9 @@ no stop message reads as news of an agent spawned again under the same name
 its bound. Parking (below) closes the same way. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
 own space, or only its owner tab when the lane started in a shared space.
-Prints `tab= tab_close_rc= killed=` or `space= space_close_rc= killed=` and
-exits with the close status.
+Prints one closed hand-off line (`at kind tab|space close_rc killed`; spec
+`#transport-close-line`), which an owner closing a consumed worker appends to
+the lane's hand-off log, and exits with the close status.
 
 ## Park an idle agent
 
@@ -117,10 +118,12 @@ herdr-close --park PANE >>"$lanes/<lane>.handoffs.jsonl"
 pane of the caller's session, by `herdr-claude-session` (below), closes its
 tab, or its whole space when that tab is the space's only one (a lane owner in
 its own space), and prints one parked line (`at kind pane name role cwd
-session`) on stdout, even when the close fails; the close report goes to
-stderr. The parker appends the line: the operator for an owner, the owner for a
-worker. An agent Herdr does not report idle is refused with exit 75, a Codex or
-pi agent (no Claude session file) with 65; nothing is closed.
+session`) on stdout, even when the close fails; its closed line goes to
+stderr. The role is the session record's, else the one a worker's spawn name
+`<role>-<ticket>` carries. The parker appends the line: the operator for an
+owner, the owner for a worker. An agent Herdr does not report idle is refused
+with exit 75, a Codex or pi agent (no Claude session file) with 65; nothing is
+closed.
 
 ## Find a pane's Claude session
 
@@ -185,9 +188,12 @@ A target Herdr does not find may be parked. The latest parked line naming it,
 by pane or name, in any lane hand-off log in `$lanes` decides: a live agent
 under the line's name gets the message; otherwise the agent is resumed (an
 owner, the line named after its log, in a new lane space; a worker in the
-caller's `$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its
-new `pane=`. Every re-send does the same, so a target parked during a wait is
-resumed. `herdr-say --parked TARGET` prints that line, or exits 1.
+caller's `$HERDR_WORKSPACE_ID` under the line's role, else its spawn name's),
+gets the message, and `herdr-say` prints its new `pane=`. Every re-send does
+the same, so a target parked during a wait is resumed. `herdr-say --parked
+TARGET` prints that line, or exits 1. A log line that is not one JSON object
+is skipped and named once on stderr by its log and line number (spec
+`#handoff-lines-json`).
 `herdr-wake check` counts a parked owner as present, so a spec review hand-off
 resumes it. `herdr-wake send` runs `herdr-say` in a session of its own, so a
 send outliving Spec Chat's send bound (a resume, a rate-limit wait) keeps

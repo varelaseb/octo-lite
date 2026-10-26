@@ -21,6 +21,8 @@ live Herdr 0.9.0:
     of an agent spawned again under the same name
   * a parked agent must hold no process, refuse when working or Codex, and
     resume once under its name when messaged
+  * a hand-off log may hold a line that is not JSON, or a parked line or
+    session record naming no role, and none may break a park or a resume
   * a pane's Claude session record may be one an ended Claude left at a pid
     since reused, or belong to a spare Claude claimed into the pane
   * Herdr ids repeat across sessions, so state, parking, waking, and closing
@@ -628,7 +630,16 @@ class HerdrWrapperTest(unittest.TestCase):
             time.sleep(0.1)
         return False
 
+    def closed_line(self, out):
+        # The one closed hand-off line herdr-close printed, its at checked and
+        # dropped: json.loads fails on any second line.
+        line = json.loads(out)
+        self.assertRegex(line.pop("at"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        return line
+
     def test_close_ends_every_process_tagged_with_the_tab(self):
+        # acceptance-lane-log-close: what it prints, appended to the lane's
+        # hand-off log, is one closed line naming the tab.
         tab = f"w1:t-{uuid.uuid4()}"
         mine, other = self.tagged(tab), self.tagged(f"w1:t-{uuid.uuid4()}")
         r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True, env=self.env)
@@ -637,7 +648,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertTrue(self.gone(mine), "a tab-tagged process survived herdr-close")
         self.assertEqual(mine.returncode, -signal.SIGTERM)
         self.assertIsNone(other.poll(), "killed a process from another tab")
-        self.assertIn("killed=1", r.stdout)
+        self.assertEqual(self.closed_line(r.stdout), {"kind": "closed", "tab": tab, "close_rc": 0, "killed": 1})
         self.assertEqual(r.stderr, "", "unreadable /proc entries must be silent")
 
     def test_close_of_a_space_ends_every_process_started_in_it(self):
@@ -650,7 +661,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("tab close", self.log.read_text())
         self.assertTrue(self.gone(owner) and self.gone(worker), "a space process survived herdr-close")
         self.assertIsNone(other.poll(), "killed a process from another space")
-        self.assertIn(f"space={space} space_close_rc=0 killed=2", r.stdout)
+        self.assertEqual(self.closed_line(r.stdout), {"kind": "closed", "space": space, "close_rc": 0, "killed": 2})
 
     def test_close_stops_only_processes_of_the_callers_session(self):
         # acceptance-session-close: another session repeats the space id.
@@ -658,12 +669,12 @@ class HerdrWrapperTest(unittest.TestCase):
         here = self.tagged(f"{space}:t1", space)
         there = self.tagged(f"{space}:t1", space, HERDR_SESSION=other)
         r = subprocess.run([str(CLOSE), space], capture_output=True, text=True, env=self.env)
-        self.assertIn("killed=1", r.stdout)
+        self.assertEqual(json.loads(r.stdout)["killed"], 1)
         self.assertTrue(self.gone(here), "a space process survived herdr-close")
         self.assertIsNone(there.poll(), "closed a lane of another session")
         r = subprocess.run([str(CLOSE), space], capture_output=True, text=True,
                            env={**self.env, "HERDR_SESSION": other})
-        self.assertIn("killed=1", r.stdout)
+        self.assertEqual(json.loads(r.stdout)["killed"], 1)
         self.assertTrue(self.gone(there), "a named session's process survived herdr-close")
 
     def waiting(self, target, pane="w5:p2", **env):
@@ -709,7 +720,7 @@ class HerdrWrapperTest(unittest.TestCase):
             r = subprocess.run([str(CLOSE), tab if close == "tab" else space], capture_output=True, text=True,
                                env={**self.env, "HERDR_PANE_ID": "w5:p2", "FAKE_AGENT_LIST": listed})
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn(f"killed={len(ended)}", r.stdout)
+            self.assertEqual(json.loads(r.stdout)["killed"], len(ended))
             for t in ended:
                 self.assertTrue(self.until(lambda: not self.tagged_pids(t)),
                                 f"a wait of the caller on an agent of the closed {close} survived")
@@ -725,13 +736,14 @@ class HerdrWrapperTest(unittest.TestCase):
 
     # --- park ------------------------------------------------------------
 
-    def claude(self, pane, tab, space, sid, replies=(), stale=False, sidechain=None, **env):
+    def claude(self, pane, tab, space, sid, replies=(), stale=False, sidechain=None, agent="implementer", **env):
         # A detached stand-in for an agent's Claude process in a pane, with
         # Claude's own session file for its pid unless sid is None, recording
         # the process start time, or another one when stale: an ended Claude's
         # record at a pid a process of the pane reuses. replies are the
         # timestamps of the replies in its transcript; none, no transcript yet.
         # sidechain is the timestamp of a subagent's assistant record after them.
+        # agent is the role the record names; None, it names none.
         p = subprocess.Popen(["sleep", "600"], start_new_session=True, env={
             **self.env, "HERDR_PANE_ID": pane, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": space, **env})
         self.addCleanup(lambda: (p.kill(), p.wait()))
@@ -741,8 +753,8 @@ class HerdrWrapperTest(unittest.TestCase):
             sessions.mkdir(parents=True, exist_ok=True)
             start = int(Path(f"/proc/{p.pid}/stat").read_text().split()[21]) + stale
             (sessions / f"{p.pid}.json").write_text(json.dumps({
-                "pid": p.pid, "sessionId": sid, "cwd": str(self.cwd),
-                "procStart": str(start), "agent": "implementer"}))
+                "pid": p.pid, "sessionId": sid, "cwd": str(self.cwd), "procStart": str(start),
+                **({"agent": agent} if agent else {})}))
             if replies:
                 project = home / ".claude/projects" / f"-p-{sid}"
                 project.mkdir(parents=True, exist_ok=True)
@@ -754,14 +766,14 @@ class HerdrWrapperTest(unittest.TestCase):
         return p
 
     def park(self, status="idle", session=True, name="implementer-ann-1", tabs=2, twin=None,
-             replies=(), beside=(), **env):
+             replies=(), beside=(), agent="implementer", **env):
         # twin names another Herdr session holding an agent under the same ids;
         # beside holds (session id, claude kwargs) of more Claude records in the pane.
         space = f"w-{uuid.uuid4()}"
         tab, pane = f"{space}:t1", f"{space}:p1"
         for sid, kw in beside:
             self.claude(pane, tab, space, sid, **kw)
-        p = self.claude(pane, tab, space, "s-1" if session else None, replies)
+        p = self.claude(pane, tab, space, "s-1" if session else None, replies, agent=agent)
         if twin:
             self.twin = self.claude(pane, tab, space, "s-twin", HERDR_SESSION=twin)
         agent = {"result": {"agent": {"name": name, "pane_id": pane, "tab_id": tab,
@@ -790,6 +802,21 @@ class HerdrWrapperTest(unittest.TestCase):
                          {"kind": "parked", "pane": pane, "name": "implementer-ann-1",
                           "role": "implementer", "cwd": str(self.cwd), "session": "s-1"})
         self.assertRegex(line["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+
+    def test_parking_prints_only_hand_off_lines_on_either_stream(self):
+        # acceptance-lane-log-park-streams, transport-close-line: both streams
+        # appended to the lane's log add one parked line, stdout, and one
+        # closed line, stderr, and nothing else.
+        p, r, pane, tab, space = self.park()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["kind"], "parked")
+        self.assertEqual(self.closed_line(r.stderr), {"kind": "closed", "tab": tab, "close_rc": 0, "killed": 1})
+
+    def test_park_takes_the_role_its_spawn_name_carries_when_the_record_names_none(self):
+        # acceptance-park-role-from-name: a worker's spawn name is <role>-<ticket>.
+        p, r, *_ = self.park(name="code-reviewer-ann-7", agent=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["role"], "code-reviewer")
 
     def test_parking_a_lane_owner_frees_its_whole_space(self):
         # acceptance-park-owner-free: the owner's tab is the only one in its space.
@@ -1093,8 +1120,40 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("tab create --workspace w3 ", self.calls())
         self.assertIn("agent prompt w1:p1 hi", self.calls())
 
+    def test_say_resumes_a_parked_worker_past_lines_that_are_not_json(self):
+        # acceptance-park-bad-line, acceptance-park-bad-line-named: another
+        # lane's log holds lines that are not one JSON object, each skipped and
+        # named once by its log and number; the worker still resumes.
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
+        self.parked_line("ann46", pane="w2:p3", name="implementer-ann-2", role="implementer")
+        bad = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes/ann46.handoffs.jsonl"
+        with open(bad, "a") as f:
+            f.write("tab=w2:t3 tab_close_rc=0 killed=1\n[]\n")
+        self.gone_file.write_text("w1:p7\nimplementer-ann-1\n")
+        r = self.say("implementer-ann-1", "hi", HERDR_WORKSPACE_ID="w1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "pane=w1:p1\n")
+        self.assertEqual(r.stderr, f"herdr-say: {bad}: line 2 is not a JSON object; skipped\n"
+                                   f"herdr-say: {bad}: line 3 is not a JSON object; skipped\n")
+        argv = self.start_argv()
+        self.assertEqual(argv[2], "implementer-ann-1")
+        self.assertEqual(argv[-4:], ["--agent", "implementer", "--resume", "s-1"])
+
+    def test_say_resumes_a_parked_worker_whose_line_names_no_role(self):
+        # acceptance-park-no-role, transport-resume: the role its spawn name carries.
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w1:p7", name="code-reviewer-ann-1")
+        self.gone_file.write_text("w1:p7\ncode-reviewer-ann-1\n")
+        r = self.say("w1:p7", "hi", HERDR_WORKSPACE_ID="w1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "pane=w1:p1\n")
+        argv = self.start_argv()
+        self.assertEqual(argv[2], "code-reviewer-ann-1")
+        self.assertEqual(argv[-4:], ["--agent", "code-reviewer", "--resume", "s-1"])
+
     def test_say_resumes_a_parked_owner_in_a_new_lane_space(self):
-        # A legacy line without name or role is the owner under the lane's name.
+        # A line without name is the owner under the lane's name.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\nann45\n")
@@ -1227,7 +1286,7 @@ class HerdrWrapperTest(unittest.TestCase):
             {"name": "implementer-ann-1", "pane_id": "w9:p1", "tab_id": "w9:t1", "workspace_id": "w9"}]}})
         close = subprocess.run([str(CLOSE), "w9:t1"], capture_output=True, text=True,
                                env={**self.env, "HERDR_PANE_ID": "w5:p2", "FAKE_AGENT_LIST": listed})
-        self.assertIn("killed=1", close.stdout)
+        self.assertEqual(json.loads(close.stdout)["killed"], 1)
         self.assertTrue(self.until(lambda: not self.tagged_pids(tab)), "a wait on the closed worker still runs")
         self.assertIsNone(self.woken(within=1), "its caller's own close woke it")
 

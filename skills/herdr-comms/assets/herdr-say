@@ -39,9 +39,11 @@
 # in any lane hand-off log of the caller's Herdr session (octo-lite-state),
 # decides; another session's lanes repeat its ids. A live agent under the
 # line's name gets the message; otherwise the agent is resumed first (an owner,
-# the lane's name, in a new lane space; a worker in the caller's space), and its
+# the lane's name, in a new lane space; a worker in the caller's space, under
+# the line's role, else the one its spawn name <role>-<ticket> carries), and its
 # new pane= is printed. Every re-send does the same, so a target parked during
-# a wait is resumed.
+# a wait is resumed. A log line that is not one JSON object is skipped, its log
+# and line number named on stderr.
 # `herdr-say --parked TARGET` prints that line, or exits 1 when there is none.
 set -euo pipefail
 
@@ -49,15 +51,19 @@ usage() { echo "usage: herdr-say [--kind KIND] [--artifact REF] TARGET MESSAGE |
 here="$(dirname "$(readlink -f "$0")")"
 
 # The latest parked line naming TARGET by pane or name. A line without name is
-# the lane owner: the lane's name, its log's stem.
+# the lane owner: the lane's name, its log's stem. Each line that is not one
+# JSON object is named once on stderr and skipped, so it hides nothing else.
 parked() {
-  local line logs=("$("$here/../../../scripts/octo-lite-state")"/lanes/*.handoffs.jsonl)
+  local out logs=("$("$here/../../../scripts/octo-lite-state")"/lanes/*.handoffs.jsonl)
   [[ -f "${logs[0]}" ]] || return 1
-  line="$(jq -nc --arg t "$1" '[inputs | select(.kind == "parked")
-    | .lane = (input_filename | split("/") | last | rtrimstr(".handoffs.jsonl"))
-    | .name //= .lane
-    | select(.pane == $t or .name == $t)] | sort_by(.at) | last // empty' "${logs[@]}")" &&
-    [[ -n "$line" ]] && printf '%s\n' "$line"
+  out="$(jq -nRr --arg t "$1" '[inputs | (try fromjson catch null) as $o
+      | if $o | type == "object"
+        then $o | .lane = (input_filename | split("/") | last | rtrimstr(".handoffs.jsonl"))
+        else "herdr-say: \(input_filename): line \(input_line_number) is not a JSON object; skipped" end]
+    | (.[] | strings), ([.[] | objects | select(.kind == "parked") | .name //= .lane
+      | select(.pane == $t or .name == $t)] | sort_by(.at) | last // empty | tojson)' "${logs[@]}")"
+  sed -n '/^herdr-say: /p' <<<"$out" >&2
+  grep '^{' <<<"$out"
 }
 
 while (($#)); do
@@ -142,7 +148,7 @@ send() {
         started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
       else
         started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
-          --role "$(jq -r '.role // empty' <<<"$line")" "${resume[@]}" -- claude)"
+          --role "$(jq -r '.role // (.name | sub("-[a-z0-9]+-[0-9]+$"; ""))' <<<"$line")" "${resume[@]}" -- claude)"
       fi
       name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
       echo "pane=$name"
