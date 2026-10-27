@@ -56,7 +56,11 @@ evidence still applies; human QA, code readiness and acceptance are separate.
 1. After spec acceptance, file the dependency-linked tickets under the spec
    issue as [consent](../octo-lite-github/SKILL.md#consent) allows, else keep
    the graph in the local brief: one outcome each, spec anchors, real blockers
-   only.
+   only. Before filing, read the target's changelog convention (file,
+   format, which changes get an entry, by default every change its users can
+   see) from its `AGENTS.md` or `CLAUDE.md`, or a rule file one of them points
+   to; octo-lite names no changelog path or format. When the lane makes a
+   change it logs, give the entry to one ticket (spec `#delivery-changelog`).
 2. Read the spec, issue, and enough of the graph to identify the first
    frontier.
 3. When exploration would remove duplicated implementation work, spawn one
@@ -70,7 +74,10 @@ evidence still applies; human QA, code readiness and acceptance are separate.
    [consent](../octo-lite-github/SKILL.md#consent) allows; otherwise the lane stays on local
    branches and ends at a local integration head.
    Put `Closes <issue-key>` lines in the PR body for the spec issue and every
-   implementation ticket.
+   implementation ticket, and one changelog line: `Changelog: <entry title>`,
+   or `Changelog: none: <reason>` when the lane makes no change the
+   convention logs or the target declares no convention. The merge ask
+   carries that line.
 5. Before dispatch, run the spec validator, backslash-artifact scan, and
    tag-balance scan. Repo tests run in delivery, never during shaping. Run one short cross-source conflict check: does the spec
    contradict another canonical spec, merged main, or an open PR?
@@ -100,7 +107,8 @@ For each ready ticket:
    optional research notes, integration branch, and relevant prior commits.
    Cite each repo-wide rule the ticket bears on by its marked criterion's spec
    and anchor (spec `#roles-repo-wide-rule`); an `AGENTS.md` line is only a
-   pointer to it.
+   pointer to it. The brief of the ticket that owns the changelog entry names
+   the convention's file, so its implementer writes the entry in the same PR.
 4. The contract declares the skills available to it and the bounds it works in,
    so neither has to be restated here or kept in step by hand. A Claude worker
    loads it with `--agent implementer`; a Codex worker gets it as developer
