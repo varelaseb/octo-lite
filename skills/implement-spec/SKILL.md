@@ -76,8 +76,7 @@ evidence still applies; human QA, code readiness and acceptance are separate.
    Put `Closes <issue-key>` lines in the PR body for the spec issue and every
    implementation ticket, and one changelog line: `Changelog: <entry title>`,
    or `Changelog: none: <reason>` when the lane makes no change the
-   convention logs or the target declares no convention. The merge ask
-   carries that line.
+   convention logs or the target declares no convention.
 5. Before dispatch, run the spec validator, backslash-artifact scan, and
    tag-balance scan. Repo tests run in delivery, never during shaping. Run one short cross-source conflict check: does the spec
    contradict another canonical spec, merged main, or an open PR?

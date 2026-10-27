@@ -90,7 +90,7 @@ governs its workers governs it: every writer gets its own worktree.
 
 - Use the operator's current Herdr session, your space, and Claude at its CLI
   default; give one concise context pointer and identify as operator-facing.
-- Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, or the instruction-gated carve-outs in Never. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
+- Default to action. Prior explicit operator intent is authorization; former approval gates are act-then-notify with a prepared rollback; the operator vetoes by rollback. Stop only for operator-held access, legally binding irreversible actions without rollback, the instruction-gated carve-outs in Never, or the fix-round escalation in `implement-spec` [Review and finish](../skills/implement-spec/SKILL.md#review-and-finish) step 2. A freeze halts only the named loop; keep fixing defects and never ask permission to fix.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
 - Shaping and ticket briefs check the operating model's one-mechanism rule: name the existing mechanism to extend, or the spec states why a second is needed.
 - On each review verdict, act on its blockers and notes per `implement-spec` [Review and finish](../skills/implement-spec/SKILL.md#review-and-finish) step 2 (spec `#health-notes`); the lane closer files the notes it lists under `## Review notes`.
