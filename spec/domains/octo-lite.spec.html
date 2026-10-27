@@ -351,7 +351,7 @@ The rank is the ticket's tracker priority, so it orders health tickets among the
 <p data-anchor="health-pass" id="health-pass">The <code>repo-health</code> skill is the repo health pass, fired by hand by the fleet operator, at its own call or when the human asks for one, and never on a timer.
 The fleet operator starts one fresh agent for it on the target's main checkout; that agent changes no repository file and writes only health tickets.
 It reads the target's instructions, its specs' modular boundaries, the open health tickets, and the code, and looks across the whole repository for architecture, cleanliness, best-practice, and trimming issues, a deletion first wherever one would do.
-It checks every open health ticket against main, closing each one main fixed as done, with a comment naming the main commit it was checked at and why the issue is gone, and files its findings by the filing rule, five new tickets at most.
+It checks every open health ticket against main, closing each one main fixed as done, with a comment naming the main commit it was checked at and why the issue is gone, and files its findings by the filing rule.
 Its result is the tickets, never a report: its one message to the fleet operator names each ticket it filed, commented on, or closed, by key, and the fleet operator relays that list to the human who asked.</p>
 <p data-anchor="health-contracts" id="health-contracts">The code-reviewer, orchestrator, and meta-operator contracts and the <code>implement-spec</code> skill state these moves where they review, list notes, close a lane, and fire the pass.</p>
 </section>
