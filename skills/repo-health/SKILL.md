@@ -65,7 +65,9 @@ filing checks against main. This skill holds only how:
    `gh pr view <pr> --json url,body`.
 2. Read the open health tickets (Tracker), and main: `git fetch origin`; main
    is `origin/main`, checked at `git rev-parse --short origin/main`.
-3. File, or comment naming the new source, with the Tracker commands.
+3. File, or comment naming the new source, with the Tracker commands. Each
+   source, one PR or one pass, files at most 5 new tickets, highest rank
+   first; the rest stay history.
 
 ## Pass
 
