@@ -18,7 +18,7 @@
 <div>
 <p class="lede" data-anchor="lede-question">Should lanes carry their traffic over Claude Code's own cross-session messaging, <code>ListAgents</code>, <code>SendMessage</code>, and <code>notify_when_idle</code>, beside or instead of <code>herdr-say</code>?</p>
 <p class="lede" data-anchor="lede-answer">No.
-A native message is taken in at the same point as a typed one, it can be sent only from inside a Claude model turn to Claude sessions on this box, it is lost without a word when its receiver exits first, and no octo-lite role can send it today.
+A native message is taken in at the same point as a typed one, it has no send command and here reaches only Claude sessions on this box, it is lost without a word when its receiver exits first, and no octo-lite role can send it today.
 Keep <code>herdr-say</code> as the one lane transport and change no wrapper; the four questions at the end are yours to pick.</p>
 </div>
 <dl class="refs" data-anchor="refs">
@@ -58,10 +58,12 @@ What differs is the receipt: <code>SendMessage</code> returns at enqueue, <code>
 <b class="k">observed</b> Every <code>agents/*.md</code> has a <code>tools:</code> allowlist without <code>SendMessage</code> or <code>ListAgents</code>, and an implementer session has neither.
 <b class="k">observed</b> Yet every live session record carries a <code>messagingSocketPath</code>, role sessions included: 11 of 11 at this writing.
 Every lane agent is receive-only, so adopting native starts by widening the contracts.</li>
-<li data-anchor="f-model-only"><b>Only a model turn can send.</b>
+<li data-anchor="f-model-only"><b>No send command.</b>
 <b class="k">observed</b> Claude Code 2.1.311 has no command that sends; <code>claude agents --json</code> only lists sessions.
-<b class="k" style="color:var(--spec-amber)">inferred</b> <code>herdr-say</code>, the wake <code>herdr-await</code> sends, <code>herdr-wake</code> for Spec Chat, and every Codex or pi caller run in a shell, so a wrapper could choose native per target only by speaking Claude's private socket protocol or by starting a headless <code>claude -p</code> turn with <code>SendMessage</code> allowed.
-That headless sender costs a model turn per send, and it exits with its <code>from=</code> socket, so a reply has nowhere to land and a later hold or expiry notice reaches no one.</li>
+<b class="k" style="color:var(--spec-amber)">inferred</b> So a sender that runs in a shell, <code>herdr-say</code>, the wake <code>herdr-await</code> sends, <code>herdr-wake</code> for Spec Chat, or any Codex or pi caller, has two native routes, neither run here.
+One is to speak Claude's private socket protocol, an unpublished internal that octo-lite would then track across Claude releases.
+The other is to start a headless <code>claude -p</code> turn with <code>SendMessage</code> allowed: a model turn per send, whose process exits with its <code>from=</code> socket, so it cannot hear a reply and a later hold or expiry notice reaches no one.
+Either route reaches only a live Claude session, on this box only a local one: never a Codex or pi target, another node (<a href="#a6">question 6</a>), or a parked agent, which nothing native resumes.</li>
 <li data-anchor="f-lost"><b>Lost without a word.</b>
 <b class="k">observed</b> In spike 6b a native message queued at a session inside a long tool call, which then closed, was never taken in, and its sender, told it was "in that session's inbox, not yet read by its Claude", heard nothing in 45 s.
 <b class="k" style="color:var(--spec-blue)">documented</b> <code>herdr-say</code> exits 1 in the same case and names the message as never taken in (<a href="../domains/octo-lite.spec.html#transport-say-rate-limit">#transport-say-rate-limit</a>).
@@ -232,12 +234,12 @@ Unset means mode parity: a message "auto-delivers only when the sending session'
 </ul>
 
 <h3 data-anchor="a6-h" id="a6">6. Mixed runtimes and remote nodes</h3>
-<p data-anchor="a6-answer"><b>Answer.</b> <code>herdr-say</code> must stay for Codex, pi, shells, and other nodes, and one wrapper cannot usefully choose native per target, since a wrapper can send natively only through a headless model turn that cannot hear a reply.</p>
+<p data-anchor="a6-answer"><b>Answer.</b> <code>herdr-say</code> must stay for Codex, pi, shells, and other nodes, and one wrapper cannot usefully choose native per target, since a wrapper can send natively only through Claude's private socket protocol or a headless model turn that cannot hear a reply (<a href="#recommendation">finding 3</a>).</p>
 <ul data-anchor="a6-evidence">
 <li data-anchor="a6-doc"><b class="k" style="color:var(--spec-blue)">documented</b> <code>notify_when_idle</code> "is only supported for Claude sessions on this machine", and a message to another machine goes "via Anthropic's servers" over Remote Control.</li>
 <li data-anchor="a6-node"><b class="k">observed</b> This box reaches the model through an API key helper and a proxy base URL.
 <b class="k" style="color:var(--spec-amber)">inferred</b> Remote Control needs a claude.ai login, so no native path reaches another node here; the herdr-node routing inside <code>herdr-say</code> that <a href="https://github.com/varelaseb/octo-lite/issues/202">gh#202</a> proposes stays the node path.</li>
-<li data-anchor="a6-choice"><b class="k" style="color:var(--spec-amber)">inferred</b> A per-target choice could live in each role's prompt, as two recipes with two failure models, or in a wrapper that starts a <code>claude -p</code> turn per send, which costs a model turn and loses the reply and any hold notice (<a href="#recommendation">finding 3</a>).</li>
+<li data-anchor="a6-choice"><b class="k" style="color:var(--spec-amber)">inferred</b> A per-target choice could live in a wrapper, on one of the two routes in <a href="#recommendation">finding 3</a>, or in each role's prompt, as two recipes with two failure models.</li>
 </ul>
 
 <h3 data-anchor="a7-h" id="a7">7. Contracts</h3>
@@ -263,7 +265,7 @@ Each cell is tagged.</p>
 <tr data-anchor="cmp-sender"><td>Who sends</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Any process: shells, Claude, Codex, pi, <code>herdr-wake</code></td><td><b class="k">observed</b> A Claude model turn; no lane role has the tool</td></tr>
 <tr data-anchor="cmp-receiver"><td>Who receives</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Any Herdr agent: Claude, Codex, pi</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Claude sessions only</td></tr>
 <tr data-anchor="cmp-scope"><td>Scope</td><td><b class="k" style="color:var(--spec-blue)">documented</b> The caller's Herdr session</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Every Claude session on the box</td></tr>
-<tr data-anchor="cmp-nodes"><td>Other nodes</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Through herdr-node, as gh#202 proposes</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Remote Control only; <b class="k" style="color:var(--spec-amber)">inferred</b> not on this box</td></tr>
+<tr data-anchor="cmp-nodes"><td>Other nodes</td><td><b class="k" style="color:var(--spec-amber)">inferred</b> Through herdr-node, proposed (<a href="https://github.com/varelaseb/octo-lite/issues/202">gh#202</a>)</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Remote Control only; <b class="k" style="color:var(--spec-amber)">inferred</b> not on this box</td></tr>
 <tr data-anchor="cmp-address"><td>Address</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Pane id or Herdr name, as the lane record keeps it</td><td><b class="k">observed</b> Native name, from the cwd unless <code>--name</code>, or <code>uds:</code> socket</td></tr>
 <tr data-anchor="cmp-busy"><td>Busy target</td><td><b class="k">observed</b> Queued, taken in at the next tool round</td><td><b class="k">observed</b> The same</td></tr>
 <tr data-anchor="cmp-blocked"><td>Blocked target</td><td><b class="k">observed</b> Refused, exit 75, the caller retries</td><td><b class="k">observed</b> Queued, taken in when the dialog closes</td></tr>
@@ -306,7 +308,7 @@ Each cell is tagged.</p>
 <div class="clause" data-anchor="opt-replace" style="border-top-color:var(--spec-red)">
 <span class="clause-id">3</span>
 <h3 data-anchor="opt-replace-h">Replace herdr-say</h3>
-<p data-anchor="opt-replace-cost"><b>Not possible.</b> Shells, Codex, pi, <code>herdr-wake</code>, <code>herdr-await</code>'s wake, other nodes, and parked resume have no native path, short of a headless Claude turn per send that cannot hear a reply.</p>
+<p data-anchor="opt-replace-cost"><b>Not possible.</b> No native path reaches a Codex or pi target, another node, or a parked agent, and every shell sender (any Codex or pi caller, <code>herdr-wake</code>, <code>herdr-await</code>'s wake) has only the two costly routes in <a href="#recommendation">finding 3</a>.</p>
 </div>
 </div>
 </section>
