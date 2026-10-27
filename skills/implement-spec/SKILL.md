@@ -76,8 +76,7 @@ evidence still applies; human QA, code readiness and acceptance are separate.
    Put `Closes <issue-key>` lines in the PR body for the spec issue and every
    implementation ticket, and one changelog line: `Changelog: <entry title>`,
    or `Changelog: none: <reason>` when the lane makes no change the
-   convention logs or the target declares no convention. The merge ask
-   carries that line.
+   convention logs or the target declares no convention.
 5. Before dispatch, run the spec validator, backslash-artifact scan, and
    tag-balance scan. Repo tests run in delivery, never during shaping. Run one short cross-source conflict check: does the spec
    contradict another canonical spec, merged main, or an open PR?
@@ -184,9 +183,9 @@ independent work and report the exact remaining dependency.
 
 ## Review and finish
 
-Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head; then one merge ask that carries the review result, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`). A merge ask never goes out ahead of a step it needs.
+Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear and its fix notes fixed; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head; then one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`), in that contract's merge-ask template: plain summary lines, then the PR link, every detail in the PR body (spec `#delivery-merge-ask`). A merge ask never goes out ahead of a step it needs.
 
-The merge ask lists each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
+The merge ask lists, in its PR body, each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
 
 After every ticket is integrated:
 
@@ -198,21 +197,22 @@ After every ticket is integrated:
    use the available independent review mechanism with the provided diff, base,
    spec and scope. Verify acknowledgment and actual review work once;
    do not retry an unrecognized slash command or count pasted text as review.
-2. Only blockers (broken or clearly over-built) send the PR back: one fix
-   branch and worktree, one implementer through `herdr-comms` briefed with the
-   accepted spec, the current diff, and the findings, not the history, and one
-   Herdr integrator. After a fix batch that changes behavior, a fresh reviewer
+2. Only the verdict's blockers send the PR back, for at most 2 fix rounds
+   (spec `#delivery-review`): the first a fix batch, the second a fresh
+   step-back pass toward the simplest design that meets the spec, not another
+   patch. A round is one fix branch and worktree, one implementer through
+   `herdr-comms` briefed with the accepted spec, the current diff, and the
+   findings, not the history, and one Herdr integrator; then a fresh reviewer
    reviews only the fix delta (base = the last reviewed head) plus the surface
-   it touches; never re-review unchanged code. Nits, wording, test-only, and
-   cosmetic findings never cost a review round: they ride in a fix batch
-   already running, else ship as notes. List every non-blocking note, tagged
-   as the reviewer gave it, in the PR body under `## Review notes`; they are
+   it touches; never re-review unchanged code. Blockers the review after round
+   2 still finds go, in place of a third round, to the operator pane (`pane`
+   in `$(octo-lite-state)/operator.toml`) with `herdr-say`, each blocker named,
+   asking how to go on. Notes marked `Fix in this PR` are fixed before the
+   merge ask, in a fix batch already running, else one batch of their own:
+   no fix round, no review. List every note naming a consequence, tagged as
+   the reviewer gave it, in the PR body under `## Review notes`; they are
    filed at lane close by the [filing rule](../repo-health/SKILL.md#filing-rule).
-   A PR back from review with
-   findings a second time gets a fresh step-back pass toward the simplest
-   design that meets the spec, not another patch. A step-back pass ends
-   step-backs: the next review's blockers get one fix batch and a fix-delta
-   review. Never park a confirmed defect or implicitly waive a failed required
+   Never park a confirmed defect or implicitly waive a failed required
    check. If the same attempt makes no progress, diagnose or route the
    concrete unresolved blocker through the repo-approved path while
    independent tasks continue.
