@@ -55,21 +55,23 @@ Both were enqueued, then taken in at the next tool round as a <code>queued_comma
 The premise in gh#213, that native reaches a busy agent mid-turn while typed text waits for idle, does not hold: <code>herdr-say</code> never waits for idle to type.
 What differs is the receipt: <code>SendMessage</code> returns at enqueue, <code>herdr-say</code> once the message's own reply is written, 25 s later in spike 3c.</li>
 <li data-anchor="f-no-role-sends"><b>No role can send natively today.</b>
-<b class="k">observed</b> Every <code>agents/*.md</code> has a <code>tools:</code> allowlist without <code>SendMessage</code> or <code>ListAgents</code>, and this implementer session has neither.
-<b class="k" style="color:var(--spec-blue)">documented</b> <code>ListAgents</code> tells such a session it "cannot message them with it; other sessions can still message this one."
+<b class="k">observed</b> Every <code>agents/*.md</code> has a <code>tools:</code> allowlist without <code>SendMessage</code> or <code>ListAgents</code>, and an implementer session has neither.
+<b class="k">observed</b> Yet every live session record carries a <code>messagingSocketPath</code>, role sessions included: 11 of 11 at this writing.
 Every lane agent is receive-only, so adopting native starts by widening the contracts.</li>
 <li data-anchor="f-model-only"><b>Only a model turn can send.</b>
 <b class="k">observed</b> Claude Code 2.1.311 has no command that sends; <code>claude agents --json</code> only lists sessions.
-<b class="k" style="color:var(--spec-amber)">inferred</b> <code>herdr-say</code>, the wake <code>herdr-await</code> sends, <code>herdr-wake</code> for Spec Chat, and every Codex or pi caller run in a shell, so no wrapper can choose native per target short of speaking Claude's private socket protocol.</li>
+<b class="k" style="color:var(--spec-amber)">inferred</b> <code>herdr-say</code>, the wake <code>herdr-await</code> sends, <code>herdr-wake</code> for Spec Chat, and every Codex or pi caller run in a shell, so a wrapper could choose native per target only by speaking Claude's private socket protocol or by starting a headless <code>claude -p</code> turn with <code>SendMessage</code> allowed.
+That headless sender costs a model turn per send, and it exits with its <code>from=</code> socket, so a reply has nowhere to land and a later hold or expiry notice reaches no one.</li>
 <li data-anchor="f-lost"><b>Lost without a word.</b>
 <b class="k">observed</b> In spike 6b a native message queued at a session inside a long tool call, which then closed, was never taken in, and its sender, told it was "in that session's inbox, not yet read by its Claude", heard nothing in 45 s.
 <b class="k" style="color:var(--spec-blue)">documented</b> <code>herdr-say</code> exits 1 in the same case and names the message as never taken in (<a href="../domains/octo-lite.spec.html#transport-say-rate-limit">#transport-say-rate-limit</a>).
-<b class="k">observed</b> To a closed or parked session <code>SendMessage</code> fails at once, "No agent named 'spike-ann-1383-b' is reachable.", where <code>herdr-say</code> resumes the agent from its parked line.</li>
+<b class="k">observed</b> To a closed session <code>SendMessage</code> fails at once, "No agent named 'spike-ann-1383-b' is reachable."
+<b class="k" style="color:var(--spec-blue)">documented</b> Only to a parked one does <code>herdr-say</code> do better: it resumes the agent from its parked line (<a href="#a2">question 2</a>).</li>
 <li data-anchor="f-box-wide"><b>Box-wide, not session-scoped.</b>
 <b class="k" style="color:var(--spec-blue)">documented</b> <code>ListAgents</code> lists "other local Claude sessions on this machine", 12 in spike 1, whatever Herdr session runs them.
 <b class="k" style="color:var(--spec-amber)">inferred</b> Native addressing crosses octo-lite's isolation unit, the Herdr session (<a href="../domains/octo-lite.spec.html#session">#session</a>); this box runs only the default session, so this was not observed.</li>
 <li data-anchor="f-holds"><b>Mode holds do not bite here today.</b>
-<b class="k">observed</b> Every live session's transcript shows <code>permissionMode</code> auto, and every contract but <code>code-reviewer</code> sets it.
+<b class="k">observed</b> Every live session's transcript shows <code>permissionMode</code> auto, a code reviewer's included, though <code>code-reviewer</code> is the one contract that does not set it.
 <b class="k" style="color:var(--spec-amber)">inferred</b> Shipped code puts only <code>bypassPermissions</code>, or plan with bypass available, in the bypass class, so auto, default, and plan sessions share the prompting class and mode parity never holds a lane's message.
 <b class="k">observed</b> A forced hold held the message, told the sender, left Herdr reporting the receiver idle, and expired when the receiver closed.</li>
 <li data-anchor="f-idle"><b><code>notify_when_idle</code> is a turn end, not a task end.</b>
@@ -90,7 +92,7 @@ It has no <code>--since</code>, no Codex or pi caller, and no Codex or pi target
 <figure data-anchor="mechanism-figure">
 <svg viewBox="0 0 340 506" role="img" aria-labelledby="mech-t mech-d" style="max-width:560px;margin:0 auto;font-family:inherit">
 <title id="mech-t">herdr-say and SendMessage both end in the receiver's one input queue</title>
-<desc id="mech-d">Left column, herdr-say: any process sends; Herdr refuses a blocked target with exit 75; the text is typed into the pane and recorded as origin human. Right column, SendMessage: only a Claude model turn sends; a closed or parked target fails and nothing resumes; the receiver's inbound policy accepts, holds in memory, or refuses. Both enter one Claude input queue. From there the message is taken in at the next tool round, or lost when Claude exits first. The sender learns: herdr-say exits 0 processed, 1 never taken in, or 69 rate limited at every send; SendMessage reports success at enqueue and says nothing of a loss.</desc>
+<desc id="mech-d">Left column, herdr-say: any process sends; Herdr refuses a blocked target with exit 75; a parked target is resumed first; the text is typed into the pane and recorded as origin human. Right column, SendMessage: only a Claude model turn sends; a closed or parked target fails and nothing resumes; the receiver's inbound policy accepts, holds in memory, or refuses. Both enter one Claude input queue. From there, by either path, the message is taken in at the next tool round, or lost when Claude exits first. The sender learns: herdr-say exits 0 processed, 1 never taken in, or 69 rate limited at every send; SendMessage reports success at enqueue and says nothing of a loss.</desc>
 <defs>
 <marker id="mech-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" style="fill:var(--spec-muted)"/></marker>
 </defs>
@@ -107,8 +109,8 @@ It has no <code>--since</code>, no Codex or pi caller, and no Codex or pi target
 <line x1="254" y1="66" x2="254" y2="84" style="stroke:var(--spec-muted);stroke-width:1.3" marker-end="url(#mech-arrow)"/>
 <rect x="8" y="84" width="156" height="58" rx="3" style="fill:var(--spec-surface);stroke:var(--spec-teal);stroke-width:1.5"/>
 <text x="16" y="103" style="fill:var(--spec-ink);font-weight:700">herdr agent prompt</text>
-<text x="16" y="119" style="fill:var(--spec-muted)">blocked target: refused,</text>
-<text x="16" y="133" style="fill:var(--spec-muted)">exit 75, caller retries</text>
+<text x="16" y="119" style="fill:var(--spec-muted)">blocked: exit 75, retry;</text>
+<text x="16" y="133" style="fill:var(--spec-muted)">parked: resumed first</text>
 <rect x="176" y="84" width="156" height="58" rx="3" style="fill:var(--spec-surface);stroke:var(--spec-blue);stroke-width:1.5"/>
 <text x="184" y="103" style="fill:var(--spec-ink);font-weight:700">socket &lt;pid&gt;.sock</text>
 <text x="184" y="119" style="fill:var(--spec-muted)">closed or parked target:</text>
@@ -128,16 +130,16 @@ It has no <code>--since</code>, no Codex or pi caller, and no Codex or pi target
 <rect x="8" y="244" width="324" height="52" rx="3" style="fill:var(--spec-code);stroke:var(--spec-ink);stroke-width:1.8"/>
 <text x="170" y="265" text-anchor="middle" style="fill:var(--spec-ink);font-weight:700">one Claude input queue</text>
 <text x="170" y="282" text-anchor="middle" style="fill:var(--spec-muted)">transcript: queue-operation enqueue</text>
-<line x1="86" y1="296" x2="86" y2="322" style="stroke:var(--spec-muted);stroke-width:1.3" marker-end="url(#mech-arrow)"/>
-<line x1="254" y1="296" x2="254" y2="322" style="stroke:var(--spec-red);stroke-width:1.3;stroke-dasharray:4 3" marker-end="url(#mech-arrow)"/>
+<line x1="150" y1="296" x2="100" y2="322" style="stroke:var(--spec-muted);stroke-width:1.3" marker-end="url(#mech-arrow)"/>
+<line x1="190" y1="296" x2="240" y2="322" style="stroke:var(--spec-red);stroke-width:1.3;stroke-dasharray:4 3" marker-end="url(#mech-arrow)"/>
 <rect x="8" y="322" width="156" height="58" rx="3" style="fill:var(--spec-surface);stroke:var(--spec-ink);stroke-width:1.5"/>
 <text x="16" y="341" style="fill:var(--spec-ink);font-weight:700">next tool round</text>
-<text x="16" y="357" style="fill:var(--spec-muted)">same turn, or a new</text>
-<text x="16" y="371" style="fill:var(--spec-muted)">turn when idle</text>
+<text x="16" y="357" style="fill:var(--spec-muted)">either path: same turn,</text>
+<text x="16" y="371" style="fill:var(--spec-muted)">or a new turn when idle</text>
 <rect x="176" y="322" width="156" height="58" rx="3" style="fill:var(--spec-surface);stroke:var(--spec-red);stroke-width:1.5;stroke-dasharray:4 3"/>
 <text x="184" y="341" style="fill:var(--spec-red);font-weight:700">Claude exits first</text>
-<text x="184" y="357" style="fill:var(--spec-muted)">never taken in:</text>
-<text x="184" y="371" style="fill:var(--spec-muted)">the message is lost</text>
+<text x="184" y="357" style="fill:var(--spec-muted)">either path: never</text>
+<text x="184" y="371" style="fill:var(--spec-muted)">taken in, lost</text>
 <line x1="8" y1="402" x2="332" y2="402" style="stroke:var(--spec-hairline);stroke-width:1"/>
 <text x="170" y="416" text-anchor="middle" style="fill:var(--spec-muted);font-size:9.5px;letter-spacing:.08em">WHAT THE SENDER LEARNS</text>
 <rect x="8" y="426" width="156" height="72" rx="3" style="fill:var(--spec-surface);stroke:var(--spec-teal);stroke-width:1.5"/>
@@ -152,7 +154,8 @@ It has no <code>--since</code>, no Codex or pi caller, and no Codex or pi target
 <text x="184" y="489" style="fill:var(--spec-muted)">a loss: nothing</text>
 </g>
 </svg>
-<figcaption data-anchor="mechanism-caption">Both paths end in the receiver's one input queue and are taken in at its next tool round; they differ before the queue, in who can send and in blocked, closed, and holding targets, and after it, in what the sender learns.
+<figcaption data-anchor="mechanism-caption">Both paths end in the receiver's one input queue and are taken in at its next tool round; they differ before the queue, in who can send and in blocked, parked, and holding targets, and after it, in what the sender learns.
+A message still queued when Claude exits is lost by either path; only <code>herdr-say</code> tells its sender, with exit 1.
 Observed in spikes 3b, 3c, 4, 5c, 6, and 6b.</figcaption>
 </figure>
 </section>
@@ -179,14 +182,17 @@ Resumed under the same <code>--name</code>, the session answered to it again wit
 </ul>
 
 <h3 data-anchor="a2-h" id="a2">2. Delivery semantics</h3>
-<p data-anchor="a2-answer"><b>Answer.</b> One queue and one drain point; native is weaker on confirmation, on a receiver that exits before taking the message in, on closed and parked targets, and on rate limits, and better only on a blocked target.</p>
+<p data-anchor="a2-answer"><b>Answer.</b> One queue and one drain point; native is weaker on confirmation, on a receiver that exits before taking the message in, on parked targets, and on rate limits, equal on a closed target that was not parked, and better only on a blocked target.</p>
 <ul data-anchor="a2-evidence">
 <li data-anchor="a2-idle"><b class="k">observed</b> Idle target: a native message started a turn at once, and the reply went back to its <code>from</code> address (spike 2); a typed one starts a turn the same way.</li>
 <li data-anchor="a2-busy"><b class="k">observed</b> Busy target: both are taken in at the next tool round (<a href="#recommendation">finding 1</a>).</li>
 <li data-anchor="a2-blocked"><b class="k">observed</b> Blocked target, an open <code>AskUserQuestion</code> dialog: <code>herdr-say</code> exited 75 at once.
 <code>SendMessage</code> queued the message, the pane showed its one-line preview above the dialog, and Claude took it in with the dialog's answer (spike 4).</li>
-<li data-anchor="a2-parked"><b class="k">observed</b> Closed or parked target: <code>SendMessage</code> fails at once and resumes nothing (spike 5c).
-<b class="k" style="color:var(--spec-blue)">documented</b> <code>herdr-say</code> resumes it from the latest parked line, then delivers (<a href="../domains/octo-lite.spec.html#transport-wake-parked">#transport-wake-parked</a>).</li>
+<li data-anchor="a2-closed"><b class="k">observed</b> Closed target, not parked: both fail at once and tell the sender.
+<code>SendMessage</code> answered "No agent named 'spike-ann-1383-b' is reachable." (spike 5c); <code>herdr-say</code> to a name no agent and no parked line carries exited 1 with Herdr's <code>agent_not_found</code> (a review probe).</li>
+<li data-anchor="a2-parked"><b class="k" style="color:var(--spec-blue)">documented</b> Parked target: <code>herdr-say</code> resumes it from the latest parked line, then delivers (<a href="../domains/octo-lite.spec.html#transport-wake-parked">#transport-wake-parked</a>).
+Only <code>herdr-close --park</code> writes that line; a plain <code>herdr-close</code> writes a closed line, which resumes nothing.
+<b class="k" style="color:var(--spec-amber)">inferred</b> <code>SendMessage</code> fails at once here too, since parking closes the session's tab as closing does.</li>
 <li data-anchor="a2-exit"><b class="k">observed</b> Receiver exits before taking it in: lost, and the sender is not told (<a href="#recommendation">finding 4</a>).</li>
 <li data-anchor="a2-rate"><b class="k">observed</b> At 04:51 both scratch sessions' turns died at once on "All credentials for model claude-opus-5-5 are cooling down".
 <b class="k" style="color:var(--spec-amber)">inferred</b> A native message drained into such a turn is spent and never sent again, where <code>herdr-say</code> sends again until the agent processes it or exits 69 (<a href="../domains/octo-lite.spec.html#transport-say-rate-limit">#transport-say-rate-limit</a>).</li>
@@ -209,7 +215,7 @@ When the subscriber itself holds peer traffic, the notice goes to its user, not 
 <li data-anchor="a4-setting"><b class="k" style="color:var(--spec-blue)">documented</b> <code>crossSessionInbound</code> is <code>accept</code>, <code>hold</code>, or <code>refuse</code>.
 Unset means mode parity: a message "auto-delivers only when the sending session's permission-mode class matches yours (bypass↔bypass or prompting↔prompting)".</li>
 <li data-anchor="a4-box"><b class="k">observed</b> On this box every live session runs auto, and every contract sets auto except <code>code-reviewer</code>, which sets none.
-<b class="k" style="color:var(--spec-amber)">inferred</b> A code reviewer therefore runs in default mode.</li>
+<b class="k">observed</b> A code-reviewer session runs auto too: every <code>permissionMode</code> record in a code reviewer's transcript is auto, so every lane is auto.</li>
 <li data-anchor="a4-class"><b class="k" style="color:var(--spec-amber)">inferred</b> Only <code>bypassPermissions</code>, or plan with bypass available, is the bypass class in shipped code, so every lane is prompting and no lane holds another's message.</li>
 <li data-anchor="a4-spike"><b class="k">observed</b> With <code>crossSessionInbound: "hold"</code> on the receiver: the sender got "[Cross-session delivery notice] Your message to another session was held by that session"; the receiver's pane showed "Held peer message", "not delivered to Claude (1 held)"; Herdr still reported it idle; closing the receiver sent "not approved before expiry" (spike 6).</li>
 <li data-anchor="a4-memory"><b class="k" style="color:var(--spec-amber)">inferred</b> Held messages live in the receiver's memory, at most 100, and expire at its shutdown, so parking a holding session discards them.</li>
@@ -226,12 +232,12 @@ Unset means mode parity: a message "auto-delivers only when the sending session'
 </ul>
 
 <h3 data-anchor="a6-h" id="a6">6. Mixed runtimes and remote nodes</h3>
-<p data-anchor="a6-answer"><b>Answer.</b> <code>herdr-say</code> must stay for Codex, pi, shells, and other nodes, and one wrapper cannot choose native per target, since no wrapper can send natively.</p>
+<p data-anchor="a6-answer"><b>Answer.</b> <code>herdr-say</code> must stay for Codex, pi, shells, and other nodes, and one wrapper cannot usefully choose native per target, since a wrapper can send natively only through a headless model turn that cannot hear a reply.</p>
 <ul data-anchor="a6-evidence">
 <li data-anchor="a6-doc"><b class="k" style="color:var(--spec-blue)">documented</b> <code>notify_when_idle</code> "is only supported for Claude sessions on this machine", and a message to another machine goes "via Anthropic's servers" over Remote Control.</li>
 <li data-anchor="a6-node"><b class="k">observed</b> This box reaches the model through an API key helper and a proxy base URL.
 <b class="k" style="color:var(--spec-amber)">inferred</b> Remote Control needs a claude.ai login, so no native path reaches another node here; the herdr-node routing inside <code>herdr-say</code> that <a href="https://github.com/varelaseb/octo-lite/issues/202">gh#202</a> proposes stays the node path.</li>
-<li data-anchor="a6-choice"><b class="k" style="color:var(--spec-amber)">inferred</b> A per-target choice could live only in each role's prompt, as two recipes with two failure models.</li>
+<li data-anchor="a6-choice"><b class="k" style="color:var(--spec-amber)">inferred</b> A per-target choice could live in each role's prompt, as two recipes with two failure models, or in a wrapper that starts a <code>claude -p</code> turn per send, which costs a model turn and loses the reply and any hold notice (<a href="#recommendation">finding 3</a>).</li>
 </ul>
 
 <h3 data-anchor="a7-h" id="a7">7. Contracts</h3>
@@ -239,7 +245,7 @@ Unset means mode parity: a message "auto-delivers only when the sending session'
 <ul data-anchor="a7-evidence">
 <li data-anchor="a7-allowlists"><b class="k">observed</b> The <code>tools:</code> allowlists date from <code>f50b847</code>, 2026-07-22.</li>
 <li data-anchor="a7-main-box"><b class="k" style="color:var(--spec-amber)">inferred</b> The exchange gh#213 reports ran on sessions outside those allowlists; the main box was not read.</li>
-<li data-anchor="a7-reply"><b class="k" style="color:var(--spec-amber)">inferred</b> A lane can still receive a native message from a plain Claude session, and having no <code>SendMessage</code>, answers it only in its own pane; <a href="#q3">question 3</a> asks whether that needs one line.</li>
+<li data-anchor="a7-reply"><b class="k" style="color:var(--spec-amber)">inferred</b> A lane can still receive a native message from a plain Claude session, and having no <code>SendMessage</code>, answers it in its own pane unless it replies by <code>herdr-say</code> to the pane its sender's pid carries; <a href="#q3">question 3</a> asks whether that needs one line.</li>
 </ul>
 </section>
 
@@ -247,28 +253,30 @@ Unset means mode parity: a message "auto-delivers only when the sending session'
 <div class="sec-head" data-anchor="compare-head">
 <span class="sec-num">04</span>
 <h2>herdr-say and native, side by side</h2>
-<p class="sec-note" data-anchor="compare-note">Claude Code 2.1.311, Herdr 0.9.0, this box.</p>
+<p class="sec-note" data-anchor="compare-note">Claude Code 2.1.311, Herdr 0.9.0, this box.
+Each cell is tagged.</p>
 </div>
 <div class="table-scroll" data-anchor="compare-wrap">
 <table data-anchor="compare-table">
 <thead><tr data-anchor="compare-head-row"><th>Aspect</th><th><code>herdr-say</code></th><th>Native <code>SendMessage</code></th></tr></thead>
 <tbody>
-<tr data-anchor="cmp-sender"><td>Who sends</td><td>Any process: shells, Claude, Codex, pi, <code>herdr-wake</code></td><td>A Claude model turn; no lane role has the tool</td></tr>
-<tr data-anchor="cmp-receiver"><td>Who receives</td><td>Any Herdr agent: Claude, Codex, pi</td><td>Claude sessions only</td></tr>
-<tr data-anchor="cmp-scope"><td>Scope</td><td>The caller's Herdr session</td><td>Every Claude session on the box</td></tr>
-<tr data-anchor="cmp-nodes"><td>Other nodes</td><td>Through herdr-node, as gh#202 proposes</td><td>Remote Control only, not on this box</td></tr>
-<tr data-anchor="cmp-address"><td>Address</td><td>Pane id or Herdr name, as the lane record keeps it</td><td>Native name, from the cwd unless <code>--name</code>, or <code>uds:</code> socket</td></tr>
-<tr data-anchor="cmp-busy"><td>Busy target</td><td>Queued, taken in at the next tool round</td><td>The same</td></tr>
-<tr data-anchor="cmp-blocked"><td>Blocked target</td><td>Refused, exit 75, the caller retries</td><td>Queued, taken in when the dialog closes</td></tr>
-<tr data-anchor="cmp-parked"><td>Parked or closed target</td><td>Resumed from its parked line, then delivered</td><td>Fails at once</td></tr>
-<tr data-anchor="cmp-exit"><td>Receiver exits first</td><td>Exit 1, never taken in</td><td>Lost; the sender is not told</td></tr>
-<tr data-anchor="cmp-rate"><td>Turn dies on a rate limit</td><td>Sent again until processed, else exit 69</td><td>Not detected (inferred)</td></tr>
-<tr data-anchor="cmp-confirm"><td>Confirmation</td><td>Exit 0 once the agent processed it</td><td>Success at enqueue</td></tr>
-<tr data-anchor="cmp-wait"><td>Waiting</td><td><code>herdr-await</code>: any caller, <code>--since</code>, gone</td><td><code>notify_when_idle</code>: one-shot, turn end, Claude only, 12 h</td></tr>
-<tr data-anchor="cmp-holds"><td>Mode holds</td><td>None</td><td>Parity holds, in memory, expired at exit</td></tr>
-<tr data-anchor="cmp-transcript"><td>Receiver's transcript</td><td>Origin <code>human</code></td><td>Origin <code>peer</code>, verified sender pid</td></tr>
-<tr data-anchor="cmp-pane"><td>Receiver's pane</td><td>The full text as a prompt line</td><td>A one-line preview</td></tr>
-<tr data-anchor="cmp-gate"><td>Per-send check</td><td>None</td><td>The auto-mode classifier, on every send</td></tr>
+<tr data-anchor="cmp-sender"><td>Who sends</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Any process: shells, Claude, Codex, pi, <code>herdr-wake</code></td><td><b class="k">observed</b> A Claude model turn; no lane role has the tool</td></tr>
+<tr data-anchor="cmp-receiver"><td>Who receives</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Any Herdr agent: Claude, Codex, pi</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Claude sessions only</td></tr>
+<tr data-anchor="cmp-scope"><td>Scope</td><td><b class="k" style="color:var(--spec-blue)">documented</b> The caller's Herdr session</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Every Claude session on the box</td></tr>
+<tr data-anchor="cmp-nodes"><td>Other nodes</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Through herdr-node, as gh#202 proposes</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Remote Control only; <b class="k" style="color:var(--spec-amber)">inferred</b> not on this box</td></tr>
+<tr data-anchor="cmp-address"><td>Address</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Pane id or Herdr name, as the lane record keeps it</td><td><b class="k">observed</b> Native name, from the cwd unless <code>--name</code>, or <code>uds:</code> socket</td></tr>
+<tr data-anchor="cmp-busy"><td>Busy target</td><td><b class="k">observed</b> Queued, taken in at the next tool round</td><td><b class="k">observed</b> The same</td></tr>
+<tr data-anchor="cmp-blocked"><td>Blocked target</td><td><b class="k">observed</b> Refused, exit 75, the caller retries</td><td><b class="k">observed</b> Queued, taken in when the dialog closes</td></tr>
+<tr data-anchor="cmp-parked"><td>Parked target</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Resumed from its parked line, then delivered</td><td><b class="k" style="color:var(--spec-amber)">inferred</b> Fails at once</td></tr>
+<tr data-anchor="cmp-closed"><td>Closed target, not parked</td><td><b class="k">observed</b> Exit 1, <code>agent_not_found</code></td><td><b class="k">observed</b> Fails at once</td></tr>
+<tr data-anchor="cmp-exit"><td>Receiver exits first</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Exit 1, never taken in</td><td><b class="k">observed</b> Lost; the sender is not told</td></tr>
+<tr data-anchor="cmp-rate"><td>Turn dies on a rate limit</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Sent again until processed, else exit 69</td><td><b class="k" style="color:var(--spec-amber)">inferred</b> Not detected</td></tr>
+<tr data-anchor="cmp-confirm"><td>Confirmation</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Exit 0 once the agent processed it</td><td><b class="k">observed</b> Success at enqueue</td></tr>
+<tr data-anchor="cmp-wait"><td>Waiting</td><td><b class="k" style="color:var(--spec-blue)">documented</b> <code>herdr-await</code>: any caller, <code>--since</code>, gone</td><td><b class="k" style="color:var(--spec-blue)">documented</b> <code>notify_when_idle</code>: one-shot, Claude only; <b class="k">observed</b> fires at a turn end; <b class="k" style="color:var(--spec-amber)">inferred</b> expires in 12 h</td></tr>
+<tr data-anchor="cmp-holds"><td>Mode holds</td><td><b class="k" style="color:var(--spec-amber)">inferred</b> None: typed text meets no inbound policy</td><td><b class="k" style="color:var(--spec-blue)">documented</b> Parity holds; <b class="k">observed</b> held until the receiver exits, then expired</td></tr>
+<tr data-anchor="cmp-transcript"><td>Receiver's transcript</td><td><b class="k">observed</b> Origin <code>human</code></td><td><b class="k">observed</b> Origin <code>peer</code>, verified sender pid</td></tr>
+<tr data-anchor="cmp-pane"><td>Receiver's pane</td><td><b class="k">observed</b> The full text as a prompt line</td><td><b class="k">observed</b> A one-line preview</td></tr>
+<tr data-anchor="cmp-gate"><td>Per-send check</td><td><b class="k">observed</b> In auto mode, the classifier checks a Claude caller's Bash call; none from a shell</td><td><b class="k">observed</b> In auto mode, the classifier checks every send (spikes 2 to 4)</td></tr>
 </tbody>
 </table>
 </div>
@@ -298,7 +306,7 @@ Unset means mode parity: a message "auto-delivers only when the sending session'
 <div class="clause" data-anchor="opt-replace" style="border-top-color:var(--spec-red)">
 <span class="clause-id">3</span>
 <h3 data-anchor="opt-replace-h">Replace herdr-say</h3>
-<p data-anchor="opt-replace-cost"><b>Not possible.</b> Shells, Codex, pi, <code>herdr-wake</code>, <code>herdr-await</code>'s wake, other nodes, and parked resume have no native path.</p>
+<p data-anchor="opt-replace-cost"><b>Not possible.</b> Shells, Codex, pi, <code>herdr-wake</code>, <code>herdr-await</code>'s wake, other nodes, and parked resume have no native path, short of a headless Claude turn per send that cannot hear a reply.</p>
 </div>
 </div>
 </section>
@@ -325,9 +333,10 @@ Cost: no code; at most one spec sentence.</p>
 </div>
 <h3 data-anchor="risks-h">Risks</h3>
 <ul data-anchor="risks">
-<li data-anchor="risk-inbound">Any plain Claude session on the box can still message a lane natively; the lane acts on it as a teammate's request and, with no <code>SendMessage</code>, answers only in its own pane, which reaches no one.</li>
-<li data-anchor="risk-revisit">A later Claude Code with a command-line send and a receipt that survives the receiver's exit would change this case; revisit then.</li>
-<li data-anchor="risk-herdr">Herdr's own open risk is unchanged (<a href="../domains/octo-lite.spec.html#transport-restart-risk">#transport-restart-risk</a>).</li>
+<li data-anchor="risk-inbound"><b class="k" style="color:var(--spec-blue)">documented</b> Any plain Claude session on the box can still message a lane natively, and Claude tells the lane to "Treat it as a teammate's request and act on it within this session's own permission settings".
+<b class="k" style="color:var(--spec-amber)">inferred</b> With no <code>SendMessage</code>, the lane answers in its own pane, which reaches no one, unless it replies by <code>herdr-say</code> to the pane its sender's pid carries (<a href="#q3">question 3</a>, b).</li>
+<li data-anchor="risk-revisit"><b class="k" style="color:var(--spec-amber)">inferred</b> A later Claude Code with a command-line send and a receipt that survives the receiver's exit would change this case; revisit then.</li>
+<li data-anchor="risk-herdr"><b class="k" style="color:var(--spec-blue)">documented</b> Herdr's own open risk is unchanged (<a href="../domains/octo-lite.spec.html#transport-restart-risk">#transport-restart-risk</a>).</li>
 </ul>
 </section>
 
@@ -374,7 +383,8 @@ b. Yes: <code>herdr-spawn</code> passes <code>--name</code>, so <code>ListAgents
 <div class="sec-head" data-anchor="spikes-head">
 <span class="sec-num">08</span>
 <h2>What ran, and sources</h2>
-<p class="sec-note" data-anchor="spikes-note">Throwaway, outside the repository, 04:44 to 06:38 UTC.</p>
+<p class="sec-note" data-anchor="spikes-note">Throwaway, outside the repository, 04:44 to 06:38 UTC.
+Every result below is observed.</p>
 </div>
 <h3 data-anchor="spikes-setup-h">Setup and the scratch-only rule</h3>
 <ul data-anchor="spikes-setup">
