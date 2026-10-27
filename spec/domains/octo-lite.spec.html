@@ -294,7 +294,7 @@ Every verdict the merge ask lists was judged at the merge ask's head: a failure 
 The merge ask lists, in its PR body, each failed criterion with the bundle's <code>evidence_state</code>, its <code>decision_source</code> and the head it was judged at, its triage, its cause or reason, and its outcome.
 A failure whose <code>evidence_state</code> is <code>complete</code>, where the judge reached the state and saw the product not match the criterion, is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape.</p>
 <p data-anchor="delivery-merge-ask" id="delivery-merge-ask">The owner sends one merge ask to the operator once every step it needs is done.
-It opens with a plain summary of three to five lines that a reader who is not an engineer follows: what changes for the user, what review found that matters, and the QA call, then the PR's link.
+It opens with a plain summary of three to five lines that a reader who is not an engineer follows: what changes for the user, what review found that matters, the PR body's <a href="#delivery-changelog">changelog line</a>, and the QA call, then the PR's link.
 The summary names no file path, anchor, command, or evidence field.
 Everything else the merge ask carries, such as the failed QA criteria with their evidence, validation, review notes, and wording-only commits, is in the PR body, which the link opens.
 The orchestrator contract holds the template.</p>
@@ -302,6 +302,7 @@ The orchestrator contract holds the template.</p>
 <h3 data-anchor="delivery-merge-ask-heading">The merge ask</h3>
 <pre data-anchor="delivery-merge-ask-example"><code>What changes: review fixes small notes in the PR and files only ones that matter, at most five.
 Review: nothing left that matters; one reliability note filed at close.
+Changelog: none: the project declares no changelog convention
 QA: skipped, no screen changes.
 Checks: all passed at 4f2a9c1.
 https://github.com/&lt;owner&gt;/&lt;repo&gt;/pull/&lt;pr&gt;</code></pre>
