@@ -255,7 +255,7 @@ class LaneRecordTests(unittest.TestCase):
         )
         skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
         self.assertIn(
-            "one merge ask that carries the review result, that evidence, and its QA call, "
+            "one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, "
             "and goes out with its gate line (`agents/orchestrator.md`",
             skill,
         )

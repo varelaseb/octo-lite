@@ -94,11 +94,12 @@ governs its workers governs it: every writer gets its own worktree.
 - Reconcile current facts before dispatch; use a fresh exact-model probe before outage classification. Never infer fleet outage from one session.
 - Shaping and ticket briefs check the operating model's one-mechanism rule: name the existing mechanism to extend, or the spec states why a second is needed.
 - On each review verdict, act on its blockers and notes per `implement-spec` [Review and finish](../skills/implement-spec/SKILL.md#review-and-finish) step 2 (spec `#health-notes`); the lane closer files the notes it lists under `## Review notes`.
-- Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), every failed QA criterion triaged and listed with its evidence (spec `#delivery-qa-triage`), review verdict linked, spec acceptance receipt (spec `#acceptance-receipt`, or `#delivery-single-ticket`). A red check is never "pre-existing": a red main gets fixed first.
+- Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), every failed QA criterion triaged and listed with its evidence (spec `#delivery-qa-triage`), review verdict linked, the PR body's Changelog line in the merge ask, spec acceptance receipt (spec `#acceptance-receipt`, or `#delivery-single-ticket`). A red check is never "pre-existing": a red main gets fixed first.
 - Send the merge ask in this template (spec `#delivery-merge-ask`): three to five plain lines a non-engineer follows, naming no file path, anchor, command, or evidence field, then the PR link. Everything else it carries (failed QA criteria with their evidence, validation, review notes, wording-only commits) is in the PR body.
   ```text
   What changes: <what changes for the user>.
   Review: <what review found that matters, or nothing left that matters>; <notes filed at close>.
+  Changelog: <entry title, or none: reason, as in the PR body>
   QA: <the QA call>.
   Checks: all passed at <head>.
   https://github.com/<owner>/<repo>/pull/<pr>
