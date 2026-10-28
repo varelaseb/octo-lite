@@ -17,6 +17,13 @@ When the target has a domain-specific UI skill or design constitution, load it
 before making visual or interaction decisions. That source supplies the local
 language; this skill supplies the general frontend practice.
 
+## Accepted mockup
+
+A screen the brief names an accepted mockup for is built from that mockup, not
+from judgment, and checked against each of its frames at that frame's width, as
+`agents/implementer.md` states (spec `#delivery-mockup`). The practice below
+fills only what no mockup draws and never overrides one.
+
 ## Scope
 
 - Respect existing design systems, component libraries, tokens, and patterns.
@@ -34,5 +41,6 @@ language; this skill supplies the general frontend practice.
 - Do not hide incomplete behavior behind decorative UI.
 - Stop for shaping/operator clarification when visual requirements,
   brand constraints, or acceptance evidence are ambiguous.
-- Treat design guidance as agent judgment. Do not turn it into product code,
-  lint gates, or new enforcement machinery unless the issue explicitly asks.
+- Where no mockup draws the screen, treat design guidance as agent judgment.
+  Do not turn it into product code, lint gates, or new enforcement machinery
+  unless the issue explicitly asks.

@@ -46,7 +46,7 @@ Briefs state the outcome, done condition, human decisions already made, exact so
 Brief commands verbatim: `review-host register --slug <issue key, lowercase, hyphen removed> --owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"` (e.g. ANN-336 is `ann336`; the board joins lane to spec rows by that slug, never a lane name; the owner names its session, spec `#session-wake-owner`), and push as its own command, `git push -u origin <branch>`.
 Before deleting a remote branch at teardown, retarget every open PR based on it to its merge target (`gh pr list --base <branch>`); deleting a base branch auto-closes the PRs stacked on it.
 
-Ask the human only for spec acceptance, QA evidence review, merges, promotion, traffic shifts, decisions that change what gets built, and operator-held access; lane notes and minor flags where current behavior is reasonable ship as notes, mentioned in one line.
+Ask the human only for spec acceptance, QA evidence review, merges, promotion, traffic shifts, decisions that change what gets built, and operator-held access; lane notes and minor flags end by the finish rule (spec `#delivery-finish`), never as an ask.
 
 Repo-wide rules (spec `#roles-repo-wide-rule`): one is an every-feature criterion its home spec marks [`data-project-rule`](https://github.com/0xTomDaniel/spec-chat/blob/main/docs/specs/project-rules.spec.html#declare-mark). Asked for a project's repo-wide rules, grep the attribute form `data-project-rule="` across its spec roots on main, so prose mentions of the mark do not match, and list each hit by spec and anchor; name any rule stated only in `AGENTS.md` or spec prose as not yet a repo-wide rule. An owner's review link that names a settled cross-cutting decision and its home spec: ask a lane on that home spec (the sender when it is its own spec, else an open lane already on that home spec, else one you start, so no competing lane or PR) for a criterion marked as a project rule that states the decision; its acceptance is that spec's PR receipt, like any other. A general rule the human states in chat (such as always, never, in general, regardless of) that no marked criterion states (the grep above): reply with one question, whether to make it a criterion marked as a project rule in the home spec you name, with your recommendation; on yes, ask a lane on that home spec as above. Keep the set small: ask or offer only for a decision or rule a later feature could plausibly break. None of this waits on Jev.
 
@@ -119,8 +119,10 @@ Audit lane records per spec `#octo-lane-record-life-audit`, writing none during 
 
 `goal` is the board card title: 2 to 6 plain words naming the feature.
 When you fold new scope into an open lane, update its goal in the same step.
-After a lane's merge ask, any follow-up (fix, polish, note) is a new lane,
-`waiting_on` the old one if needed; the merged lane tears down.
+An in-scope fix the human asks for at the merge ask stays in the open lane
+(spec `#delivery-finish`); only separate work is a new lane, `waiting_on` the
+old one if needed. After a lane merges, any follow-up (fix, polish, note) is a
+new lane; the merged lane tears down.
 
 `owner` is always the `pane=` id, never the `name=` agent name or `tab=` id.
 The file name is the agent name. A wrong `owner` shows the lane as stalled.

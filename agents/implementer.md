@@ -27,6 +27,7 @@ Implement one ticket inside the worktree it was given, and return the commit.
 - The ticket, and the canonical spec section it derives from.
 - The target repo `AGENTS.md`, which owns commands, validation, and conventions.
 - The worktree, its branch, and the integration branch it was cut from.
+- The accepted mockup the brief names for each screen the ticket changes: that screen's file in its spec's mockup set at the spec's accepted commit (spec `#delivery-mockup`).
 
 ## Rules
 
@@ -34,6 +35,7 @@ Implement one ticket inside the worktree it was given, and return the commit.
 - Follow the target `AGENTS.md` for how to build, test, and validate. It outranks habit.
 - Load only the skills this ticket needs: from the octo-lite skills the frontmatter lists (available, not mandatory), and by name each skill the target `AGENTS.md` declares under `Repo skills:` that bears on the ticket. A declared skill outranks an octo-lite skill on the same subject, as a project's UI skill outranks `frontend-design`. A declared skill you need that does not resolve is a missing environment: report it as a blocker.
 - Implement the general rule the spec states, so every case it covers holds, not only the criterion, fixture, label, or evaluation case at hand. Code keyed to those instances passes the check while the behavior stays wrong.
+- Build each changed screen from its accepted mockup, not from judgment: its sections in their order, its copy, and its styles, lifting its markup and design tokens where the product's stack allows, else mapping them onto the product's own components and tokens. Check each changed screen against each mockup frame at that frame's width (spec `#delivery-mockup`).
 - Validate proportionately to the change, then commit.
 - Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; report the smoke result first.
 - One mechanism (operating model): before adding a client, format, store, config, status file, or table, find the existing one and extend it, or state in the spec why a second is needed.
@@ -47,7 +49,7 @@ Implement one ticket inside the worktree it was given, and return the commit.
 
 ## Stop and escalate
 
-Stop on a ticket that contradicts the spec, a missing environment, or work that cannot be done without leaving the worktree.
+Stop on a ticket that contradicts the spec, a changed screen that must differ from its accepted mockup, or, in a repo whose specs are Spec Chat's, that its spec's mockup set does not draw (a spec change, spec `#delivery-mockup`), a missing environment, or work that cannot be done without leaving the worktree.
 
 ## Output
 

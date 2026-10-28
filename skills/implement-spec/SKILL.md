@@ -30,6 +30,12 @@ The primary issue is the one-node graph: Start step 1 files nothing, and only
 filing is skipped. Every worker step still runs: one implementer in its own
 worktree, one integrator, one reviewer. The primary issue stays open until merge.
 
+In a repo whose specs are Spec Chat's, a ticket that changes a screen its
+spec's mockup set does not draw goes back to shaping, which draws it and
+returns the spec to review, before any implementer starts. A screen that must
+differ from its accepted mockup goes back the same way before the build
+differs (spec `#delivery-mockup`).
+
 A processed human **spec acceptance** (page action **Accept spec**, formerly
 called Finish review) permits implementation dispatch under the reviewed
 canonical spec. Follow `spec-chat/skill/review-spec/SKILL.md` under
@@ -104,6 +110,9 @@ For each ready ticket:
 3. Spawn a Herdr implementer in that worktree, under the `implementer` role
    contract. Prompt it with pointers to the ticket, spec, target `AGENTS.md`,
    optional research notes, integration branch, and relevant prior commits.
+   Name the accepted mockup of each screen the ticket changes: its file in the
+   spec's mockup set at the spec acceptance receipt's commit (spec
+   `#delivery-mockup`).
    Cite each repo-wide rule the ticket bears on by its marked criterion's spec
    and anchor (spec `#roles-repo-wide-rule`); an `AGENTS.md` line is only a
    pointer to it. The brief of the ticket that owns the changelog entry names
@@ -183,15 +192,16 @@ independent work and report the exact remaining dependency.
 
 ## Review and finish
 
-Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear and its fix notes fixed; the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head; then one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`), in that contract's merge-ask template: plain summary lines, then the PR link, every detail in the PR body (spec `#delivery-merge-ask`). A merge ask never goes out ahead of a step it needs.
+Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear and its notes ended by the finish rule (spec `#delivery-finish`); the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head, then ended by the finish rule; then one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`), in that contract's merge-ask template: plain summary lines, then the PR link, every detail in the PR body (spec `#delivery-merge-ask`). A merge ask covers its whole issue (spec `#delivery-finish`): in-scope work that cannot be done before merge is named, with why, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`) with `herdr-say`, asking whether to cut it, in place of the merge ask. A merge ask never goes out ahead of a step it needs.
 
-The merge ask lists, in its PR body, each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
+The merge ask lists, in its PR body, each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome, the end the finish rule gives it; one the rule files is also listed under `## Review notes`, tagged with its category and its consequence as a review note is, so the lane closer files it with its Health label. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
 
 After every ticket is integrated:
 
 1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
    and brief it to run `/code-review` on the integration branch, the lane's one
-   full review of the integration head, then `herdr-say` its verdict to the
+   full review of the integration head, naming each changed screen's accepted
+   mockup as the implementer briefs do, then `herdr-say` its verdict to the
    owner pane, since `/code-review` ends in its own pane. The verdict policy
    is the `agents/code-reviewer.md` contract. If unsupported,
    use the available independent review mechanism with the provided diff, base,
@@ -207,10 +217,13 @@ After every ticket is integrated:
    it touches; never re-review unchanged code. Blockers the review after round
    2 still finds go, in place of a third round, to the operator pane (`pane`
    in `$(octo-lite-state)/operator.toml`) with `herdr-say`, each blocker named,
-   asking how to go on. Notes marked `Fix in this PR` are fixed before the
-   merge ask, in a fix batch already running, else one batch of their own:
-   no fix round, no review. List every note naming a consequence, tagged as
-   the reviewer gave it, in the PR body under `## Review notes`; they are
+   asking how to go on. In-scope work the verdict names as not doable before
+   merge gets no fix round: it goes to the ask before it is cut, in the Order
+   above. Notes marked `Fix in this PR` are fixed before the merge ask, in a
+   fix batch already running, which that round's delta review covers, else
+   one batch of their own: no fix round, but a fresh reviewer reviews its
+   delta the same way. List every other note, tagged as the reviewer
+   gave it, in the PR body under `## Review notes`; they are
    filed at lane close by the [filing rule](../repo-health/SKILL.md#filing-rule).
    Never park a confirmed defect or implicitly waive a failed required
    check. If the same attempt makes no progress, diagnose or route the

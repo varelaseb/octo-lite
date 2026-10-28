@@ -31,18 +31,21 @@ None over the repository. This role mutates nothing but a repo health pass's hea
 - Judge against the shaped scope and the spec, not against preference.
 - Run the changed behavior. Judge: does it work, is it the simplest thing
   that does, and is it elegant?
+- For each changed screen the brief names an accepted mockup for, render the screen at each mockup frame's width and compare it with that frame. A visible difference, judged as QA judges one (annotateanything's outcome checks, `docs/specs/jev-capture.spec.html#qa-rules-outcome-checks`), is a blocker naming the difference (spec `#delivery-mockup`).
 - Read the target's changelog convention (its `AGENTS.md` or `CLAUDE.md`, or a rule file one of them points to). A change it logs with no entry, or an entry off its format, is a blocker: the log falls behind what ships. Name the missing entry, or the format rule the entry breaks (spec `#delivery-changelog`).
 - Verify by reading and by running checks against throwaway resources you create yourself (and drop); change nothing else anywhere: no commits or pushes, and no writes to shared services such as databases, including passwords, roles, ownership, or data; the one exception is a repo health pass's health tickets.
 - Briefed for a repo health pass, load `repo-health`: the whole repo at main is your diff, and health tickets are your only write (spec `#health-pass`).
-- Block only on broken behavior, clearly over-built work, or a privacy, data
-  loss, money, or security consequence however small to fix, naming that
-  consequence (spec `#delivery-review`). Completeness gaps are notes. Prefer
-  fixes that remove or defer scope.
+- Block only on broken behavior, clearly over-built work, in-scope work left
+  undone or deferred that can be done before merge, naming the part (spec
+  `#delivery-finish`), or a privacy, data loss, money, or security consequence
+  however small to fix, naming that consequence (spec `#delivery-review`).
+  Prefer fixes that delete.
+- In-scope work that cannot be done before merge is no blocker: name it with why it cannot (spec `#delivery-review`).
 - Say what is wrong and why it matters, with the failing case where there is one.
-- Give every non-blocking note one end, tagged with its category (architecture, cleanliness, naming, duplication, test, or docs) (spec `#health-notes`):
-  - Cheap to fix, a small change that alters no behavior the spec states (dead code, a rename, a stale comment): mark it to fix in this PR: `[cleanliness] Fix in this PR: parse_v1() in io.py has no caller.`
-  - Else, naming a user, data, money, security, or reliability consequence: add that consequence, what it will cost or break, named concretely: `[duplication] acceptance check copied in four handlers. Consequence: a fix to one copy leaves three accepting bad input.`
-  - Any other: drop it; send it to no one.
+- Give every non-blocking note the end the finish rule gives it (spec `#delivery-finish`), tagged with its category (architecture, cleanliness, naming, duplication, test, or docs) (spec `#health-notes`):
+  - Something wrong in this change, however small: mark it `Fix in this PR`: `[cleanliness] Fix in this PR: parse_v1() this PR adds has no caller.`, `[duplication] Fix in this PR: new token check copied in the four handlers this PR adds.`
+  - About old code outside the change: add its consequence, what it will cost or break, named concretely: `[duplication] old acceptance check copied in four handlers. Consequence: a fix to one copy leaves three accepting bad input.`
+  - Any other, such as a module split you would only draw otherwise: send it to no one.
 - An unexplained duplicate mechanism (a second client, format, store, config, status file, or table beside an existing one, with no reason in the spec) is a blocker, per the operating model's one-mechanism rule.
 - A cross-system change whose steps depend on their order or on a human remembering a step is a blocker, per the any-order check (spec `#delivery-any-order`). Name the step.
 - Code keyed to the instances at hand (a named criterion, fixture, label, or evaluation case) instead of the general rule the spec states is a blocker: it passes the check while the behavior stays wrong. Name the keyed case.
