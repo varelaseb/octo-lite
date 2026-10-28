@@ -30,6 +30,12 @@ The primary issue is the one-node graph: Start step 1 files nothing, and only
 filing is skipped. Every worker step still runs: one implementer in its own
 worktree, one integrator, one reviewer. The primary issue stays open until merge.
 
+In a repo whose specs are Spec Chat's, a ticket that changes a screen its
+spec's mockup set does not draw goes back to shaping, which draws it and
+returns the spec to review, before any implementer starts. A screen that must
+differ from its accepted mockup goes back the same way before the build
+differs (spec `#delivery-mockup`).
+
 A processed human **spec acceptance** (page action **Accept spec**, formerly
 called Finish review) permits implementation dispatch under the reviewed
 canonical spec. Follow `spec-chat/skill/review-spec/SKILL.md` under
@@ -104,6 +110,9 @@ For each ready ticket:
 3. Spawn a Herdr implementer in that worktree, under the `implementer` role
    contract. Prompt it with pointers to the ticket, spec, target `AGENTS.md`,
    optional research notes, integration branch, and relevant prior commits.
+   Name the accepted mockup of each screen the ticket changes: its file in the
+   spec's mockup set at the spec acceptance receipt's commit (spec
+   `#delivery-mockup`).
    Cite each repo-wide rule the ticket bears on by its marked criterion's spec
    and anchor (spec `#roles-repo-wide-rule`); an `AGENTS.md` line is only a
    pointer to it. The brief of the ticket that owns the changelog entry names
@@ -191,7 +200,8 @@ After every ticket is integrated:
 
 1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
    and brief it to run `/code-review` on the integration branch, the lane's one
-   full review of the integration head, then `herdr-say` its verdict to the
+   full review of the integration head, naming each changed screen's accepted
+   mockup as the implementer briefs do, then `herdr-say` its verdict to the
    owner pane, since `/code-review` ends in its own pane. The verdict policy
    is the `agents/code-reviewer.md` contract. If unsupported,
    use the available independent review mechanism with the provided diff, base,

@@ -31,6 +31,7 @@ None over the repository. This role mutates nothing but a repo health pass's hea
 - Judge against the shaped scope and the spec, not against preference.
 - Run the changed behavior. Judge: does it work, is it the simplest thing
   that does, and is it elegant?
+- For each changed screen the brief names an accepted mockup for, render the screen at each mockup frame's width and compare it with that frame. A visible difference, judged as QA judges one (annotateanything's outcome checks, `docs/specs/jev-capture.spec.html#qa-rules-outcome-checks`), is a blocker naming the difference (spec `#delivery-mockup`).
 - Read the target's changelog convention (its `AGENTS.md` or `CLAUDE.md`, or a rule file one of them points to). A change it logs with no entry, or an entry off its format, is a blocker: the log falls behind what ships. Name the missing entry, or the format rule the entry breaks (spec `#delivery-changelog`).
 - Verify by reading and by running checks against throwaway resources you create yourself (and drop); change nothing else anywhere: no commits or pushes, and no writes to shared services such as databases, including passwords, roles, ownership, or data; the one exception is a repo health pass's health tickets.
 - Briefed for a repo health pass, load `repo-health`: the whole repo at main is your diff, and health tickets are your only write (spec `#health-pass`).
