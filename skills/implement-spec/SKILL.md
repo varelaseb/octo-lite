@@ -194,7 +194,7 @@ independent work and report the exact remaining dependency.
 
 Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear and its notes ended by the finish rule (spec `#delivery-finish`); the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head, then ended by the finish rule; then one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`), in that contract's merge-ask template: plain summary lines, then the PR link, every detail in the PR body (spec `#delivery-merge-ask`). A merge ask covers its whole issue (spec `#delivery-finish`): in-scope work that cannot be done before merge is named, with why, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`) with `herdr-say`, asking whether to cut it, in place of the merge ask. A merge ask never goes out ahead of a step it needs.
 
-The merge ask lists, in its PR body, each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome, the end the finish rule gives it; one the rule files is also listed under `## Review notes` with its consequence, so the lane closer files it. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
+The merge ask lists, in its PR body, each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome, the end the finish rule gives it; one the rule files is also listed under `## Review notes`, tagged with its category and its consequence as a review note is, so the lane closer files it with its Health label. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
 
 After every ticket is integrated:
 
@@ -217,9 +217,12 @@ After every ticket is integrated:
    it touches; never re-review unchanged code. Blockers the review after round
    2 still finds go, in place of a third round, to the operator pane (`pane`
    in `$(octo-lite-state)/operator.toml`) with `herdr-say`, each blocker named,
-   asking how to go on. Notes marked `Fix in this PR` are fixed before the
-   merge ask, in a fix batch already running, else one batch of their own:
-   no fix round, no review. List every other note, tagged as the reviewer
+   asking how to go on. In-scope work the verdict names as not doable before
+   merge gets no fix round: it goes to the ask before it is cut, in the Order
+   above. Notes marked `Fix in this PR` are fixed before the merge ask, in a
+   fix batch already running, which that round's delta review covers, else
+   one batch of their own: no fix round, but a fresh reviewer reviews its
+   delta the same way. List every other note, tagged as the reviewer
    gave it, in the PR body under `## Review notes`; they are
    filed at lane close by the [filing rule](../repo-health/SKILL.md#filing-rule).
    Never park a confirmed defect or implicitly waive a failed required

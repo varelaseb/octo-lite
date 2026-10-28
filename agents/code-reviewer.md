@@ -36,14 +36,16 @@ None over the repository. This role mutates nothing but a repo health pass's hea
 - Verify by reading and by running checks against throwaway resources you create yourself (and drop); change nothing else anywhere: no commits or pushes, and no writes to shared services such as databases, including passwords, roles, ownership, or data; the one exception is a repo health pass's health tickets.
 - Briefed for a repo health pass, load `repo-health`: the whole repo at main is your diff, and health tickets are your only write (spec `#health-pass`).
 - Block only on broken behavior, clearly over-built work, in-scope work left
-  undone or deferred, naming the part (spec `#delivery-finish`), or a privacy,
-  data loss, money, or security consequence however small to fix, naming that
-  consequence (spec `#delivery-review`). Prefer fixes that delete.
+  undone or deferred that can be done before merge, naming the part (spec
+  `#delivery-finish`), or a privacy, data loss, money, or security consequence
+  however small to fix, naming that consequence (spec `#delivery-review`).
+  Prefer fixes that delete.
+- In-scope work that cannot be done before merge is no blocker: name it with why it cannot (spec `#delivery-review`).
 - Say what is wrong and why it matters, with the failing case where there is one.
 - Give every non-blocking note the end the finish rule gives it (spec `#delivery-finish`), tagged with its category (architecture, cleanliness, naming, duplication, test, or docs) (spec `#health-notes`):
-  - Fixed in the PR: mark it `Fix in this PR`: `[duplication] Fix in this PR: new token check copied in the four handlers this PR adds.`
-  - Filed at lane close: add its consequence, what it will cost or break, named concretely: `[duplication] old acceptance check copied in four handlers. Consequence: a fix to one copy leaves three accepting bad input.`
-  - Dropped: send it to no one.
+  - Something wrong in this change, however small: mark it `Fix in this PR`: `[cleanliness] Fix in this PR: parse_v1() this PR adds has no caller.`, `[duplication] Fix in this PR: new token check copied in the four handlers this PR adds.`
+  - About old code outside the change: add its consequence, what it will cost or break, named concretely: `[duplication] old acceptance check copied in four handlers. Consequence: a fix to one copy leaves three accepting bad input.`
+  - Any other, such as a module split you would only draw otherwise: send it to no one.
 - An unexplained duplicate mechanism (a second client, format, store, config, status file, or table beside an existing one, with no reason in the spec) is a blocker, per the operating model's one-mechanism rule.
 - A cross-system change whose steps depend on their order or on a human remembering a step is a blocker, per the any-order check (spec `#delivery-any-order`). Name the step.
 - Code keyed to the instances at hand (a named criterion, fixture, label, or evaluation case) instead of the general rule the spec states is a blocker: it passes the check while the behavior stays wrong. Name the keyed case.

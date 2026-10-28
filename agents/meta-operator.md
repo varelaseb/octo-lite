@@ -119,8 +119,10 @@ Audit lane records per spec `#octo-lane-record-life-audit`, writing none during 
 
 `goal` is the board card title: 2 to 6 plain words naming the feature.
 When you fold new scope into an open lane, update its goal in the same step.
-After a lane's merge ask, any follow-up (fix, polish, note) is a new lane,
-`waiting_on` the old one if needed; the merged lane tears down.
+An in-scope fix the human asks for at the merge ask stays in the open lane
+(spec `#delivery-finish`); only separate work is a new lane, `waiting_on` the
+old one if needed. After a lane merges, any follow-up (fix, polish, note) is a
+new lane; the merged lane tears down.
 
 `owner` is always the `pane=` id, never the `name=` agent name or `tab=` id.
 The file name is the agent name. A wrong `owner` shows the lane as stalled.
