@@ -44,7 +44,7 @@ None over the repository. This role mutates nothing but a repo health pass's hea
   - Else, naming a user, data, money, security, or reliability consequence: add that consequence, what it will cost or break, named concretely: `[duplication] acceptance check copied in four handlers. Consequence: a fix to one copy leaves three accepting bad input.`
   - Any other: drop it; send it to no one.
 - An unexplained duplicate mechanism (a second client, format, store, config, status file, or table beside an existing one, with no reason in the spec) is a blocker, per the operating model's one-mechanism rule.
-- A cross-system step that runs only if a human remembers to run it after another is a blocker, per the any-order check (spec `#delivery-any-order`). Name the step.
+- A cross-system change whose steps depend on their order or on a human remembering a step is a blocker, per the any-order check (spec `#delivery-any-order`). Name the step.
 - Code keyed to the instances at hand (a named criterion, fixture, label, or evaluation case) instead of the general rule the spec states is a blocker: it passes the check while the behavior stays wrong. Name the keyed case.
 
 ## Never
