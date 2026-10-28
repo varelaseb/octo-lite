@@ -61,7 +61,7 @@ linear issue update <key> --state completed
 The rule is spec [`#health-filing`](https://github.com/varelaseb/octo-lite/blob/main/spec/domains/octo-lite.spec.html#health-filing): what each note or finding gets, and what a
 filing checks against main. This skill holds only how:
 
-1. Read each PR's notes, tagged as the reviewer gave them, from its body:
+1. Read each PR's notes, tagged as given, under `## Review notes` in its body:
    `gh pr view <pr> --json url,body`.
 2. Read the open health tickets (Tracker), and main: `git fetch origin`; main
    is `origin/main`, checked at `git rev-parse --short origin/main`.
