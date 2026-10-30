@@ -33,8 +33,10 @@ live Herdr 0.9.0:
     records a slash command transformed, never as typed
   * a wake send outliving Spec Chat's bound fails after Spec Chat counted it
     sent, so only the operator can be told
-  * a background command's end invokes only a Claude caller, so a wait on an
-    agent must wake its caller by message, and end with the caller's tab
+  * a background command's end invokes only a Claude caller, and a message
+    typed to a Claude caller reads as the operator's, so a wait on an agent
+    ends a Claude caller's own task, wakes any other by message, and ends
+    with the caller's tab
 """
 
 import json
@@ -1421,9 +1423,68 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertRegex(woken, r"^herdr-await: implementer-ann-1 stop=send-failed \(herdr-say exit 1: .*agent_not_found.*\)$")
         self.assertNotIn("agent wait", self.calls())
 
+    def noticing(self, target):
+        # herdr-await --notice on target run as a background task of its Claude
+        # caller in pane w5:p2 of its own tab, the task leading its own process
+        # group, its stdout the task's output; held on as Herdr holds a wait on
+        # an agent whose tab closes.
+        tab = f"w5:t-{uuid.uuid4()}"
+        self.addCleanup(self.reap, tab)
+        p = subprocess.Popen([str(AWAIT), "--notice", target], stdout=subprocess.PIPE, text=True,
+                             start_new_session=True,
+                             env={**self.env, "HERDR_PANE_ID": "w5:p2", "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": "w5",
+                                  "FAKE_WAIT_GATE": str(Path(self.tmp.name) / "never")})
+        self.addCleanup(lambda: (p.kill(), p.wait(), p.stdout.close()))
+        self.assertTrue(self.until(lambda: self.tagged_pids(tab, "agent wait")), "the wait never ran")
+        return p, tab
+
+    def test_await_notice_ends_its_callers_own_task_naming_the_stop(self):
+        # transport-await, acceptance-await-notice: a Claude caller's wait runs
+        # in its own background task, which ends on the stop with the stop line
+        # as its output, and no message is typed to the caller's pane.
+        r = self.awaits("--notice", "implementer-ann-1", "brief ANN-1", FAKE_WAIT_STATUS="blocked")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "herdr-await: implementer-ann-1 stop=blocked seq=42\n", ""))
+        calls = self.calls()
+        self.assertLess(calls.index("agent prompt implementer-ann-1 brief ANN-1"), calls.index("agent wait implementer-ann-1"))
+        self.assertNotIn("agent prompt w5:p2", calls)
+        self.assertEqual(self.tagged_pids(r.tab), [], "the wait outlived its task")
+
+    def test_await_notice_keeps_since_and_a_failed_send(self):
+        # transport-await: --since and a failed send end a notice wait as they
+        # end a detached one.
+        r = self.awaits("--notice", "--since", "42", "implementer-ann-1", FAKE_WORKS_AFTER_WAIT="1")
+        self.assertEqual(r.stdout, "herdr-await: implementer-ann-1 stop=idle seq=44\n")
+        self.gone_file.write_text("implementer-ann-1\n")
+        r = self.awaits("--notice", "implementer-ann-1", "brief ANN-1")
+        self.assertRegex(r.stdout, r"^herdr-await: implementer-ann-1 stop=send-failed \(herdr-say exit 1: .*agent_not_found.*\)\n$")
+        self.assertNotIn("agent prompt w5:p2", self.calls())
+
+    def test_await_notice_its_caller_closes_ends_as_closed_by_its_caller(self):
+        # transport-close-waits, acceptance-worker-closed-no-wait: the caller's
+        # herdr-close of the agent ends its notice wait on it whole, the notice
+        # naming that close, never a stop.
+        p, tab = self.noticing("implementer-ann-1")
+        listed = json.dumps({"result": {"agents": [
+            {"name": "implementer-ann-1", "pane_id": "w9:p1", "tab_id": "w9:t1", "workspace_id": "w9"}]}})
+        close = subprocess.run([str(CLOSE), "w9:t1"], capture_output=True, text=True,
+                               env={**self.env, "HERDR_PANE_ID": "w5:p2", "FAKE_AGENT_LIST": listed})
+        self.assertEqual(json.loads(close.stdout)["killed"], 1)
+        self.assertEqual(p.communicate(timeout=5)[0], "herdr-await: implementer-ann-1 closed by its caller\n")
+        self.assertTrue(self.until(lambda: not self.tagged_pids(tab)), "a wait on the closed worker still runs")
+        self.assertNotIn("agent prompt w5:p2", self.calls())
+
+    def test_await_notice_ends_with_its_callers_tab(self):
+        # transport-await: closing or parking the caller ends its notice wait.
+        p, tab = self.noticing("implementer-ann-1")
+        self.assertEqual(subprocess.run([str(CLOSE), tab], capture_output=True, env=self.env).returncode, 0)
+        p.communicate(timeout=5)
+        self.assertTrue(self.until(lambda: not self.tagged_pids(tab)), "the wait outlived its caller's tab")
+        self.assertNotIn("agent prompt w5:p2", self.calls())
+
     def test_await_needs_a_name_and_a_caller_pane(self):
         for args, env in (((), {}), (("-h",), {}), (("a", "b", "c"), {}),
                           (("--since", "42"), {}), (("--since", "seq=42", "a"), {}),
+                          (("--notice",), {}), (("--notice", "--since", "42"), {}), (("--wait", "a"), {}),
                           (("implementer-ann-1",), {"HERDR_PANE_ID": ""})):
             r = self.awaits(*args, **env)
             self.assertEqual(r.returncode, 64, (args, r.stderr))

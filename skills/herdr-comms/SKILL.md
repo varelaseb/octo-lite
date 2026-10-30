@@ -99,10 +99,11 @@ a space. Closes it, then sends TERM to every process of the caller's session
 whose environ carries `HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which
 catches detached children that close alone leaves running, and ends whole each
 `herdr-await` of the caller's own pane on an agent in it, by name or pane id,
-read from `herdr agent list` before the close, waking no one: you closed it, so
-no stop message reads as news of an agent spawned again under the same name
-(spec `#transport-close-waits`). Another caller's wait on it ends as gone at
-its bound. Parking (below) closes the same way. Run it from outside
+read from `herdr agent list` before the close, sending no message (a `--notice`
+wait prints `closed by its caller`): you closed it, so no stop reads as news of
+an agent spawned again under the same name (spec `#transport-close-waits`).
+Another caller's wait on it ends as gone at its bound. Parking (below) closes
+the same way. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
 own space, or only its owner tab when the lane started in a shared space.
 Prints one closed hand-off line (`at kind tab|space close_rc killed`; spec
@@ -211,15 +212,14 @@ and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
 ## Wait on an agent
 
 ```
-herdr-await [--since SEQ] NAME [MESSAGE]
+herdr-await [--notice] [--since SEQ] NAME [MESSAGE]
 ```
 
 The one wait on a lane agent (spec `#transport-await`): never run `herdr agent
-wait` yourself. Returns at once. Apart from its caller, it sends MESSAGE to NAME
-with `herdr-say` when given, then waits until NAME is idle, done, or blocked on
-interactive input, or gone: its agent exited, its tab closed, or no agent has
-that name. Then it sends the caller's pane (`$HERDR_PANE_ID`) one message
-naming NAME and the stop:
+wait` yourself. It sends MESSAGE to NAME with `herdr-say` when given, then
+waits until NAME is idle, done, or blocked on interactive input, or gone: its
+agent exited, its tab closed, or no agent has that name. Its end is one stop
+line naming NAME and the stop:
 
 ```
 herdr-await: NAME stop=STATE seq=N                     stopped in STATE at Herdr's state_change_seq N
@@ -227,10 +227,15 @@ herdr-await: NAME stop=gone (REASON)                   Herdr's error code, or th
 herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   the send did not exit 0; no wait ran
 ```
 
-A message wakes a Claude, Codex, or pi caller the same way, so no runtime needs
-a background command's end to invoke it, and a send that waits out a rate limit
-holds no caller in the foreground. Given `--since SEQ`, the `seq` of the stop
-the caller last read, the wait ends only once NAME has changed state since that
+A Claude caller passes `--notice` and runs it with its Bash tool in the
+background (`run_in_background`), its description naming NAME: the wait holds
+that task, prints the stop line as its output, and exits 0, so the task's end
+is your wake, never text your conversation records as the operator's. Any
+other caller, Codex or pi, omits `--notice`: it returns at once, waits apart
+from its caller, and sends the caller's pane (`$HERDR_PANE_ID`) the stop line
+as a message. Either way a send that waits out a rate limit holds no caller in
+the foreground. Given `--since SEQ`, the `seq` of the stop the caller last
+read, the wait ends only once NAME has changed state since that
 stop and stopped again, or is gone: a re-wait on an agent still at its task
 never wakes its caller before it moves, and one that works and stops before the
 wait starts still ends it at once. Wait by agent name: a parked worker
@@ -242,22 +247,25 @@ stopped between two waits. The wait keeps the caller's environ, so
 `herdr-close` of the caller's tab, parking included, ends it with the caller's
 other processes, waking no one; a wait whose caller is gone otherwise ends at
 its bound, waking no one. `herdr-close` of the agent by the caller, parking
-included, ends the caller's waits on it, waking no one.
+included, ends the caller's waits on it, sending no message; a `--notice` wait
+so ended prints `herdr-await: NAME closed by its caller`, never a stop: you
+closed it, so nothing to do.
 
 The wait recipe (spec `#roles-goal`), for an owner on each worker it sets to
-work and the operator on an owner it awaits a reply from. The stop message is
-your only wake: no timer or poll. When relaunched from a park, run
-`herdr-await <name>`, sending nothing, on each agent you still await: your
-earlier waits ended with your process. When a stop message comes for an agent
-whose result or reply you still await, read its screen with
-`herdr agent read <name>`; the message already names its state.
+work and the operator on an owner it awaits a reply from. Run every
+`herdr-await` here as above, on Claude with `--notice` in the background. The
+wait's end is your only wake: no timer or poll. When relaunched from a park,
+run `herdr-await <name>`, sending nothing, on each agent you still await: your
+earlier waits ended with your process. When a wait ends on a stop for an agent
+whose result or reply you still await, read its stop line (on Claude, the
+task's output), then its screen with `herdr agent read <name>`.
 
 - A finished result or reply there is its report: consume it.
 - A turn ended on an API error: resume it with `herdr-await <name> continue`,
   which sends again while a rate limit lasts; its `stop=send-failed` means it
   is blocked.
 - Still at its task, such as on its own background command:
-  `herdr-await --since <seq> <name>`, `<seq>` the one the message named, so
+  `herdr-await --since <seq> <name>`, `<seq>` the one the stop line named, so
   you wake only once it has worked and stopped again, even if it did so before
   that wait starts.
 - Otherwise it is blocked: recover it as your role contract says.
