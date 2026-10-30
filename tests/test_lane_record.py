@@ -323,14 +323,19 @@ class LaneRecordTests(unittest.TestCase):
         # unparked owner.
         # #acceptance-worker-owner-rate-limited: exit 69 already re-sent, so it
         # goes to the operator at once, never re-sent.
+        # #transport-native, #acceptance-native-*: natively to a live Claude
+        # session, else, or when Claude reports it failed or held, herdr-say.
         for role in ("implementer", "integrator", "code-reviewer"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
-                "to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; "
+                "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
+                "natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. "
+                "Only a native send Claude reports delivered, or a `herdr-say` exit 0, confirms the send; "
+                "one Claude reports failed or held goes by `herdr-say`; "
                 "on exit 69, which `herdr-say` already re-sent for hours, send it no more; "
-                "on any other exit, send it again, 3 sends in all. If none exits 0, send it once, "
-                "naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). "
-                "Then stop, whatever the last exit.",
+                "on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, "
+                "naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). "
+                "Then stop, whatever the last result.",
                 output,
                 role,
             )
@@ -341,6 +346,21 @@ class LaneRecordTests(unittest.TestCase):
             r"only when no live or parked owner has that name, relaunch fresh.*"
             r"`#roles-park`\), then forward\.",
         )
+
+    def test_claude_roles_report_natively_to_the_pane_session(self) -> None:
+        # spec #transport-native: every Claude role contract allows the native
+        # send, and the one recipe addresses the target pane's Claude session
+        # (#transport-claude-session), never a box-wide name, falling back to
+        # herdr-say; every report line points at that recipe.
+        for path in ROOT.glob("agents/*.md"):
+            tools = re.search(r"^tools: (\[.*\])$", path.read_text(encoding="utf-8"), flags=re.MULTILINE)
+            self.assertIn("SendMessage", json.loads(tools.group(1)), path.name)
+        recipe = (ROOT / "skills/herdr-comms/SKILL.md").read_text(encoding="utf-8")
+        recipe = recipe.split("\n## Send a report\n", 1)[1].split("\n## ", 1)[0]
+        for token in ("herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'", "`uds:<that path>`", "`herdr-say PANE REPORT`"):
+            self.assertIn(token, recipe)
+        for doc in ("agents/orchestrator.md", "agents/meta-operator.md", "skills/implement-spec/SKILL.md", "skills/repo-health/SKILL.md"):
+            self.assertIn("herdr-comms/SKILL.md#send-a-report)", (ROOT / doc).read_text(encoding="utf-8"), doc)
 
     def test_waiter_keeps_one_herdr_wait_on_each_agent_it_sets_to_work(self) -> None:
         # spec #roles-goal, #transport-await, #acceptance-worker-ended,
@@ -362,7 +382,7 @@ class LaneRecordTests(unittest.TestCase):
         }
         for path, text in callers.items():
             self.assertIn("herdr-comms/SKILL.md#wait-on-an-agent)", text, path)
-            self.assertIn("`herdr-await <", text, path)
+            self.assertRegex(text, r"`herdr-await (--notice )?<", path)
             self.assertNotIn("herdr agent get", text, path)
             self.assertNotRegex(text, r"check-in,? reads?", path)
             self.assertNotRegex(text, r"herdr agent wait <", path)

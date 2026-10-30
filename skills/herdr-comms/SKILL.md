@@ -132,7 +132,8 @@ closed.
 herdr-claude-session PANE
 ```
 
-The one lookup `herdr-close --park` and `herdr-say` share (spec
+The one lookup `herdr-close --park`, `herdr-say`, and a
+[native report](#send-a-report) share (spec
 `#transport-claude-session`). Prints one JSON line: Claude's own record
 `~/.claude/sessions/<pid>.json` plus `transcript`, the path of
 `~/.claude/projects/*/<sessionId>.jsonl`, `null` before its first message.
@@ -207,6 +208,34 @@ the reason goes to Spec Chat, which retries.
 The review service may run in another Herdr session, so register a review row
 with `--owner "${HERDR_SESSION:-default}/$HERDR_PANE_ID"`: `herdr-wake` checks
 and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
+
+## Send a report
+
+A report is a status, result, or blocker (spec `#transport-native`). A Claude
+agent sends it to a Claude agent by Claude's own messaging, so the receiver
+records it as a peer's message from the sender's name: a message `herdr-say`
+types is recorded as the operator's input. Address the target pane's Claude
+session, never a box-wide name, so it never reaches another Herdr session:
+
+```
+herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'
+```
+
+then `SendMessage` with `to` set to `uds:<that path>`. Claude reporting it in
+the receiver's inbox confirms it. Send it with `herdr-say PANE REPORT` instead,
+under its exit codes, when the lookup exits 1 or prints nothing (a parked,
+closed, Codex, or pi agent; `herdr-say` resumes a parked one), or when Claude
+reports the send failed, or a later `[Cross-session delivery notice]` says it
+was held, denied, or expired. A confirmed native send is never sent again: a
+receiver that exits before reading it loses it, and a turn that dies on a rate
+limit spends it, so a lost result is read from the sender's pane when the
+owner's wait on it ends (spec `#roles-goal`).
+
+Only a Claude turn sends natively: a Codex or pi agent and every shell sender
+(`herdr-wake`, `herdr-await`) send by `herdr-say`. Work is never a report: a
+brief, a resume, a repair, or a human's answer the operator relays goes by
+`herdr-say` or `herdr-await`, since a wait starts from a send Herdr saw taken
+in and a relayed answer must read as the human's.
 
 ## Wait on an agent
 
