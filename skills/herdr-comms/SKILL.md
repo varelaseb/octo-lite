@@ -44,7 +44,8 @@ The runtime comes from the agent definition and each CLI's own defaults. This
 pins no model, effort, or service tier.
 
 `--role` is not just a label. A Claude agent loads its own contract through
-`--agent ROLE`, which `herdr-spawn` passes. Codex has no custom-agent file, so
+`--agent ROLE`, which `herdr-spawn` passes with `--name NAME`, so Claude's own
+session list names it as Herdr does. Codex has no custom-agent file, so
 the contract at `~/.claude/agents/ROLE.md` is passed as `-c developer_instructions=...`. It
 binds at the developer layer and the agent waits for its brief; a contract sent
 as a prompt is worked as a task. Pi has neither, so it gets the contract file
@@ -82,9 +83,9 @@ those leave to the caller:
 Any failure closes the tab, so a failed spawn never leaves an orphan.
 
 `--resume SESSION` (Claude only) starts a parked agent as it was launched:
-Claude gets `--agent ROLE --resume SESSION` and keeps its conversation. An
-owner resumes through `octo-lite-start --cwd WORKTREE --name LANE --resume
-SESSION`, in a new lane space. `herdr-say` does both for you; see below.
+Claude gets `--name NAME --agent ROLE --resume SESSION` and keeps its
+conversation. An owner resumes through `octo-lite-start --cwd WORKTREE --name
+LANE --resume SESSION`, in a new lane space. `herdr-say` does both for you; see below.
 
 ## Close an agent or a lane space
 

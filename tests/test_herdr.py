@@ -517,17 +517,23 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("contract=not-found", r.stdout)
         self.assertNotIn("--append-system-prompt", self.start_argv())
 
-    def test_claude_gets_its_role_from_role(self):
+    def test_claude_starts_under_its_name_with_its_role(self):
+        # acceptance-lane-claude-names, transport-claude-name: Claude's own
+        # session list names the agent by its Herdr name.
         self.dialog.write_text("none\n")
         r = self.spawn()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.start_argv()[-2:], ["--agent", "r"])
+        argv = self.start_argv()
+        self.assertEqual(argv[argv.index("--") + 1:], ["--name", "a1", "--agent", "r"])
 
-    def test_a_resumed_claude_keeps_its_role_and_session(self):
+    def test_a_resumed_claude_keeps_its_name_role_and_session(self):
+        # acceptance-park-claude-name, transport-resume: a resumed agent too.
         self.dialog.write_text("none\n")
         r = self.spawn(extra=["--resume", "s-1"])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.start_argv()[-4:], ["--agent", "r", "--resume", "s-1"])
+        argv = self.start_argv()
+        self.assertEqual(argv[argv.index("--") + 1:],
+                         ["--name", "a1", "--agent", "r", "--resume", "s-1"])
 
     def test_resume_is_claude_only_and_refused_before_any_tab(self):
         for runtime in ("codex", "pi"):
@@ -1659,7 +1665,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         argv = self.start_argv()
         self.assertEqual(argv[:3], ["agent", "start", "orchestrator-worktree"])
-        self.assertEqual(argv[-2:], ["--agent", "orchestrator"])
+        # acceptance-lane-claude-names: the owner starts under the lane's name.
+        self.assertEqual(argv[-4:], ["--name", "orchestrator-worktree", "--agent", "orchestrator"])
 
     def test_start_codex_takes_the_orchestrator_contract(self):
         self.dialog.write_text("none\n")
