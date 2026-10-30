@@ -23,8 +23,8 @@ usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
     [--operating-model FILE] [--resume SESSION] -- claude|codex|pi
 
-Spawn bare, then send the brief with herdr-say. Claude gets --agent ROLE from
---role. --resume SESSION continues a parked Claude session (Claude only).
+Spawn bare, then send the brief with herdr-say. Claude gets --name NAME and
+--agent ROLE from --role. --resume SESSION continues a parked Claude session (Claude only).
 
 Prints: name= role= tab= pane= cwd= contract= provider_session_id=
 EOF
@@ -77,7 +77,8 @@ contract="not-found"
 # `agent start --kind` supplies the executable.
 if [[ "$kind" == claude ]]; then
   contract="loaded-by-agent-flag"
-  launch_argv=(--agent "$role")
+  # --name puts the Herdr name in Claude's own session list, resumed too.
+  launch_argv=(--name "$name" --agent "$role")
   [[ -z "$resume" ]] || launch_argv+=(--resume "$resume")
 elif [[ "$kind" == pi ]]; then
   launch_argv=()
