@@ -353,7 +353,8 @@ class LaneRecordTests(unittest.TestCase):
         # task; no role runs herdr agent wait or a get-based check-in poll.
         recipe = (ROOT / "skills/herdr-comms/SKILL.md").read_text(encoding="utf-8")
         recipe = recipe.split("\n## Wait on an agent\n", 1)[1].split("\n## ", 1)[0]
-        for token in ("`herdr agent read <name>`", "`herdr-await <name> continue`", "`stop=send-failed`", "--since <seq>"):
+        for token in ("`herdr agent read <name>`", "`herdr-await <name> continue`", "`stop=send-failed`", "--since <seq>",
+                      "on Claude with `--notice` in the background"):
             self.assertIn(token, recipe)
         callers = {
             "orchestrator": (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"),
@@ -367,6 +368,9 @@ class LaneRecordTests(unittest.TestCase):
             self.assertNotRegex(text, r"check-in,? reads?", path)
             self.assertNotRegex(text, r"herdr agent wait <", path)
         self.assertIn("never a standing wait on every owner", callers["meta-operator"])
+        # #acceptance-await-notice: an owner on Claude waits by its own task.
+        for path in ("orchestrator", "implement-spec"):
+            self.assertIn("on Claude as `herdr-await --notice` run in the background", " ".join(callers[path].split()), path)
 
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")

@@ -129,8 +129,9 @@ tickets.
 Use `herdr-say` for commands. It returns only once Herdr has observed the
 target change state, so delivery needs no separate acknowledgement. Send each
 message that sets a worker to work (brief, resume, repair) with
-`herdr-await <name> <message>` instead, by name, never `herdr agent wait`
-yourself, and on its stop message follow the
+`herdr-await <name> <message>` instead, by name, on Claude as
+`herdr-await --notice` run in the background, never `herdr agent wait`
+yourself, and when that wait ends follow the
 [wait recipe](../herdr-comms/SKILL.md#wait-on-an-agent) (spec `#roles-goal`,
 `#transport-await`). Keep messages sparse. A status pointer or
 commit is better than a recap.
