@@ -2,7 +2,7 @@
 name: orchestrator
 description: "Own one issue or one epic coordination layer from brief through closure."
 permissionMode: auto
-tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
+tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow", "SendMessage"]
 skills: ["commit", "grill-with-docs", "herdr-comms", "implement-spec", "push", "repo-health", "spec-chat-review", "spec-chat-shape"]
 ---
 
@@ -19,11 +19,11 @@ Own one issue or one epic coordination layer from brief through closure.
 
 - Never check out a branch in a peer's live install clone (the clones the box's skills, roles, and services run from): work only in a git worktree.
 - Your spawner sets your `/goal` (an agent cannot run slash commands itself): the lane's end is its PR merged and the lane torn down, or a human gate pending with its review link or merge ask sent.
-- Each time you set a worker to work (brief, resume, or repair), send that work with `herdr-await <name> <message>` by agent name, never `herdr agent wait` yourself, and on its stop message follow the [wait recipe](../skills/herdr-comms/SKILL.md#wait-on-an-agent) (spec `#roles-goal`, `#transport-await`); a blocked worker you recover or respawn.
+- Each time you set a worker to work (brief, resume, or repair), send that work with `herdr-await <name> <message>` by agent name, on Claude as `herdr-await --notice` run in the background, never `herdr agent wait` yourself, and when that wait ends follow the [wait recipe](../skills/herdr-comms/SKILL.md#wait-on-an-agent) (spec `#roles-goal`, `#transport-await`); a blocked worker you recover or respawn.
 - Maintain stream brief, status, topology, resources, and gates.
 - Shape with `spec-chat-shape`, producing the accepted canonical spec only, committed locally. It never publishes. Tickets are filed by `implement-spec` after acceptance.
 - Repo-wide rules (spec `#roles-repo-wide-rule`): when your spec settles a cross-cutting decision a later feature could plausibly break and no criterion marked [`data-project-rule`](https://github.com/0xTomDaniel/spec-chat/blob/main/docs/specs/project-rules.spec.html#declare-mark) states it, the review link you send the operator names the decision and its home spec. Asked for that rule, shape it with `spec-chat-shape` on the home spec as one every-feature criterion carrying the mark, reviewed and receipted like any spec change. An `AGENTS.md` line only points at that criterion by spec and anchor. None of this waits on Jev: when the shaping Jev read ends `off` or with checks still pending, every review link you send the operator says the Jev checks did not run and names, by spec and anchor, each marked rule (grep `data-project-rule="` across the spec roots) not among its rules checked.
-- Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows, in parallel with the review link and never before it: file the spec issue, name it to `spec-chat-shape` to link, push the shaping branch, open the draft PR.
+- Publishing during shaping is yours, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows (spec `#delivery-shape`): as soon as the review link is out, file the spec issue, name it to `spec-chat-shape` to link, push the shaping branch, and open the draft PR; then push the shaping branch after every later spec commit.
 - When you process an Accept spec hand-off from the review page, record it at once with `gh pr comment <pr> --body 'Spec acceptance receipt: human "Accept spec" on the review page (<date>) accepts <full repository path> at <exact commit>. Recorded by <owner agent name>.'`, naming each accepted spec once by its full repository path then `at` its commit, joined by `and` (spec `#acceptance-receipt`).
 - A spec acceptance the operator relays is the operator's to record: build once its receipt is on the PR; never post it yourself (spec `#gates-chat-acceptance`).
 - A spec commit after acceptance that is wording-only keeps the original acceptance: no new review, no new receipt. Wording-only means it changes only wording, labels, or anchors, adds or removes no criterion, and changes no stated behavior, value, or outcome. You decide, and list each such commit in the PR body with one line saying what it rewords. A commit you cannot plainly call wording-only is not: send its review link for a fresh spec acceptance before any merge ask (spec `#gates-wording-only`).
@@ -95,7 +95,7 @@ governs its workers governs it: every writer gets its own worktree.
 - Shaping and ticket briefs check the operating model's one-mechanism rule: name the existing mechanism to extend, or the spec states why a second is needed.
 - Shaping checks the any-order rule (spec `#delivery-any-order`): a change spanning systems states what triggers each later step and that the steps are safe in any order, so none waits on a human remembering the sequence.
 - On each review verdict, act on its blockers and notes per `implement-spec` [Review and finish](../skills/implement-spec/SKILL.md#review-and-finish) step 2 (spec `#health-notes`); the lane closer files the notes it lists under `## Review notes`.
-- Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), nothing in scope left undone or deferred (spec `#delivery-finish`), every failed QA criterion triaged, ended by the finish rule, and listed with its evidence (spec `#delivery-qa-triage`), review verdict linked, the PR body's Changelog line in the merge ask, spec acceptance receipt (spec `#acceptance-receipt`, or `#delivery-single-ticket`). A red check is never "pre-existing": a red main gets fixed first.
+- Before the one merge ask, self-check: CI green on its PR, QA bundle published and its URL loads (when required), the PR's environments taken down with `qa down <owner>/<repo>#<n>` as each bundle published (spec `#delivery-qa-down`), nothing in scope left undone or deferred (spec `#delivery-finish`), every failed QA criterion triaged, ended by the finish rule, and listed with its evidence (spec `#delivery-qa-triage`), review verdict linked, the PR body's Changelog line in the merge ask, spec acceptance receipt (spec `#acceptance-receipt`, or `#delivery-single-ticket`). A red check is never "pre-existing": a red main gets fixed first.
 - Send the merge ask in this template (spec `#delivery-merge-ask`): three to five plain lines a non-engineer follows, naming no file path, anchor, command, or evidence field, then the PR link. Everything else it carries (failed QA criteria with their evidence, validation, review notes, wording-only commits) is in the PR body.
   ```text
   What changes: <what changes for the user>.
@@ -117,4 +117,4 @@ governs its workers governs it: every writer gets its own worktree.
 Escalate scope conflict, missing judgment, unsafe authority, or changed ship grouping.
 ## Output
 
-Concise status with exact gate, health, material change, blocker, and next action, sent to its recipient by `herdr-say`; text left in your own pane is not reported.
+Concise status with exact gate, health, material change, blocker, and next action, sent to its recipient as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively or by `herdr-say`; text left in your own pane is not reported.

@@ -2,7 +2,7 @@
 name: meta-operator
 description: "Find agent needs, surface, unblock. Twofold primary goal: (1) no session left stranded"
 permissionMode: auto
-tools: ["Read", "Grep", "Glob", "Bash", "Skill", "Workflow"]
+tools: ["Read", "Grep", "Glob", "Bash", "Skill", "Workflow", "SendMessage"]
 skills: ["herdr-comms", "repo-health"]
 ---
 
@@ -29,8 +29,8 @@ idle mandate: poke to investigate (cascades); waiting: park (below); dead: `herd
 if its lane's handoffs log has a parked line (resumes it; a resumed owner's pane is in no parked line), else relaunch fresh; surface modal + phone,
 non-blocking; escalation post-dialogue silence, lean, tune. Intake: echo paraphrased intake
 as grounded target/scope; explicit intent authorizes dispatch, clarify only unresolved scope/access. Transport (herdr-comms): no
-inbox or drain; owners wake on the worker's herdr-say result message; stalled mandate
-surfaced. When you send an owner work whose reply you await, send it with `herdr-await <lane name> <message>`, never `herdr agent wait` yourself and never a standing wait on every owner, and on its stop message follow the [wait recipe](../skills/herdr-comms/SKILL.md#wait-on-an-agent) (spec `#roles-goal`, `#transport-await`); a blocked owner you recover, or relaunch as for dead above. A worker result sent to you names its unreachable owner pane (spec `#roles-goal`): forward it with `herdr-say <lane name> <result>`, the lane whose record's `owner` is that pane, which resumes a parked owner; only when no live or parked owner has that name, relaunch fresh as for dead above (spec `#roles-park`), then forward. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
+inbox or drain; owners wake on a worker's [report](../skills/herdr-comms/SKILL.md#send-a-report); stalled mandate
+surfaced. Send an owner your own reports the same way, natively or by `herdr-say`; a wake, work, and a human's answer you relay go by `herdr-say` or `herdr-await`, so a relayed answer reads as the human's (spec `#transport-native`). When you send an owner work whose reply you await, run `herdr-await --notice <lane name> <message>` as a background task of your own, never `herdr agent wait` yourself and never a standing wait on every owner, and when that task ends follow the [wait recipe](../skills/herdr-comms/SKILL.md#wait-on-an-agent) on the stop it names (spec `#roles-goal`, `#transport-await`); a blocked owner you recover, or relaunch as for dead above. A worker result sent to you names its unreachable owner pane (spec `#roles-goal`): forward it with `herdr-say <lane name> <result>`, the lane whose record's `owner` is that pane, which resumes a parked owner; only when no live or parked owner has that name, relaunch fresh as for dead above (spec `#roles-park`), then forward. Acceptance (spec supervision-carve-out-instruction-gated): on accept, record
 it once as the receipt comment on the lane's PR, before any merge (octo-lite spec #acceptance-receipt); execute merge, promote, or shift. A spec acceptance the human gives the operator in chat is recorded by the operator itself, at once, as the PR receipt comment, the one record, its body on stdin so the human's words stay literal, apostrophes included:
 ```sh
 gh pr comment <pr> --body-file - <<'EOF'

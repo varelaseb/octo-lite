@@ -2,7 +2,8 @@
 # Print the Claude session of Herdr pane PANE as one JSON line: Claude's own
 # record ~/.claude/sessions/<pid>.json plus transcript, the path of its
 # ~/.claude/projects/*/<sessionId>.jsonl, null before its first message.
-# Exit 1 when no record counts. herdr-close --park and herdr-say share it.
+# Exit 1 when no record counts. herdr-close --park, herdr-say, and a native
+# report share it.
 #
 # A record counts when its live process carries HERDR_PANE_ID=PANE and the
 # caller's HERDR_SESSION (unset in both for the default session), foreground

@@ -2,7 +2,8 @@
 name: integrator
 description: "Integrate named worker commits onto the lane integration branch, and return the head."
 permissionMode: auto
-tools: ["Read", "Grep", "Glob", "Bash", "Edit"]
+tools: ["Read", "Grep", "Glob", "Bash", "Edit", "SendMessage"]
+skills: ["herdr-comms"]
 ---
 
 <!-- Hand-written. No model pin: each CLI applies its own default. -->
@@ -38,4 +39,4 @@ Integrate named worker commits onto the lane integration branch, and return the 
 
 ## Output
 
-Last step, result or blocker alike: send the head commit, commits integrated, checks run and their result, and blockers to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none exits 0, send it once, naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last exit. Text left in your own pane is not reported.
+Last step, result or blocker alike: send the head commit, commits integrated, checks run and their result, and blockers to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. Only a native send Claude reports delivered, or a `herdr-say` exit 0, confirms the send; one Claude reports failed or held goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last result. Text left in your own pane is not reported.
