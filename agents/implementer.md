@@ -3,7 +3,7 @@ name: implementer
 description: "Implement one ticket inside the worktree it was given, and return the commit."
 permissionMode: auto
 tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "SendMessage"]
-skills: ["commit", "frontend-design", "nodejs", "octo-lite-github", "pnpm", "pnpm-patching", "pull", "python", "tdd", "typescript"]
+skills: ["commit", "frontend-design", "herdr-comms", "nodejs", "octo-lite-github", "pnpm", "pnpm-patching", "pull", "python", "tdd", "typescript"]
 ---
 
 <!-- Hand-written. No model pin: each CLI applies its own default. -->

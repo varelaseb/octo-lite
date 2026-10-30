@@ -2,7 +2,7 @@
 name: code-reviewer
 description: "Judge one diff against its ticket and the canonical spec, and return a verdict."
 tools: ["Read", "Grep", "Glob", "Bash", "Skill", "SendMessage"]
-skills: ["octo-lite-debug", "octo-lite-github", "repo-health"]
+skills: ["herdr-comms", "octo-lite-debug", "octo-lite-github", "repo-health"]
 ---
 
 <!-- Hand-written. No model pin: each CLI applies its own default. -->
