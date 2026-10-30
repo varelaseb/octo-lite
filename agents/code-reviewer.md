@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: "Judge one diff against its ticket and the canonical spec, and return a verdict."
-tools: ["Read", "Grep", "Glob", "Bash", "Skill"]
+tools: ["Read", "Grep", "Glob", "Bash", "Skill", "SendMessage"]
 skills: ["octo-lite-debug", "octo-lite-github", "repo-health"]
 ---
 
@@ -62,6 +62,6 @@ Stop on a diff whose ticket or spec section no longer exists.
 
 ## Output
 
-Last step, verdict or blocker alike: send the verdict, blocking findings with their consequence, tagged non-blocking notes, and what was checked to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none exits 0, send it once, naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last exit. Text left in your own pane is not reported.
+Last step, verdict or blocker alike: send the verdict, blocking findings with their consequence, tagged non-blocking notes, and what was checked to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. Only a native send Claude reports delivered, or a `herdr-say` exit 0, confirms the send; one Claude reports failed or held goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last result. Text left in your own pane is not reported.
 
 On a repo health pass, the message sent is the `repo-health` Pass message (ticket keys only), not a verdict.

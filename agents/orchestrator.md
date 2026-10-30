@@ -2,7 +2,7 @@
 name: orchestrator
 description: "Own one issue or one epic coordination layer from brief through closure."
 permissionMode: auto
-tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow"]
+tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow", "SendMessage"]
 skills: ["commit", "grill-with-docs", "herdr-comms", "implement-spec", "push", "repo-health", "spec-chat-review", "spec-chat-shape"]
 ---
 
@@ -117,4 +117,4 @@ governs its workers governs it: every writer gets its own worktree.
 Escalate scope conflict, missing judgment, unsafe authority, or changed ship grouping.
 ## Output
 
-Concise status with exact gate, health, material change, blocker, and next action, sent to its recipient by `herdr-say`; text left in your own pane is not reported.
+Concise status with exact gate, health, material change, blocker, and next action, sent to its recipient as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively or by `herdr-say`; text left in your own pane is not reported.

@@ -145,8 +145,8 @@ When an implementer completes:
 2. Give it the ticket, worker commit, integration branch, and spec pointers.
 3. Have it merge or cherry-pick the worker commit, resolve only integration
    conflicts, run proportionate validation, push the integration branch as
-   [consent](../octo-lite-github/SKILL.md#consent) allows, and `herdr-say`
-   the resulting commit to the owner pane.
+   [consent](../octo-lite-github/SKILL.md#consent) allows, and send the
+   resulting commit to the owner pane as a [report](../herdr-comms/SKILL.md#send-a-report).
 4. Mark the ticket Done only after its change is integrated (and pushed when
    consent allows). If the merge fails or validation is red, reflect that
    truth in Linear and return the ticket to active work.
@@ -193,7 +193,7 @@ independent work and report the exact remaining dependency.
 
 ## Review and finish
 
-Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear and its notes ended by the finish rule (spec `#delivery-finish`); the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head, then ended by the finish rule; then one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`), in that contract's merge-ask template: plain summary lines, then the PR link, every detail in the PR body (spec `#delivery-merge-ask`). A merge ask covers its whole issue (spec `#delivery-finish`): in-scope work that cannot be done before merge is named, with why, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`) with `herdr-say`, asking whether to cut it, in place of the merge ask. A merge ask never goes out ahead of a step it needs.
+Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear and its notes ended by the finish rule (spec `#delivery-finish`); the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head, then ended by the finish rule; then one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`), in that contract's merge-ask template: plain summary lines, then the PR link, every detail in the PR body (spec `#delivery-merge-ask`). A merge ask covers its whole issue (spec `#delivery-finish`): in-scope work that cannot be done before merge is named, with why, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`) as a [report](../herdr-comms/SKILL.md#send-a-report), asking whether to cut it, in place of the merge ask. A merge ask never goes out ahead of a step it needs.
 
 As soon as a capture or recapture of the PR publishes its bundle, run `qa down <owner>/<repo>#<n>` before your next step (spec `#delivery-qa-down`); only a recapture brings an environment back, and it goes down again once that recapture publishes its bundle.
 
@@ -204,8 +204,8 @@ After every ticket is integrated:
 1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
    and brief it to run `/code-review` on the integration branch, the lane's one
    full review of the integration head, naming each changed screen's accepted
-   mockup as the implementer briefs do, then `herdr-say` its verdict to the
-   owner pane, since `/code-review` ends in its own pane. The verdict policy
+   mockup as the implementer briefs do, then send its verdict to the
+   owner pane as a [report](../herdr-comms/SKILL.md#send-a-report), since `/code-review` ends in its own pane. The verdict policy
    is the `agents/code-reviewer.md` contract. If unsupported,
    use the available independent review mechanism with the provided diff, base,
    spec and scope. Verify acknowledgment and actual review work once;
@@ -219,7 +219,7 @@ After every ticket is integrated:
    reviews only the fix delta (base = the last reviewed head) plus the surface
    it touches; never re-review unchanged code. Blockers the review after round
    2 still finds go, in place of a third round, to the operator pane (`pane`
-   in `$(octo-lite-state)/operator.toml`) with `herdr-say`, each blocker named,
+   in `$(octo-lite-state)/operator.toml`) as a [report](../herdr-comms/SKILL.md#send-a-report), each blocker named,
    asking how to go on. In-scope work the verdict names as not doable before
    merge gets no fix round: it goes to the ask before it is cut, in the Order
    above. Notes marked `Fix in this PR` are fixed before the merge ask, in a

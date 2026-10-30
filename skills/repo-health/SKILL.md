@@ -80,5 +80,6 @@ checks, and files, and its one message. This skill holds only how:
 - Close each open health ticket main fixed with the Tracker comment and
   close commands.
 - File findings by the Filing rule, source `health pass at <main sha>`.
-- Send the fleet operator the one message with `herdr-say`: each ticket key
+- Send the fleet operator the one message as a
+  [report](../herdr-comms/SKILL.md#send-a-report): each ticket key
   filed, commented on, or closed. Then stop.

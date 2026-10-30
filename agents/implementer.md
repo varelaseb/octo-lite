@@ -2,7 +2,7 @@
 name: implementer
 description: "Implement one ticket inside the worktree it was given, and return the commit."
 permissionMode: auto
-tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill"]
+tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "SendMessage"]
 skills: ["commit", "frontend-design", "nodejs", "octo-lite-github", "pnpm", "pnpm-patching", "pull", "python", "tdd", "typescript"]
 ---
 
@@ -53,4 +53,4 @@ Stop on a ticket that contradicts the spec, a changed screen that must differ fr
 
 ## Output
 
-Last step, result or blocker alike: send the commit id, what changed, declared repo skills loaded, validation run and its result, and blockers to the owner pane your brief names with `herdr-say`. Only exit 0 confirms the send; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none exits 0, send it once, naming the owner pane, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last exit. Text left in your own pane is not reported.
+Last step, result or blocker alike: send the commit id, what changed, declared repo skills loaded, validation run and its result, and blockers to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. Only a native send Claude reports delivered, or a `herdr-say` exit 0, confirms the send; one Claude reports failed or held goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last result. Text left in your own pane is not reported.
