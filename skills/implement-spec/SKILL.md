@@ -111,8 +111,9 @@ For each ready ticket:
    contract. Prompt it with pointers to the ticket, spec, target `AGENTS.md`,
    optional research notes, integration branch, and relevant prior commits.
    Name the accepted mockup of each screen the ticket changes: its file in the
-   spec's mockup set at the spec acceptance receipt's commit (spec
-   `#delivery-mockup`).
+   spec's mockup set at the spec acceptance receipt's commit, and for a
+   prototyped screen its prototype's components at that commit as where the
+   build starts (spec `#delivery-mockup`).
    Cite each repo-wide rule the ticket bears on by its marked criterion's spec
    and anchor (spec `#roles-repo-wide-rule`); an `AGENTS.md` line is only a
    pointer to it. The brief of the ticket that owns the changelog entry names
@@ -204,7 +205,7 @@ After every ticket is integrated:
 1. Spawn a fresh reviewer through `herdr-comms` with `--role code-reviewer`
    and brief it to run `/code-review` on the integration branch, the lane's one
    full review of the integration head, naming each changed screen's accepted
-   mockup as the implementer briefs do, then send its verdict to the
+   mockup and prototype components as the implementer briefs do, then send its verdict to the
    owner pane as a [report](../herdr-comms/SKILL.md#send-a-report), since `/code-review` ends in its own pane. The verdict policy
    is the `agents/code-reviewer.md` contract. If unsupported,
    use the available independent review mechanism with the provided diff, base,
