@@ -242,18 +242,18 @@ class LaneRecordTests(unittest.TestCase):
                 self.assertEqual(run.returncode != 0, fail == "1", run.stderr)
                 self.assertEqual(log.read_text(encoding="utf-8").splitlines(), calls)
 
-    def test_operator_writes_only_for_decisions_finishes_risks(self) -> None:
+    def test_operator_relays_gates_decisions_blockers_lane_closes(self) -> None:
         # spec #roles-operator-writes, #acceptance-operator-quiet,
         # #acceptance-operator-bundle, #acceptance-operator-trade-off.
         text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
-        self.assertIn("write to the human only when they must decide (a gate), when what they asked for finishes "
-                      "(a lane), or when a risk appears", text)
-        self.assertIn("status only when they ask; a stop or report that brings them nothing new you consume "
-                      "without a message", text)
+        self.assertIn("You are the filter (spec `#roles-operator-writes`): relay to the human only gates, decisions, "
+                      "real blockers, and lane closes, plus the one addendum receipt line; progress gets one line "
+                      "or nothing.", text)
         self.assertIn("go together as one question asking whether to take your recommendations, one plain line "
                       "per question naming its recommendation", text)
         self.assertIn("A question that weighs real trade-offs goes alone, never in that bundle.", text)
-        self.assertNotIn("progress gets one line", text)
+        self.assertNotIn("status only when they ask", text)
+        self.assertNotIn("you consume without a message", text)
 
     def test_operator_starts_each_lane_under_an_unused_name(self) -> None:
         # spec #lane-record: a lane record's name is never reused, archived included.
