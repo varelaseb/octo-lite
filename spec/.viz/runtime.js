@@ -1,5 +1,5 @@
 // spec-chat runtime v0.1 — hydrates semantic islands and mounts the annotation layer.
-// spec-chat-capabilities: answer-buttons changed-root-focus custom-style-focus diff-visibility-control finish-review git-focus manual-resume-status mobile-pre-wrap mobile-review next-tbd reopen-thread semantic-islands shared-style-ownership spec-acceptance tbd-later
+// spec-chat-capabilities: answer-buttons changed-root-focus custom-style-focus design-set diff-visibility-control error-overlay finish-review git-focus keys-icons manual-resume-status mobile-handoff mobile-pre-wrap mobile-review mockup-chips mockup-review next-tbd one-surface reopen-thread semantic-islands served-storage shared-style-ownership spec-acceptance tbd-later wake-reason
 // Transports: FSA (file://, primary) | HTTP review-serve (http(s)://, secondary).
 // Same spools, same event schema either way. See DESIGN.md.
 // Classic script, NOT a module: browsers CORS-block module scripts on file:// pages,
@@ -20,30 +20,50 @@ OWN_ADDRESS.hash = '';
 const SPEC_FILE = decodeURIComponent(OWN_ADDRESS.pathname.split('/').pop());
 // document.currentScript is only valid during the initial synchronous run — capture now.
 const EMBED_REVIEW_DIR = (document.currentScript && document.currentScript.dataset && document.currentScript.dataset.reviewDir) || null;
+// comment-layer #load: served at <url>/static/comment-layer.js, this runtime is the comment layer on a host page, and
+// <url>/ is the review service every request goes to, never the host page's own address.
+const LAYER_SERVICE = (() => {
+  const src = document.currentScript && document.currentScript.src;
+  const at = src ? new URL(src) : null;
+  return at && /\/static\/comment-layer\.js$/.test(at.pathname) ? new URL('../', at) : null;
+})();
 const REVIEW_DIRNAME = SPEC_FILE + '.review';
-// The spool this page reviews; also keys its outbox and last-loaded events in browser storage.
-const REVIEW_DIR = EMBED_REVIEW_DIR || OWN_ADDRESS.pathname.replace(/^\//, '') + '.review';
+// The spool this page reviews; also keys its outbox and last-loaded events in browser storage. The layer's outbox
+// holds every scope's events, each naming its own, so it is keyed by the service.
+const REVIEW_DIR = EMBED_REVIEW_DIR || (LAYER_SERVICE ? 'layer:' + LAYER_SERVICE.href : OWN_ADDRESS.pathname.replace(/^\//, '') + '.review');
 const RUNTIME_URL = (document.currentScript && document.currentScript.src) || new URL('./.viz/runtime.js', document.baseURI).href;
 const VENDOR = { echarts: new URL('./vendor/echarts-5.5.1.min.js', RUNTIME_URL).href };
 
 /* ---------------- error overlay (headless-debuggable) ---------------- */
-window.addEventListener('error', e => {
+// spec-page-design #error-overlay: one line per distinct error, counting its times, so an error on a timer never grows
+// it. Fixed under the top line, and at the top of the page while no top line shows; the page starts under both.
+// A host page's own errors are the host's: the layer shows no error (comment-layer #ui-absent).
+if (!LAYER_SERVICE) window.addEventListener('error', e => {
   // Browsers intentionally redact some foreign/extension failures to this
   // detail-free signature. It cannot identify a spec-chat fault and must not
   // cover a still-working review surface with a fatal-looking overlay.
   if (e.message === 'Script error.' && !e.filename && !e.lineno && !e.colno && !e.error) return;
   overlay('error', e.message + ' @ ' + (e.filename || '').split('/').pop() + ':' + e.lineno);
 });
-window.addEventListener('unhandledrejection', e => overlay('rejection', String(e.reason)));
+if (!LAYER_SERVICE) window.addEventListener('unhandledrejection', e => overlay('rejection', String(e.reason)));
+const errorLines = new Map(); // 'kind: message' -> { line, times }
 function overlay(kind, msg) {
   let el = document.getElementById('hx-errors');
   if (!el) {
     el = document.createElement('div');
     el.id = 'hx-errors';
-    el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#8b1a1a;color:#fff;font:12px monospace;padding:6px 10px;z-index:9999;white-space:pre-wrap;';
-    document.body.appendChild(el);
+    el.className = 'hx-errors';
+    const line = document.getElementById('hx-top-line');
+    document.body.insertBefore(el, line ? line.nextSibling : document.body.firstChild);
+    errorLines.clear();
+    new ResizeObserver(measureTop).observe(el); // its height alone changes too, as the screen's does while it is capped
   }
-  el.textContent += kind + ': ' + msg + '\n';
+  const text = kind + ': ' + msg;
+  let error = errorLines.get(text);
+  if (!error) errorLines.set(text, error = { line: el.appendChild(document.createElement('p')), times: 0 });
+  error.times += 1;
+  error.line.textContent = error.times > 1 ? text + ' (\u00d7' + error.times + ')' : text;
+  measureTop();
 }
 
 /* ---------------- state ---------------- */
@@ -74,9 +94,43 @@ const state = {
   lastStamp: null,       // last event-name stamp this page chose
   outboxBlocked: false,  // a send failed; the offline notice shows until the outbox drains
   storedCount: -1,       // events last kept in browser storage
+  mockups: [],           // the spec's mockup set as the service last told it (#chip-source); null until it first answers
+  mockupAsk: false,      // an HTTP page asks for its set with each read; a page that is no spec is told so and stops
+  mockupAsking: false,
+  mockupChips: '',       // what the drawn chips show, so a read that changes only open counts redraws none
+};
+
+// A narrow screen, a phone's: every narrow-width choice the chrome makes in script reads this one query, the CSS's
+// @media(max-width:640px).
+const NARROW = window.matchMedia('(max-width: 640px)');
+
+// mockups #set-where: a page at mockups/<spec name>/<file>.mockup.html beside a spec is a screen of that spec's mockup
+// set, reviewed as the spec page is (#review-same); MOCKUP_SPEC is that spec's name, null on any other page.
+const MOCKUP_SPEC = (() => {
+  const parts = OWN_ADDRESS.pathname.split('/').map(part => { try { return decodeURIComponent(part); } catch (_) { return part; } });
+  return !LAYER_SERVICE && !EMBED_REVIEW_DIR && parts.length >= 4 && parts[parts.length - 3] === 'mockups'
+    && /\.mockup\.html$/.test(parts[parts.length - 1]) && parts[parts.length - 2] ? parts[parts.length - 2] : null;
+})();
+const MOCKUP_VIEWPORTS = [['desktop', 'Desktop'], ['phone', 'Phone']]; // each frame's viewport and label (#frame-viewports)
+const mockup = {
+  stage: null,           // the frames' row, or column on a phone (#review-fit)
+  slots: [],             // [{viewport, slot, fit, frame}], desktop first
+  styles: [],            // the mockup's own style sheets, off while Before shows
+  base: null,            // the mockup at the compared base, as a document; null when absent there or unknown
+  differs: false,        // the mockup differs from the base: Before and After show (#before-table)
+  before: false,         // Before shows: the frames at the base, with no pins and no comment control
+  request: 0,            // the latest base compared; an older answer is dropped
+  shown: null,           // the page's served text, once read (shownMockupText)
 };
 
 /* ---------------- transports ---------------- */
+// review-state #offline-outbox: an events answer, the service's or the copy this page kept of it, is the list it holds
+// or refused, so the page never keeps, reads, or adds to anything else.
+function eventList(answer) {
+  if (!Array.isArray(answer)) throw new Error('review service answered no event list');
+  return answer;
+}
+
 function httpTransport() {
   const dir = REVIEW_DIR;
   const POST_TIMEOUT_MS = 10000; // a save that has not answered by then is waiting, not stored
@@ -85,7 +139,8 @@ function httpTransport() {
     ready: Promise.resolve(true),
     async listEvents() {
       const r = await fetch('/api/events?dir=' + encodeURIComponent(dir));
-      return { events: await r.json(), wake: r.headers.get('X-Spec-Chat-Wake') || null };
+      if (!r.ok) throw new Error('review service answered ' + r.status); // a page it reviews no spool for: no event list
+      return { events: eventList(await r.json()), wake: r.headers.get('X-Spec-Chat-Wake') || null };
     },
     // 'stored' (also a resend of the same bytes), 'refused' (400, 403, 409: validation no resend fixes);
     // throws on anything else, a hung save included, so the outbox keeps the event and sends it again (#offline-outbox).
@@ -273,13 +328,16 @@ async function requestJev(base, refresh = false) {
     const result = await fetchJev(base, controller.signal);
     if (request !== state.jev.request) return;
     const status = result.jev === 'off' ? 'off' : 'on';
-    const same = refresh && status === state.jev.status
-      && JSON.stringify([result.items, result.levels]) === JSON.stringify([state.jev.items, state.jev.levels]);
+    // An unchanged answer keeps the shown items, so each note shown is of an item the page holds.
+    if (refresh && status === state.jev.status
+      && JSON.stringify([result.items, result.levels]) === JSON.stringify([state.jev.items, state.jev.levels])) {
+      scheduleJevPoll();
+      return;
+    }
     state.jev.status = status;
     state.jev.items = result.items;
     state.jev.levels = result.levels;
     scheduleJevPoll();
-    if (same) return;
     renderJev();
     renderPanel();
     renderPins();
@@ -308,6 +366,104 @@ async function requestEvidence() {
     state.evidence.criteria = criteria;
     renderJev();
   } catch (_) {}
+}
+
+/* ---------------- the spec's mockup set (mockups #chip, #accept) ----------------
+ * An HTTP spec page asks the service for its set with each read of its events (#chip-source): each mockup's page,
+ * screen, version, the spec anchors its parts illustrate, and its open threads. The set draws the See mockup chips,
+ * lists each mockup with open threads in the panel, holds Accept spec until they are resolved (#accept-gate), and is
+ * what Accept spec names (#accept-set). A page that is no spec, a mockup among them, is answered that it has no set
+ * and asks no more; an unanswered read keeps the set last told.
+ */
+async function requestMockups() {
+  if (!state.mockupAsk || state.mockupAsking) return;
+  state.mockupAsking = true;
+  try {
+    const response = await fetch('/api/mockups?' + new URLSearchParams({ path: OWN_ADDRESS.pathname.replace(/^\//, '') }));
+    if (response.status === 400 || response.status === 404) {
+      state.mockupAsk = false;
+      return showMockups([]);
+    }
+    const result = response.ok ? await response.json() : null;
+    if (result && Array.isArray(result.mockups)) showMockups(result.mockups.filter(mockupEntry));
+  } catch (_) { /* offline: the set last told stands */
+  } finally {
+    state.mockupAsking = false;
+  }
+}
+
+const mockupEntry = m => Boolean(m && typeof m.page === 'string' && m.page && typeof m.screen === 'string'
+  && m.illustrates && typeof m.illustrates === 'object' && !Array.isArray(m.illustrates));
+
+function showMockups(mockups) {
+  const changed = JSON.stringify(mockups) !== JSON.stringify(state.mockups);
+  state.mockups = mockups;
+  renderMockupChips();
+  if (changed) renderPanel();
+}
+
+// A mockup page's address from this page's own: its path in the set from the spec's folder, the base this page's
+// address names (mockups #before-after: a mockup page compares against its spec page's base), and the part to arrive at.
+function mockupHref(page, part) {
+  const url = new URL(page, OWN_ADDRESS);
+  const base = OWN_ADDRESS.searchParams.get('base');
+  if (base) url.searchParams.set('base', base);
+  if (part) url.hash = part;
+  return url.href;
+}
+
+// #accept-set: Accept spec names each mockup of the set, by its path from the spec's folder, and the version the service
+// last told this page, the SHA-256 of the mockup text it serves.
+function acceptedMockups(mockups) {
+  return mockups && mockups.length ? { mockups: mockups.map(m => ({ path: decodeURIComponent(m.page), version: m.version })) } : {};
+}
+
+// #chip-rule: each anchored block a part of a mockup illustrates shows one See mockup chip per mockup after its text,
+// naming the screen and opening its page at the first part illustrating it. Drawn again only when what they show changes.
+function renderMockupChips() {
+  const chips = (state.mockups || []).flatMap(m => Object.entries(m.illustrates)
+    .filter(([, parts]) => Array.isArray(parts) && parts.length)
+    .map(([anchor, parts]) => ({ anchor, screen: m.screen, href: mockupHref(m.page, String(parts[0])) })));
+  const drawn = JSON.stringify(chips);
+  if (drawn === state.mockupChips) return;
+  state.mockupChips = drawn;
+  document.querySelectorAll('.hx-mockup-chip').forEach(chip => chip.remove());
+  for (const { anchor, screen, href } of chips) {
+    const holder = findAnchor(anchor);
+    if (!holder) continue;
+    const chip = document.createElement('a');
+    chip.className = 'hx-mockup-chip';
+    chip.href = href;
+    chip.dataset.hxFor = anchor;
+    chip.textContent = 'See mockup · ' + screen;
+    chip.setAttribute('aria-label', 'See mockup: ' + screen);
+    placeMockupChip(holder, chip);
+  }
+}
+
+// After the block's text, in the flow, so it never covers it: a row's last cell, and beside a block that holds no
+// inline element (a list, a table, a drawing).
+function placeMockupChip(holder, chip) {
+  if (holder.tagName === 'TR') return (holder.cells[holder.cells.length - 1] || holder).appendChild(chip);
+  let outer = holder;
+  while (outer.ownerSVGElement) outer = outer.ownerSVGElement;
+  if (outer !== holder || /^(TABLE|THEAD|TBODY|TFOOT|UL|OL|DL|SVG|IMG|HR|INPUT|SELECT|TEXTAREA|CANVAS|IFRAME|VIDEO|AUDIO)$/i.test(holder.tagName)) return outer.after(chip);
+  holder.appendChild(chip);
+}
+
+// #accept-gate: each mockup holding an open thread, as a link to its page with its screen and open count.
+function mockupOpenList(mockups) {
+  const waiting = (mockups || []).filter(m => m.open !== 0);
+  if (!waiting.length) return null;
+  const list = document.createElement('ul');
+  list.className = 'hx-mockup-open';
+  list.setAttribute('aria-label', 'Mockups with open threads');
+  for (const m of waiting) {
+    const link = list.appendChild(document.createElement('li')).appendChild(document.createElement('a'));
+    link.href = mockupHref(m.page, null);
+    link.textContent = m.screen + ' · ' + (Number.isInteger(m.open) ? m.open + ' open thread' + (m.open === 1 ? '' : 's') : 'threads unreadable');
+  }
+  return list;
 }
 
 function markIssueFocus(current, baseline) {
@@ -345,6 +501,7 @@ async function applyIssueFocus() {
     const baseline = await fetchBaseline(requestedBase, controller.signal);
     state.range.baseline = baseline;
     renderRangeBar(baseline);
+    if (MOCKUP_SPEC) { await showMockupBase(baseline); return; } // a mockup offers Before, never Jev or focus
     requestJev(baseline.base);
     markIssueFocus(state.range.loaded, baseline);
   } catch (error) {
@@ -466,10 +623,12 @@ async function selectRangeBase(value) {
   try {
     const baseline = await fetchBaseline(requested, controller.signal);
     state.range.baseline = baseline;
-    markIssueFocus(state.range.loaded, baseline);
+    if (!MOCKUP_SPEC) markIssueFocus(state.range.loaded, baseline);
     renderRangeBar(baseline);
-    requestJev(baseline.base || requested);
+    // The address names the new base first: a mockup page's spec link takes the base from it (mockups #before-base).
     rewriteAddress(query => { query.set('focus', 'changes'); query.set('base', baseline.base || requested); });
+    if (MOCKUP_SPEC) showMockupBase(baseline);
+    else requestJev(baseline.base || requested);
     openRangePicker(false);
   } catch (error) {
     setRangeError(error.name === 'AbortError' ? 'Commit lookup timed out.' : 'That commit could not be resolved locally.');
@@ -480,16 +639,14 @@ async function selectRangeBase(value) {
   }
 }
 
-function mountRangeBar() {
+function mountRangeBar(line) {
   if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(OWN_ADDRESS.protocol) || document.getElementById('hx-range-bar')) return;
   const bar = document.createElement('section');
   bar.className = 'hx-range-bar';
   bar.id = 'hx-range-bar';
   bar.setAttribute('aria-label', 'Compared commit range');
   bar.innerHTML = '<div class="hx-range-row"><p id="hx-range-copy" class="hx-range-copy">Loading compared range…</p><button id="hx-range-change" class="hx-range-change" type="button" aria-expanded="false" aria-controls="hx-range-picker">Change base</button></div><div id="hx-range-picker" class="hx-range-picker" hidden><div id="hx-range-commits" class="hx-range-commits"></div><form id="hx-range-form" class="hx-range-form"><label for="hx-range-input">Paste a commit id</label><div><input id="hx-range-input" name="base" autocomplete="off" spellcheck="false"><button id="hx-range-apply" type="submit">Apply</button></div><p id="hx-range-error" class="hx-range-error" role="alert" hidden></p></form></div>';
-  const article = document.querySelector('article.spec');
-  if (article) article.parentNode.insertBefore(bar, article);
-  else document.body.insertBefore(bar, document.body.firstChild);
+  line.appendChild(bar);
   bar.querySelector('#hx-range-change').addEventListener('click', () => openRangePicker(!state.range.pickerOpen));
   bar.querySelector('#hx-range-form').addEventListener('submit', event => {
     event.preventDefault();
@@ -910,20 +1067,50 @@ function onChartClick(chartKey, params) {
 const TARGETABLE = 'h1, h2, h3, h4, h5, h6, p, li, ul, ol, table, tr, td, th, blockquote, pre, code, nav, figcaption, button, input, select, textarea, label, a, output, summary, [data-render-target]';
 const cssId = id => window.CSS && window.CSS.escape ? window.CSS.escape(id) : id.replace(/([^a-zA-Z0-9_-])/g, '\\$1');
 
+// The element a click on `el` marks within its block `holder`: the nearest targetable one, else the block itself. In a
+// mockup frame every element is a target (mockups #review-targets): an image is its own, and an element inside no
+// targetable one is itself; only the block's own empty spot marks the block, its region.
+function markedElement(el, holder) {
+  const targetable = MOCKUP_SPEC ? TARGETABLE + ', img, video' : TARGETABLE;
+  let node = el;
+  while (node && node !== holder && !node.matches(targetable)) node = node.parentElement;
+  return MOCKUP_SPEC && node === holder ? el : node;
+}
+
+// The runtime's own nodes inside the spec's content: pins, Jev markers, badges, and See mockup chips. No source holds
+// them, so every reader of a block's text or elements skips them, and keys and quotes read as place.py reads the source.
+const OVERLAY = '.hx-pin,.hx-jev-marker,.hx-badge,.hx-mockup-chip';
+const UNREAD = OVERLAY + ',script,style';
+
+// A block's elements of one selector as its source holds them: never the runtime's own.
+const ownElements = (holder, sel) => [...holder.querySelectorAll(sel)].filter(el => !el.closest(OVERLAY));
+
+// A node's text as its source reads, whitespace collapsed: without the runtime's own nodes, nor what `skip` names.
+function sourceText(node, skip = UNREAD) {
+  const parts = [];
+  const walk = parent => {
+    for (const child of parent.childNodes) {
+      if (child.nodeType === 3) parts.push(child.nodeValue);
+      else if (child.nodeType === 1 && !child.matches(skip)) walk(child);
+    }
+  };
+  walk(node);
+  return parts.join('').split(/\s+/).filter(Boolean).join(' ');
+}
+
 function elementDescriptor(el, holder) {
   if (el.closest && el.closest('svg')) return svgDescriptor(el, holder);
-  let node = el;
-  while (node && node !== holder && !node.matches(TARGETABLE)) node = node.parentElement;
+  const node = markedElement(el, holder);
   if (!node || node === holder) return null;
   const isFig = node.hasAttribute('data-render-target');
   const tag = node.tagName.toLowerCase();
-  const quote = (node.textContent || node.value || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+  const quote = (sourceText(node) || (node.value || '').trim().replace(/\s+/g, ' ')).slice(0, 60);
   // ids are hand-authored and survive spec edits better than positional indexes
-  if (!isFig && node.id && holder.querySelectorAll(tag + '#' + cssId(node.id)).length === 1) {
+  if (!isFig && node.id && ownElements(holder, tag + '#' + cssId(node.id)).length === 1) {
     return { key: tag + '#' + node.id, quote };
   }
   const sel = isFig ? '[data-render-target]' : tag;
-  const peers = [...holder.querySelectorAll(sel)];
+  const peers = ownElements(holder, sel);
   const name = isFig ? 'figure' : sel === 'h1' ? 'title' : sel === 'nav' ? 'breadcrumbs' : sel;
   return { key: name + '[' + (peers.indexOf(node) + 1) + ']', quote };
 }
@@ -951,12 +1138,12 @@ function resolveElement(holder, key) { // 'p[2]' | 'button#cycle-play' | 'svg[1]
   let m = /^([a-z][a-z0-9-]*|title|breadcrumbs|figure)#(.+)$/.exec(key);
   if (m) {
     const sel = m[1] === 'title' ? 'h1' : m[1] === 'breadcrumbs' ? 'nav' : m[1] === 'figure' ? '[data-render-target]' : m[1];
-    return holder.querySelector(sel + '#' + cssId(m[2]));
+    return ownElements(holder, sel + '#' + cssId(m[2]))[0] || null;
   }
   m = /^([a-z][a-z0-9-]*|title|breadcrumbs|figure)\[(\d+)\]$/.exec(key);
   if (!m) return null;
   const sel = m[1] === 'title' ? 'h1' : m[1] === 'breadcrumbs' ? 'nav' : m[1] === 'figure' ? '[data-render-target]' : m[1];
-  return [...holder.querySelectorAll(sel)][+m[2] - 1] || null;
+  return ownElements(holder, sel)[+m[2] - 1] || null;
 }
 
 function resolveSvgPath(holder, key) {
@@ -975,7 +1162,7 @@ function resolveSvgPath(holder, key) {
 
 function onDocClick(e) {
   if (!state.commentMode) { pressAnswer(e); return; }
-  if (e.target.closest('.hx-pin,.hx-jev-marker,.hx-jev-pop,.hx-panel,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
+  if (e.target.closest('.hx-pin,.hx-jev-marker,.hx-mockup-chip,.hx-jev-pop,.hx-panel,.hx-toolbar,.hx-top-line,#hx-errors')) return;
   const holder = holderOf(e.target);
   if (!holder) return;
   if (e.target.tagName === 'CANVAS') return; // canvas clicks are the chart's business: marks via chart events, blanks via zrender
@@ -1042,6 +1229,9 @@ function pressAnswer(e) {
 // Events sorted by file name; meaning follows references (#model-order): an event whose
 // referent sorts later waits for it, so a skewed clock never drops or detaches a message.
 function foldThreads(events) {
+  // The statuses an event may name (event schema): an agent reply's, and the human's resolve. Any other value is no
+  // status: an agent reply naming none acknowledges, a status event naming none changes nothing.
+  const NAMED = ['acknowledged', 'orphaned', 'resolved'];
   const threads = new Map();
   const drafts = draftIds(events);
   const ids = new Set(events.map(e => e.body.id));
@@ -1073,7 +1263,7 @@ function foldThreads(events) {
         th.status = humanStatus(e);
         markDraft(th, e);
       } else if (b.respondsTo === th.latestHumanId) {
-        th.status = b.status || 'acknowledged';
+        th.status = NAMED.includes(b.status) ? b.status : 'acknowledged';
       }
       return;
     }
@@ -1096,7 +1286,7 @@ function foldThreads(events) {
     if (b.event === 'status') {
       const threadId = b.threadId || messageThread.get(b.respondsTo) || (threads.has(b.respondsTo) ? b.respondsTo : null);
       const th = threadId && threads.get(threadId);
-      if (th) th.status = b.status;
+      if (th && NAMED.includes(b.status)) th.status = b.status;
     }
   };
   const visit = e => {
@@ -1162,16 +1352,15 @@ function messageAuthor(names, message) {
 
 // #model-author-assign: a random id and a fruit name, created once and kept in this browser.
 const FRUITS = ['Mango', 'Papaya', 'Lychee', 'Guava', 'Rambutan', 'Pineapple', 'Passion Fruit', 'Dragon Fruit', 'Durian', 'Jackfruit', 'Mangosteen', 'Starfruit', 'Soursop', 'Coconut', 'Banana', 'Tamarind', 'Longan', 'Feijoa', 'Cherimoya', 'Sapodilla', 'Kiwano', 'Pitanga', 'Jabuticaba', 'Salak'];
+const REVIEWER_KEY = 'spec-chat:reviewer';
 function reviewerIdentity(storage, random) {
-  const KEY = 'spec-chat:reviewer';
   try {
-    const kept = JSON.parse(storage.getItem(KEY) || 'null');
+    const kept = JSON.parse(storage.getItem(REVIEWER_KEY) || 'null');
     if (kept && typeof kept.browser === 'string' && kept.browser && FRUITS.includes(kept.author)) return kept;
   } catch (_) { /* no storage: a name for this page only */ }
-  let browser = '';
-  while (browser.length < 20) browser += Math.floor(random() * 36).toString(36);
+  const browser = Array.from({ length: 20 }, () => Math.floor(random() * 36).toString(36)).join('');
   const fresh = { browser, author: FRUITS[Math.min(FRUITS.length - 1, Math.floor(random() * FRUITS.length))] };
-  try { storage.setItem(KEY, JSON.stringify(fresh)); } catch (_) { /* nothing to keep it in */ }
+  try { storage.setItem(REVIEWER_KEY, JSON.stringify(fresh)); } catch (_) { /* nothing to keep it in */ }
   return fresh;
 }
 
@@ -1197,7 +1386,7 @@ function resolvedThreadCollapsed(thread, expandedResolved) {
 function threadReplyAction(thread) {
   const message = thread.messages[thread.messages.length - 1];
   if (!message || message.actor !== 'agent') return null;
-  return { label: thread.status === 'resolved' ? 'Reply and reopen' : '↩ Reply', message };
+  return { label: thread.status === 'resolved' ? 'Reply and reopen' : 'Reply', message };
 }
 
 function commentModeShortcut(e) {
@@ -1219,14 +1408,27 @@ function acknowledgedReplyCount(threads) {
 
 // With open TBDs the action is TBD open once settled; until then Next TBD sits beside Hand off.
 // `browser` counts only that browser's draft threads: its Hand off hands off only its own drafts.
-function reviewHandoffState(threads, openTbds = 0, browser = null) {
+// `mockupOpen`, the open threads of the spec's mockups (mockupOpenThreads): the review settles only at 0 (mockups #accept-gate).
+function reviewHandoffState(threads, openTbds = 0, browser = null, mockupOpen = 0) {
   const values = [...threads.values()];
   const drafts = values.filter(thread => browser ? thread.draftBy?.has(browser) || thread.draftBy?.has('') : thread.status === 'draft').length;
   const unsent = values.some(thread => thread.status === 'draft');
-  const settled = !unsent && values.every(thread => thread.status === 'resolved');
+  const settled = !unsent && mockupOpen === 0 && values.every(thread => thread.status === 'resolved');
   const finish = !openTbds && settled;
   const tbd = openTbds > 0 && settled;
   return { drafts, openTbds, finish, tbd, nextTbd: openTbds > 0 && !tbd, enabled: drafts > 0 || finish || tbd };
+}
+
+// The open threads of a mockup set as the service tells it (#chip-source); null while the set is not yet known or a
+// mockup's spool is unreadable, so Accept spec waits rather than accept threads it cannot see.
+function mockupOpenThreads(mockups) {
+  if (!mockups) return null;
+  let open = 0;
+  for (const mockup of mockups) {
+    if (!Number.isInteger(mockup.open)) return null;
+    open += mockup.open;
+  }
+  return open;
 }
 
 function tbdCountLabel(label, openTbds) {
@@ -1261,7 +1463,7 @@ function advanceTbd(st, open) {
 // Open TBDs and the addressed anchor share one highlight; the addressed one keeps it while it is the address.
 function renderHighlight() {
   const openTbds = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
-  const handoffState = reviewHandoffState(state.threads, openTbds.length, state.reviewer?.browser);
+  const handoffState = reviewHandoffState(state.threads, openTbds.length, state.reviewer?.browser, mockupOpenThreads(state.mockups));
   const addressed = addressPlace();
   renderTbdHighlight(document, tbdHighlightBlocks(openTbds).concat(addressed ? [findAnchor(addressed.anchor)] : []));
   return handoffState;
@@ -1312,12 +1514,13 @@ function ingest(events, force = false) {
   state.eventsRendered = true;
   if (changed) {
     state.events.sort((a, b) => a.name < b.name ? -1 : 1);
-    state.threads = foldThreads(state.events);
+    state.threads = LAYER_SERVICE ? foldLayerThreads(state.events) : foldThreads(state.events);
     state.authors = authorNames(state.events);
     for (const id of state.expandedResolved) {
       if (state.threads.get(id)?.status !== 'resolved') state.expandedResolved.delete(id);
     }
   }
+  if (LAYER_SERVICE) return renderLayer(changed);
   renderPanel();
   renderPins();
   renderBadges();
@@ -1347,7 +1550,7 @@ function corpusFlags(items) {
     if (item.state !== 'label') continue;
     const label = labels[String(item.label || '').toLowerCase()];
     if (label) result.push({ anchor, state: 'label', label, level: item.level || null,
-      target: item.target == null ? null : String(item.target), record: item.record || null, rule: item.rule || null });
+      target: item.target == null ? null : String(item.target), rule: item.rule || null, item });
   }
   return result;
 }
@@ -1443,27 +1646,20 @@ function jevNeutralNote(anchor, question) {
   return { anchor, group: 'neutral', state: 'unavailable', text: 'Jev unavailable', sentence: 'Jev could not check ' + JEV_QUESTIONS[question], level: null };
 }
 
-// project-rules #dismiss: one click that Jev is wrong. Changes what the page shows at once, ends any read in flight,
-// records through the Jev record route for this page, then re-reads /api/jev and shows what the server returns: a
-// recorded answer stays, a refused or failed one comes back.
-function jevRecordAction(label, body) {
+// project-rules #dismiss: one click that Jev is wrong about the item a card shows. Drops that item at once, ends any
+// read in flight, records body through the Jev record route for this page, then re-reads /api/jev and shows what the
+// server returns, the one source of what an answer removes: a recorded answer leaves out each note its ledger line
+// keys, a refused or failed one brings the item back.
+function jevRecordAction(label, item, body) {
   return { label, run: () => {
     const base = state.jev.base;
     state.jev.request += 1;
-    jevForget(body);
+    state.jev.items = state.jev.items.filter(other => other !== item);
     renderJev();
     const reread = () => { if (base === state.jev.base) requestJev(base, true); };
     fetch('/api/jev/offer?' + new URLSearchParams({ path: OWN_ADDRESS.pathname.replace(/^\//, '') }),
       { method: 'POST', body: JSON.stringify(body) }).then(reread, reread);
   } };
-}
-
-// What one recorded answer removes from the page (#dismiss): Not for this spec drops the one note holding its record;
-// Not a project rule drops the candidate on its criterion.
-function jevForget(body) {
-  state.jev.items = state.jev.items.filter(item => body.dismiss === 'here'
-    ? item.record !== body.record
-    : !(item.kind === 'candidate' && item.id === body.anchor));
 }
 
 // A rule's source: its home file name without .spec.html, a middle dot, and the clause anchor (#card).
@@ -1482,10 +1678,13 @@ function jevRuleTitle(rule) {
   return rule.name || (source ? source.text : '');
 }
 
-// Not for this spec (#dismiss): left of the primary on every rule card, one click, for the note's record on this
-// page's spec; on a mark citing the rule (anchor), for that flagged clause too.
-function jevNotForThisSpec(rule, record, anchor) {
-  return jevRecordAction('Not for this spec', { dismiss: 'here', home: rule.home, record, ...(anchor ? { anchor } : {}) });
+// Not for this spec (#dismiss): left of the primary on every rule card, one click, naming from the card's item the
+// rule's home and the record the server gave the note; on a mark citing the rule, that flagged clause too
+// (#card-cites-reject).
+function jevNotForThisSpec(item) {
+  const cited = item.kind === 'corpus';
+  return jevRecordAction('Not for this spec', item,
+    { dismiss: 'here', home: cited ? item.rule.home : item.home, record: item.record, ...(cited ? { anchor: item.id } : {}) });
 }
 
 // project-rules #card: every note about a project rule is one card, rendered the same wherever it shows. Label, the
@@ -1512,8 +1711,7 @@ function jevRuleCard(card, note = null) {
     link.lastElementChild.textContent = source.text;
     const arrow = link.appendChild(document.createElement('span'));
     arrow.className = 'hx-rule-card-source-arrow';
-    arrow.setAttribute('aria-hidden', 'true');
-    arrow.textContent = '↗';
+    arrow.innerHTML = ICONS.external;
   }
   const actions = box.appendChild(document.createElement('div'));
   actions.className = 'hx-rule-card-actions';
@@ -1550,7 +1748,7 @@ function jevRuleNote(item) {
     const mark = { ...jevDraftAction('Mark as rule', 'Mark this criterion as a project rule with a short name.'), primary: true };
     return jevCardNote(item.id, 'rule', item.level || null, 'Jev reads this as a rule for every feature',
       { label: 'Possible project rule', title, rule, source: false,
-        actions: [jevRecordAction('Not a project rule', { dismiss: 'rule', anchor: item.id }), mark] });
+        actions: [jevRecordAction('Not a project rule', item, { dismiss: 'rule', anchor: item.id }), mark] });
   }
   if (item.state !== 'unavailable' && (item.state !== 'label' || item.label !== 'missed')) return null;
   const source = jevRuleSource(item.target);
@@ -1561,7 +1759,7 @@ function jevRuleNote(item) {
   }
   const ask = { ...jevDraftAction('Ask to cover', 'Cover ' + source.link + ' with a criterion, or add one line saying why it does not apply.'), primary: true };
   return jevCardNote(item.id, 'rule', item.level || null, 'This spec may need the rule ' + title + ' from ' + source.file,
-    { label: 'Missing project rule', rule, actions: [jevNotForThisSpec(rule, item.record), ask] });
+    { label: 'Missing project rule', rule, actions: [jevNotForThisSpec(item), ask] });
 }
 
 function jevSuggestionNotes() {
@@ -1615,7 +1813,7 @@ function jevSuggestionNotes() {
       const source = jevRuleSource(flag.rule.target);
       const label = flag.label + ' project rule';
       notes.push(jevCardNote(flag.anchor, 'conflict', flag.level, label + ' ' + jevRuleTitle(flag.rule), { label, rule: flag.rule,
-        actions: [jevNotForThisSpec(flag.rule, flag.record, flag.anchor),
+        actions: [jevNotForThisSpec(flag.item),
           { ...jevDraftAction('Ask agent to reconcile', 'Reconcile this clause with ' + (source ? source.link : flag.rule.target) + '.'), primary: true }] }));
       continue;
     }
@@ -1657,15 +1855,7 @@ function evidenceAge(capturedAt, now = Date.now()) {
 
 // The criterion as read: its own text, without nested anchors or runtime overlays, whitespace collapsed as the server reads it.
 function evidenceReadText(element) {
-  const parts = [];
-  const walk = node => {
-    for (const child of node.childNodes) {
-      if (child.nodeType === 3) parts.push(child.nodeValue);
-      else if (child.nodeType === 1 && !child.matches('[data-anchor],.hx-jev-marker,.hx-pin,.hx-badge,script,style')) walk(child);
-    }
-  };
-  walk(element);
-  return parts.join('').split(/\s+/).filter(Boolean).join(' ');
+  return sourceText(element, '[data-anchor],' + UNREAD);
 }
 
 // Word diff of the proven text against the text as read: [{ op: 'same' | 'del' | 'ins', text }].
@@ -1707,6 +1897,13 @@ function evidenceCriterionKey(url) {
   } catch (_) { return null; }
 }
 
+/* ---------------- host bridge (criterion-evidence #plugin-bridge) ----------------
+ * Self-contained (window, document, navigator only): review-serve inlines this exact block
+ * into the review index, so spec pages and the index run one bridge (#bridge-tab-pages). */
+// The parent frame's origin per step its hello offers; null keeps the browser's own behavior.
+const hostBridge = { evidence: null, tab: null };
+
+// Step 2 (#bridge-open, #bridge-intercept): true when sent, so the caller cancels the link; false keeps the link.
 function evidenceOpen(bundle, criterion) {
   if (!bundle) return null;
   return () => {
@@ -1716,11 +1913,13 @@ function evidenceOpen(bundle, criterion) {
   };
 }
 
-/* ---------------- host bridge (criterion-evidence #plugin-bridge) ----------------
- * Self-contained (window, document, navigator only): review-serve inlines this exact block
- * into the review index, so spec pages and the index run one bridge (#bridge-tab-pages). */
-// The parent frame's origin per step its hello offers; null keeps the browser's own behavior.
-const hostBridge = { evidence: null, tab: null };
+// The index's lane Proof link (#bridge-tab-pages): a link carrying data-evidence-bundle speaks step 2 with that bundle alone.
+function hostEvidenceClick(event) {
+  if (event.defaultPrevented) return;
+  const link = event.target && event.target.closest && event.target.closest('a[data-evidence-bundle]');
+  const open = link && evidenceOpen(link.getAttribute('data-evidence-bundle'));
+  if (open && open()) event.preventDefault();
+}
 
 // #bridge-new-tab-click: Cmd+click on macOS, Ctrl+click elsewhere, or middle-click (auxclick button 1), same-origin link.
 function hostTabClick(event) {
@@ -1749,6 +1948,7 @@ function listenHost() {
     event.source.postMessage({ type: 'spec-chat-title', title: String(document.title) }, event.origin);
   });
   for (const type of ['click', 'auxclick']) document.addEventListener(type, hostTabClick, true);
+  document.addEventListener('click', hostEvidenceClick);
 }
 /* ---------------- end host bridge ---------------- */
 
@@ -1842,7 +2042,7 @@ function placeJevMarker(marker) {
   marker.dataset.inset = String(holder.tagName === 'TR');
   if (marker.getBoundingClientRect().right > document.documentElement.clientWidth) marker.dataset.inset = 'true';
   const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT, {
-    acceptNode: node => node.nodeValue.trim() && !node.parentElement.closest('.hx-jev-marker,.hx-pin,.hx-badge,script,style') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP,
+    acceptNode: node => node.nodeValue.trim() && !node.parentElement.closest(UNREAD) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP,
   });
   const text = walker.nextNode();
   if (!text) return;
@@ -2011,10 +2211,10 @@ function placeJevPopover() {
   pop.style.top = '';
   pop.style.bottom = '';
   pop.style.width = '';
-  if (window.matchMedia('(max-width: 640px)').matches) return;
+  if (NARROW.matches) return;
   const anchor = marker.getBoundingClientRect();
   if (!marker.isConnected || anchor.bottom < 0 || anchor.top > innerHeight) { closeJevPopover(); return; }
-  const controls = [...document.querySelectorAll('.hx-toolbar,.hx-thread-dock,.hx-panel.open,.hx-service-index-link,.hx-banner')]
+  const controls = [...document.querySelectorAll('.hx-toolbar,.hx-thread-dock,.hx-panel.open,.hx-top-line,.hx-banner')]
     .filter(control => getComputedStyle(control).visibility !== 'hidden' && getComputedStyle(control).opacity !== '0')
     .map(control => control.getBoundingClientRect()).filter(rect => rect.width && rect.height);
   pop.dataset.measure = '';
@@ -2108,31 +2308,52 @@ function renderJev() {
 
 /* ---------------- UI ---------------- */
 // Document presentation applies only to standalone spec pages: an embedding host app
-// owns its own look, so embed mode ships the hx-* overlay CSS alone.
+// owns its own look, so embed mode ships the hx-* overlay CSS alone, and so does a mockup
+// page, whose frames keep the mockup's own look (mockups #review-chrome).
+/* design-set icons c5834e773e3a0e88da6343b1540fb0931ca7b2ad begin: the pinned set's icons/, built in by scripts/design-set-sync; never edit by hand */
+const ICONS = {
+  "chevron-down": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M3.5 6L8 10.5 12.5 6\"/></svg>",
+  "chevron-left": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M10 3.5L5.5 8l4.5 4.5\"/></svg>",
+  "chevron-right": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M6 3.5l4.5 4.5L6 12.5\"/></svg>",
+  "chevron-up": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M3.5 10L8 5.5l4.5 4.5\"/></svg>",
+  "close": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M4 4l8 8M12 4l-8 8\"/></svg>",
+  "comment": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M4.5 2.5h7a2 2 0 0 1 2 2V9a2 2 0 0 1-2 2H8l-3 2.5V11h-.5a2 2 0 0 1-2-2V4.5a2 2 0 0 1 2-2z\"/></svg>",
+  "external": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M7 3.5H4A1.5 1.5 0 0 0 2.5 5v7A1.5 1.5 0 0 0 4 13.5h7a1.5 1.5 0 0 0 1.5-1.5V9\"/><path d=\"M9.5 2.5h4v4M13.5 2.5l-6 6\"/></svg>",
+  "gear": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M6.34 3.18L6.6 1.4L9.4 1.4L9.66 3.18L11.35 4.15L13.02 3.48L14.42 5.91L13.01 7.03L13.01 8.97L14.42 10.09L13.02 12.52L11.35 11.85L9.66 12.82L9.4 14.6L6.6 14.6L6.34 12.82L4.65 11.85L2.98 12.52L1.58 10.09L2.99 8.97L2.99 7.03L1.58 5.91L2.98 3.48L4.65 4.15z\"/><circle cx=\"8\" cy=\"8\" r=\"2\"/></svg>",
+  "keys": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><rect x=\"1.5\" y=\"4\" width=\"13\" height=\"8\" rx=\"1.5\"/><path d=\"M5 7h.01M8 7h.01M11 7h.01M5.5 9.5h5\"/></svg>",
+  "not-answering": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M2.5 7.4a8 8 0 0 1 11 0M4.8 9.9a4.6 4.6 0 0 1 6.4 0\"/><path d=\"M8 12.6h.01\"/><path d=\"M2.5 2.5l11 11\"/></svg>",
+  "panel": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><rect x=\"2\" y=\"2.5\" width=\"12\" height=\"11\" rx=\"2\"/><path d=\"M10 2.5v11\"/></svg>",
+  "retry": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M13.5 8a5.5 5.5 0 1 1-5.5-5.5c1.54 0 3.01.61 4.12 1.67L13.5 5.5\"/><path d=\"M13.5 2.5v3h-3\"/></svg>",
+  "threads": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M3.5 6h5A1.5 1.5 0 0 1 10 7.5v3A1.5 1.5 0 0 1 8.5 12H6.5L4 14v-2h-.5A1.5 1.5 0 0 1 2 10.5v-3A1.5 1.5 0 0 1 3.5 6z\"/><path d=\"M6 6V3.5A1.5 1.5 0 0 1 7.5 2h5A1.5 1.5 0 0 1 14 3.5v3A1.5 1.5 0 0 1 12.5 8H12v2l-2-1.5\"/></svg>",
+};
+/* design-set icons end */
+/* design-set marks c5834e773e3a0e88da6343b1540fb0931ca7b2ad begin: the pinned set's marks/, built in by scripts/design-set-sync; never edit by hand */
+const MARKS = {
+  "attention": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" stroke=\"var(--ui-attention, currentColor)\"/><path d=\"M8 4.8v3.6\" stroke=\"var(--ui-attention, currentColor)\"/><circle cx=\"8\" cy=\"11\" r=\"1\" fill=\"var(--ui-attention, currentColor)\"/></svg>",
+  "fail": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" stroke=\"var(--ui-fail, currentColor)\"/><path d=\"M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4\" stroke=\"var(--ui-fail, currentColor)\"/></svg>",
+  "neutral": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" stroke=\"var(--ui-muted, currentColor)\"/></svg>",
+  "pass": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><circle cx=\"8\" cy=\"8\" r=\"7\" fill=\"var(--ui-pass, currentColor)\"/><path d=\"M5 8.3l2 2 4-4.6\" stroke=\"var(--ui-page, Canvas)\"/></svg>",
+  "running": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" stroke=\"var(--ui-action, currentColor)\"/><path d=\"M8 3.5a4.5 4.5 0 0 1 0 9z\" fill=\"var(--ui-action, currentColor)\"/></svg>",
+};
+/* design-set marks end */
 const DOC_CSS = `
-/* document presentation — the spec file stays lean; the dialect's look lives here */
-:where(:root){--spec-muted:#586069}
-:where(body){margin:0;background:#faf9f6;color:#22242a;padding-bottom:100px}
-article.spec{max-width:720px;margin:0 auto;padding:40px 24px;font:16.5px/1.65 "Iowan Old Style","Palatino Linotype",Georgia,serif}
-article.spec header{border-bottom:1px solid #e2e0d8;padding-bottom:16px;margin-bottom:28px}
-article.spec h1{font-size:29px;line-height:1.2;margin:0 0 8px;letter-spacing:-.01em}
-article.spec h2{font-size:20px;margin:26px 0 10px}
-article.spec nav{font:12px system-ui;color:#8b8e98}
-article.spec p{margin:0 0 10px;max-width:62ch}
+/* document presentation: the spec file stays lean; the dialect's look lives here, every value from the design set the
+   chrome CSS opens with (spec-page-design #document) */
+:where(:root){color-scheme:light dark;--spec-paper:var(--ui-page);--spec-ink:var(--ui-ink);--spec-muted:var(--ui-muted);--spec-hairline:var(--ui-border);--spec-link:var(--ui-link);--spec-soft:var(--ui-surface-soft)}
+:where(body){margin:0;background:var(--spec-paper);color:var(--spec-ink);padding-bottom:100px}
+article.spec{max-width:720px;margin:0 auto;padding:40px 24px;font:var(--ui-weight-regular) 15px/1.6 var(--ui-font)}
+article.spec header{margin-bottom:28px}
+article.spec h1{font-size:var(--ui-text-2xl);font-weight:var(--ui-weight-semibold);line-height:1.2;margin:6px 0 8px;letter-spacing:-.01em}
+article.spec h2{font-size:var(--ui-text-xl);font-weight:var(--ui-weight-semibold);line-height:1.25;margin:32px 0 10px;padding-top:16px;border-top:1px solid var(--spec-hairline)}
+article.spec nav{font:var(--ui-text-xs)/1.5 var(--ui-font);color:var(--spec-muted)}
+article.spec p{margin:0 0 10px;max-width:72ch}
 article.spec pre{white-space:pre-wrap;overflow-wrap:anywhere}
-article.spec a{color:#12897c}
-[data-render-target]{border:1px solid #e2e0d8;border-radius:8px;background:#fff;margin:6px 0 10px}
-@media(prefers-color-scheme:dark){
-:where(body){background:#17191d;color:#e8e7e2}
-article.spec header{border-color:#33363c}
-article.spec nav{color:#74767e}
-article.spec a{color:#34a899}
-[data-render-target]{border-color:#33363c;background:#1d2024}
-body [data-hx-jev-type=no-behavior-change]{color:#b9c0ca!important}
-}
+article.spec a{color:var(--spec-link)}
+[data-render-target]{border:1px solid var(--spec-hairline);border-radius:var(--ui-radius);background:var(--spec-soft);margin:6px 0 10px}
 @media(max-width:640px){
 :where(body){padding-bottom:calc(112px + env(safe-area-inset-bottom))}
 article.spec{padding:24px 16px}
+article.spec h1{font-size:var(--ui-text-xl)}
 }`;
 const FOCUS_CSS = `
 /* Unchanged context sits beneath a readable black veil; changed content stays clear. */
@@ -2150,89 +2371,192 @@ body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:n
 }
 `;
 const CSS = `
+/* design-set c5834e773e3a0e88da6343b1540fb0931ca7b2ad begin: the pinned set's tokens.css, built in by scripts/design-set-sync; never edit by hand */
+/* design-set tokens. Light in :root, dark under prefers-color-scheme.
+   tokens.json holds the same values; tests/test_design_set.py checks both. */
+:root {
+  /* color */
+  --ui-page: #ffffff;
+  --ui-surface: #ffffff;
+  --ui-surface-soft: #f5f5f5;
+  --ui-ink: #333333;
+  --ui-muted: #525252;
+  --ui-muted-soft: #eeeeee;
+  --ui-border: #dfdfdf;
+  --ui-action: #1d4ed8;
+  --ui-action-soft: #eff3ff;
+  --ui-link: var(--ui-action);
+  --ui-focus: var(--ui-action);
+  --ui-pass: #005c32;
+  --ui-pass-soft: #e6efea;
+  --ui-fail: #a5000f;
+  --ui-fail-soft: #f6e6e7;
+  --ui-attention: #b0540e;
+  --ui-attention-soft: #faf4ef;
+
+  /* type */
+  --ui-font: "Inter Variable", Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --ui-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ui-text-xs: 12px;
+  --ui-text-ui: 13px;
+  --ui-text-sm: 14px;
+  --ui-text-md: 16px;
+  --ui-text-lg: 20px;
+  --ui-text-xl: 24px;
+  --ui-text-2xl: 30px;
+  --ui-weight-regular: 400;
+  --ui-weight-medium: 500;
+  --ui-weight-semibold: 600;
+
+  /* space and shape */
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 24px;
+  --ui-space-6: 32px;
+  --ui-radius-sm: 6px;
+  --ui-radius: 8px;
+  --ui-radius-pill: 999px;
+  --ui-focus-width: 2px;
+  --ui-focus-offset: 2px;
+
+  /* motion */
+  --ui-motion-duration: 150ms;
+  --ui-motion-ease: ease-out;
+
+  /* layout: media queries cannot read a custom property, so build it in from tokens.json */
+  --ui-phone-width: 640px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ui-page: #1a1a1a;
+    --ui-surface: #242424;
+    --ui-surface-soft: #2a2a2a;
+    --ui-ink: #e0e0e0;
+    --ui-muted: #999999;
+    --ui-muted-soft: #2e2e2e;
+    --ui-border: #3a3a3a;
+    --ui-action: #7896ef;
+    --ui-action-soft: #1a2040;
+    --ui-pass: #3daa6e;
+    --ui-pass-soft: #1a2e22;
+    --ui-fail: #ffb4ab;
+    --ui-fail-soft: #2e1a1c;
+    --ui-attention: #e5873a;
+    --ui-attention-soft: #2e2218;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ui-motion-duration: 0ms;
+  }
+}
+/* design-set end */
 /* ui tokens */
-:root{--ui-font:"Inter Variable",Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--ui-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--ui-text-xs:12px;--ui-text-sm:14px;--ui-text-md:16px;--ui-text-lg:20px;--ui-page:#ffffff;--ui-surface:#ffffff;--ui-ink:#333333;--ui-muted:#525252;--ui-border:#dfdfdf;--ui-focus:#262626;--ui-link:#333333;--ui-action:#262626;--ui-pass:#005c32;--ui-pass-soft:#e6efea;--ui-fail:#a5000f;--ui-fail-soft:#f6e6e7;--ui-attention:#b0540e;--ui-attention-soft:#faf4ef;--ui-muted-soft:#eeeeee;--ui-draft:#b0540e;--ui-draft-soft:#faf4ef;--ui-ack:#1d4ed8;--ui-ack-soft:#eff3ff;--ui-resolved:#005c32;--ui-resolved-soft:#e6efea;--ui-error:#a5000f;--ui-marker:#767b85;--ui-marker-important:#d1242f;--ui-marker-pass:#1a7f37;--ui-on-marker:#ffffff;--ui-marker-warning:#e5534b;--ui-pin-ring:rgba(176,84,14,0.25);--ui-shadow:rgba(51,51,51,0.14);--ui-radius:8px;--ui-radius-sm:6px;--ui-radius-pill:999px;--ui-space-1:4px;--ui-space-2:8px;--ui-space-3:12px;--ui-space-4:16px;--ui-space-5:24px;--ui-space-6:32px}
-/* range bar */
-.hx-range-bar{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:var(--ui-ack-soft);color:var(--ui-ink);font:var(--ui-text-sm)/1.4 var(--ui-font)}
-.hx-range-row{display:flex;align-items:center;gap:var(--ui-space-2);min-width:0}
-.hx-range-copy{flex:1 1 auto;min-width:0;margin:0;overflow-wrap:anywhere}
-.hx-range-id{font-weight:600;font-family:var(--ui-mono)}
-.hx-range-change{flex:0 0 auto;min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-ink);font:600 var(--ui-text-xs) var(--ui-font);cursor:pointer}
-.hx-range-change:hover{background:var(--ui-page)}
-.hx-range-change:focus-visible,.hx-range-commit:focus-visible,.hx-range-form input:focus-visible,.hx-range-form button:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
-.hx-range-picker{margin-top:var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid var(--ui-border)}
+:root{--ui-draft:var(--ui-attention);--ui-draft-soft:var(--ui-attention-soft);--ui-ack:var(--ui-action);--ui-ack-soft:var(--ui-action-soft);--ui-resolved:var(--ui-pass);--ui-resolved-soft:var(--ui-pass-soft);--ui-error:var(--ui-fail);--ui-marker:#767b85;--ui-marker-important:#d1242f;--ui-marker-pass:#1a7f37;--ui-on-marker:#ffffff;--ui-marker-warning:#e5534b;--ui-pin-ring:rgba(176,84,14,0.25);--ui-shadow:rgba(51,51,51,0.14)}
+@media(prefers-color-scheme:dark){
+:root{--ui-pin-ring:rgba(229,135,58,0.25);--ui-shadow:rgba(0,0,0,0.4)}
+}
+/* focus ring: the set's, on every chrome control (spec-page-design #button-system-rule, #acceptance-focus-set) */
+:is(.hx-top-line,.hx-toolbar,.hx-thread-dock,.hx-panel,.hx-jev-pop,.hx-jev-note,.hx-banner,.hx-layer) :focus-visible,:is(.hx-pin,.hx-jev-marker,.hx-mockup-chip):focus-visible{outline:var(--ui-focus-width) solid var(--ui-focus);outline-offset:var(--ui-focus-offset)}
+/* top line (spec-page-design #top-line, compared-range #bar-flow): one fixed line on the page color over a hairline,
+   holding the index link and the range bar; the body starts under it */
+.hx-top-line{position:fixed;top:0;left:0;right:0;z-index:860;box-sizing:border-box;max-height:100vh;overflow-y:auto;display:flex;align-items:flex-start;gap:var(--ui-space-3);padding:var(--ui-space-1) var(--ui-space-4);background:var(--ui-page);border-bottom:1px solid var(--ui-border);color:var(--ui-ink);font:var(--ui-text-sm)/1.4 var(--ui-font)}
+body.hx-panel-open :is(.hx-top-line,.hx-errors){right:330px}
+body:has(> :is(.hx-top-line,.hx-errors)){padding-top:var(--hx-top-space,0px)}
+html:has(> body > :is(.hx-top-line,.hx-errors)){scroll-padding-top:var(--hx-top-space,0px)}
+:is(.hx-top-line,.hx-panel-head,.hx-thread-dock,.hx-thread-summary,.hx-rule-card-source) svg{display:block;flex:0 0 auto}
+/* index link (lane-hosting #index-link): a chevron and Review index at the start of the top line */
+.hx-service-index-link{flex:0 0 auto;display:inline-flex;align-items:center;gap:var(--ui-space-1);min-height:var(--ui-space-6);box-sizing:border-box;border-radius:var(--ui-radius-sm);color:var(--ui-ink);font:var(--ui-weight-medium) var(--ui-text-xs)/1 var(--ui-font);text-decoration:none}
+.hx-service-index-link:hover{text-decoration:underline;text-underline-offset:3px}
+.hx-service-index-link svg{color:var(--ui-muted)}
+/* spec link (mockups #review-chrome): a mockup page's spec, after the index link */
+.hx-spec-link{flex:0 1 auto;min-width:0;display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border-radius:var(--ui-radius-sm);color:var(--ui-link);font:var(--ui-weight-semibold) var(--ui-text-xs)/1 var(--ui-font);line-height:var(--ui-space-6);text-decoration:none}
+.hx-spec-link:hover{text-decoration:underline;text-underline-offset:3px}
+/* range bar (compared-range #range-bar): the rest of the top line; the base picker opens as a row under it */
+.hx-range-bar{flex:1 1 auto;min-width:0;display:flex;flex-wrap:wrap;align-items:center;margin:0;padding:0;border:0}
+.hx-range-row{display:flex;flex:1 1 100%;align-items:center;gap:var(--ui-space-2);min-width:0}
+.hx-range-copy{flex:1 1 auto;min-width:0;max-width:none;margin:0;color:var(--ui-muted);overflow-wrap:anywhere}
+.hx-range-id{font-weight:var(--ui-weight-medium);font-family:var(--ui-mono);color:var(--ui-ink)}
+.hx-range-change{flex:0 0 auto;min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:none;border-radius:var(--ui-radius-sm);background:transparent;color:var(--ui-ink);font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);cursor:pointer}
+.hx-range-change:hover,.hx-range-change[aria-expanded=true]{background:var(--ui-surface-soft)}
+/* Before and After (mockups #before-table): a mockup page's two views, the pressed one marked, before the base picker */
+.hx-mockup-view{flex:0 0 auto;display:inline-flex;gap:var(--ui-space-1)}
+.hx-mockup-view[hidden]{display:none}
+.hx-mockup-view button{min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:none;border-radius:var(--ui-radius-sm);background:transparent;color:var(--ui-ink);font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);cursor:pointer}
+.hx-mockup-view button:hover,.hx-mockup-view button[aria-pressed=true]{background:var(--ui-surface-soft)}
+.hx-mockup-view button[aria-pressed=true]{text-decoration:underline;text-underline-offset:3px}
+.hx-range-picker{flex:1 1 100%;box-sizing:border-box;max-width:720px;margin:var(--ui-space-1) 0 var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid var(--ui-border)}
 .hx-range-commits{display:grid;gap:var(--ui-space-1);max-height:270px;overflow:auto}
 .hx-range-commit{display:grid;grid-template-columns:5.5em 6.5em minmax(0,1fr);gap:var(--ui-space-2);align-items:baseline;width:100%;padding:var(--ui-space-1) var(--ui-space-2);border:1px solid transparent;border-radius:var(--ui-radius-sm);background:transparent;color:var(--ui-ink);text-align:left;font:var(--ui-text-xs)/1.35 var(--ui-font);cursor:pointer}
 .hx-range-commit:hover,.hx-range-commit[data-selected=true]{border-color:var(--ui-resolved);background:var(--ui-resolved-soft)}
-.hx-range-commit strong{font:600 var(--ui-text-xs) var(--ui-mono)}
+.hx-range-commit strong{font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-mono)}
 .hx-range-commit time{color:var(--ui-muted);font-variant-numeric:tabular-nums}
 .hx-range-commit span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hx-range-empty{margin:0;padding:var(--ui-space-1) var(--ui-space-2);color:var(--ui-muted)}
 .hx-range-form{margin-top:var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid var(--ui-border)}
-.hx-range-form label{display:block;margin-bottom:var(--ui-space-1);font-size:var(--ui-text-xs);font-weight:600;color:var(--ui-ink)}
+.hx-range-form label{display:block;margin-bottom:var(--ui-space-1);font-size:var(--ui-text-xs);font-weight:var(--ui-weight-semibold);color:var(--ui-ink)}
 .hx-range-form>div{display:flex;gap:var(--ui-space-1)}
 .hx-range-form input{box-sizing:border-box;min-width:0;flex:1 1 auto;padding:var(--ui-space-2);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-ink);font:var(--ui-text-sm) var(--ui-mono)}
-.hx-range-form button{flex:0 0 auto;min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-ink);border-radius:var(--ui-radius-sm);background:var(--ui-ink);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);cursor:pointer}
+.hx-range-form button{flex:0 0 auto;min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-ink);border-radius:var(--ui-radius-sm);background:var(--ui-ink);color:var(--ui-page);font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);cursor:pointer}
 .hx-range-form button:disabled{cursor:wait;opacity:.5}
 .hx-range-error{margin:var(--ui-space-1) 0 0;color:var(--ui-error);font-size:var(--ui-text-xs)}
-@media(prefers-color-scheme:dark){
-:root{--ui-page:#1a1a1a;--ui-surface:#242424;--ui-ink:#e0e0e0;--ui-muted:#999999;--ui-border:#3a3a3a;--ui-focus:#cccccc;--ui-link:#e0e0e0;--ui-action:#cccccc;--ui-pass:#3daa6e;--ui-pass-soft:#1a2e22;--ui-fail:#ffb4ab;--ui-fail-soft:#2e1a1c;--ui-attention:#e5873a;--ui-attention-soft:#2e2218;--ui-draft:#e5873a;--ui-draft-soft:#2e2218;--ui-ack:#6b8aed;--ui-ack-soft:#1a2040;--ui-resolved:#3daa6e;--ui-resolved-soft:#1a2e22;--ui-error:#ffb4ab;--ui-pin-ring:rgba(229,135,58,0.25);--ui-shadow:rgba(0,0,0,0.4)}
-}
+/* phone: the range copy wraps to its own row under the index link; its picker button stays on the first row */
 @media(max-width:640px){
-.hx-range-bar{margin:var(--ui-space-2) var(--ui-space-4) 0;padding:var(--ui-space-2)}
-.hx-range-row{align-items:flex-start;flex-wrap:wrap;gap:var(--ui-space-1)}
-.hx-range-copy{flex:1 1 100%}
-.hx-range-change{min-height:44px}
-.hx-range-picker{margin-top:var(--ui-space-1)}
+.hx-top-line{flex-wrap:wrap;gap:0 var(--ui-space-2);padding:env(safe-area-inset-top) var(--ui-space-2) var(--ui-space-1)}
+.hx-service-index-link{min-height:44px;padding:0 var(--ui-space-1)}
+.hx-range-bar{flex:1 1 100%;padding:0 var(--ui-space-1)}
+.hx-range-change{position:absolute;top:env(safe-area-inset-top);right:var(--ui-space-2);min-height:44px}
+.hx-spec-link{line-height:44px;margin-right:calc(3 * var(--ui-space-6) + var(--ui-space-2))} /* clear of the base picker */
+.hx-mockup-view button{min-height:44px}
+.hx-range-copy{font-size:var(--ui-text-xs)}
 .hx-range-commits{max-height:none}
 .hx-range-commit{grid-template-columns:5.5em 6.5em minmax(0,1fr);padding:var(--ui-space-2) var(--ui-space-1);min-height:44px}
 .hx-range-form input,.hx-range-form button{min-height:44px}
 .hx-range-form input{font-size:var(--ui-text-md)}
 }
-@media(max-width:800px){
-.hx-range-bar{margin-top:calc(2 * var(--ui-space-6))}
-}
 /* toolbar */
-.hx-toolbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:var(--ui-space-1);align-items:center;background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);box-shadow:0 8px 28px var(--ui-shadow);padding:var(--ui-space-1);z-index:900;font:var(--ui-text-sm) var(--ui-font)}
-.hx-toolbar button{font:600 var(--ui-text-xs) var(--ui-font);border:none;background:transparent;border-radius:var(--ui-radius-sm);padding:var(--ui-space-2) var(--ui-space-3);min-height:var(--ui-space-6);cursor:pointer;color:var(--ui-ink)}
+.hx-toolbar{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;gap:var(--ui-space-1);align-items:center;background:var(--ui-page);border:1px solid var(--ui-border);border-radius:var(--ui-radius);box-shadow:0 8px 28px var(--ui-shadow);padding:var(--ui-space-1);z-index:900;font:var(--ui-text-sm) var(--ui-font)}
+.hx-toolbar button{font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);border:none;background:transparent;border-radius:var(--ui-radius-sm);padding:var(--ui-space-2) var(--ui-space-3);min-height:var(--ui-space-6);cursor:pointer;color:var(--ui-ink)}
 .hx-toolbar button:disabled{cursor:default;opacity:.45}
-.hx-mobile-handoff,.hx-mobile-next-tbd{display:none}
 .hx-toolbar button[aria-pressed=true]{background:var(--ui-draft-soft);color:var(--ui-draft)}
 .hx-toolbar .hx-status{color:var(--ui-muted);font-size:var(--ui-text-xs);padding:0 var(--ui-space-2)}
-.hx-toolbar .hx-offline{font-size:var(--ui-text-xs);font-weight:600;padding:0 var(--ui-space-2)}
-/* index link */
-.hx-service-index-link{position:fixed;top:var(--ui-space-3);left:var(--ui-space-3);z-index:1000;display:inline-flex;align-items:center;min-height:44px;box-sizing:border-box;padding:var(--ui-space-2) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:var(--ui-surface);box-shadow:0 5px 18px var(--ui-shadow);color:var(--ui-resolved);font:600 var(--ui-text-xs)/1 var(--ui-font);text-decoration:none}
-.hx-service-index-link:hover{background:var(--ui-page);border-color:var(--ui-muted);color:var(--ui-resolved)}
-.hx-service-index-link:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
+.hx-toolbar .hx-offline{font-size:var(--ui-text-xs);font-weight:var(--ui-weight-semibold);padding:0 var(--ui-space-2)}
 /* panel */
 .hx-panel{position:fixed;top:0;right:0;width:330px;height:100vh;background:var(--ui-page);color:var(--ui-ink);border-left:1px solid var(--ui-border);z-index:800;display:none;flex-direction:column;font:var(--ui-text-sm) var(--ui-font);box-shadow:none}
-.hx-panel.open{display:flex;box-shadow:-8px 0 30px var(--ui-shadow)}
+.hx-panel.open{display:flex}
 body.hx-panel-open{padding-right:330px}
-.hx-panel-head{position:relative;min-height:44px;padding:var(--ui-space-3) var(--ui-space-4) var(--ui-space-3) calc(var(--ui-space-6) + var(--ui-space-4));box-sizing:border-box;border-bottom:1px solid var(--ui-border);font-weight:600}
-.hx-panel-head .hx-sub{font-weight:400;font-size:var(--ui-text-xs);color:var(--ui-muted)}
-.hx-panel-toggle{position:absolute;top:var(--ui-space-2);left:var(--ui-space-2);width:var(--ui-space-6);height:var(--ui-space-6);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;font:var(--ui-text-lg)/1 var(--ui-font);display:grid;place-items:center;padding:0}
+/* The header text runs between the toggle and the gear, each held clear by its inset, its size, and one gap: the head's
+   own properties place both and its side padding derives from them, so moving or resizing either moves the text (on a
+   phone, 44px controls, the toggle a space-1 inset); the agent note moves to its own line as one unit when it does not
+   fit beside Review, and wraps only when longer than that line. */
+.hx-panel-head{--hx-head-control:var(--ui-space-6);--hx-head-gap:var(--ui-space-2);--hx-gear-inset:var(--ui-space-2);--hx-toggle-inset:var(--ui-space-2);position:relative;min-height:44px;padding:var(--ui-space-3) calc(var(--hx-gear-inset) + var(--hx-head-control) + var(--hx-head-gap)) var(--ui-space-3) calc(var(--hx-toggle-inset) + var(--hx-head-control) + var(--hx-head-gap));box-sizing:border-box;border-bottom:1px solid var(--ui-border);font-weight:var(--ui-weight-semibold);overflow-wrap:anywhere}
+.hx-panel-head .hx-sub{display:inline-block;font-weight:var(--ui-weight-regular);font-size:var(--ui-text-xs);color:var(--ui-muted)}
+.hx-panel-toggle{position:absolute;top:var(--ui-space-2);left:var(--hx-toggle-inset);width:var(--hx-head-control);height:var(--hx-head-control);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;display:grid;place-items:center;padding:0}
 .hx-panel-toggle:hover{background:var(--ui-page);color:var(--ui-ink)}
-.hx-panel-gear{position:absolute;top:var(--ui-space-2);right:var(--ui-space-2);width:var(--ui-space-6);height:var(--ui-space-6);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;font:var(--ui-text-sm)/1 var(--ui-font);display:grid;place-items:center;padding:0}
+.hx-panel-gear{position:absolute;top:var(--ui-space-2);right:var(--hx-gear-inset);width:var(--hx-head-control);height:var(--hx-head-control);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;display:grid;place-items:center;padding:0}
 .hx-panel-gear:hover{background:var(--ui-page);color:var(--ui-ink)}
 .hx-panel-gear[aria-expanded=true]{background:var(--ui-draft-soft);color:var(--ui-draft);border-color:var(--ui-draft)}
 .hx-settings{padding:var(--ui-space-3) var(--ui-space-4);border-bottom:1px solid var(--ui-border);background:var(--ui-surface)}
-.hx-set-row{display:grid;grid-template-columns:1fr auto;gap:var(--ui-space-1) var(--ui-space-2);align-items:center;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-ink)}
+.hx-set-row{display:grid;grid-template-columns:1fr auto;gap:var(--ui-space-1) var(--ui-space-2);align-items:center;font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);color:var(--ui-ink)}
 .hx-set-row input[type=range]{grid-column:1/-1;width:100%;margin:var(--ui-space-1) 0 0;accent-color:var(--ui-resolved);min-height:24px;touch-action:manipulation}
-.hx-set-val{font:600 var(--ui-text-xs) var(--ui-mono);color:var(--ui-muted)}
-.hx-set-note{margin:var(--ui-space-2) 0 0;font:400 var(--ui-text-xs)/1.45 var(--ui-font);color:var(--ui-muted)}
+.hx-set-val{font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-mono);color:var(--ui-muted)}
+.hx-set-note{margin:var(--ui-space-2) 0 0;font:var(--ui-weight-regular) var(--ui-text-xs)/1.45 var(--ui-font);color:var(--ui-muted)}
 .hx-panel-content{display:flex;flex:1;min-height:0;flex-direction:column}
 /* dock */
-.hx-thread-dock{position:fixed;top:var(--ui-space-3);right:var(--ui-space-3);z-index:850;display:flex;flex-direction:column;gap:var(--ui-space-1);padding:var(--ui-space-1);background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);box-shadow:0 5px 18px var(--ui-shadow);font:var(--ui-text-xs) var(--ui-font);transition:opacity .15s,transform .15s}
+.hx-thread-dock{position:fixed;top:calc(var(--hx-top-space,0px) + var(--ui-space-3));right:var(--ui-space-3);z-index:850;display:flex;flex-direction:column;gap:var(--ui-space-1);padding:var(--ui-space-1);background:var(--ui-surface);border:1px solid var(--ui-border);border-radius:var(--ui-radius);font:var(--ui-text-xs) var(--ui-font);transition:opacity .15s,transform .15s}
 body.hx-panel-open .hx-thread-dock{opacity:0;transform:translateX(10px);pointer-events:none}
 .hx-dock-open,.hx-dock-thread{position:relative;width:var(--ui-space-6);height:var(--ui-space-6);box-sizing:border-box;border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);color:var(--ui-muted);cursor:pointer;display:grid;place-items:center;padding:0}
 .hx-dock-open:hover,.hx-dock-thread:hover{background:var(--ui-page);border-color:var(--ui-muted);color:var(--ui-ink)}
-.hx-dock-open svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-.hx-unread-badge{position:absolute;top:-6px;right:-6px;min-width:20px;height:20px;box-sizing:border-box;border:2px solid var(--ui-page);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-1);background:var(--ui-ack);color:var(--ui-page);display:grid;place-items:center;font:600 var(--ui-text-xs)/1 var(--ui-font);box-shadow:0 1px 4px var(--ui-shadow)}
+.hx-unread-badge{position:absolute;top:-6px;right:-6px;min-width:20px;height:20px;box-sizing:border-box;border:2px solid var(--ui-page);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-1);background:var(--ui-ack);color:var(--ui-page);display:grid;place-items:center;font:var(--ui-weight-semibold) var(--ui-text-xs)/1 var(--ui-font);box-shadow:0 1px 4px var(--ui-shadow)}
 .hx-unread-badge[hidden]{display:none}
-.hx-dock-threads{display:flex;flex-direction:column;gap:var(--ui-space-1);max-height:calc(100vh - 76px);overflow-y:auto;scrollbar-width:none}
+.hx-dock-threads{display:flex;flex-direction:column;gap:var(--ui-space-1);max-height:calc(100vh - var(--hx-top-space,0px) - 76px);overflow-y:auto;scrollbar-width:none}
 .hx-dock-threads:not(:empty){border-top:1px solid var(--ui-border);padding-top:var(--ui-space-1)}
 .hx-dock-threads::-webkit-scrollbar{display:none}
-.hx-dock-thread{font:600 var(--ui-text-xs)/1 var(--ui-mono)}
+.hx-dock-thread{font:var(--ui-weight-semibold) var(--ui-text-xs)/1 var(--ui-mono)}
 .hx-dock-thread[data-s=draft],.hx-dock-thread[data-s=pending]{border-color:var(--ui-draft);color:var(--ui-draft);background:var(--ui-draft-soft)}
 .hx-dock-thread[data-s=acknowledged]{border-color:var(--ui-ack);color:var(--ui-ack);background:var(--ui-ack-soft)}
 .hx-dock-thread[data-s=resolved]{border-color:var(--ui-resolved);color:var(--ui-resolved);background:var(--ui-resolved-soft)}
@@ -2244,34 +2568,36 @@ body.hx-panel-open .hx-thread-dock{opacity:0;transform:translateX(10px);pointer-
 .hx-thread.active{border-color:var(--ui-draft);box-shadow:0 0 0 1px var(--ui-draft)}
 .hx-thread-summary{display:flex;align-items:center;gap:var(--ui-space-1);min-width:0}
 .hx-anchor{flex:1;font-family:var(--ui-mono);font-size:var(--ui-text-xs);color:var(--ui-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hx-pill{font-size:var(--ui-text-xs);font-weight:600;text-transform:uppercase;letter-spacing:.05em;border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6}
-.hx-disclosure{flex:0 0 auto;box-sizing:border-box;width:var(--ui-space-6);height:var(--ui-space-6);display:inline-grid;place-items:center;padding:0;border:1px solid var(--ui-border);background:var(--ui-surface);color:var(--ui-muted);border-radius:var(--ui-radius-sm);cursor:pointer;font:var(--ui-text-sm)/1 var(--ui-font)}
+.hx-pill{font-size:var(--ui-text-xs);font-weight:var(--ui-weight-semibold);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6}
+.hx-disclosure{flex:0 0 auto;box-sizing:border-box;width:var(--ui-space-6);height:var(--ui-space-6);display:inline-grid;place-items:center;padding:0;border:1px solid var(--ui-border);background:var(--ui-surface);color:var(--ui-muted);border-radius:var(--ui-radius-sm);cursor:pointer}
 .hx-disclosure:hover{background:var(--ui-page);color:var(--ui-ink)}
 .hx-thread-preview{margin-top:var(--ui-space-1);color:var(--ui-muted);font-size:var(--ui-text-xs);line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hx-pill[data-s=draft],.hx-pill[data-s=pending]{color:var(--ui-draft);background:var(--ui-draft-soft)}
 .hx-pill[data-s=acknowledged]{color:var(--ui-ack);background:var(--ui-ack-soft)}
 .hx-pill[data-s=resolved]{color:var(--ui-resolved);background:var(--ui-resolved-soft)}
 .hx-msg{margin-top:var(--ui-space-2);font-size:var(--ui-text-sm);line-height:1.45}
-.hx-who{font-size:var(--ui-text-xs);font-weight:600;color:var(--ui-muted);text-transform:uppercase}
+.hx-who{font-size:var(--ui-text-xs);font-weight:var(--ui-weight-semibold);color:var(--ui-muted)}
 .hx-history{margin:var(--ui-space-1) 0 0;padding-left:var(--ui-space-4);font-size:var(--ui-text-xs);color:var(--ui-muted)}
 .hx-quote{display:block;border-left:2px solid var(--ui-border);padding-left:var(--ui-space-2);color:var(--ui-muted);font-style:italic;font-size:var(--ui-text-xs);margin:var(--ui-space-1) 0}
 .hx-msg-actions{display:flex;gap:var(--ui-space-1);margin-top:var(--ui-space-1)}
 /* composer */
 .hx-composer textarea{width:100%;min-height:56px;font:var(--ui-text-sm) var(--ui-font);border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);padding:var(--ui-space-1) var(--ui-space-2);box-sizing:border-box;margin-top:var(--ui-space-1);background:var(--ui-surface);color:var(--ui-ink)}
 /* buttons */
-.hx-btn{font:600 var(--ui-text-xs) var(--ui-font);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);padding:var(--ui-space-2) var(--ui-space-3);cursor:pointer;margin:var(--ui-space-1) var(--ui-space-1) 0 0;color:var(--ui-ink);min-height:var(--ui-space-6)}
+.hx-btn{font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);border:1px solid var(--ui-border);background:var(--ui-surface);border-radius:var(--ui-radius-sm);padding:var(--ui-space-2) var(--ui-space-3);cursor:pointer;margin:var(--ui-space-1) var(--ui-space-1) 0 0;color:var(--ui-ink);min-height:var(--ui-space-6)}
 .hx-btn.pri{background:var(--ui-ink);color:var(--ui-page);border-color:var(--ui-ink)}
+.hx-btn:has(>svg){display:inline-flex;align-items:center;gap:var(--ui-space-1)}
+.hx-btn>svg{flex:none}
 /* handoff bar */
 .hx-handoff{border-top:1px solid var(--ui-border);padding:var(--ui-space-3) var(--ui-space-4);display:flex;justify-content:space-between;align-items:center}
 .hx-handoff .hx-note{font-size:var(--ui-text-xs);color:var(--ui-muted)}
 .hx-handoff .hx-next-tbd{margin-left:auto}
 /* pins */
-.hx-pin{position:absolute;z-index:700;width:24px;height:24px;border-radius:50% 50% 50% 4px;border:none;cursor:pointer;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-page);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px var(--ui-shadow)}
+.hx-pin{position:absolute;z-index:700;width:24px;height:24px;border-radius:50% 50% 50% 4px;border:none;cursor:pointer;font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);color:var(--ui-page);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px var(--ui-shadow)}
 .hx-pin[data-s=draft],.hx-pin[data-s=pending]{background:var(--ui-draft)}
 .hx-pin[data-s=acknowledged]{background:var(--ui-ack)}
 .hx-pin[data-s=resolved]{background:var(--ui-surface);color:var(--ui-resolved);border:2px solid var(--ui-resolved)}
 .hx-pin.active{box-shadow:0 0 0 3px var(--ui-pin-ring),0 2px 8px var(--ui-shadow)}
-[data-anchor]{position:relative}
+[data-anchor]:where(:not(.hx-mockup-fit *)){position:relative}
 /* A block with a marker and a corner pin reserves a right column: marker on the first line, pin below it. */
 [data-anchor]:has(> .hx-pin[data-column]){padding-right:var(--ui-space-6);min-height:calc(.5lh + 42px)}
 [data-anchor]:has(> .hx-pin[data-column]) > .hx-jev-marker,.hx-pin[data-column]{left:auto;right:0}
@@ -2287,17 +2613,35 @@ body.hx-comment [data-anchor] :is(button,input,select,textarea,label,a,summary){
 body.hx-comment [data-render-target]:hover{border:1.5px dashed var(--ui-draft)}
 body.hx-comment [data-render-target] canvas{cursor:copy!important}
 .hx-tbd-open{outline:2px solid var(--ui-draft);outline-offset:var(--ui-space-1)}
+/* mockup page (mockups #review-fit): the frames side by side, desktop first, each labeled and zoomed whole into its slot;
+   stacked on a phone. The frames keep the mockup's own look: an anchored region holds a pin with no weight of its own,
+   so the mockup's own position wins, and only pins and the arrival ring keep the chrome's size at any zoom. */
+.hx-mockup{display:flex;align-items:flex-start;gap:var(--ui-space-5);box-sizing:border-box;width:100%;margin:0;padding:var(--ui-space-5) calc(var(--ui-space-6) + var(--ui-space-5)) calc(var(--hx-dock-space,var(--ui-space-6)) + 2 * var(--ui-space-6)) var(--ui-space-5)}
+.hx-mockup-slot{flex:0 1 var(--hx-natural,auto);min-width:0;margin:0}
+.hx-mockup-label{margin:0 0 var(--ui-space-2);color:var(--ui-muted);font:var(--ui-weight-semibold) var(--ui-text-xs)/1.4 var(--ui-font)}
+.hx-mockup-fit{position:relative;width:max-content}
+:where(.hx-mockup-fit [data-anchor]){position:relative}
+.hx-mockup-fit .hx-pin{zoom:calc(1 / var(--hx-zoom,1))}
+.hx-mockup-fit .hx-tbd-open{outline-width:calc(2px / var(--hx-zoom,1));outline-offset:calc(var(--ui-space-1) / var(--hx-zoom,1))}
+.hx-mockup-before :is(.hx-pin,.hx-thread-ring,#hx-mode){display:none!important}
 /* chosen answer button: pressed, checked, and outlined, not color alone; the check stays out of its name */
-button[data-spec-choice][aria-pressed=true]{border:2px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-ink);font-weight:600}
+button[data-spec-choice][aria-pressed=true]{border:2px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-ink);font-weight:var(--ui-weight-semibold)}
 button[data-spec-choice][aria-pressed=true]::before{content:"\\2713";content:"\\2713" / "";margin-right:var(--ui-space-1)}
 /* badge */
-.hx-badge{font:600 var(--ui-text-xs) var(--ui-font);text-transform:uppercase;letter-spacing:.04em;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6;margin-left:var(--ui-space-2);vertical-align:middle}
+.hx-badge{font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6;margin-left:var(--ui-space-2);vertical-align:middle}
+/* See mockup chip (mockups #chip-look): the chrome's pill radius and link color, in the flow after the block's text */
+.hx-mockup-chip{display:inline-block;box-sizing:border-box;user-select:none;-webkit-user-select:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;margin-left:var(--ui-space-2);padding:0 var(--ui-space-2);border:1px solid currentColor;border-radius:var(--ui-radius-pill);background:var(--ui-surface);color:var(--ui-link);font:var(--ui-weight-semibold) var(--ui-text-xs)/1.6 var(--ui-font);text-decoration:none;text-indent:0}
+.hx-mockup-chip:hover{background:var(--ui-action-soft)}
+body.hx-comment [data-anchor] a.hx-mockup-chip{cursor:pointer}
+/* mockups with open threads, at the head of the panel (mockups #accept-gate) */
+.hx-mockup-open{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--ui-space-1)}
+.hx-mockup-open a{color:var(--ui-link);font:var(--ui-weight-medium) var(--ui-text-sm)/1.4 var(--ui-font)}
 /* jev note */
-.hx-jev-note{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-1) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:var(--ui-draft-soft);color:var(--ui-draft);font:600 var(--ui-text-xs)/1.35 var(--ui-font)}
+.hx-jev-note{box-sizing:border-box;max-width:720px;margin:var(--ui-space-3) auto 0;padding:var(--ui-space-1) var(--ui-space-3);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:var(--ui-draft-soft);color:var(--ui-draft);font:var(--ui-weight-semibold) var(--ui-text-xs)/1.35 var(--ui-font)}
 [data-hx-jev-type=no-behavior-change]{color:var(--spec-muted)!important}
 [data-hx-jev-type=no-behavior-change] :is(h1,h2,h3,h4,h5,h6,p,li,td,th,blockquote,code,strong,em,a){color:inherit!important}
 /* jev markers */
-.hx-jev-marker{position:absolute;top:.35em;left:calc(100% + 10px);z-index:640;box-sizing:border-box;width:10px;height:10px;margin:0;padding:0;border:0;border-radius:50%;background:var(--ui-marker);color:var(--ui-on-marker);cursor:pointer;display:grid;place-items:center;font:600 var(--ui-text-xs)/1 var(--ui-font)}
+.hx-jev-marker{position:absolute;top:.35em;left:calc(100% + 10px);z-index:640;box-sizing:border-box;width:10px;height:10px;margin:0;padding:0;border:0;border-radius:50%;background:var(--ui-marker);color:var(--ui-on-marker);cursor:pointer;display:grid;place-items:center;font:var(--ui-weight-semibold) var(--ui-text-xs)/1 var(--ui-font)}
 .hx-jev-marker::before{content:"";position:absolute;inset:-10px 0 -10px -16px}
 .hx-jev-marker[data-attention=true]{width:14px;height:14px;background:var(--ui-marker-important)}
 .hx-jev-marker[data-attention=true]::after{content:"!"}
@@ -2306,22 +2650,20 @@ button[data-spec-choice][aria-pressed=true]::before{content:"\\2713";content:"\\
 .hx-jev-marker[data-passed=true]::after{content:"\\2713"}
 .hx-jev-marker[data-inset=true]{left:auto;right:0}
 .hx-jev-marker:hover,.hx-jev-marker[aria-expanded=true]{box-shadow:0 0 0 3px var(--ui-pin-ring)}
-.hx-jev-marker:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
 .hx-jev-marker[data-pending=true]{background:transparent;border:2px solid var(--ui-marker);border-right-color:transparent;animation:hx-jev-spin 1s linear infinite}
 @keyframes hx-jev-spin{to{transform:rotate(360deg)}}
 /* rule card (project-rules #card): label, title, verbatim quote, source, then rejects left and one primary rightmost */
 .hx-rule-card{display:grid;gap:var(--ui-space-2);min-width:0;color:var(--ui-ink);font:var(--ui-text-sm)/1.55 var(--ui-font)}
-.hx-rule-card-label{font:600 var(--ui-text-xs)/1.3 var(--ui-font);letter-spacing:.02em;color:var(--ui-muted)}
-.hx-rule-card-title{font:600 var(--ui-text-md)/1.35 var(--ui-font);color:var(--ui-ink);overflow-wrap:anywhere}
+.hx-rule-card-label{font:var(--ui-weight-semibold) var(--ui-text-xs)/1.3 var(--ui-font);letter-spacing:.02em;color:var(--ui-muted)}
+.hx-rule-card-title{font:var(--ui-weight-semibold) var(--ui-text-md)/1.35 var(--ui-font);color:var(--ui-ink);overflow-wrap:anywhere}
 .hx-rule-card-quote{margin:var(--ui-space-1) 0 0;padding:0 0 0 var(--ui-space-3);border-left:3px solid var(--ui-border);border-radius:0;font:inherit;font-style:normal;color:var(--ui-ink);overflow-wrap:anywhere;white-space:normal}
-.hx-rule-card-source{justify-self:start;display:inline-flex;gap:var(--ui-space-1);align-items:baseline;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:none;overflow-wrap:anywhere}
+.hx-rule-card-source{justify-self:start;display:inline-flex;gap:var(--ui-space-1);align-items:center;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:none;overflow-wrap:anywhere}
 .hx-rule-card-source-text{text-decoration:underline;text-underline-offset:2px}
 .hx-rule-card-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--ui-space-2) var(--ui-space-4);margin-top:var(--ui-space-1);padding-top:var(--ui-space-3);border-top:1px solid var(--ui-border)}
 .hx-rule-card-actions button{white-space:nowrap}
 .hx-rule-card-actions .hx-btn.pri{margin:0 0 0 auto}
-.hx-rule-card-reject{margin:0;padding:var(--ui-space-1) 0;min-height:var(--ui-space-6);border:0;background:none;font:600 var(--ui-text-xs) var(--ui-font);color:var(--ui-ink);text-decoration:underline;text-decoration-color:var(--ui-border);text-decoration-thickness:1px;text-underline-offset:3px;cursor:pointer;border-radius:var(--ui-radius-sm)}
+.hx-rule-card-reject{margin:0;padding:var(--ui-space-1) 0;min-height:var(--ui-space-6);border:0;background:none;font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);color:var(--ui-ink);text-decoration:underline;text-decoration-color:var(--ui-border);text-decoration-thickness:1px;text-underline-offset:3px;cursor:pointer;border-radius:var(--ui-radius-sm)}
 .hx-rule-card-reject:hover{text-decoration-color:currentColor}
-.hx-rule-card-reject:focus-visible,.hx-rule-card .hx-btn:focus-visible,.hx-rule-card-source:focus-visible{outline:2px solid var(--ui-focus);outline-offset:2px}
 .hx-jev-pop:has(.hx-rule-card){max-width:min(440px,calc(100vw - 16px));padding:var(--ui-space-4)}
 .hx-jev-pop-note:has(>.hx-rule-card)+.hx-jev-pop-note,.hx-jev-pop-note+.hx-jev-pop-note:has(>.hx-rule-card){margin-top:var(--ui-space-2);padding-top:var(--ui-space-3);border-top:1px solid var(--ui-border)}
 /* jev popover */
@@ -2329,9 +2671,9 @@ button[data-spec-choice][aria-pressed=true]::before{content:"\\2713";content:"\\
 .hx-jev-pop[hidden]{display:none}
 .hx-jev-pop-notes{margin:0;padding:0;list-style:none;display:grid;gap:var(--ui-space-1)}
 .hx-jev-pop-note{display:grid;gap:var(--ui-space-1)}
-.hx-jev-pop-text{font-weight:600;color:var(--ui-ink);overflow-wrap:anywhere}
+.hx-jev-pop-text{font-weight:var(--ui-weight-semibold);color:var(--ui-ink);overflow-wrap:anywhere}
 .hx-jev-pop-note[data-attention=true] .hx-jev-pop-text{color:var(--ui-fail)}
-.hx-jev-pop-note[data-group=neutral] .hx-jev-pop-text{font-weight:600;color:var(--ui-muted)}
+.hx-jev-pop-note[data-group=neutral] .hx-jev-pop-text{font-weight:var(--ui-weight-semibold);color:var(--ui-muted)}
 a.hx-jev-pop-text{text-decoration:underline;text-underline-offset:2px}
 .hx-jev-pop-quote{color:var(--ui-ink);overflow-wrap:anywhere}
 .hx-jev-pop-sentence{display:none;font-size:var(--ui-text-xs);color:var(--ui-muted);overflow-wrap:anywhere}
@@ -2349,38 +2691,67 @@ a.hx-jev-pop-text{text-decoration:underline;text-underline-offset:2px}
 .hx-jev-pop-batch{display:inline-flex;align-items:center;gap:var(--ui-space-1);white-space:nowrap}
 .hx-jev-pop-more{margin:0;min-height:var(--ui-space-6);padding:0;border:0;background:none;font:inherit;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px;cursor:pointer;align-self:center}
 /* jev thread label */
-.hx-jev-thread-label{flex:0 0 auto;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6;font-size:var(--ui-text-xs);font-weight:600;white-space:nowrap}
+.hx-jev-thread-label{flex:0 0 auto;color:var(--ui-resolved);background:var(--ui-resolved-soft);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-2);line-height:1.6;font-size:var(--ui-text-xs);font-weight:var(--ui-weight-semibold);white-space:nowrap}
 .hx-jev-thread-label[data-state=unavailable]{color:var(--ui-error);background:var(--ui-fail-soft)}
 /* orphan hint */
 .hx-orphan-hint{display:flex;align-items:center;flex-wrap:wrap;gap:var(--ui-space-1);margin:var(--ui-space-2) 0;padding:var(--ui-space-2);border-left:3px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-draft);font-size:var(--ui-text-xs);line-height:1.35}
 .hx-orphan-hint>span{flex:1 1 100%}
 .hx-place-notice{margin:var(--ui-space-2) 0;padding:var(--ui-space-2);border-left:3px solid var(--ui-draft);background:var(--ui-draft-soft);color:var(--ui-draft);font-size:var(--ui-text-xs);line-height:1.35}
 .hx-orphan-hint .hx-btn{margin:0}
-.hx-pin-jev{position:absolute;left:calc(100% + 4px);top:50%;transform:translateY(-50%);width:max-content;max-width:120px;color:var(--ui-resolved);background:var(--ui-resolved-soft);border:1px solid var(--ui-resolved);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-1);font:600 var(--ui-text-xs)/1.4 var(--ui-font);white-space:nowrap;pointer-events:none}
+.hx-pin-jev{position:absolute;left:calc(100% + 4px);top:50%;transform:translateY(-50%);width:max-content;max-width:120px;color:var(--ui-resolved);background:var(--ui-resolved-soft);border:1px solid var(--ui-resolved);border-radius:var(--ui-radius-pill);padding:0 var(--ui-space-1);font:var(--ui-weight-semibold) var(--ui-text-xs)/1.4 var(--ui-font);white-space:nowrap;pointer-events:none}
 /* banner */
-.hx-banner{position:fixed;top:0;left:0;right:0;background:var(--ui-pass);color:var(--ui-page);font:600 var(--ui-text-sm) var(--ui-font);padding:var(--ui-space-2) var(--ui-space-4);z-index:950;display:flex;gap:var(--ui-space-3);align-items:center;justify-content:center}
+.hx-banner{position:fixed;top:0;left:0;right:0;background:var(--ui-pass);color:var(--ui-page);font:var(--ui-weight-semibold) var(--ui-text-sm) var(--ui-font);padding:var(--ui-space-2) var(--ui-space-4);z-index:950;display:flex;gap:var(--ui-space-3);align-items:center;justify-content:center}
+/* error overlay (#error-overlay): under the top line, at most a fifth of the screen, its lines scrolling within it */
+.hx-errors{position:fixed;top:var(--hx-line-space,0px);left:0;right:0;z-index:870;box-sizing:border-box;max-height:20vh;overflow:auto;padding:var(--ui-space-2) var(--ui-space-3);background:var(--ui-error);color:var(--ui-page);font:var(--ui-text-xs)/1.4 var(--ui-mono);white-space:pre-wrap}
+.hx-errors p{margin:0;max-width:none;font:inherit;color:inherit}
+.hx-errors p+p{margin-top:var(--ui-space-1)}
 /* focus error */
-.hx-focus-error{position:fixed;top:calc(var(--ui-space-3) + env(safe-area-inset-top));left:50%;transform:translateX(-50%);max-width:calc(100vw - 24px);box-sizing:border-box;padding:var(--ui-space-2) var(--ui-space-3);border-radius:var(--ui-radius);background:var(--ui-error);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);z-index:970;box-shadow:0 6px 20px var(--ui-shadow)}
+.hx-focus-error{position:fixed;top:calc(var(--hx-top-space,0px) + var(--ui-space-3) + env(safe-area-inset-top));left:50%;transform:translateX(-50%);max-width:calc(100vw - 24px);box-sizing:border-box;padding:var(--ui-space-2) var(--ui-space-3);border-radius:var(--ui-radius);background:var(--ui-error);color:var(--ui-page);font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);z-index:970;box-shadow:0 6px 20px var(--ui-shadow)}
 /* toast */
-.hx-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--ui-ink);color:var(--ui-page);font:600 var(--ui-text-xs) var(--ui-font);border-radius:var(--ui-radius);padding:var(--ui-space-2) var(--ui-space-4);box-shadow:0 8px 28px var(--ui-shadow);z-index:960;opacity:0;transition:opacity .25s;pointer-events:none}
+.hx-toast{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);background:var(--ui-ink);color:var(--ui-page);font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);border-radius:var(--ui-radius);padding:var(--ui-space-2) var(--ui-space-4);box-shadow:0 8px 28px var(--ui-shadow);z-index:960;opacity:0;transition:opacity .25s;pointer-events:none}
 .hx-toast.show{opacity:1}
-.hx-banner button{font:600 var(--ui-text-xs) var(--ui-font);border:1px solid var(--ui-page);background:transparent;color:var(--ui-page);border-radius:var(--ui-radius-sm);min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);cursor:pointer}
+.hx-banner button{font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);border:1px solid var(--ui-page);background:transparent;color:var(--ui-page);border-radius:var(--ui-radius-sm);min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);cursor:pointer}
+/* host source (comment-layer #ui-from) */
+.hx-host-from{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 var(--ui-space-1);margin-top:var(--ui-space-1);font-size:var(--ui-text-xs);color:var(--ui-muted);min-width:0}
+.hx-host-kind{font-weight:var(--ui-weight-semibold);color:var(--ui-ink)}
+.hx-host-from a{color:var(--ui-ack);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere;min-width:0}
+/* starters (comment-layer #ui-starters) */
+.hx-starters{display:flex;flex-wrap:wrap}
+/* comment layer (comment-layer #ui-style): its own overlay on a host page, the host's look untouched */
+:host{all:initial;font:var(--ui-text-sm)/1.4 var(--ui-font);color:var(--ui-ink)}
+.hx-layer-control,.hx-layer .hx-pin,.hx-quote-mark,.hx-layer-box{position:fixed}
+.hx-layer-control{z-index:700;box-sizing:border-box;width:24px;height:24px;margin:0;padding:0;display:grid;place-items:center;border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-muted);cursor:pointer;box-shadow:0 2px 8px var(--ui-shadow)}
+.hx-layer-control:hover,.hx-layer-control[aria-expanded=true]{color:var(--ui-ink);border-color:var(--ui-muted)}
+.hx-layer-control svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.hx-layer .hx-pin{margin:0;padding:0}
+.hx-quote-mark{z-index:640;pointer-events:none;background:var(--ui-pin-ring);border-bottom:2px solid var(--ui-draft)}
+.hx-layer-box{z-index:800;box-sizing:border-box;display:flex;flex-direction:column;width:380px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow:hidden;background:var(--ui-page);color:var(--ui-ink);border:1px solid var(--ui-border);border-radius:var(--ui-radius);box-shadow:0 8px 28px var(--ui-shadow);font:var(--ui-text-sm) var(--ui-font)}
+.hx-layer-head{display:flex;align-items:center;gap:var(--ui-space-2);padding:var(--ui-space-2) var(--ui-space-2) var(--ui-space-2) var(--ui-space-3);border-bottom:1px solid var(--ui-border)}
+.hx-layer-title{flex:1 1 auto;min-width:0;font-weight:var(--ui-weight-semibold);overflow-wrap:anywhere}
+.hx-layer-kind{flex:0 1 auto;min-width:0;font-size:var(--ui-text-xs);color:var(--ui-muted);overflow-wrap:anywhere}
+.hx-layer-close{flex:0 0 auto;width:var(--ui-space-6);height:var(--ui-space-6);margin:0;padding:0;display:grid;place-items:center;border:1px solid var(--ui-border);border-radius:var(--ui-radius-sm);background:var(--ui-surface);color:var(--ui-muted);cursor:pointer;font:var(--ui-text-lg)/1 var(--ui-font)}
+.hx-layer-close:hover{background:var(--ui-page);color:var(--ui-ink)}
+.hx-layer-box .hx-threads{flex:1 1 auto;min-height:0}
+.hx-layer-box .hx-thread{cursor:default}
+.hx-layer-box .hx-handoff{flex-wrap:wrap;gap:var(--ui-space-1) var(--ui-space-2)}
+.hx-layer-box .hx-offline{font-size:var(--ui-text-xs);font-weight:var(--ui-weight-semibold);color:var(--ui-draft)}
+.hx-layer .hx-toast{bottom:18px}
 /* mobile */
 @media(max-width:640px){
 .hx-toolbar{left:var(--ui-space-3);right:var(--ui-space-3);bottom:calc(10px + env(safe-area-inset-bottom));transform:none;max-width:none;display:flex;flex-wrap:wrap;justify-content:stretch;gap:var(--ui-space-1);padding:var(--ui-space-1)}
 .hx-toolbar button{min-height:44px;flex:1 1 auto;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
-.hx-mobile-handoff,.hx-mobile-next-tbd:not([hidden]){display:block}
+.hx-toolbar .hx-handoff{display:contents}
 .hx-toolbar .hx-status{flex:1 0 100%;min-width:0;padding:0 var(--ui-space-2) var(--ui-space-1);overflow:hidden;text-align:center;text-overflow:ellipsis;white-space:nowrap}
 .hx-panel{width:100vw;height:100dvh;max-height:100dvh;border-left:0;box-sizing:border-box;padding-bottom:calc(var(--hx-dock-space,0px) + var(--ui-space-3) + env(safe-area-inset-bottom))}
 body.hx-panel-open{padding-right:0;overflow:hidden}
-.hx-panel-head{min-height:56px;padding:var(--ui-space-4) var(--ui-space-4) var(--ui-space-3) calc(var(--ui-space-6) + var(--ui-space-5))}
-.hx-panel-toggle{top:var(--ui-space-1);left:var(--ui-space-1);width:44px;height:44px;touch-action:manipulation}
-.hx-panel-gear{top:var(--ui-space-1);right:var(--ui-space-2);width:44px;height:44px;touch-action:manipulation}
-.hx-thread-dock{top:calc(var(--ui-space-2) + env(safe-area-inset-top));right:var(--ui-space-2);padding:var(--ui-space-1)}
-.hx-service-index-link{top:calc(var(--ui-space-2) + env(safe-area-inset-top));left:var(--ui-space-2);max-width:calc(100vw - 68px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-body.hx-panel-open .hx-service-index-link{display:none}
+.hx-mockup{flex-direction:column;gap:var(--ui-space-4);padding:var(--ui-space-3) var(--ui-space-3) calc(var(--hx-dock-space,112px) + var(--ui-space-5) + env(safe-area-inset-bottom))}
+.hx-mockup-slot{flex:none;width:100%}
+.hx-panel-head{--hx-head-control:44px;--hx-toggle-inset:var(--ui-space-1);min-height:56px;padding-top:var(--ui-space-4)}
+.hx-panel-toggle,.hx-panel-gear{top:var(--ui-space-1);touch-action:manipulation}
+.hx-thread-dock{top:calc(var(--hx-top-space,0px) + var(--ui-space-2));right:var(--ui-space-2);padding:var(--ui-space-1)}
+body.hx-panel-open :is(.hx-top-line,.hx-errors){display:none}
 .hx-dock-open,.hx-dock-thread{width:44px;height:44px;touch-action:manipulation}
-.hx-dock-threads{max-height:calc(100dvh - 68px)}
+.hx-dock-threads{max-height:calc(100dvh - var(--hx-top-space,0px) - 68px)}
 .hx-threads{padding:var(--ui-space-3);overscroll-behavior:contain}
 .hx-thread{padding:var(--ui-space-3)}
 .hx-disclosure{min-width:44px;min-height:44px;touch-action:manipulation}
@@ -2402,11 +2773,84 @@ tr[data-anchor]:has(> .hx-pin[data-column]) > :has(> .hx-jev-marker){padding-rig
 .hx-banner{align-items:flex-start;flex-wrap:wrap;padding:calc(var(--ui-space-2) + env(safe-area-inset-top)) var(--ui-space-3) var(--ui-space-2);text-align:center}
 .hx-banner button{min-height:44px;padding:var(--ui-space-2) var(--ui-space-3);touch-action:manipulation}
 .hx-toast{bottom:calc(112px + env(safe-area-inset-bottom));max-width:calc(100vw - 24px);box-sizing:border-box;text-align:center}
+.hx-layer-control{width:44px;height:44px;touch-action:manipulation}
+.hx-layer-close{width:44px;height:44px;touch-action:manipulation}
+.hx-layer-box{width:auto;max-width:none;max-height:75dvh}
+.hx-layer .hx-toast{bottom:calc(18px + env(safe-area-inset-bottom))}
 }
 @media(prefers-reduced-motion:reduce){
 .hx-thread-dock,.hx-thread-ring,.hx-toast{transition:none}
 .hx-jev-marker[data-pending=true]{animation:none}
 }`;
+
+// spec-page-design #top-line, lane-hosting #index-link: one fixed line at the top of an HTTP page holding the back link
+// and the range bar; the body and the dock start under it, at the height it measures (--hx-top-space). An embed host
+// keeps its own look, so it gets no line.
+function mountTopLine() {
+  if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(OWN_ADDRESS.protocol) || document.getElementById('hx-top-line')) return;
+  const line = document.createElement('div');
+  line.className = 'hx-top-line';
+  line.id = 'hx-top-line';
+  const indexLink = line.appendChild(document.createElement('a'));
+  indexLink.className = 'hx-service-index-link';
+  indexLink.href = new URL('/', OWN_ADDRESS).href;
+  indexLink.innerHTML = ICONS['chevron-left'] + '<span>Review index</span>';
+  indexLink.dataset.specChatNavigation = 'index';
+  if (MOCKUP_SPEC) { // mockups #review-chrome: the mockup's spec, after the back link, named by its file name in words
+    const specLink = line.appendChild(document.createElement('a'));
+    specLink.className = 'hx-spec-link';
+    specLink.id = 'hx-spec-link';
+    specLink.href = mockupSpecAddress();
+    specLink.textContent = sentenceCase(MOCKUP_SPEC.replace(/-/g, ' ')) + ' spec';
+  }
+  document.body.insertBefore(line, document.body.firstChild);
+  mountRangeBar(line);
+  // Measured as the line goes in, so the page is already under it when a place is restored. Any change the page makes in
+  // the line (the picker opening or closing, the range, an error) is measured at once, before any other task reads or
+  // paints the page; the resize observer runs only at the next rendering, and keeps it current as the width changes.
+  measureTop();
+  new MutationObserver(measureTop).observe(line, { subtree: true, childList: true, attributes: true, characterData: true });
+  new ResizeObserver(measureTop).observe(line);
+}
+
+// The space the page starts under: the top line (--hx-line-space, 0 while none shows), then the error overlay under it
+// (#error-overlay), the two together --hx-top-space. Both hide while the phone panel covers the page: keep the last
+// heights, so the page does not move under it.
+function measureTop() {
+  const line = document.getElementById('hx-top-line'), errors = document.getElementById('hx-errors');
+  if ([line, errors].some(el => el && !el.offsetHeight)) return;
+  const lineSpace = line ? line.offsetHeight : 0;
+  document.documentElement.style.setProperty('--hx-line-space', lineSpace + 'px');
+  document.documentElement.style.setProperty('--hx-top-space', lineSpace + (errors ? errors.offsetHeight : 0) + 'px');
+}
+
+// spec-page-design #keys-rule: no label carries its key; the tooltip names it beside the label, and on a phone,
+// where a tooltip does not show, the control has none.
+function keyTip(control, key) {
+  const label = control.textContent;
+  const apply = () => {
+    if (NARROW.matches) control.removeAttribute('title');
+    else control.title = label + ' (' + key + ')';
+  };
+  apply();
+  NARROW.addEventListener('change', apply);
+}
+
+// spec-page-design #type-system-rule: status words read in sentence case.
+const sentenceCase = text => String(text).charAt(0).toUpperCase() + String(text).slice(1);
+
+// The page's chrome CSS, first at boot: whatever shows before the chrome mounts, the error overlay included, has its look.
+function mountStyle() {
+  const style = document.createElement('style');
+  style.setAttribute('data-hx-chrome', '');
+  const sharedDocumentStyle = document.querySelector('link[rel~="stylesheet"][href*=".style/spec.css"]');
+  style.textContent = (EMBED_REVIEW_DIR || MOCKUP_SPEC || sharedDocumentStyle ? '' : DOC_CSS) + FOCUS_CSS + CSS;
+  document.head.appendChild(style);
+  // mockups #review-fit: the review lays the page out at the screen's width, as a spec page declares; the frames keep theirs.
+  if (MOCKUP_SPEC && !document.querySelector('meta[name="viewport"]')) {
+    document.head.appendChild(Object.assign(document.createElement('meta'), { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' }));
+  }
+}
 
 function mountUI() {
   function setupDiffVisibility() {
@@ -2446,49 +2890,40 @@ function mountUI() {
     });
   }
 
-  const style = document.createElement('style');
-  const sharedDocumentStyle = document.querySelector('link[rel~="stylesheet"][href*=".style/spec.css"]');
-  style.textContent = (EMBED_REVIEW_DIR || sharedDocumentStyle ? '' : DOC_CSS) + FOCUS_CSS + CSS;
-  document.head.appendChild(style);
-
-  mountRangeBar();
-
-  if (OWN_ADDRESS.protocol === 'http:' || OWN_ADDRESS.protocol === 'https:') {
-    const indexLink = document.createElement('a');
-    indexLink.className = 'hx-service-index-link';
-    indexLink.href = new URL('/', OWN_ADDRESS).href;
-    indexLink.textContent = 'Back to Spec Chat index';
-    indexLink.setAttribute('aria-label', 'Back to Spec Chat index');
-    indexLink.dataset.specChatNavigation = 'index';
-    document.body.insertBefore(indexLink, document.body.firstChild);
-  }
+  mountTopLine();
 
   const bar = document.createElement('div');
   bar.className = 'hx-toolbar';
-  bar.innerHTML = '<button id="hx-mode" aria-pressed="false">✛ Comment (C)</button><button class="hx-mobile-next-tbd" id="hx-mobile-next-tbd" type="button" hidden>Next TBD</button><button class="hx-mobile-handoff" id="hx-mobile-handoff" type="button" disabled>Hand off</button><button id="hx-connect" hidden>Connect review folder</button><button id="hx-repick" hidden>Choose different folder</button><span class="hx-offline" id="hx-offline" role="status" hidden></span><span class="hx-status" id="hx-status">starting…</span>';
+  bar.innerHTML = '<button id="hx-mode" aria-pressed="false">Comment</button><button id="hx-connect" hidden>Connect review folder</button><button id="hx-repick" hidden>Choose different folder</button><span class="hx-offline" id="hx-offline" role="status" hidden></span><span class="hx-status" id="hx-status">starting…</span>';
   document.body.appendChild(bar);
+  keyTip(document.getElementById('hx-mode'), 'C');
   // The narrow sidebar ends above the fixed dock, so its last content stays reachable.
   new ResizeObserver(() => document.documentElement.style.setProperty('--hx-dock-space', bar.offsetHeight + 'px')).observe(bar);
 
   const dock = document.createElement('nav');
   dock.className = 'hx-thread-dock';
   dock.setAttribute('aria-label', 'Review conversations');
-  dock.innerHTML = '<button class="hx-dock-open" id="hx-dock-open" type="button" aria-label="Open review sidebar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H10l-5 3v-13Z"></path><path d="M8 9h8M8 12h5"></path></svg><span class="hx-unread-badge" id="hx-unread-badge" aria-hidden="true" hidden></span></button><div class="hx-dock-threads" id="hx-dock-threads"></div>';
+  dock.innerHTML = '<button class="hx-dock-open" id="hx-dock-open" type="button" aria-label="Open review sidebar">' + ICONS.threads + '<span class="hx-unread-badge" id="hx-unread-badge" aria-hidden="true" hidden></span></button><div class="hx-dock-threads" id="hx-dock-threads"></div>';
   document.body.appendChild(dock);
 
   const panel = document.createElement('aside');
   panel.className = 'hx-panel';
   panel.setAttribute('aria-label', 'Review sidebar');
-  panel.innerHTML = '<div class="hx-panel-head">Review <span class="hx-sub" id="hx-agent"></span><button class="hx-panel-toggle" id="hx-panel-toggle" type="button" aria-expanded="false" aria-label="Open review sidebar">‹</button><button class="hx-panel-gear" id="hx-panel-gear" type="button" aria-expanded="false" aria-controls="hx-settings" aria-label="Review display settings" title="Display settings">⚙</button></div><div class="hx-panel-content" id="hx-panel-content" aria-hidden="true" inert><div class="hx-settings" id="hx-settings" hidden><label class="hx-set-row" for="hx-veil">Diff visibility<span class="hx-set-val" id="hx-veil-val">100%</span><input type="range" id="hx-veil" min="0" max="100" step="5" value="100"></label><p class="hx-set-note">How strongly unchanged blocks are dimmed and blurred. At 0 the whole spec reads at normal clarity.</p></div><div class="hx-threads" id="hx-threads"></div><div class="hx-handoff"><span class="hx-note" id="hx-drafts">0 drafts</span><button class="hx-btn hx-next-tbd" id="hx-next-tbd" type="button" hidden>Next TBD</button><button class="hx-btn pri" id="hx-handoff">Hand off to agent →</button></div></div>';
+  panel.innerHTML = '<div class="hx-panel-head">Review <span class="hx-sub" id="hx-agent"></span><button class="hx-panel-toggle" id="hx-panel-toggle" type="button" aria-expanded="false" aria-label="Open review sidebar">' + ICONS.panel + '</button><button class="hx-panel-gear" id="hx-panel-gear" type="button" aria-expanded="false" aria-controls="hx-settings" aria-label="Review display settings" title="Display settings">' + ICONS.gear + '</button></div><div class="hx-panel-content" id="hx-panel-content" aria-hidden="true" inert><div class="hx-settings" id="hx-settings" hidden><label class="hx-set-row" for="hx-veil">Diff visibility<span class="hx-set-val" id="hx-veil-val">100%</span><input type="range" id="hx-veil" min="0" max="100" step="5" value="100"></label><p class="hx-set-note">How strongly unchanged blocks are dimmed and blurred. At 0 the whole spec reads at normal clarity.</p></div><div class="hx-threads" id="hx-threads"></div><div class="hx-handoff"><span class="hx-note" id="hx-drafts">0 drafts</span><button class="hx-btn hx-next-tbd" id="hx-next-tbd" type="button" hidden>Next TBD</button><button class="hx-btn pri" id="hx-handoff">Hand off to agent →</button></div></div>';
   document.body.appendChild(panel);
+  // #mobile-handoff: on a narrow screen the panel's one hand-off bar sits in the bottom toolbar, panel open or closed,
+  // so it stays operable while the panel's content is inert; on a desktop it ends the panel's content.
+  const handoffBar = panel.querySelector('.hx-handoff');
+  const dockHandoff = () => NARROW.matches ? bar.insertBefore(handoffBar, document.getElementById('hx-mode').nextSibling) : document.getElementById('hx-panel-content').appendChild(handoffBar);
+  dockHandoff();
+  NARROW.addEventListener('change', dockHandoff);
 
   document.getElementById('hx-mode').addEventListener('click', () => setCommentMode(!state.commentMode));
-  document.getElementById('hx-mobile-handoff').addEventListener('click', handoff);
-  document.getElementById('hx-mobile-next-tbd').addEventListener('click', nextTbd);
   document.getElementById('hx-dock-open').addEventListener('click', () => openPanel(true));
   document.getElementById('hx-panel-toggle').addEventListener('click', () => openPanel(!state.panelOpen));
   document.getElementById('hx-handoff').addEventListener('click', handoff);
   document.getElementById('hx-next-tbd').addEventListener('click', nextTbd);
+  if (MOCKUP_SPEC) ['hx-panel-gear', 'hx-settings'].forEach(id => document.getElementById(id).remove()); // a spec's diff dimming
   setupDiffVisibility();
   document.addEventListener('keydown', e => {
     // Enter or Space on a comment-target block is a plain click on the block itself (onDocClick):
@@ -2509,12 +2944,13 @@ function mountUI() {
   const INTERACTIVE = 'button, input, select, textarea, label, a, summary, [role="button"]:not([data-hx-target]), [role="link"]';
   const suspend = e => {
     if (!state.commentMode) return;
-    if (e.target.closest && e.target.closest('.hx-pin,.hx-jev-marker,.hx-jev-pop,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-range-bar,.hx-service-index-link,#hx-errors')) return;
+    if (e.target.closest && e.target.closest('.hx-pin,.hx-jev-marker,.hx-mockup-chip,.hx-jev-pop,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-top-line,#hx-errors')) return;
     if (e.target.tagName === 'CANVAS') return;
     if (!holderOf(e.target)) return;
-    // native drag/toggle on controls dies here; elsewhere only spec-script handlers die (selection survives)
+    // native drag/toggle on controls dies here; elsewhere only spec-script handlers die (selection survives). A touch's
+    // default is its click, which marks the control (onDocClick blocks its action), so only a touch's handlers die.
     if (/^(pointerdown|mousedown|touchstart)$/.test(e.type)) {
-      if (e.target.closest(INTERACTIVE)) { if (e.cancelable) e.preventDefault(); e.stopImmediatePropagation(); }
+      if (e.target.closest(INTERACTIVE)) { if (e.cancelable && e.type !== 'touchstart') e.preventDefault(); e.stopImmediatePropagation(); }
       return;
     }
     if (e.cancelable) e.preventDefault();
@@ -2533,14 +2969,16 @@ function mountUI() {
   document.addEventListener('pointermove', e => {
     const t = e.target;
     let box = null;
-    if (state.commentMode && t instanceof Element && !t.closest('.hx-pin,.hx-jev-marker,.hx-jev-pop,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-range-bar')) {
+    if (state.commentMode && t instanceof Element && !t.closest('.hx-pin,.hx-jev-marker,.hx-mockup-chip,.hx-jev-pop,.hx-panel,.hx-thread-dock,.hx-toolbar,.hx-top-line')) {
       const svg = t.closest && t.closest('[data-anchor] svg');
-      if (svg && t !== svg) box = t.getBoundingClientRect();
+      // in a mockup frame the ring shows what a click marks: an element, or an anchored region (mockups #review-targets)
+      if (MOCKUP_SPEC && !svg && holderOf(t) && t.closest('[data-mockup-frame]')) box = markedElement(t, holderOf(t)).getBoundingClientRect();
+      else if (svg && t !== svg) box = t.getBoundingClientRect();
       else if (!svg && t.closest && t.closest(INTERACTIVE) && holderOf(t)) box = t.closest(INTERACTIVE).getBoundingClientRect();
     }
     if (!box) { if (ring) ring.style.display = 'none'; return; }
     ring = ring || document.body.appendChild(Object.assign(document.createElement('div'), { className: 'hx-ring' }));
-    ring.style.cssText = 'position:fixed;border:2px dashed #d98e04;border-radius:4px;pointer-events:none;z-index:650;display:block'
+    ring.style.cssText = 'position:fixed;display:block'
       + ';left:' + (box.left - 4) + 'px;top:' + (box.top - 4) + 'px;width:' + (Math.max(box.width, 8) + 8) + 'px;height:' + (Math.max(box.height, 8) + 8) + 'px';
   }, true);
   renderThreadDock();
@@ -2567,6 +3005,7 @@ function setCommentTargets(on) {
 }
 
 function setCommentMode(on) {
+  if (on && mockup.before) return; // a mockup's Before takes no comment (mockups #before-changed)
   state.commentMode = on;
   document.body.classList.toggle('hx-comment', on);
   setCommentTargets(on);
@@ -2576,10 +3015,11 @@ function setCommentMode(on) {
     try {
       const opt = info.chart.getOption() || {};
       const patch = {};
-      // amber hover highlight on chart marks (canvas can't take CSS outlines); a single-element
+      // draft-color hover highlight on chart marks (canvas can't take CSS outlines); a single-element
       // series array only merges onto series[0], so build one entry per series
       const n = (opt.series || []).length || 1;
-      patch.series = Array.from({ length: n }, () => ({ emphasis: { itemStyle: on ? { borderColor: '#d98e04', borderWidth: 3 } : { borderWidth: 0 } } }));
+      const draft = getComputedStyle(document.documentElement).getPropertyValue('--ui-draft').trim();
+      patch.series = Array.from({ length: n }, () => ({ emphasis: { itemStyle: on ? { borderColor: draft, borderWidth: 3 } : { borderWidth: 0 } } }));
       // comment mode silences chart interactivity: no tooltips / axis pointers.
       // Only touch charts that have a tooltip — patching one in would add hover UI on exit.
       const tt = Array.isArray(opt.tooltip) ? opt.tooltip[0] : opt.tooltip;
@@ -2590,7 +3030,7 @@ function setCommentMode(on) {
       info.chart.setOption(patch);
     } catch {}
   }
-  if (on) openPanel(!window.matchMedia('(max-width: 640px)').matches);
+  if (on) openPanel(!NARROW.matches);
 }
 function openPanel(open) {
   state.panelOpen = Boolean(open);
@@ -2599,7 +3039,6 @@ function openPanel(open) {
   const toggle = document.getElementById('hx-panel-toggle');
   toggle.setAttribute('aria-expanded', String(state.panelOpen));
   toggle.setAttribute('aria-label', state.panelOpen ? 'Collapse review sidebar' : 'Open review sidebar');
-  toggle.textContent = state.panelOpen ? '›' : '‹';
   const content = document.getElementById('hx-panel-content');
   content.toggleAttribute('inert', !state.panelOpen);
   content.setAttribute('aria-hidden', String(!state.panelOpen));
@@ -2628,6 +3067,26 @@ function addComposer(parent, c) {
     '<button class="hx-btn pri" data-act="save">' + verb + '</button><button class="hx-btn" data-act="cancel">Cancel</button>';
   const textarea = box.querySelector('textarea');
   textarea.value = c.text || '';
+  // comment-layer #ui-starters: the item's starters as buttons above the comment box; one begins the draft with its
+  // word, and the comment stays ordinary text.
+  if (c.kind === 'comment' && c.starters && c.starters.length) {
+    const row = document.createElement('div');
+    row.className = 'hx-starters';
+    for (const word of c.starters) {
+      const starter = row.appendChild(document.createElement('button'));
+      starter.type = 'button';
+      starter.className = 'hx-btn';
+      starter.dataset.starter = word;
+      starter.textContent = word;
+      starter.addEventListener('click', e => {
+        e.stopPropagation();
+        textarea.value = c.text = startedWith(word, textarea.value, c.starters);
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
+    }
+    box.insertBefore(row, textarea);
+  }
   // Live events re-render the panel; the composer keeps what was typed.
   textarea.addEventListener('input', () => { c.text = textarea.value; });
   textarea.addEventListener('keydown', e => {
@@ -2645,14 +3104,22 @@ function addComposer(parent, c) {
   setTimeout(() => textarea.focus(), 0);
 }
 
-// The one human message save: the composer and answer buttons write the same events.
+// A draft begun with a starter word: any starter it already begins with gives way to this one.
+function startedWith(word, text, starters) {
+  const rest = String(text || '').replace(/^\s+/, '');
+  const prior = starters.find(other => rest === other || rest.startsWith(other + ' '));
+  return word + ' ' + (prior ? rest.slice(prior.length).replace(/^ /, '') : rest);
+}
+
+// The one human message save: the composer and answer buttons write the same events. A comment written through the
+// comment layer also carries its item's subject, kind, label, and from address (c.host), and goes to its scope (c.route).
 function saveMessage(c, text) {
   const common = { anchorId: c.anchorId, target: c.target, quote: c.quote || null, text, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 };
   let body;
   if (c.kind === 'reply') body = Object.assign(common, { id: humanId('u'), event: 'reply', respondsTo: c.respondsTo, threadId: c.threadId });
   else if (c.kind === 'edit') body = Object.assign(common, { id: humanId('e'), event: 'edit', supersedes: c.supersedes, threadId: c.threadId });
-  else body = Object.assign(common, { id: humanId('u'), event: 'comment' });
-  save(body);
+  else body = Object.assign(common, { id: humanId('u'), event: 'comment' }, c.host || {});
+  save(body, c.route);
   toast((c.kind === 'edit' ? 'Edit' : c.kind === 'reply' ? 'Reply' : 'Comment') + ' saved as draft — hand off when ready');
   refresh();
 }
@@ -2699,105 +3166,18 @@ function renderThreadDock() {
 }
 
 function renderPanel() {
+  if (LAYER_SERVICE) return renderLayer(true);
   const wrap = document.getElementById('hx-threads');
   if (!wrap) return;
   wrap.innerHTML = '';
+  const openMockups = mockupOpenList(state.mockups);
+  if (openMockups) wrap.appendChild(openMockups);
   if (state.composer && state.composer.kind === 'comment') {
     const c = state.composer;
-    const d = document.createElement('div');
-    d.className = 'hx-thread active';
-    d.innerHTML = '<div class="hx-anchor">' + esc(label({ anchorId: c.anchorId, target: c.target })) + '</div>' +
-      (c.quote ? '<span class="hx-quote">“' + esc(c.quote) + '”</span>' : '');
-    addComposer(d, c);
-    wrap.appendChild(d);
+    wrap.appendChild(composerCard(c, label({ anchorId: c.anchorId, target: c.target })));
   }
   const threads = [...state.threads.values()].reverse();
-  for (const th of threads) {
-    const b = th.ev.body;
-    const collapsed = resolvedThreadCollapsed(th, state.expandedResolved);
-    const d = document.createElement('div');
-    d.className = 'hx-thread' + (state.activeThread === th.id ? ' active' : '') + (collapsed ? ' resolved-collapsed' : '');
-    // A resolved thread shows its own resolved indicator, never a resolved-in-spirit Jev label.
-    const resolvedHint = th.status === 'resolved' ? null : jevItem('resolved', th.id);
-    const orphanHint = openOrphanHint(th);
-    const threadJevState = threadJevNotice(orphanHint, resolvedHint);
-    d.innerHTML = '<div class="hx-thread-summary"><div class="hx-anchor">' + esc(label(b)) + '</div>' +
-      '<span class="hx-pill" data-s="' + th.status + '">' + th.status + '</span>' +
-      (looksResolved(th) ? '<span class="hx-jev-thread-label">Looks resolved</span>' : '') +
-      (threadJevState ? '<span class="hx-jev-thread-label" data-state="' + threadJevState.state + '">' + esc(jevDisplayLabel(threadJevState)) + '</span>' : '') +
-      (th.status === 'resolved' ? '<button class="hx-disclosure" data-act="disclosure" aria-expanded="' + String(!collapsed) + '" aria-label="' + (collapsed ? 'Show' : 'Hide') + ' resolved thread">' + (collapsed ? '▸' : '▾') + '</button>' : '') + '</div>' +
-      (collapsed ? '<div class="hx-thread-preview">' + esc(th.messages[0].body.text || 'Resolved comment') + '</div>' : '');
-    const notice = th.ev.place && PLACE_NOTICES[th.ev.place.state];
-    if (notice) {
-      const n = document.createElement('div');
-      n.className = 'hx-place-notice';
-      n.dataset.state = th.ev.place.state;
-      n.innerHTML = esc(notice) + (b.quote ? '<span class="hx-quote">“' + esc(b.quote) + '”</span>' : '');
-      d.appendChild(n);
-    }
-    const hint = orphanHintElement(th, orphanHint);
-    if (hint) d.appendChild(hint);
-    if (!collapsed) {
-      th.messages.forEach((message, index) => {
-        const m = message.body;
-        const history = th.history && th.history.get(index);
-        const item = document.createElement('div');
-        item.className = 'hx-msg';
-        item.dataset.messageId = m.id;
-        item.innerHTML = '<span class="hx-who">' + esc(messageAuthor(state.authors, history ? history.original : message)) + '</span>' +
-          (m.quote ? '<span class="hx-quote">“' + esc(m.quote) + '”</span>' : '') + '<span class="hx-text">' + esc(m.text || '') + '</span>';
-        // #model-edit-history: more than one edit lists every edit with its author.
-        if (history && history.edits.length > 1) {
-          const list = document.createElement('ol');
-          list.className = 'hx-history';
-          list.setAttribute('aria-label', 'Edit history');
-          for (const edit of history.edits) {
-            const entry = document.createElement('li');
-            entry.innerHTML = '<span class="hx-who">' + esc(messageAuthor(state.authors, edit)) + '</span> ' + esc(edit.body.text || '');
-            list.appendChild(entry);
-          }
-          item.appendChild(list);
-        }
-        if (message.actor === 'human' && m.id === th.latestHumanId && ['draft', 'pending'].includes(th.status)) {
-          const actions = document.createElement('div');
-          actions.className = 'hx-msg-actions';
-          actions.innerHTML = '<button class="hx-btn" data-act="edit">Edit</button>';
-          actions.querySelector('button').addEventListener('click', e => { e.stopPropagation(); startEdit(th, message); });
-          item.appendChild(actions);
-        }
-        d.appendChild(item);
-      });
-      const replyAction = threadReplyAction(th);
-      if (replyAction) {
-        const reply = document.createElement('button');
-        reply.className = 'hx-btn';
-        reply.dataset.act = 'reply';
-        reply.textContent = replyAction.label;
-        reply.addEventListener('click', e => { e.stopPropagation(); startReply(th, replyAction.message); });
-        d.appendChild(reply);
-      }
-      if (th.status === 'acknowledged') {
-        const resolve = document.createElement('button');
-        resolve.className = 'hx-btn';
-        resolve.dataset.act = 'resolve';
-        resolve.textContent = '✓ Resolve';
-        resolve.addEventListener('click', e => { e.stopPropagation(); resolveThread(th); });
-        d.appendChild(resolve);
-      }
-      if (state.composer && state.composer.threadId === th.id) addComposer(d, state.composer);
-    }
-    d.addEventListener('click', () => selectThread(th, true));
-    d.querySelector('[data-act=disclosure]')?.addEventListener('click', e => {
-      e.stopPropagation();
-      if (collapsed) selectThread(th, true);
-      else {
-        state.expandedResolved.delete(th.id);
-        renderPanel();
-        renderPins();
-      }
-    });
-    wrap.appendChild(d);
-  }
+  for (const th of threads) wrap.appendChild(threadCard(th, label(th.ev.body), th.ev.place));
   const movable = threads.map(th => ({ th, hint: openOrphanHint(th) }))
     .filter(m => m.hint && m.hint.state === 'label' && m.hint.target)
     .map(m => ({ th: m.th, target: m.hint.target }));
@@ -2819,21 +3199,150 @@ function renderPanel() {
     all.addEventListener('click', e => { e.stopPropagation(); resolveThreads(hinted); });
     wrap.appendChild(all);
   }
-  const handoffState = renderHighlight();
+  const handoffState = pageHandoffState(renderHighlight());
   const drafts = handoffState.drafts;
   document.getElementById('hx-drafts').textContent = handoffState.finish ? 'Ready to accept' : drafts + ' draft' + (drafts === 1 ? '' : 's');
-  const desktopHandoff = document.getElementById('hx-handoff');
-  desktopHandoff.disabled = !handoffState.enabled;
-  desktopHandoff.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? tbdCountLabel('TBD open', handoffState.openTbds) : 'Hand off to agent →';
-  const mobileHandoff = document.getElementById('hx-mobile-handoff');
-  mobileHandoff.disabled = !handoffState.enabled;
-  mobileHandoff.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? tbdCountLabel('TBD open', handoffState.openTbds) : drafts ? 'Hand off (' + drafts + ')' : 'Hand off';
-  for (const nextButton of [document.getElementById('hx-next-tbd'), document.getElementById('hx-mobile-next-tbd')]) {
-    nextButton.hidden = !handoffState.nextTbd;
-    nextButton.textContent = tbdCountLabel('Next TBD', handoffState.openTbds);
-  }
+  const handoffButton = document.getElementById('hx-handoff');
+  handoffButton.disabled = !handoffState.enabled;
+  handoffButton.textContent = handoffState.finish ? 'Accept spec' : handoffState.tbd ? tbdCountLabel('TBD open', handoffState.openTbds) : 'Hand off to agent →';
+  const nextButton = document.getElementById('hx-next-tbd');
+  nextButton.hidden = !handoffState.nextTbd;
+  nextButton.textContent = tbdCountLabel('Next TBD', handoffState.openTbds);
   renderThreadDock();
   renderThreadHighlight();
+}
+
+// One thread's card, on the spec page's panel and in the comment layer's thread box: `where` heads it, and `place` is
+// where its mark sits now (#anchoring-states).
+function threadCard(th, where, place) {
+  const b = th.ev.body;
+  const collapsed = resolvedThreadCollapsed(th, state.expandedResolved);
+  const d = document.createElement('div');
+  d.className = 'hx-thread' + (state.activeThread === th.id ? ' active' : '') + (collapsed ? ' resolved-collapsed' : '');
+  // A resolved thread shows its own resolved indicator, never a resolved-in-spirit Jev label.
+  const resolvedHint = th.status === 'resolved' ? null : jevItem('resolved', th.id);
+  const orphanHint = openOrphanHint(th);
+  const threadJevState = threadJevNotice(orphanHint, resolvedHint);
+  d.innerHTML = '<div class="hx-thread-summary"><div class="hx-anchor">' + esc(where) + '</div>' +
+    '<span class="hx-pill" data-s="' + esc(th.status) + '">' + esc(sentenceCase(th.status)) + '</span>' +
+    (looksResolved(th) ? '<span class="hx-jev-thread-label">Looks resolved</span>' : '') +
+    (threadJevState ? '<span class="hx-jev-thread-label" data-state="' + threadJevState.state + '">' + esc(jevDisplayLabel(threadJevState)) + '</span>' : '') +
+    (th.status === 'resolved' ? '<button class="hx-disclosure" data-act="disclosure" aria-expanded="' + String(!collapsed) + '" aria-label="' + (collapsed ? 'Show' : 'Hide') + ' resolved thread">' + (collapsed ? ICONS['chevron-right'] : ICONS['chevron-down']) + '</button>' : '') + '</div>' +
+    (collapsed ? '<div class="hx-thread-preview">' + esc(th.messages[0].body.text || 'Resolved comment') + '</div>' : '');
+  if (b.kind || b.from) d.appendChild(hostSource(b));
+  const notice = place && PLACE_NOTICES[place.state];
+  if (notice) {
+    const n = document.createElement('div');
+    n.className = 'hx-place-notice';
+    n.dataset.state = place.state;
+    n.innerHTML = esc(notice) + (b.quote ? '<span class="hx-quote">“' + esc(b.quote) + '”</span>' : '');
+    d.appendChild(n);
+  }
+  const hint = orphanHintElement(th, orphanHint);
+  if (hint) d.appendChild(hint);
+  if (!collapsed) {
+    th.messages.forEach((message, index) => {
+      const m = message.body;
+      const history = th.history && th.history.get(index);
+      const item = document.createElement('div');
+      item.className = 'hx-msg';
+      item.dataset.messageId = m.id;
+      // A space after the author name, as an edit's entry has: the name never runs into the text.
+      item.innerHTML = '<span class="hx-who">' + esc(messageAuthor(state.authors, history ? history.original : message)) + '</span> ' +
+        (m.quote ? '<span class="hx-quote">“' + esc(m.quote) + '”</span>' : '') + '<span class="hx-text">' + esc(m.text || '') + '</span>';
+      // #model-edit-history: more than one edit lists every edit with its author.
+      if (history && history.edits.length > 1) {
+        const list = document.createElement('ol');
+        list.className = 'hx-history';
+        list.setAttribute('aria-label', 'Edit history');
+        for (const edit of history.edits) {
+          const entry = document.createElement('li');
+          entry.innerHTML = '<span class="hx-who">' + esc(messageAuthor(state.authors, edit)) + '</span> ' + esc(edit.body.text || '');
+          list.appendChild(entry);
+        }
+        item.appendChild(list);
+      }
+      if (message.actor === 'human' && m.id === th.latestHumanId && ['draft', 'pending'].includes(th.status)) {
+        const actions = document.createElement('div');
+        actions.className = 'hx-msg-actions';
+        actions.innerHTML = '<button class="hx-btn" data-act="edit">Edit</button>';
+        actions.querySelector('button').addEventListener('click', e => { e.stopPropagation(); startEdit(th, message); });
+        item.appendChild(actions);
+      }
+      d.appendChild(item);
+    });
+    const replyAction = threadReplyAction(th);
+    if (replyAction) {
+      const reply = document.createElement('button');
+      reply.className = 'hx-btn';
+      reply.dataset.act = 'reply';
+      reply.innerHTML = ICONS.comment + '<span>' + esc(replyAction.label) + '</span>';
+      reply.addEventListener('click', e => { e.stopPropagation(); startReply(th, replyAction.message); });
+      d.appendChild(reply);
+    }
+    if (th.status === 'acknowledged') {
+      const resolve = document.createElement('button');
+      resolve.className = 'hx-btn';
+      resolve.dataset.act = 'resolve';
+      resolve.textContent = 'Resolve';
+      resolve.addEventListener('click', e => { e.stopPropagation(); resolveThread(th); });
+      d.appendChild(resolve);
+    }
+    if (state.composer && state.composer.threadId === th.id) addComposer(d, state.composer);
+  }
+  d.addEventListener('click', () => selectThread(th, true));
+  d.querySelector('[data-act=disclosure]')?.addEventListener('click', e => {
+    e.stopPropagation();
+    if (collapsed) selectThread(th, true);
+    else {
+      state.expandedResolved.delete(th.id);
+      renderPanel(); // the layer places its pins as it draws its box
+      if (!LAYER_SERVICE) renderPins();
+    }
+  });
+  return d;
+}
+
+// A new comment's card: where it goes, the quote it holds, and the composer.
+function composerCard(c, where) {
+  const d = document.createElement('div');
+  d.className = 'hx-thread active';
+  d.innerHTML = '<div class="hx-anchor">' + esc(where) + '</div>' +
+    (c.quote ? '<span class="hx-quote">“' + esc(c.quote) + '”</span>' : '');
+  addComposer(d, c);
+  return d;
+}
+
+// comment-layer #ui-from: a comment written on a host page shows its kind and a link to the address it was written
+// from, on every page that shows its thread.
+function hostSource(b) {
+  const line = document.createElement('div');
+  line.className = 'hx-host-from';
+  if (b.kind) {
+    const kind = line.appendChild(document.createElement('span'));
+    kind.className = 'hx-host-kind';
+    kind.textContent = String(b.kind);
+  }
+  const href = webAddress(b.from);
+  if (href) {
+    line.appendChild(document.createElement('span')).textContent = 'from';
+    const link = line.appendChild(document.createElement('a'));
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.title = href;
+    link.textContent = href.replace(/^https?:\/\//, '');
+    link.addEventListener('click', e => e.stopPropagation());
+  }
+  return line;
+}
+
+// An http(s) address, or null: a host's from address is shown as a link only when it is one.
+function webAddress(value) {
+  try {
+    const url = new URL(String(value || ''), document.baseURI);
+    return value && /^https?:$/.test(url.protocol) ? url.href : null;
+  } catch (_) { return null; }
 }
 
 // A card's own resolve control and Resolve all post the same resolve event.
@@ -2851,6 +3360,7 @@ function resolveThread(th) {
 }
 
 function selectThread(th, scroll) {
+  if (LAYER_SERVICE) return selectLayerThread(th);
   state.activeThread = th.id;
   if (th.status === 'resolved') state.expandedResolved.add(th.id);
   openPanel(true);
@@ -2949,6 +3459,13 @@ const chartInfoFor = b => {
 };
 
 function textTargetRect(holder, needle) {
+  const range = textRange(holder, needle);
+  const rect = range && range.getBoundingClientRect();
+  return rect && (rect.width || rect.height) ? rect : null;
+}
+
+// Where a quote sits in a block's or a host item's text (comment-layer #anchor-quote): the range of its first match.
+function textRange(holder, needle) {
   needle = String(needle || '');
   if (!needle) return null;
   const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
@@ -2964,8 +3481,7 @@ function textTargetRect(holder, needle) {
   const range = document.createRange();
   range.setStart(a.node, start - a.start);
   range.setEnd(z.node, end - z.start);
-  const rect = range.getBoundingClientRect();
-  return rect.width || rect.height ? rect : null;
+  return range;
 }
 
 function chartDatum(info, t) {
@@ -3133,17 +3649,23 @@ function pinPos(b, holder) {
     const el = resolveElement(holder, t.key);
     if (el) {
       const hR = holder.getBoundingClientRect(), eR = el.getBoundingClientRect();
-      return { top: eR.top - hR.top - 4, left: Math.min(holder.clientWidth - 28, eR.right - hR.left - 12) };
+      return { top: eR.top - hR.top - 4, left: Math.min(shownWidth(holder) - 28, eR.right - hR.left - 12) };
     }
   }
   return cornerPos(holder); // orphan/text fallback
+}
+
+// A pin's place is in screen pixels: in a zoomed mockup frame the pin keeps its own size (mockups #review-fit), so a
+// block's width is taken as shown.
+function shownWidth(holder) {
+  return holder.clientWidth * (holder.currentCSSZoom || 1);
 }
 
 // Block corner, or, when the block has its own Jev marker, the block's reserved right column
 // directly below the marker's tap pad (its ::before), so the pin covers neither the marker nor text.
 function cornerPos(holder) {
   const marker = holder.querySelector(holder.tagName === 'TR' ? ':scope > :is(td,th) > .hx-jev-marker' : ':scope > .hx-jev-marker');
-  if (!marker) return { top: 4, left: holder.clientWidth - 30 };
+  if (!marker) return { top: 4, left: shownWidth(holder) - 30 };
   const pad = parseFloat(getComputedStyle(marker, '::before').bottom) || 0;
   const top = marker.getBoundingClientRect().bottom - pad - holder.getBoundingClientRect().top - holder.clientTop;
   return { column: true, top: Math.ceil(top) }; // right edge by CSS, so a table's later reflow keeps it
@@ -3178,8 +3700,8 @@ function renderPins() {
     pin.setAttribute('aria-label', (hinted ? 'Looks resolved: ' : '') + label(b));
     pin.style.top = pos.top + 'px';
     if (pos.column) pin.dataset.column = '';
-    const pinSize = window.matchMedia('(max-width: 640px)').matches ? 44 : 24;
-    if (!pos.column) pin.style.left = Math.max(0, Math.min(pos.left, holder.clientWidth - pinSize)) + 'px';
+    const pinSize = NARROW.matches ? 44 : 24;
+    if (!pos.column) pin.style.left = Math.max(0, Math.min(pos.left, shownWidth(holder) - pinSize)) + 'px';
     pin.addEventListener('click', e => { e.stopPropagation(); selectThread(th, true); });
     holder.appendChild(pin);
   }
@@ -3187,9 +3709,9 @@ function renderPins() {
 
 function renderBadges() {
   document.querySelectorAll('.hx-badge').forEach(b => b.remove());
-  // Embed hosts are live product UI: injecting badge text into their headings
-  // pollutes the page being reviewed. Spec pages keep the badges.
-  if (EMBED_REVIEW_DIR) return;
+  // Embed hosts are live product UI and mockup frames keep the mockup's own look: injecting
+  // badge text into their headings pollutes the page being reviewed. Spec pages keep the badges.
+  if (EMBED_REVIEW_DIR || MOCKUP_SPEC) return;
   const changed = new Set();
   for (const e of state.events) if (e.actor === 'agent' && e.body.change && e.body.anchorId) changed.add(e.body.anchorId);
   for (const a of changed) {
@@ -3197,19 +3719,21 @@ function renderBadges() {
     if (!h || h.querySelector('.hx-badge')) continue;
     const s = document.createElement('span');
     s.className = 'hx-badge';
-    s.textContent = 'updated by agent';
+    s.textContent = 'Updated by agent';
     h.appendChild(s);
   }
 }
 
 function handoff() {
   const openTbds = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
-  const action = reviewHandoffState(state.threads, openTbds.length, state.reviewer.browser);
+  const reviewed = reviewHandoffState(state.threads, openTbds.length, state.reviewer.browser, mockupOpenThreads(state.mockups));
+  const action = pageHandoffState(reviewed);
   if (action.tbd) return nextTbd();
   if (state.handoffPosting || !action.enabled) return;
   state.handoffPosting = true; // until this hand-off's send settles: a double tap writes one
-  // Hand off lists this browser's drafts (#live-handoff); Accept spec writes the existing hand-off without a list.
-  const listed = action.finish ? {} : { events: handoffEvents(state.events, state.reviewer.browser) };
+  // Hand off lists this browser's drafts (#live-handoff); Accept spec writes the existing hand-off without a list, and
+  // accepts the spec's mockup set with it (mockups #accept-set).
+  const listed = action.finish ? acceptedMockups(state.mockups) : { events: handoffEvents(state.events, state.reviewer.browser) };
   save(Object.assign({ id: humanId('h'), event: 'handoff', anchorId: '', target: null, quote: null, text: 'batch from ' + state.transport.mode, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 }, listed));
   toast(action.finish ? 'Spec accepted' : 'Handed off ' + action.drafts + ' comment' + (action.drafts === 1 ? '' : 's') + ', agent notified');
   refresh().finally(() => { state.handoffPosting = false; });
@@ -3222,6 +3746,7 @@ function nextTbd() {
 }
 
 function jumpToTbd(el) {
+  if (NARROW.matches) openPanel(false); // a narrow screen's open panel covers the spec
   if (!el.matches('a[href],button,input,select,textarea,[tabindex]')) el.setAttribute('tabindex', '-1');
   el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   el.focus({ preventScroll: true });
@@ -3231,12 +3756,14 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 
 let toastTimer;
 function toast(msg) {
-  let el = document.getElementById('hx-toast');
+  const holder = LAYER_SERVICE ? layer.root : document.body; // the layer's own look stays in its overlay
+  if (!holder) return;
+  let el = holder.querySelector('#hx-toast');
   if (!el) {
     el = document.createElement('div');
     el.id = 'hx-toast';
     el.className = 'hx-toast';
-    document.body.appendChild(el);
+    holder.appendChild(el);
   }
   el.textContent = msg;
   el.classList.add('show');
@@ -3249,14 +3776,83 @@ function toast(msg) {
  * browser storage for this spool until the service stores it, shown at once, and sent
  * in order; a resend after a lost response stores nothing new.
  */
-const OUTBOX_KEY = 'spec-chat:outbox:' + REVIEW_DIR;
+const OUTBOX_PREFIX = 'spec-chat:outbox:';
+const OUTBOX_KEY = OUTBOX_PREFIX + REVIEW_DIR;
 const LOADED_KEY = 'spec-chat:events:' + REVIEW_DIR;
-let pageOutbox = null; // this page's own outbox when browser storage cannot keep it
+let pageOutbox = null; // this page's own outbox when its storage cannot keep or read it
 let flushing = null;
 
 function reviewStorage() {
-  try { return window.localStorage; } catch (_) { return null; }
+  try { return window.localStorage; } catch (_) { return frameStore; }
 }
+
+// review-service #served-storage: a page with no origin has no browser storage, so it keeps its fruit name and outbox in
+// its frame's name, which lasts as long as the host's frame: across reloads and moves to the service's other pages in it.
+// The name holds each review service's items apart (the layer's service, or the page's at its own address), so another
+// service's page never gets them; any later page in the frame can read it, so a page's write keeps of every other
+// service only its reviewer (browser id and fruit name) and its unsent changes: once that service's page opens in the
+// frame again, it is the same reviewer, its unsent changes send, and its hand-off lists every draft it saved. A name
+// the host gives its frame, before the page loads or after, is the host's for the rest of the page's life, even if the
+// host clears it (its links and forms may target it): from then on the page keeps nothing there and serves its items
+// from its own memory, so its unsent changes still send until it reloads.
+const FRAME_NAME = 'spec-chat:';
+const FRAME_SERVICE = (LAYER_SERVICE || OWN_ADDRESS).origin;
+const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+let frameLeft = null; // the frame name as this page last read or wrote it; null before its first use
+let frameServices = {}; // every service's items as this page last read or wrote them
+let frameHosts = false; // the host has named the frame
+
+// Whether the name is the host's: at the page's first use, a name not under the prefix; after it, any name but the one
+// the page last left there, since only the host changes it under the page.
+function frameNamedByHost() {
+  if (frameHosts) return true;
+  const name = window.name;
+  if (frameLeft !== null) return frameHosts = name !== frameLeft;
+  if (name && !name.startsWith(FRAME_NAME)) return frameHosts = true;
+  frameLeft = name;
+  try {
+    const services = JSON.parse(name.slice(FRAME_NAME.length));
+    if (plainObject(services)) frameServices = services;
+  } catch (_) { /* under the prefix, anything but a plain object holds no items */ }
+  return false;
+}
+
+// This service's items: in the frame name, or in the page's memory once the name is the host's.
+function frameItems() {
+  frameNamedByHost();
+  if (!Object.hasOwn(frameServices, FRAME_SERVICE) || !plainObject(frameServices[FRAME_SERVICE])) frameServices[FRAME_SERVICE] = {};
+  return frameServices[FRAME_SERVICE];
+}
+
+// An outbox holding changes its service has not stored yet.
+function unsentChanges(key, value) {
+  if (!key.startsWith(OUTBOX_PREFIX) || typeof value !== 'string') return false;
+  try {
+    const entries = JSON.parse(value);
+    return Array.isArray(entries) && entries.length > 0;
+  } catch (_) { return false; }
+}
+
+// Of another service's items, what the frame keeps: its reviewer and its unsent changes.
+const reviewerAndUnsent = items => Object.fromEntries(Object.entries(items).filter(([k, v]) =>
+  (k === REVIEWER_KEY && typeof v === 'string') || unsentChanges(k, v)));
+
+const frameStore = {
+  getItem: key => {
+    const items = frameItems();
+    return Object.hasOwn(items, key) && typeof items[key] === 'string' ? items[key] : null;
+  },
+  setItem: (key, value) => {
+    const items = frameItems();
+    items[key] = String(value);
+    if (frameHosts) return;
+    const others = Object.entries(frameServices).filter(([service, kept]) => service !== FRAME_SERVICE && plainObject(kept))
+      .map(([service, kept]) => [service, reviewerAndUnsent(kept)])
+      .filter(([, kept]) => Object.keys(kept).length);
+    frameServices = Object.fromEntries(others.concat([[FRAME_SERVICE, items]]));
+    window.name = frameLeft = FRAME_NAME + JSON.stringify(frameServices);
+  },
+};
 
 function outboxEntries() {
   if (pageOutbox) return pageOutbox;
@@ -3270,14 +3866,17 @@ function setOutbox(entries) {
   pageOutbox = entries;
 }
 
-const outboxEvents = () => outboxEntries().map(entry => ({ actor: 'human', name: entry.name, body: entry.body }));
+// A layer entry also names the scope and subject it is sent with, and the store it is known to go to.
+const outboxEvent = entry => Object.assign({ actor: 'human', name: entry.name, body: entry.body },
+  entry.scope ? { scope: entry.scope, subject: entry.subject, store: entry.store } : {});
+const outboxEvents = () => outboxEntries().map(outboxEvent);
 
-function save(body) {
+function save(body, route) {
   const event = Object.assign({}, body, { browser: state.reviewer.browser, author: state.reviewer.author }, state.version ? { version: state.version } : {});
   state.lastStamp = nextStamp(state.lastStamp, Date.now(), Math.random);
-  const entry = { name: eventName(event, state.lastStamp), body: event };
+  const entry = Object.assign({ name: eventName(event, state.lastStamp), body: event }, LAYER_SERVICE ? layerRoute(event, route) : {});
   setOutbox(outboxEntries().concat([entry]));
-  ingest([{ actor: 'human', name: entry.name, body: event }]);
+  ingest([outboxEvent(entry)]);
   flushOutbox();
 }
 
@@ -3304,18 +3903,19 @@ function forgetEvent(name) {
   toast('The review service refused a change; it was not saved');
 }
 
+// The service's copy of the review, kept only in browser storage: a frame's name holds just this reviewer's own work.
 function keepLoaded(events) {
   if (events.length === state.storedCount) return;
   state.storedCount = events.length;
-  try { reviewStorage().setItem(LOADED_KEY, JSON.stringify(events)); } catch (_) { /* the page still shows them */ }
+  try { window.localStorage.setItem(LOADED_KEY, JSON.stringify(events)); } catch (_) { /* the page still shows them */ }
 }
 
 function loadedEvents() {
-  try { return JSON.parse(reviewStorage().getItem(LOADED_KEY) || '[]'); } catch (_) { return []; }
+  try { return eventList(JSON.parse(window.localStorage.getItem(LOADED_KEY) || '[]')); } catch (_) { return []; }
 }
 
 function renderOffline() {
-  const el = document.getElementById('hx-offline');
+  const el = LAYER_SERVICE ? layer.root && layer.root.querySelector('#hx-offline') : document.getElementById('hx-offline');
   if (!el) return;
   el.textContent = state.outboxBlocked ? offlineNotice(outboxEntries().length) : '';
   el.hidden = !el.textContent;
@@ -3331,7 +3931,9 @@ async function shownVersion() {
 
 /* ---------------- loops ---------------- */
 async function refresh() {
+  if (LAYER_SERVICE) return refreshLayer();
   flushOutbox(); // #offline-reopen: waiting events are sent first; the read never waits on a pending save
+  requestMockups();
   try {
     const listed = await state.transport.listEvents();
     const wake = Array.isArray(listed) ? null : listed.wake;
@@ -3360,7 +3962,7 @@ async function watchSpec() {
     const b = document.createElement('div');
     b.className = 'hx-banner';
     b.id = 'hx-banner';
-    b.innerHTML = 'Spec updated by agent <button>Reload</button>';
+    b.innerHTML = (MOCKUP_SPEC ? 'Mockup' : 'Spec') + ' updated by agent <button>Reload</button>'; // mockups #review-banner
     b.querySelector('button').addEventListener('click', () => location.reload());
     document.body.appendChild(b);
   }
@@ -3389,13 +3991,20 @@ function writePlace(storage, place) {
   } catch (_) { /* full, sandboxed, or disabled: the place is simply not kept */ }
 }
 
+// spec-page-design #top-line: the page shows from under the fixed top line, so a place is measured from there: the space
+// the body starts under (--hx-top-space), which holds while the phone panel hides the line.
+function pageTop() {
+  return parseFloat(document.documentElement.style.getPropertyValue('--hx-top-space')) || 0;
+}
+
 function currentPlace() {
   if (window.scrollY <= 0) return null;
+  const top = pageTop();
   let place = null;
   for (const el of document.querySelectorAll('[data-anchor]')) {
     const r = el.getBoundingClientRect();
-    if (!r.height || r.top > 0 || (place && -r.top >= place.offset)) continue;
-    place = { anchor: el.dataset.anchor, offset: Math.round(-r.top) };
+    if (!r.height || r.top > top || (place && top - r.top >= place.offset)) continue;
+    place = { anchor: el.dataset.anchor, offset: Math.round(top - r.top) };
   }
   return place;
 }
@@ -3420,7 +4029,7 @@ function keepPlace() {
     for (const t of intents) window.removeEventListener(t, intent, true);
     const place = moved ? null : addressPlace() || (storage && readPlace(storage));
     const el = place && findAnchor(place.anchor);
-    if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY + place.offset);
+    if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY + place.offset - pageTop());
     if (!storage) return;
     let timer = 0;
     const save = () => { clearTimeout(timer); timer = 0; writePlace(storage, currentPlace()); };
@@ -3431,13 +4040,18 @@ function keepPlace() {
 
 /* ---------------- boot ---------------- */
 (async function boot() {
+  if (LAYER_SERVICE) return bootLayer();
+  mountStyle();
   const restorePlace = keepPlace();
   const httpPage = !EMBED_REVIEW_DIR && ['http:', 'https:'].includes(OWN_ADDRESS.protocol);
+  // Accept spec waits until the set is told; a mockup page is no spec, so it has no set and asks none (mockups #review-chrome)
+  if (httpPage && !MOCKUP_SPEC) Object.assign(state, { mockups: null, mockupAsk: true });
   // Deferred script: the DOM is the served spec until mountUI; compare it, never refetch it.
   if (httpPage) state.range.loaded = anchorSignatures(document);
   mountUI();
+  if (MOCKUP_SPEC) mountMockup();
   if (httpPage) applyIssueFocus();
-  if (httpPage) { listenHost(); requestEvidence(); }
+  if (httpPage) { listenHost(); if (!MOCKUP_SPEC) requestEvidence(); }
   await hydrateIslands();
   adoptForeignCharts();
   restorePlace();
@@ -3569,6 +4183,755 @@ function startLoops() {
   window.addEventListener('resize', () => { document.querySelectorAll('.hx-jev-marker').forEach(placeJevMarker); renderPins(); renderThreadHighlight(); });
 }
 
+/* ---------------- mockup page (mockups.spec.html) ----------------
+ * A screen of a spec's mockup set (MOCKUP_SPEC) is reviewed by the spec page's own review, on the spec page's chrome
+ * (#review-same, #review-chrome): the top line links the spec and, while the mockup changed since the base, offers
+ * Before and After (#before-table); Hand off never becomes Accept spec, and no Next TBD, Jev, or evidence shows. The two
+ * frames keep the mockup's own look, side by side or stacked, each zoomed whole into its space (#review-fit), and every
+ * element in them is a comment target (#review-targets).
+ */
+// The frames into one stage where the first sat, desktop first, each in a slot with its label and a fit box it is zoomed
+// in. Fitted at once, so a kept place or an address is restored onto the fitted page.
+function mountMockup() {
+  const frames = MOCKUP_VIEWPORTS.map(([viewport]) => document.querySelector('[data-mockup-frame="' + viewport + '"]'));
+  mockup.styles = [...document.querySelectorAll('style, link[rel~="stylesheet"]')]
+    .filter(sheet => !sheet.hasAttribute('data-hx-chrome') && !sheet.closest('[data-mockup-frame]'));
+  const stage = document.createElement('div');
+  stage.className = 'hx-mockup';
+  const first = frames.find(Boolean);
+  if (first) first.parentNode.insertBefore(stage, first);
+  else document.body.appendChild(stage);
+  mockup.stage = stage;
+  mockup.slots = MOCKUP_VIEWPORTS.map(([viewport, name], index) => {
+    const slot = stage.appendChild(document.createElement('div'));
+    slot.className = 'hx-mockup-slot';
+    slot.dataset.viewport = viewport;
+    slot.setAttribute('role', 'group');
+    slot.setAttribute('aria-label', name);
+    const label = slot.appendChild(document.createElement('div'));
+    label.className = 'hx-mockup-label';
+    label.textContent = name;
+    const fit = slot.appendChild(document.createElement('div'));
+    fit.className = 'hx-mockup-fit';
+    if (frames[index]) fit.appendChild(frames[index]);
+    return { viewport, slot, fit, frame: frames[index] };
+  });
+  fitMockup();
+  // The space changes with the window and as the panel opens or closes (a body class); pins follow a new zoom.
+  const refit = () => { if (fitMockup()) { renderPins(); renderThreadHighlight(); } };
+  window.addEventListener('resize', refit);
+  new MutationObserver(refit).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+}
+
+// #review-fit: each frame zoomed to its slot's width, never above its own size. Side by side the slots share the row in
+// proportion to the frames' own widths (CSS), so both zoom alike; stacked, each takes the screen's width. True when a
+// zoom changed.
+function fitMockup() {
+  for (const s of mockup.slots) s.slot.style.setProperty('--hx-natural', s.fit.offsetWidth + 'px');
+  let changed = false;
+  for (const s of mockup.slots) {
+    const natural = s.fit.offsetWidth; // its own width: offsetWidth is not zoomed
+    const zoom = String(natural ? Math.min(1, Math.floor(s.slot.clientWidth / natural * 1e4) / 1e4) : 1);
+    if (s.fit.style.getPropertyValue('--hx-zoom') === zoom) continue;
+    s.fit.style.zoom = zoom;
+    s.fit.style.setProperty('--hx-zoom', zoom); // pins and the arrival ring keep their own size (CSS)
+    changed = true;
+  }
+  return changed;
+}
+
+// #review-chrome: a mockup page's Hand off never becomes Accept spec, and it has no TBD: it hands off this browser's drafts.
+function pageHandoffState(action) {
+  return MOCKUP_SPEC ? { ...action, finish: false, tbd: false, nextTbd: false, enabled: action.drafts > 0 } : action;
+}
+
+// The mockup's spec, beside its set's folder, at the same compared range (#review-chrome).
+function mockupSpecAddress() {
+  return new URL('../../' + encodeURIComponent(MOCKUP_SPEC) + '.spec.html' + OWN_ADDRESS.search, OWN_ADDRESS).href;
+}
+
+// The page as served, read once from the cache the page loaded from.
+function shownMockupText() {
+  mockup.shown = mockup.shown || fetch(OWN_ADDRESS.href, { cache: 'force-cache' })
+    .then(response => response.ok ? response.text() : null).catch(() => null);
+  return mockup.shown;
+}
+
+// What a mockup shows, to compare two of its texts: its head's elements but meta, which the service adds as it serves,
+// and its body.
+function mockupSignature(doc) {
+  return [...doc.head.children].filter(el => el.tagName !== 'META').map(el => el.outerHTML).join('') + doc.body.outerHTML;
+}
+
+// #before-base, #before-table: the top line by how the mockup compares with the base its page compares. Absent there, it
+// reads New since the base; the same, the compared range alone; differing, the compared range, then Before and After,
+// After pressed. A new base shows the current frames again.
+async function showMockupBase(baseline) {
+  const request = ++mockup.request;
+  showMockupBefore(false);
+  mockup.base = null;
+  mockup.differs = false;
+  document.getElementById('hx-mockup-view')?.remove(); // back once this base is compared
+  document.getElementById('hx-spec-link')?.setAttribute('href', mockupSpecAddress());
+  const copy = document.getElementById('hx-range-copy');
+  if (baseline.html == null) {
+    if (copy) {
+      copy.textContent = 'New since the base';
+      copy.removeAttribute('aria-label');
+      copy.title = rangeBarText(baseline);
+    }
+    return;
+  }
+  const base = new DOMParser().parseFromString(baseline.html, 'text/html');
+  const text = await shownMockupText();
+  if (request !== mockup.request) return;
+  mockup.base = base;
+  // A page whose served text cannot be read again is taken as changed, so Before stays offered.
+  mockup.differs = text === null || mockupSignature(new DOMParser().parseFromString(text, 'text/html')) !== mockupSignature(base);
+  renderMockupView();
+}
+
+// Before and After in the range bar, before Change base, shown while the mockup differs from the base it was compared with.
+function renderMockupView() {
+  const row = document.querySelector('#hx-range-bar .hx-range-row');
+  if (!row) return;
+  let view = document.getElementById('hx-mockup-view');
+  if (!view) {
+    view = document.createElement('span');
+    view.className = 'hx-mockup-view';
+    view.id = 'hx-mockup-view';
+    view.setAttribute('role', 'group');
+    view.setAttribute('aria-label', 'Mockup at the base or now');
+    for (const [id, text, before] of [['hx-mockup-before', 'Before', true], ['hx-mockup-after', 'After', false]]) {
+      const button = view.appendChild(document.createElement('button'));
+      button.type = 'button';
+      button.id = id;
+      button.textContent = text;
+      button.addEventListener('click', () => showMockupBefore(before));
+    }
+    row.insertBefore(view, document.getElementById('hx-range-change'));
+  }
+  view.hidden = !mockup.differs;
+  document.getElementById('hx-mockup-before').setAttribute('aria-pressed', String(mockup.before));
+  document.getElementById('hx-mockup-after').setAttribute('aria-pressed', String(!mockup.before));
+}
+
+// #before-changed: Before shows both frames as the mockup was at the base, under its style sheets then, with no pins and
+// no comment control (CSS); After returns the current frames with their threads.
+function showMockupBefore(before) {
+  before = Boolean(before && mockup.base && mockup.differs);
+  if (before !== mockup.before) {
+    mockup.before = before;
+    if (before) {
+      setCommentMode(false);
+      if (state.composer) { state.composer = null; renderPanel(); }
+    }
+    for (const s of mockup.slots) {
+      const base = before && mockup.base.querySelector('[data-mockup-frame="' + s.viewport + '"]');
+      const frame = before ? base && document.importNode(base, true) : s.frame;
+      if (before && frame) frame.querySelectorAll('script').forEach(el => el.remove());
+      s.fit.replaceChildren(...(frame ? [frame] : []));
+    }
+    mockup.styles.forEach(sheet => { sheet.disabled = before; });
+    document.querySelectorAll('[data-hx-before]').forEach(el => el.remove());
+    const chrome = document.querySelector('style[data-hx-chrome]');
+    for (const sheet of before ? mockup.base.querySelectorAll('style, link[rel~="stylesheet"]') : []) {
+      if (sheet.closest('[data-mockup-frame]')) continue;
+      const copy = document.importNode(sheet, true);
+      copy.setAttribute('data-hx-before', '');
+      document.head.insertBefore(copy, chrome); // the mockup's sheets come before the chrome's, as served
+    }
+    document.body.classList.toggle('hx-mockup-before', before);
+    fitMockup();
+    renderPins();
+    renderHighlight();
+    renderThreadHighlight();
+  }
+  if (document.getElementById('hx-mockup-view')) renderMockupView();
+}
+
+/* ---------------- comment layer (comment-layer.spec.html) ----------------
+ * A host page loads this runtime from <url>/static/comment-layer.js (#load). Each element the host anchors with a
+ * subject, a scope, and a kind (#anchor-table) gets a comment control, and the spec page's pins, thread cards,
+ * composer, Hand off, fruit names, live read, and outbox above draw on that element, in an overlay of the layer's own
+ * (#ui, #ui-style). Only items whose store the service names get a control, so every save names the store it goes to
+ * and Hand off writes one hand-off into each (#ui-handoff): with the service unreachable, refusing this origin, or no
+ * scope answered, nothing draws (#scope-rule, #ui-absent).
+ */
+const LAYER_ANCHOR = '[data-comment-subject][data-comment-scope][data-comment-kind]';
+const LAYER_ATTRIBUTES = ['data-comment-subject', 'data-comment-scope', 'data-comment-kind', 'data-comment-label', 'data-comment-from', 'data-comment-starters'];
+const LAYER_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5.5h14v10H10l-5 3v-13Z"></path><path d="M8 9h8M8 12h5"></path></svg>';
+const layer = {
+  host: null,        // the overlay's element, while any control shows
+  root: null,        // its content, inside the overlay's shadow root
+  stores: new Map(), // scope -> Map(subject -> store), as the service last named them; absent once no row has the scope
+  open: null,        // the item whose thread box shows
+  held: null,        // {el, text}: the selection inside an item as its control was pressed
+  nodes: new Map(),  // placed controls, pins, and marks by key, reused so focus stays
+  keys: new WeakMap(), count: 0, // each item element's part of its nodes' keys
+  subjects: '',      // the anchored scopes and subjects as last read
+  failures: 0,       // reads in a row the service did not answer
+  readTimer: 0, scanTimer: 0, frame: 0,
+  written: false,    // the host wrote to the page since the last placement (#ui-place)
+  sizes: null,       // the ResizeObserver on the page and each anchored element (#ui-place)
+  sized: new Set(),  // the anchored elements it observes
+};
+
+async function bootLayer() {
+  await Promise.resolve(); // after the whole runtime has run
+  const once = Symbol.for('spec-chat:comment-layer');
+  if (window[once]) return; // a second copy of the layer on one page draws nothing more
+  window[once] = true;
+  if (document.readyState === 'loading') await new Promise(done => document.addEventListener('DOMContentLoaded', done, { once: true }));
+  state.transport = layerTransport();
+  state.reviewer = reviewerIdentity(reviewStorage(), Math.random);
+  // #load-scan: the layer follows the elements the host adds, changes, or removes; only an added or removed element or
+  // a changed anchor can change what it reads. #ui-place: any change the host makes in the page, such as hiding an
+  // element above an item, may move an item without changing a size observed below, so the rows are placed in the
+  // next frame, before it paints: once a frame however often the host writes, as it does streaming text.
+  new MutationObserver(records => {
+    if (records.some(r => r.type === 'childList' || LAYER_ATTRIBUTES.includes(r.attributeName))) scanLayer();
+    layer.written = true;
+    scheduleLayerPlace();
+  }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+  // #ui-place: a CSS transition or animation the host runs moves items with no change to observe; its start asks for a
+  // placement, and each placement reads whether one that can move an item runs or is paused (boxMoves). A script
+  // animation announces nothing: the next scroll, resize, or live read places the rows where it moved them.
+  for (const type of ['transitionrun', 'animationstart']) document.addEventListener(type, scheduleLayerPlace, true);
+  // #ui-place: a row follows its element at once as the element, or the page that moves it, changes size: placed as the
+  // size is read, before the frame paints.
+  layer.sizes = new ResizeObserver(() => placeLayer());
+  layer.sizes.observe(document.body);
+  followSizes(layerItems());
+  document.addEventListener('scroll', scheduleLayerPlace, true);
+  window.addEventListener('resize', scheduleLayerPlace);
+  window.addEventListener('online', readLayer);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && layer.open) closeLayerBox(); });
+  readLayer();
+}
+
+// One live read, then the next in 2 s; a service that does not answer is asked less often, up to every 32 s.
+function readLayer() {
+  clearTimeout(layer.readTimer);
+  refreshLayer().finally(() => {
+    clearTimeout(layer.readTimer);
+    layer.readTimer = setTimeout(readLayer, 2000 * 2 ** Math.min(layer.failures, 4));
+  });
+}
+
+function scanLayer() {
+  clearTimeout(layer.scanTimer);
+  layer.scanTimer = setTimeout(() => {
+    const items = layerItems();
+    followSizes(items);
+    if (layerSubjects(items) !== layer.subjects) readLayer();
+    else placeLayer();
+  }, 100);
+}
+
+// The size observer watches the anchored elements on the page, and lets go of those the host removed.
+function followSizes(items) {
+  const els = new Set(items.map(item => item.el));
+  for (const el of layer.sized) if (!els.has(el)) { layer.sizes.unobserve(el); layer.sized.delete(el); }
+  for (const el of els) if (!layer.sized.has(el)) { layer.sizes.observe(el); layer.sized.add(el); }
+}
+
+// #ui-place: one placement in the next frame, before it paints, and one every frame after while the host writes to the
+// page or a running or paused animation can move an item; none while nothing moves. A placement asked for is never put
+// off: a host that writes in its own frame, which runs before the layer's, would put it off every frame; placing in
+// each frame it writes keeps the layer's frame after the host's, so each placement follows that frame's writes.
+function scheduleLayerPlace() {
+  if (layer.frame) return;
+  layer.frame = requestAnimationFrame(() => {
+    layer.frame = 0;
+    if (layer.written || boxMoves()) scheduleLayerPlace();
+    layer.written = false;
+    placeLayer();
+  });
+}
+
+// Properties whose motion only paints, as a blinking caret's or a hover's, so it moves no box the layer reads.
+const PAINT_ONLY = /^(opacity|visibility|z-index|color|caret-color|accent-color|background.*|border(-(top|right|bottom|left|block|inline)(-(start|end))?)?-color|outline.*|box-shadow|text-shadow|text-decoration-color|text-emphasis-color|column-rule-color|filter|backdrop-filter|clip-path|mask.*|fill|fill-opacity|stroke|stroke-opacity|stroke-dasharray|stroke-dashoffset)$/;
+// Properties that transform only their own element and what it holds, so a spinner's motion moves no item outside it.
+const TRANSFORM_ONLY = /^(transform(-origin|-box|-style)?|translate|rotate|scale|perspective(-origin)?|offset-(path|distance|rotate|anchor|position))$/;
+const KEYFRAME_TIMING = new Set(['offset', 'computedOffset', 'easing', 'composite']);
+// Whether a running or paused animation can move an item: one whose keyframes change a property that does more than
+// paint and more than transform, or that transforms an element, not a pseudo-element, that is or holds an item. Read in
+// each frame that places, so an item the host moves into a moving element, or out of it, counts from the next frame. A
+// paused one counts, as a pseudo-class such as :hover or :checked resumes it with no event; a finished or idle one, or
+// one on an element the host removed, moves nothing.
+function boxMoves() {
+  return document.getAnimations().some(run => {
+    const effect = run.effect;
+    if (run.playState === 'finished' || run.playState === 'idle' || !effect?.target) return false;
+    const moves = effect.getKeyframes().flatMap(Object.keys).filter(key => !KEYFRAME_TIMING.has(key))
+      .map(key => key.startsWith('--') ? key : key.replace(/[A-Z]/g, c => '-' + c.toLowerCase()))
+      .filter(property => !PAINT_ONLY.test(property));
+    return moves.some(property => !TRANSFORM_ONLY.test(property)) || (moves.length > 0 && !effect.pseudoElement
+      && Boolean(effect.target.matches(LAYER_ANCHOR) || effect.target.querySelector(LAYER_ANCHOR)));
+  });
+}
+
+// #anchor-table: an anchored element as the layer reads it. A from address that is no web address gives way to the
+// page's own.
+function layerItem(el) {
+  const d = el.dataset;
+  const kind = (d.commentKind || '').trim();
+  if (!d.commentSubject || !d.commentScope || !kind) return null;
+  return { el, subject: d.commentSubject, scope: d.commentScope, kind, label: (d.commentLabel || '').trim() || null,
+    from: webAddress(d.commentFrom) || location.href,
+    starters: (d.commentStarters || '').split(',').map(word => word.trim()).filter(Boolean) };
+}
+
+const layerItems = () => [...document.querySelectorAll(LAYER_ANCHOR)].map(layerItem).filter(Boolean);
+const storeOf = item => layer.stores.get(item.scope)?.get(item.subject);
+const liveItems = () => layerItems().filter(item => storeOf(item) !== undefined);
+const sameItem = (a, b) => Boolean(a && b) && a.scope === b.scope && a.subject === b.subject;
+
+function layerSubjects(items) {
+  const byScope = new Map();
+  for (const item of items) {
+    if (!byScope.has(item.scope)) byScope.set(item.scope, new Set());
+    byScope.get(item.scope).add(item.subject);
+  }
+  return JSON.stringify([...byScope].map(([scope, subjects]) => [scope, [...subjects].sort()]).sort());
+}
+
+function layerTransport() {
+  const POST_TIMEOUT_MS = 10000;
+  return {
+    mode: 'layer', label: 'comment layer',
+    // 'stored', or 'refused' (400, 403, 404, 409: no row has the scope now, or validation no resend fixes); throws
+    // otherwise, so the outbox keeps the event and sends it again (review-state #offline-outbox).
+    async postEvent(entry) {
+      const url = new URL('api/events', LAYER_SERVICE);
+      url.search = new URLSearchParams({ scope: entry.scope, subject: entry.subject, actor: 'human', name: entry.name });
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), POST_TIMEOUT_MS);
+      let r;
+      try {
+        r = await fetch(url.href, { method: 'POST', body: JSON.stringify(entry.body), signal: abort.signal });
+      } finally { clearTimeout(timer); }
+      if (r.ok) return 'stored';
+      if ([400, 403, 404, 409].includes(r.status)) return 'refused';
+      throw new Error('review service answered ' + r.status);
+    },
+  };
+}
+
+// The threads on a scope's subjects, wherever kept, and the store each subject is kept in (comment-layer #subjects):
+// {events, stores}, or null when no row has the scope.
+async function readScope(scope, subjects) {
+  const url = new URL('api/events', LAYER_SERVICE);
+  url.searchParams.set('scope', scope);
+  for (const subject of subjects) url.searchParams.append('subject', subject);
+  const r = await fetch(url.href);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('review service answered ' + r.status);
+  const answer = await r.json() || {};
+  const events = Array.isArray(answer.events) ? answer.events : [];
+  return { events: events.filter(e => e && e.body && typeof e.body === 'object' && typeof e.name === 'string'),
+    stores: new Map(Object.entries(answer.stores || {}).filter(([, store]) => typeof store === 'string')) };
+}
+
+async function refreshLayer() {
+  flushOutbox(); // waiting events are sent first; the read never waits on a pending save
+  const items = layerItems();
+  const subjects = layerSubjects(items);
+  const read = [];
+  let failed = false, storesChanged = subjects !== layer.subjects;
+  layer.subjects = subjects;
+  await Promise.all(JSON.parse(subjects).map(async ([scope, list]) => {
+    try {
+      const answer = await readScope(scope, list);
+      const before = JSON.stringify([...(layer.stores.get(scope) || [])]);
+      if (answer) layer.stores.set(scope, answer.stores);
+      else layer.stores.delete(scope);
+      if (JSON.stringify([...(layer.stores.get(scope) || [])]) !== before) storesChanged = true;
+      for (const e of answer ? answer.events : []) read.push(Object.assign(e, { scope }));
+    } catch (_) { failed = true; } // unreachable, or refusing this origin: a subject never answered stays without a control
+  }));
+  layer.failures = failed ? layer.failures + 1 : 0;
+  // A save this page holds learns its store and subject from the read.
+  const held = new Map(state.events.map(e => [e.actor + '/' + e.name, e]));
+  let learned = false;
+  for (const e of read) {
+    const mine = held.get(e.actor + '/' + e.name);
+    if (!mine || mine === e) continue;
+    if (mine.store !== e.store || mine.scope !== e.scope || (e.subject !== undefined && mine.subject !== e.subject)) {
+      Object.assign(mine, { store: e.store, scope: e.scope }, e.subject !== undefined ? { subject: e.subject } : {});
+      learned = true;
+    }
+  }
+  ingest(read.concat(outboxEvents()), storesChanged || learned);
+  renderOffline();
+  scheduleLayerPlace(); // a host's text may have moved under its marks since the last read
+}
+
+// Each store's own events fold apart (review-state #model-rule): a store's hand-offs cover only its drafts. Every save
+// names the store the service named for its subject before it was written, so one not yet read back folds there too.
+const layerStore = e => (e.scope || '') + '\n' + (e.store || '');
+
+function foldLayerThreads(events) {
+  const stores = new Map();
+  for (const e of events) {
+    const key = layerStore(e);
+    if (!stores.has(key)) stores.set(key, []);
+    stores.get(key).push(e);
+  }
+  const threads = [...stores.values()].flatMap(list => [...foldThreads(list).values()]);
+  threads.sort((a, b) => a.ev.name < b.ev.name ? -1 : 1);
+  return new Map(threads.map(th => [th.id, th]));
+}
+
+// Where a layer save is sent: a comment with its item's scope and subject, anything else with its thread's.
+function layerRoute(event, route) {
+  if (route) return { scope: route.scope, subject: route.subject, store: route.store };
+  const th = state.threads.get(event.threadId) || state.threads.get(event.respondsTo);
+  return th ? { scope: th.ev.scope, subject: th.ev.subject, store: th.ev.store } : {};
+}
+
+// #ui-handoff: this browser's drafts on the page, one hand-off into each store that holds them, each listing its own.
+// The outbox is shared by every host page of this service in this browser: another page's waiting drafts stay drafts.
+function handoffLayer() {
+  if (state.handoffPosting) return;
+  const items = liveItems();
+  const stores = new Map();
+  for (const e of state.events) {
+    if (!items.some(item => item.scope === e.scope)) continue;
+    const key = layerStore(e);
+    if (!stores.has(key)) stores.set(key, []);
+    stores.get(key).push(e);
+  }
+  const drafts = layerDrafts();
+  let sent = 0;
+  for (const list of stores.values()) {
+    const mine = new Set(handoffEvents(list, state.reviewer.browser));
+    const listed = list.filter(e => mine.has(e.body.id) && items.some(item => sameItem(item, e)));
+    if (!listed.length) continue;
+    const { scope, subject, store } = listed[0];
+    save({ id: humanId('h'), event: 'handoff', anchorId: '', target: null, quote: null, text: 'batch from ' + state.transport.mode,
+      events: listed.map(e => e.body.id), actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 }, { scope, subject, store });
+    sent++;
+  }
+  if (!sent) return;
+  state.handoffPosting = true; // until this hand-off's send settles: a double tap writes one
+  toast('Handed off ' + drafts + ' comment' + (drafts === 1 ? '' : 's') + ', agent notified');
+  refresh().finally(() => { state.handoffPosting = false; });
+}
+
+// This browser's draft threads on the page's items.
+function layerDrafts() {
+  const browser = state.reviewer && state.reviewer.browser;
+  const items = liveItems();
+  return [...state.threads.values()].filter(th => items.some(item => sameItem(item, th.ev))
+    && (th.draftBy.has(browser) || th.draftBy.has(''))).length;
+}
+
+const itemThreads = item => [...state.threads.values()].filter(th => th.ev.scope === item.scope && th.ev.subject === item.subject);
+
+// #subjects-quote-gone: a quote its item's text no longer holds is Text removed; one it holds is placed there.
+function layerPlace(th, el) {
+  const b = th.ev.body;
+  if (!b.quote || !b.target || b.target.type !== 'text') return null;
+  return el && textRange(el, b.quote) ? null : { state: 'gone' };
+}
+
+// The text inside an item the human selected, as its text nodes hold it, so the quote is found there again.
+function heldQuote(el) {
+  const selection = window.getSelection && window.getSelection();
+  if (!selection || !selection.rangeCount || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  if (!el.contains(range.startContainer) || !el.contains(range.endContainer)) return null;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let text = '';
+  for (let node; (node = walker.nextNode());) {
+    if (!range.intersectsNode(node)) continue;
+    const start = node === range.startContainer ? range.startOffset : 0;
+    const end = node === range.endContainer ? range.endOffset : node.data.length;
+    text += node.data.slice(start, end);
+  }
+  return text.trim() || null;
+}
+
+function openLayerComposer(item) {
+  const quote = layer.held && layer.held.el === item.el ? layer.held.text : heldQuote(item.el);
+  layer.held = null;
+  // #subjects-fields: every comment written on a host page carries its kind, label, and from address, and its subject.
+  const host = { subject: item.subject, kind: item.kind, label: item.label, from: item.from };
+  state.composer = { kind: 'comment', target: quote ? { type: 'text', key: quote.slice(0, 40) } : null, quote, text: '',
+    starters: item.starters, host, route: { scope: item.scope, subject: item.subject, store: storeOf(item) } };
+  state.activeThread = null;
+  layer.open = item;
+  renderLayer(true);
+}
+
+function selectLayerThread(th) {
+  state.activeThread = th.id;
+  if (th.status === 'resolved') state.expandedResolved.add(th.id);
+  if (!sameItem(layer.open, th.ev)) layer.open = liveItems().find(item => sameItem(item, th.ev)) || layer.open;
+  renderLayer(true);
+}
+
+function closeLayerBox() {
+  layer.open = null;
+  state.composer = null;
+  state.activeThread = null;
+  renderLayer(true);
+}
+
+function layerOverlay() {
+  if (layer.root) return layer.root;
+  const host = document.createElement('div');
+  host.setAttribute('data-spec-chat', 'comment-layer');
+  host.style.cssText = 'all:initial;position:fixed;top:0;left:0;width:0;height:0;z-index:2147483000';
+  const shadow = host.attachShadow({ mode: 'open' });
+  const style = document.createElement('style');
+  style.textContent = CSS.replace(/:root(\s*)\{/g, ':host$1{'); // the chrome's tokens and rules, on the overlay alone
+  layer.root = document.createElement('div');
+  layer.root.className = 'hx-layer';
+  shadow.append(style, layer.root);
+  layer.host = host;
+  document.body.appendChild(host);
+  return layer.root;
+}
+
+// The data changed (or the box opened, closed, or moved on): the box is drawn again; everything else is placed.
+function renderLayer(changed) {
+  if (changed && layer.root) renderLayerBox();
+  placeLayer();
+}
+
+function renderLayerBox() {
+  const root = layer.root;
+  let box = root.querySelector('.hx-layer-box');
+  if (layer.open && !liveItems().some(item => sameItem(item, layer.open))) { layer.open = null; state.composer = null; }
+  if (!layer.open) { if (box) box.remove(); return; }
+  const item = layer.open;
+  if (!box) {
+    box = root.appendChild(document.createElement('section'));
+    box.className = 'hx-layer-box';
+    box.setAttribute('role', 'dialog');
+  }
+  box.setAttribute('aria-label', 'Comments on ' + (item.label || item.subject));
+  const head = document.createElement('div');
+  head.className = 'hx-layer-head';
+  const title = head.appendChild(document.createElement('span'));
+  title.className = 'hx-layer-title';
+  title.textContent = item.label || item.subject;
+  const kind = head.appendChild(document.createElement('span'));
+  kind.className = 'hx-layer-kind';
+  kind.textContent = item.kind;
+  const close = head.appendChild(document.createElement('button'));
+  close.type = 'button';
+  close.className = 'hx-layer-close';
+  close.setAttribute('aria-label', 'Close comments');
+  close.textContent = '×';
+  close.addEventListener('click', closeLayerBox);
+  const list = document.createElement('div');
+  list.className = 'hx-threads';
+  const numbers = new Map([...state.threads.keys()].map((id, index) => [id, index + 1]));
+  const c = state.composer;
+  if (c && c.kind === 'comment' && c.route && sameItem(c.route, item)) list.appendChild(composerCard(c, 'New comment'));
+  for (const th of itemThreads(item).reverse()) list.appendChild(threadCard(th, 'Thread ' + numbers.get(th.id), layerPlace(th, item.el)));
+  if (!c || c.kind !== 'comment' || !sameItem(c.route, item)) {
+    const start = list.appendChild(document.createElement('button'));
+    start.type = 'button';
+    start.className = 'hx-btn';
+    start.dataset.act = 'comment';
+    start.textContent = '✛ Comment';
+    start.addEventListener('click', () => openLayerComposer(layer.open));
+  }
+  // Hand off, and no Accept spec: a host page hands off drafts only (comment-layer #ui-same).
+  const bar = document.createElement('div');
+  bar.className = 'hx-handoff';
+  const drafts = layerDrafts();
+  const note = bar.appendChild(document.createElement('span'));
+  note.className = 'hx-note';
+  note.id = 'hx-drafts';
+  note.textContent = drafts + ' draft' + (drafts === 1 ? '' : 's');
+  const offline = bar.appendChild(document.createElement('span'));
+  offline.className = 'hx-offline';
+  offline.id = 'hx-offline';
+  offline.setAttribute('role', 'status');
+  offline.hidden = true;
+  const send = bar.appendChild(document.createElement('button'));
+  send.type = 'button';
+  send.className = 'hx-btn pri';
+  send.id = 'hx-handoff';
+  send.textContent = 'Hand off to agent →';
+  send.disabled = !drafts;
+  send.addEventListener('click', handoffLayer);
+  box.replaceChildren(head, list, bar);
+  renderOffline();
+}
+
+// What shows of an element: the part of it inside the viewport and every box that clips it, with the element's own box
+// and the clip, the box it shows through; null when no part shows.
+function visiblePart(el) {
+  const box = el.getBoundingClientRect();
+  if (!box.width && !box.height) return null;
+  const clip = { top: 0, left: 0, bottom: innerHeight, right: innerWidth };
+  for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
+    const style = getComputedStyle(p);
+    if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
+    const c = p.getBoundingClientRect();
+    clip.top = Math.max(clip.top, c.top); clip.left = Math.max(clip.left, c.left);
+    clip.bottom = Math.min(clip.bottom, c.bottom); clip.right = Math.min(clip.right, c.right);
+  }
+  const top = Math.max(box.top, clip.top), left = Math.max(box.left, clip.left);
+  const bottom = Math.min(box.bottom, clip.bottom), right = Math.min(box.right, clip.right);
+  return bottom - top >= 1 && right - left >= 1 ? { top, left, bottom, right, box, clip } : null;
+}
+
+// An item element's part of its nodes' keys: a control, pin, or mark stays with its element as the host adds, moves, or
+// removes others, so a focused one keeps its item and its focus.
+function itemKey(el) {
+  if (!layer.keys.has(el)) layer.keys.set(el, ++layer.count);
+  return layer.keys.get(el);
+}
+
+function placedNode(key, make) {
+  let node = layer.nodes.get(key);
+  if (!node || !node.isConnected) {
+    node = make();
+    layer.nodes.set(key, node);
+    layer.root.appendChild(node);
+  }
+  return node;
+}
+
+function layerControl(key) {
+  return placedNode(key, () => {
+    const control = document.createElement('button');
+    control.type = 'button';
+    control.className = 'hx-layer-control';
+    control.innerHTML = LAYER_ICON;
+    // The selection the human made inside the item is the quote; the press itself would clear it.
+    control.addEventListener('pointerdown', () => { layer.held = { el: control.item.el, text: heldQuote(control.item.el) }; });
+    control.addEventListener('mousedown', e => e.preventDefault());
+    control.addEventListener('click', () => openLayerComposer(control.item));
+    return control;
+  });
+}
+
+function layerPin(key) {
+  return placedNode(key, () => {
+    const pin = document.createElement('button');
+    pin.type = 'button';
+    pin.className = 'hx-pin';
+    pin.appendChild(document.createElement('span')).className = 'hx-pin-number';
+    pin.addEventListener('click', () => { layer.open = pin.item; selectLayerThread(pin.thread); });
+    return pin;
+  });
+}
+
+// Controls and pins in a row at each item's own top right corner, while that corner shows (#ui-place); quote marks on
+// the text they quote, inside what shows of it; the open thread's ring; the box beside its item.
+function placeLayer() {
+  const items = liveItems();
+  if (!items.length) {
+    if (layer.host) layer.host.remove();
+    layer.host = layer.root = layer.open = null;
+    layer.nodes.clear();
+    return;
+  }
+  const fresh = !layer.root;
+  layerOverlay();
+  if (fresh && layer.open) renderLayerBox();
+  const used = new Set();
+  const size = NARROW.matches ? 44 : 24;
+  const numbers = new Map([...state.threads.keys()].map((id, index) => [id, index + 1]));
+  let ring = null;
+  items.forEach(item => {
+    const part = visiblePart(item.el);
+    if (!part) return;
+    const name = item.label || item.subject;
+    const at = itemKey(item.el);
+    // #ui-place: the row sits 4 px in from the element's own top right corner and shows only while that corner and the
+    // control's square are inside what the element shows through, so it is never moved onto the element's content.
+    const { box, clip } = part;
+    const top = box.top + 4;
+    let right = box.right - 4;
+    const row = box.top >= clip.top && box.right <= clip.right
+      && top + size <= clip.bottom && right - size >= clip.left;
+    if (row) {
+      const control = layerControl('control:' + at);
+      control.item = item;
+      control.setAttribute('aria-label', 'Comment on ' + name);
+      control.title = 'Comment on ' + name;
+      control.setAttribute('aria-expanded', String(sameItem(layer.open, item) && layer.open.el === item.el));
+      used.add('control:' + at);
+      control.style.top = top + 'px';
+      control.style.left = (right - size) + 'px';
+      right -= size + 4;
+    }
+    for (const th of itemThreads(item)) {
+      const key = 'pin:' + at + ':' + th.id;
+      if (row) {
+        const pin = layerPin(key);
+        pin.item = item;
+        pin.thread = th;
+        used.add(key);
+        pin.dataset.s = th.status;
+        pin.classList.toggle('active', state.activeThread === th.id);
+        pin.firstChild.textContent = numbers.get(th.id);
+        pin.title = 'Thread ' + numbers.get(th.id) + ' on ' + name + ' · ' + th.status;
+        pin.setAttribute('aria-label', 'Open thread ' + numbers.get(th.id) + ': ' + name + ', ' + th.status);
+        pin.style.top = top + 'px';
+        pin.style.left = (right - size) + 'px';
+        right -= size + 4;
+      }
+      const b = th.ev.body;
+      const range = b.quote && b.target && b.target.type === 'text' ? textRange(item.el, b.quote) : null;
+      if (range) {
+        [...range.getClientRects()].forEach((rect, line) => {
+          const t = Math.max(rect.top, part.top), l = Math.max(rect.left, part.left);
+          const h = Math.min(rect.bottom, part.bottom) - t, w = Math.min(rect.right, part.right) - l;
+          if (h < 1 || w < 1) return;
+          const markKey = 'mark:' + at + ':' + th.id + ':' + line;
+          const mark = placedNode(markKey, () => Object.assign(document.createElement('div'), { className: 'hx-quote-mark' }));
+          used.add(markKey);
+          Object.assign(mark.style, { top: t + 'px', left: l + 'px', width: w + 'px', height: h + 'px' });
+        });
+      }
+      if (state.activeThread === th.id && sameItem(layer.open, item) && (!ring || layer.open.el === item.el)) {
+        ring = range ? range.getBoundingClientRect() : item.el.getBoundingClientRect();
+      }
+    }
+  });
+  if (ring) {
+    used.add('ring');
+    const node = placedNode('ring', () => Object.assign(document.createElement('div'), { className: 'hx-thread-ring' }));
+    Object.assign(node.style, { left: (ring.left - 4) + 'px', top: (ring.top - 4) + 'px',
+      width: (Math.max(ring.width, 8) + 8) + 'px', height: (Math.max(ring.height, 8) + 8) + 'px' });
+  }
+  for (const [key, node] of layer.nodes) if (!used.has(key)) { node.remove(); layer.nodes.delete(key); }
+  placeLayerBox(items);
+}
+
+// Beside its item, below it or above it, on the screen; a sheet across a phone's width.
+function placeLayerBox(items) {
+  const box = layer.root && layer.root.querySelector('.hx-layer-box');
+  if (!box || !layer.open) return;
+  if (!layer.open.el.isConnected) { // the host drew the item again: the box follows the new element
+    const again = items.find(item => sameItem(item, layer.open));
+    if (again) layer.open = again;
+  }
+  const style = box.style;
+  if (NARROW.matches) {
+    Object.assign(style, { left: '8px', right: '8px', bottom: '8px', top: 'auto' });
+    return;
+  }
+  Object.assign(style, { right: 'auto', bottom: 'auto' });
+  const r = layer.open.el.getBoundingClientRect();
+  const { width, height } = box.getBoundingClientRect();
+  const below = r.bottom + 8, above = r.top - 8 - height;
+  const top = below + height <= innerHeight - 8 ? below : above >= 8 ? above : Math.max(8, innerHeight - 8 - height);
+  style.top = Math.round(top) + 'px';
+  style.left = Math.round(Math.max(8, Math.min(r.left, innerWidth - 8 - width))) + 'px';
+}
+
 /* ---------------- ANN-108 reading view ----------------
  * This block owns the audience toggle and its HTTP-only Jev request. It never
  * changes document order or removes clauses. Git focus and reading view are
@@ -3612,14 +4975,14 @@ function setReadingView(on) {
 }
 
 function mountReadingView() {
-  if (EMBED_REVIEW_DIR || !['http:', 'https:'].includes(OWN_ADDRESS.protocol) || document.getElementById('hx-reading')) return;
+  if (EMBED_REVIEW_DIR || MOCKUP_SPEC || !['http:', 'https:'].includes(OWN_ADDRESS.protocol) || document.getElementById('hx-reading')) return;
   const toolbar = document.querySelector('.hx-toolbar');
   if (!toolbar) return;
   const style = document.createElement('style');
-  style.textContent = `.hx-reading-active [data-hx-audience="internals"]{color:#586069!important}
+  // Internals take the document's muted color, which the shared stylesheet and the runtime's document CSS set in both modes.
+  style.textContent = `.hx-reading-active [data-hx-audience="internals"]{color:var(--spec-muted)!important}
 .hx-reading-active [data-hx-audience="internals"] :is(a,code,strong,em,span){color:inherit!important}
-` + (document.querySelector('link[rel~="stylesheet"][href*=".style/spec.css"]') ? '' :
-    `@media(prefers-color-scheme:dark){.hx-reading-active [data-hx-audience="internals"]{color:#b9c0ca!important}}`);
+`;
   document.head.appendChild(style);
   const button = document.createElement('button');
   button.id = 'hx-reading';
@@ -3635,7 +4998,9 @@ const readingClassObserver = new MutationObserver(() => {
   if (state.readingView && document.body.classList.contains('hx-focus-active')) setReadingView(false);
   else document.body.classList.toggle('hx-reading-active', state.readingView);
 });
-readingClassObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
-setTimeout(mountReadingView, 0);
+if (!LAYER_SERVICE) {
+  readingClassObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+  setTimeout(mountReadingView, 0);
+}
 
 })();
