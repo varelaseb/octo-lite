@@ -121,8 +121,8 @@ EOF
 
 - `<accepted sha>` is the full sha. A merge set to run once checks pass is
   that chain after `gh pr checks <pr> --watch --fail-fast &&`, never `--auto`,
-  so a head pushed after the human's go is never merged. Run it as a background
-  task of your own.
+  so a head pushed after the human's go is never merged. On Claude, run it as a
+  background task of your own.
 - The merge completes the worklane. Move the primary Linear issue to Done, the
   team's completed state, and stop the lane. Do not assume deployment-named
   states exist.
