@@ -98,8 +98,10 @@ Do not create extra workflow labels unless the operator explicitly asks.
 - Merge to the main branch is the active owning agent's mechanical execution of
   an accepted PR, bound to explicit human instruction. Acceptance follows the
   worklane. An explicit instruction to merge a named PR accepts that exact head
-  unless the human says otherwise. Mechanical rebases onto accepted main do not
-  require renewed acceptance when behavior and scope are unchanged. A
+  unless the human says otherwise. A mechanical update onto accepted main made
+  before the human's go (merge main in, never rebase or force-push) does not
+  require renewed acceptance when behavior and scope are unchanged; an update
+  after the go moves the head, so the pinned merge stops and needs a fresh go. A
   human statement assigning the current lane ownership is sufficient for this
   action. No worker merges, no agent decides acceptance, and no agent merges
   unaccepted work. Required failed checks remain blockers until fixed or
@@ -119,7 +121,8 @@ EOF
 
 - `<accepted sha>` is the full sha. A merge set to run once checks pass is
   that chain after `gh pr checks <pr> --watch --fail-fast &&`, never `--auto`,
-  so a head pushed after the human's go is never merged.
+  so a head pushed after the human's go is never merged. Run it as a background
+  task of your own.
 - The merge completes the worklane. Move the primary Linear issue to Done, the
   team's completed state, and stop the lane. Do not assume deployment-named
   states exist.
