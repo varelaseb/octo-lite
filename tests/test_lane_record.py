@@ -186,6 +186,83 @@ class LaneRecordTests(unittest.TestCase):
             r"when the owner sends you that spec's review link or head, quoting the human's standing words",
         )
 
+    def test_addendum_receipt_recorded_by_operator_as_spec_example(self) -> None:
+        # spec #gates-addendum, #acceptance-receipt-addendum-example: the owner
+        # sends the restating commit to the operator, whose receipt body, filled
+        # in, is the spec's example.
+        text = OPERATOR.read_text(encoding="utf-8")
+        self.assertRegex(text, r"adds no behavior, value, or outcome that text does not already state, "
+                         r"record an addendum receipt the same way, then tell the human in one line")
+        body = re.search(r"\(spec `#gates-addendum`\)\. Its body:\n```text\n(.*?)\n```", text)
+        self.assertIsNotNone(body, "addendum receipt body is missing")
+        fill = {
+            "<full repository path>": "spec/domains/octo-lite.spec.html",
+            "<addendum commit>": "5d6e7f8",
+            "<anchor>": "gates-merge-check",
+            "<accepted commit>": "1a2b3c4",
+            "<accepted text>": "the receiving agent checks that the PR head is the accepted commit",
+            "<words>": "accept both",
+            "<date>": "2026-10-19",
+        }
+        receipt = body.group(1)
+        for slot, value in fill.items():
+            receipt = receipt.replace(slot, value)
+        example = re.search(r'data-anchor="acceptance-receipt-addendum-example"><code>(.*?)</code>',
+                            SPEC.read_text(encoding="utf-8"))
+        self.assertEqual(receipt, unescape(example.group(1)))
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("send the operator the commit and the accepted text it restates, quoted with its anchor, "
+                      "for an addendum receipt; never record one yourself", owner)
+
+    def test_merge_chain_needs_its_receipt_and_the_accepted_head(self) -> None:
+        # spec #gates-merge-check, #acceptance-merge-receipt-fails,
+        # #acceptance-merge-pin: the merge runs only after its receipt posts,
+        # pinned to the accepted head, deferred merges included.
+        skill = (ROOT / "skills/octo-lite-github/SKILL.md").read_text(encoding="utf-8")
+        chain = re.search(r"## Merge And Linear Sync.*?```sh\n(.*?)```", skill, flags=re.DOTALL)
+        self.assertIsNotNone(chain, "merge chain is missing")
+        self.assertIn("after `gh pr checks <pr> --watch --fail-fast &&`, never `--auto`", " ".join(skill.split()))
+        self.assertIn("(../skills/octo-lite-github/SKILL.md#merge-and-linear-sync), a merge set to run once checks pass included",
+                      OPERATOR.read_text(encoding="utf-8"))
+        sha = "9be60f6" + "0" * 33
+        command = chain.group(1)
+        for slot, value in {"<pr>": "74", "<words>": "merge #74", "<date>": "2026-09-26",
+                            "<accepted sha>": sha, "<agent name>": "meta-operator"}.items():
+            command = command.replace(slot, value)
+        with tempfile.TemporaryDirectory() as tmp:
+            log, gh = Path(tmp) / "log", Path(tmp) / "gh"
+            gh.write_text('#!/bin/sh\necho "$*" >> "$LOG"\n[ "$2" = comment ] && { cat > /dev/null; exit "$FAIL"; }\nexit 0\n',
+                          encoding="utf-8")
+            gh.chmod(0o755)
+            for fail, calls in (("1", ["pr comment 74 --body-file -"]),
+                                ("0", ["pr comment 74 --body-file -", f"pr merge 74 --merge --match-head-commit {sha}"])):
+                log.write_text("", encoding="utf-8")
+                env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "LOG": str(log), "FAIL": fail}
+                run = subprocess.run(["sh", "-c", command], env=env, capture_output=True, text=True)
+                self.assertEqual(run.returncode != 0, fail == "1", run.stderr)
+                self.assertEqual(log.read_text(encoding="utf-8").splitlines(), calls)
+
+    def test_operator_writes_only_for_decisions_finishes_risks(self) -> None:
+        # spec #roles-operator-writes, #acceptance-operator-quiet,
+        # #acceptance-operator-bundle, #acceptance-operator-trade-off.
+        text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
+        self.assertIn("write to the human only when they must decide (a gate), when what they asked for finishes "
+                      "(a lane), or when a risk appears", text)
+        self.assertIn("status only when they ask; a stop or report that brings them nothing new you consume "
+                      "without a message", text)
+        self.assertIn("go together as one question asking whether to take your recommendations, one plain line "
+                      "per question naming its recommendation", text)
+        self.assertIn("A question that weighs real trade-offs goes alone, never in that bundle.", text)
+        self.assertNotIn("progress gets one line", text)
+
+    def test_operator_starts_each_lane_under_an_unused_name(self) -> None:
+        # spec #lane-record: a lane record's name is never reused, archived included.
+        self.assertIn(
+            "pick a lane name no open or archived record has (no `<lane name>.toml` in `$(octo-lite-state)/lanes/` "
+            "or its `archive/`), so one name is one lane (spec `#lane-record`); `octo-lite-start",
+            " ".join(OPERATOR.read_text(encoding="utf-8").split()),
+        )
+
     def test_owner_logs_attempt_line_on_consuming_worker_result(self) -> None:
         # spec #acceptance-lane-log: consuming a worker's result appends one
         # attempt line naming the worker's role, ticket, pane, and commit.
