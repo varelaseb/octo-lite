@@ -72,7 +72,7 @@ class LaneRecordTests(unittest.TestCase):
         owner = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
         self.assertRegex(
             owner,
-            r"tear down in order: review rows, worktrees, workers\. Last, after your last "
+            r"tear down in order: review rows, the prototype you run, worktrees, workers\. Last, after your last "
             r"hand-off line \(the final worker close\) and "
             r"before your close report, move `<name>\.toml`, "
             r"`<name>\.handoffs\.jsonl`, and `<name>-notes/` when present, "
@@ -104,15 +104,6 @@ class LaneRecordTests(unittest.TestCase):
             r"`#handoff-operator`",
         )
 
-    def test_owner_posts_spec_receipt_on_accept_spec_handoff(self) -> None:
-        # spec #acceptance-receipt-paths: each spec by full path then at <commit>.
-        text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
-        self.assertRegex(
-            text,
-            r"Accept spec hand-off.*gh pr comment.*Spec acceptance receipt: human.*"
-            r"accepts <full repository path> at <exact commit>\.",
-        )
-
     def test_owner_leaves_relayed_spec_acceptance_to_operator(self) -> None:
         # spec #gates-chat-acceptance, #acceptance-chat-acceptance: a spec
         # acceptance the operator relays is the operator's receipt; the owner
@@ -139,24 +130,10 @@ class LaneRecordTests(unittest.TestCase):
             r"it moves the row's base to the accepted commit and records no acceptance\.",
         )
 
-    def test_chat_spec_receipt_command_keeps_the_humans_words(self) -> None:
-        # spec #acceptance-receipt-spec-example, #gates-push-proof,
-        # #acceptance-push-proof-receipt: the operator's receipt command, run as
-        # written, posts the human's words verbatim, apostrophe included, and
-        # posts nothing when the PR's remote head lacks the accepted commit.
-        text = OPERATOR.read_text(encoding="utf-8")
-        match = re.search(r"in chat is recorded .*?```sh\n(.*?)```", text, flags=re.DOTALL)
-        self.assertIsNotNone(match, "chat receipt command is missing")
-        fill = {
-            "<branch>": "ann1527",
-            "<pr>": "208",
-            "<words>": "your goal is to merge all this stuff. you're preauthorized",
-            "<date>": "2026-10-21",
-            "<full repository path>": "spec/domains/octo-lite.spec.html",
-            "<commit>": "1a2b3c4",
-        }
-        command = match.group(1)
-        for slot, value in fill.items():
+    def assert_receipt_command(self, command: str, fill: dict[str, str], posted: str) -> None:
+        # Runs a receipt command as written: it posts nothing when the PR's
+        # remote head lacks the accepted commit, else posts the body verbatim.
+        for slot, value in {"<branch>": "ann1527", "<pr>": "208", "<commit>": "1a2b3c4", **fill}.items():
             command = command.replace(slot, value)
         with tempfile.TemporaryDirectory() as tmp:
             body = Path(tmp) / "body"
@@ -183,12 +160,46 @@ class LaneRecordTests(unittest.TestCase):
                              ["fetch origin ann1527", "merge-base --is-ancestor 1a2b3c4 origin/ann1527"])
             run = subprocess.run(["sh", "-c", command], env={**env, "PROOF": "0"}, capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertEqual(
-                body.read_text(encoding="utf-8").strip(),
-                'Spec acceptance receipt: human "your goal is to merge all this stuff. '
-                "you're preauthorized\" (2026-10-21) accepts spec/domains/octo-lite.spec.html "
-                "at 1a2b3c4. Recorded by meta-operator.",
-            )
+            self.assertEqual(body.read_text(encoding="utf-8").strip(), posted)
+
+    def test_chat_spec_receipt_command_keeps_the_humans_words(self) -> None:
+        # spec #acceptance-receipt-spec-example, #gates-push-proof,
+        # #acceptance-push-proof-receipt: the operator's receipt command, run as
+        # written, posts the human's words verbatim, apostrophe included, and
+        # posts nothing when the PR's remote head lacks the accepted commit.
+        text = OPERATOR.read_text(encoding="utf-8")
+        match = re.search(r"in chat is recorded .*?```sh\n(.*?)```", text, flags=re.DOTALL)
+        self.assertIsNotNone(match, "chat receipt command is missing")
+        self.assert_receipt_command(
+            match.group(1),
+            {
+                "<words>": "your goal is to merge all this stuff. you're preauthorized",
+                "<date>": "2026-10-21",
+                "<full repository path>": "spec/domains/octo-lite.spec.html",
+            },
+            'Spec acceptance receipt: human "your goal is to merge all this stuff. '
+            "you're preauthorized\" (2026-10-21) accepts spec/domains/octo-lite.spec.html "
+            "at 1a2b3c4. Recorded by meta-operator.",
+        )
+
+    def test_review_page_receipt_command_needs_push_proof(self) -> None:
+        # spec #acceptance-receipt-paths, #gates-push-proof,
+        # #acceptance-push-proof-receipt: the owner's Accept spec receipt command,
+        # run as written, names each spec by full path then at <commit>, and
+        # posts nothing when the PR's remote head lacks the accepted commit.
+        text = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        match = re.search(r"Accept spec hand-off from the review page, record it with `([^`]*)`", text)
+        self.assertIsNotNone(match, "review page receipt command is missing")
+        self.assert_receipt_command(
+            match.group(1),
+            {
+                "<date>": "2026-11-02",
+                "<full repository path>": "spec/domains/octo-lite.spec.html",
+                "<owner agent name>": "ann1527-prototype-first",
+            },
+            'Spec acceptance receipt: human "Accept spec" on the review page (2026-11-02) accepts '
+            "spec/domains/octo-lite.spec.html at 1a2b3c4. Recorded by ann1527-prototype-first.",
+        )
 
     def test_push_reports_and_receipts_need_ancestor_proof(self) -> None:
         # spec #gates-push-proof, #acceptance-push-proof-report: each surface
@@ -373,7 +384,7 @@ class LaneRecordTests(unittest.TestCase):
         close = re.search(
             r"add to the PR body a permalink to each report the lane kept outside main, "
             r"`https://github\.com/<owner>/<repo>/blob/<commit>/<path>` at the last commit holding it, "
-            r"`(git log [^`]*)` on the branch that removed it.*tear down in order: review rows, worktrees, workers\.",
+            r"`(git log [^`]*)` on the branch that removed it.*tear down in order: review rows, the prototype you run, worktrees, workers\.",
             owner,
         )
         self.assertIsNotNone(close, "report permalink step is missing or after review rows")
