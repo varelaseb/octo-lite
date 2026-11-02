@@ -140,12 +140,15 @@ class LaneRecordTests(unittest.TestCase):
         )
 
     def test_chat_spec_receipt_command_keeps_the_humans_words(self) -> None:
-        # spec #acceptance-receipt-spec-example: the operator's receipt command,
-        # run as written, posts the human's words verbatim, apostrophe included.
+        # spec #acceptance-receipt-spec-example, #gates-push-proof,
+        # #acceptance-push-proof-receipt: the operator's receipt command, run as
+        # written, posts the human's words verbatim, apostrophe included, and
+        # posts nothing when the PR's remote head lacks the accepted commit.
         text = OPERATOR.read_text(encoding="utf-8")
         match = re.search(r"in chat is recorded .*?```sh\n(.*?)```", text, flags=re.DOTALL)
         self.assertIsNotNone(match, "chat receipt command is missing")
         fill = {
+            "<branch>": "ann1527",
             "<pr>": "208",
             "<words>": "your goal is to merge all this stuff. you're preauthorized",
             "<date>": "2026-10-21",
@@ -167,8 +170,18 @@ class LaneRecordTests(unittest.TestCase):
                 encoding="utf-8",
             )
             gh.chmod(0o755)
-            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "BODY": str(body)}
-            run = subprocess.run(["sh", "-c", command], env=env, capture_output=True, text=True)
+            git = Path(tmp) / "git"
+            git.write_text('#!/bin/sh\necho "$*" >> "$LOG"\n[ "$1" = merge-base ] && exit "$PROOF"\nexit 0\n',
+                           encoding="utf-8")
+            git.chmod(0o755)
+            log = Path(tmp) / "log"
+            env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "BODY": str(body), "LOG": str(log)}
+            run = subprocess.run(["sh", "-c", command], env={**env, "PROOF": "1"}, capture_output=True, text=True)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertFalse(body.exists(), "receipt posted without push proof")
+            self.assertEqual(log.read_text(encoding="utf-8").splitlines(),
+                             ["fetch origin ann1527", "merge-base --is-ancestor 1a2b3c4 origin/ann1527"])
+            run = subprocess.run(["sh", "-c", command], env={**env, "PROOF": "0"}, capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(
                 body.read_text(encoding="utf-8").strip(),
@@ -176,6 +189,21 @@ class LaneRecordTests(unittest.TestCase):
                 "you're preauthorized\" (2026-10-21) accepts spec/domains/octo-lite.spec.html "
                 "at 1a2b3c4. Recorded by meta-operator.",
             )
+
+    def test_push_reports_and_receipts_need_ancestor_proof(self) -> None:
+        # spec #gates-push-proof, #acceptance-push-proof-report: each surface
+        # that reports a push or records a receipt proves the commit is an
+        # ancestor of the remote branch head first.
+        fetch, prove = "`git fetch origin <branch>`", "`git merge-base --is-ancestor <commit> origin/<branch>`"
+        for rel, steps in {
+            "agents/orchestrator.md": (fetch, prove),
+            "agents/integrator.md": (fetch, prove.replace("<commit>", "<head>")),
+            "agents/meta-operator.md": ("git fetch origin <branch> && " + prove.strip("`") + " &&\ngh pr comment",),
+            "skills/push/SKILL.md": (fetch, prove),
+        }.items():
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            for step in (*steps, "(spec `#gates-push-proof`)"):
+                self.assertIn(step, text, rel)
 
     def test_standing_spec_acceptance_recorded_on_owner_send(self) -> None:
         # spec #gates-chat-acceptance, #acceptance-standing-acceptance: a standing
