@@ -101,10 +101,25 @@ Do not create extra workflow labels unless the operator explicitly asks.
   unless the human says otherwise. Mechanical rebases onto accepted main do not
   require renewed acceptance when behavior and scope are unchanged. A
   human statement assigning the current lane ownership is sufficient for this
-  action. Record acceptance as the receipt comment on the PR
-  (octo-lite spec `#acceptance-receipt`), verify required checks, then merge. No worker merges, no agent decides acceptance, and no agent merges
+  action. No worker merges, no agent decides acceptance, and no agent merges
   unaccepted work. Required failed checks remain blockers until fixed or
   durably waived through a repository-approved path.
+- Check the PR head is the accepted commit and required checks pass, then
+  record acceptance as the receipt comment on the PR (octo-lite spec
+  `#acceptance-receipt`) and merge pinned to that commit (spec
+  `#gates-merge-check`). Every receipt the merge needs, an addendum receipt
+  included, is on the PR first. Run them as one chain, so a receipt that
+  cannot be recorded, or a head that moved, means no merge; report why:
+
+```sh
+gh pr comment <pr> --body-file - <<'EOF' && gh pr merge <pr> --merge --match-head-commit <accepted sha>
+Acceptance receipt: human "<words>" (<date>) accepts and merges PR #<pr> at <accepted sha>. Recorded by <agent name>.
+EOF
+```
+
+- `<accepted sha>` is the full sha. A merge set to run once checks pass is
+  that chain after `gh pr checks <pr> --watch --fail-fast &&`, never `--auto`,
+  so a head pushed after the human's go is never merged.
 - The merge completes the worklane. Move the primary Linear issue to Done, the
   team's completed state, and stop the lane. Do not assume deployment-named
   states exist.
