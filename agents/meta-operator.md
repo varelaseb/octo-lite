@@ -80,6 +80,7 @@ slash commands themselves): "<outcome> for <issue>, delivered through
 implement-spec; done when a human gate is pending (review link or merge ask
 sent) or PR merged and lane torn down". Then the
 brief pointing to the finish order. Code-level conditions go in the brief only.
+For a spec that changes a product's screens, the brief names the prototype, its round videos, and its route table as shaping's deliverable (spec `#delivery-prototype`).
 
 Bootstrap adoption: on taking over as operator, message every live orchestrator
 with your pane id ("Operator is now <pane>. Report gates and completion here.")
