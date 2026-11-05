@@ -245,7 +245,7 @@ class OnboardingTest(unittest.TestCase):
 
 class AfterPullTest(unittest.TestCase):
     """A host fast-forwards an installed clone, then runs the published
-    after_pull argv with no shell (#install-after-pull)."""
+    after_pull argv with no shell (spec/domains/install.spec.html#install-after-pull)."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

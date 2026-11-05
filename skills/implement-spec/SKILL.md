@@ -91,9 +91,9 @@ and fill available capacity from the current frontier.
 
 Spawn every worker into the owner's space, `--workspace "$HERDR_WORKSPACE_ID"`,
 named `<role>-<ticket>` lowercase (`implementer-ann-64`; a lane-wide worker such
-as the integrator carries the primary issue key), per spec
-`#transport-spawn-name`. Close a worker before reusing its name. Herdr owns
-session selection. Spawn Claude workers
+as the integrator carries the primary issue key), per
+`spec/domains/herdr-transport.spec.html#transport-spawn-name`. Close a worker
+before reusing its name. Herdr owns session selection. Spawn Claude workers
 (`-- claude`, CLI default model; brief via `herdr-say`); Codex only when the operator
 explicitly selects it. Keep the worker-specific nuance: every writer still
 gets its own worktree, and only one integrator writes the integration branch.
@@ -128,9 +128,9 @@ message that sets a worker to work (brief, resume, repair) with
 `herdr-await <name> <message>` instead, by name, on Claude as
 `herdr-await --notice` run in the background, never `herdr agent wait`
 yourself, and when that wait ends follow the
-[wait recipe](../herdr-comms/SKILL.md#wait-on-an-agent) (spec `#roles-goal`,
-`#transport-await`). Keep messages sparse. A status pointer or
-commit is better than a recap.
+[wait recipe](../herdr-comms/SKILL.md#wait-on-an-agent)
+(`spec/domains/herdr-transport.spec.html#roles-goal`, `#transport-await`).
+Keep messages sparse. A status pointer or commit is better than a recap.
 
 ## Integrate and advance
 
@@ -225,9 +225,10 @@ After every ticket is integrated:
    issue open until human review or repository automation closes it.
 5. Close each consumed worker with
    `herdr-close TAB >> $(octo-lite-state)/lanes/<lane record name>.handoffs.jsonl`,
-   which also ends its detached processes and appends its closed line (spec
-   `#transport-close-line`). A worker you would keep idle through a long wait (human
-   gate, another lane) is parked instead, never a consumed one:
+   which also ends its detached processes and appends its closed line
+   (`spec/domains/herdr-transport.spec.html#transport-close-line`). A worker you
+   would keep idle through a long wait (human gate, another lane) is parked
+   instead, never a consumed one:
    `herdr-close --park <pane> >> $(octo-lite-state)/lanes/<lane record name>.handoffs.jsonl`;
    `herdr-say <name>` resumes it. Remove every temporary worker worktree only after it is
    clean and its commits are reachable from the integration branch. Never
