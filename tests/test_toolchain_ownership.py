@@ -11,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
+# skillfile stubbed unreachable: installer runs never fetch.
+OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
 
 
 class ToolchainOwnershipTests(unittest.TestCase):
@@ -30,6 +32,7 @@ class ToolchainOwnershipTests(unittest.TestCase):
     def _install(self) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["SPEC_CHAT_ROOT"] = str(self.peer)
+        env["PATH"] = OFFLINE
         return subprocess.run(
             [str(INSTALLER), "--prefix", str(self.profile)],
             capture_output=True,
@@ -64,7 +67,7 @@ class ToolchainOwnershipTests(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
-            env={**os.environ, "SPEC_CHAT_ROOT": str(self.peer)},
+            env={**os.environ, "SPEC_CHAT_ROOT": str(self.peer), "PATH": OFFLINE},
         )
         self.assertNotEqual(0, check.returncode)
 

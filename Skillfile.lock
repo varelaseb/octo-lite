@@ -1,4 +1,8 @@
 {
+  "github/skill/stageshow": {
+    "sha": "299140fafd08df55a9c234e610c3f64af3f45531",
+    "raw_url": "https://api.github.com/repos/benjitaylor/skills/contents/stageshow?ref=299140fafd08df55a9c234e610c3f64af3f45531"
+  },
   "github/skill/tdd": {
     "sha": "ed37663cc5fbef691ddfecd080dff42f7e7e350d",
     "raw_url": "https://api.github.com/repos/mattpocock/skills/contents/skills/engineering/tdd?ref=ed37663cc5fbef691ddfecd080dff42f7e7e350d"
