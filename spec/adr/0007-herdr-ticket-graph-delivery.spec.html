@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0007: Herdr ticket-graph delivery</title>
+<link rel="stylesheet" href="../.style/spec.css">
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1">
+<header data-anchor="header">
+<h1>ADR 0007: Herdr ticket-graph delivery</h1>
+<nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/octo-lite.spec.html">octo-lite</a> / ADR 0007</nav>
+<p data-anchor="supersedes">Supersedes <a href="./0005-herdr-ticket-graph-delivery.spec.html">ADR 0005</a>.
+Decision behind <a href="../domains/octo-lite.spec.html#delivery">delivery</a>.</p>
+</header>
+
+<section data-anchor="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-parallel-ticket-delivery" data-user-facing="true" data-guided-journey="no">As an operator, I can invoke implement-spec on an accepted spec and have its ready tickets delivered in parallel onto one PR branch.</p>
+<p data-user-story data-anchor="user-story-truthful-linear" data-user-facing="true" data-guided-journey="no">As an operator, I can read Linear to see which tickets are actually in progress and which are integrated and pushed.</p>
+</section>
+
+<section data-anchor="context">
+<h2>Context</h2>
+<p data-anchor="context-old-loop">Post-shaping delivery had gathered role resolution, receipts, journals, exact-model gates, verdict publication, QA gates, and lifecycle transitions around ordinary implementation.</p>
+<p data-anchor="context-natural-unit">An accepted spec defines outcomes whose ticket graph, once filed, shows through its blocking relations the work that can safely run in parallel.</p>
+</section>
+
+<section data-anchor="decision">
+<h2>Decision</h2>
+<p data-anchor="decision-graph">After spec acceptance, <code>implement-spec</code> owns delivery: it files the spec's dependency-linked ticket graph and fills its ready frontier (<a href="../domains/octo-lite.spec.html#delivery-implement">implement</a>).</p>
+<p data-anchor="decision-workers">The lane owner launches temporary Herdr workers directly, each under its hand-written role contract (<a href="../domains/octo-lite.spec.html#roles-loaded">roles</a>): implementers in their own worktrees, one integrator at a time onto one PR branch (<a href="../domains/octo-lite.spec.html#delivery-merge">integrate</a>), and a fresh code reviewer on the integration head (<a href="../domains/octo-lite.spec.html#delivery-review">review</a>).</p>
+<p data-anchor="decision-linear">Linear holds the ticket graph and its live work state (<a href="../domains/octo-lite.spec.html#delivery-linear">truthful Linear</a>).</p>
+</section>
+
+<section data-anchor="why">
+<h2>Why</h2>
+<p data-anchor="why-throughput">Independent tickets run at once, so dependencies, not a fixed phase sequence, set throughput.</p>
+<p data-anchor="why-simple">Workers launched directly, passing durable pointers and commits, are simpler to run and to watch than a loop of machine receipts and verdict gates.</p>
+</section>
+
+<section data-anchor="alternatives">
+<h2>Alternatives rejected</h2>
+<div class="table-scroll" data-anchor="alternatives-table-scroll">
+<table data-anchor="alternatives-table">
+<thead><tr><th>Option</th><th>Rejected because</th></tr></thead>
+<tbody>
+<tr data-anchor="alt-loop"><td>Keep the post-shaping loop, with role resolution, receipts, journals, exact-model gates, and verdict publication</td><td>Its deterministic gates cost ceremony around ordinary implementation, and its state stood apart from the actual work</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section data-anchor="consequences">
+<h2>Consequences</h2>
+<p data-anchor="consequence-sparse-context">Agents communicate through durable pointers and commits instead of copied briefs and machine receipts.</p>
+<p data-anchor="consequence-tradeoff">Delivery gives up deterministic role and verdict gates in exchange for simpler execution, direct observability, and Linear state that reflects actual work.</p>
+<p data-anchor="consequence-gates">Required checks and the <a href="../domains/octo-lite.spec.html#gates-list">human gates</a> still hold every merge.</p>
+</section>
+</article>
+</body>
+</html>
