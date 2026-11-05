@@ -520,8 +520,9 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("--append-system-prompt", self.start_argv())
 
     def test_claude_starts_under_its_name_with_its_role(self):
-        # acceptance-lane-claude-names, transport-claude-name: Claude's own
-        # session list names the agent by its Herdr name.
+        # spec/domains/herdr-transport.spec.html#acceptance-lane-claude-names,
+        # transport-claude-name: Claude's own session list names the agent by
+        # its Herdr name.
         self.dialog.write_text("none\n")
         r = self.spawn()
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -529,7 +530,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(argv[argv.index("--") + 1:], ["--name", "a1", "--agent", "r"])
 
     def test_a_resumed_claude_keeps_its_name_role_and_session(self):
-        # acceptance-park-claude-name, transport-resume: a resumed agent too.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-claude-name,
+        # transport-resume: a resumed agent too.
         self.dialog.write_text("none\n")
         r = self.spawn(extra=["--resume", "s-1"])
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -672,7 +674,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.closed_line(r.stdout), {"kind": "closed", "space": space, "close_rc": 0, "killed": 2})
 
     def test_close_stops_only_processes_of_the_callers_session(self):
-        # acceptance-session-close: another session repeats the space id.
+        # spec/domains/herdr-transport.spec.html#acceptance-session-close:
+        # another session repeats the space id.
         space, other = f"w-{uuid.uuid4()}", f"s-{uuid.uuid4()}"
         here = self.tagged(f"{space}:t1", space)
         there = self.tagged(f"{space}:t1", space, HERDR_SESSION=other)
@@ -701,11 +704,12 @@ class HerdrWrapperTest(unittest.TestCase):
         return v
 
     def test_close_ends_its_callers_own_waits_on_an_agent_it_closes_whole(self):
-        # transport-close-waits, acceptance-worker-closed-no-wait: a herdr-await
-        # of the caller's pane on an agent in what it closes, by name or pane
-        # id, ends with its Herdr wait, so no wait on that agent runs; another
-        # pane's or session's wait on it is left to end as gone at its bound,
-        # one on an agent still open to run.
+        # spec/domains/herdr-transport.spec.html#transport-close-waits,
+        # acceptance-worker-closed-no-wait: a herdr-await of the caller's pane
+        # on an agent in what it closes, by name or pane id, ends with its Herdr
+        # wait, so no wait on that agent runs; another pane's or session's wait
+        # on it is left to end as gone at its bound, one on an agent still open
+        # to run.
         other = f"s-{uuid.uuid4()}"
         for close in ("tab", "space"):
             space, n = f"w-{uuid.uuid4()}", f"-{close}"
@@ -812,28 +816,32 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertRegex(line["at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
     def test_parking_prints_only_hand_off_lines_on_either_stream(self):
-        # acceptance-lane-log-park-streams, transport-close-line: both streams
-        # appended to the lane's log add one parked line, stdout, and one
-        # closed line, stderr, and nothing else.
+        # acceptance-lane-log-park-streams,
+        # spec/domains/herdr-transport.spec.html#transport-close-line: both
+        # streams appended to the lane's log add one parked line, stdout, and
+        # one closed line, stderr, and nothing else.
         p, r, pane, tab, space = self.park()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["kind"], "parked")
         self.assertEqual(self.closed_line(r.stderr), {"kind": "closed", "tab": tab, "close_rc": 0, "killed": 1})
 
     def test_park_takes_the_role_its_spawn_name_carries_when_the_record_names_none(self):
-        # acceptance-park-role-from-name: a worker's spawn name is <role>-<ticket>.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-role-from-name:
+        # a worker's spawn name is <role>-<ticket>.
         p, r, *_ = self.park(name="code-reviewer-ann-7", agent=None)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["role"], "code-reviewer")
 
     def test_park_takes_no_role_from_a_name_not_of_spawn_form(self):
-        # transport-spawn-name: a name not <role>-<ticket> carries no role.
+        # spec/domains/herdr-transport.spec.html#transport-spawn-name: a name
+        # not <role>-<ticket> carries no role.
         p, r, *_ = self.park(name="ann45", tabs=1, agent=None)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIsNone(json.loads(r.stdout)["role"])
 
     def test_parking_a_lane_owner_frees_its_whole_space(self):
-        # acceptance-park-owner-free: the owner's tab is the only one in its space.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-owner-free: the
+        # owner's tab is the only one in its space.
         p, r, pane, tab, space = self.park(name="ann45", tabs=1)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"workspace close {space}", self.calls())
@@ -842,7 +850,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(json.loads(r.stdout)["session"], "s-1")
 
     def test_parking_ends_its_callers_own_waits_on_the_parked_agent(self):
-        # transport-close-waits: parking included.
+        # spec/domains/herdr-transport.spec.html#transport-close-waits: parking
+        # included.
         mine, _ = self.waiting("implementer-ann-1"), self.waiting("implementer-ann-1", pane="w5:p9")
         still = self.waiting("implementer-ann-2")
         p, r, *_ = self.park(name="implementer-ann-1", HERDR_PANE_ID="w5:p2")
@@ -869,7 +878,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(json.loads(r.stdout)["kind"], "parked")
 
     def test_park_refuses_a_working_blocked_or_codex_agent(self):
-        # acceptance-park-refuse: nothing closed, the agent keeps running.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-refuse: nothing
+        # closed, the agent keeps running.
         for kw, code in (({"status": "working"}, 75), ({"status": "blocked"}, 75),
                          ({"session": False}, 65)):
             p, r, *_ = self.park(**kw)
@@ -879,7 +889,8 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertIsNone(p.poll(), "a refused park stopped the agent")
 
     def test_park_names_the_conversation_of_its_own_sessions_agent(self):
-        # acceptance-session-park: another session repeats the pane id.
+        # spec/domains/herdr-transport.spec.html#acceptance-session-park:
+        # another session repeats the pane id.
         other = f"s-{uuid.uuid4()}"
         for caller, sid in (({}, "s-1"), ({"HERDR_SESSION": other}, "s-twin")):
             p, r, *_ = self.park(twin=other, **caller)
@@ -890,17 +901,19 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertIsNone(theirs.poll(), "parking stopped another session's agent")
 
     def test_park_never_reads_a_record_left_at_a_reused_pid(self):
-        # acceptance-park-stale-record: the ended Claude's record holds the
-        # pane's newest reply, but its pid now runs another process of the pane.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-stale-record:
+        # the ended Claude's record holds the pane's newest reply, but its pid
+        # now runs another process of the pane.
         p, r, *_ = self.park(replies=["2026-10-21T09:00:00.000Z"],
                              beside=[("s-ended", {"stale": True, "replies": ["2026-10-21T10:00:00.000Z"]})])
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["session"], "s-1")
 
     def test_park_names_the_conversation_held_in_the_pane(self):
-        # acceptance-park-claimed-spare: a spare Claude claimed into the pane
-        # beside an idle foreground one; the one holding the latest reply is
-        # the pane's, whichever started first; a subagent's (sidechain) is none.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-claimed-spare:
+        # a spare Claude claimed into the pane beside an idle foreground one;
+        # the one holding the latest reply is the pane's, whichever started
+        # first; a subagent's (sidechain) is none.
         for mine, other, sid in (("2026-10-21T09:00:00.000Z", "2026-10-21T08:00:00.000Z", "s-1"),
                                  ("2026-10-21T08:00:00.000Z", "2026-10-21T09:00:00.000Z", "s-spare")):
             p, r, *_ = self.park(replies=[mine], beside=[("s-spare", {
@@ -1014,8 +1027,9 @@ class HerdrWrapperTest(unittest.TestCase):
         return [float(w) for w in self.waits.read_text().split()] if self.waits.exists() else []
 
     def test_say_resends_a_message_its_turn_died_on_a_rate_limit_until_processed(self):
-        # acceptance-say-rate-limit, -confirmed: the first two turns die on a
-        # 429, the third is a reply; each wait is longer than the last.
+        # spec/domains/herdr-transport.spec.html#acceptance-say-rate-limit,
+        # -confirmed: the first two turns die on a 429, the third is a reply;
+        # each wait is longer than the last.
         r = self.say_to_claude("rate_limit", "rate_limit", "ok")
         self.assertEqual((r.returncode, r.stderr), (0, ""))
         self.assertEqual(self.sends("implementer-ann-1"), 3)
@@ -1025,7 +1039,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertGreater(waits[1], waits[0])
 
     def test_say_exits_69_when_every_turn_dies_on_a_rate_limit(self):
-        # acceptance-say-rate-limit-persistent: about two hours, then not processed.
+        # spec/domains/herdr-transport.spec.html#acceptance-say-rate-limit-persistent:
+        # about two hours, then not processed.
         r = self.say_to_claude(*["rate_limit"] * 20)
         self.assertEqual(r.returncode, 69, r.stderr)
         n = self.sends("implementer-ann-1")
@@ -1049,24 +1064,27 @@ class HerdrWrapperTest(unittest.TestCase):
             self.waits.unlink(missing_ok=True)
 
     def test_say_resends_a_message_queued_behind_a_running_turn_whose_own_turn_died(self):
-        # acceptance-say-rate-limit-queued: the running turn's ok lands inside
-        # the reply window; the message, taken in past it, dies on a 429.
+        # spec/domains/herdr-transport.spec.html#acceptance-say-rate-limit-queued:
+        # the running turn's ok lands inside the reply window; the message,
+        # taken in past it, dies on a 429.
         r = self.say_to_claude("ok rate_limit", "ok", "rate_limit")
         self.assertEqual((r.returncode, r.stderr), (0, ""))
         self.assertEqual(self.sends("implementer-ann-1"), 2)
         self.assertEqual([w for w in self.slept() if w >= 30], [60])
 
     def test_say_judges_a_message_queued_behind_a_turn_dying_on_a_rate_limit_by_its_own_reply(self):
-        # acceptance-say-running-turn-limited: the running turn's 429 is not
-        # this message's; its own reply is ok, so it is sent once.
+        # spec/domains/herdr-transport.spec.html#acceptance-say-running-turn-limited:
+        # the running turn's 429 is not this message's; its own reply is ok, so
+        # it is sent once.
         r = self.say_to_claude("rate_limit ok", "rate_limit")
         self.assertEqual((r.returncode, r.stderr), (0, ""))
         self.assertEqual(self.sends("implementer-ann-1"), 1)
         self.assertEqual([w for w in self.slept() if w >= 30], [])
 
     def test_say_fails_a_queued_message_never_taken_in(self):
-        # acceptance-say-never-taken-in: the running turn ends, or the agent's
-        # Claude exits (Herdr finds no agent), before taking the message in.
+        # spec/domains/herdr-transport.spec.html#acceptance-say-never-taken-in:
+        # the running turn ends, or the agent's Claude exits (Herdr finds no
+        # agent), before taking the message in.
         for end in ("ended", "exited"):
             pane = f"w-{end}:p1"
             later = f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl.later"
@@ -1094,9 +1112,10 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.sends("w1:p1"), 2)
 
     def test_say_resends_through_the_resume_to_a_worker_parked_during_its_wait(self):
-        # acceptance-say-rate-limit-parked: the worker is parked while the send
-        # waits out a rate limit, so the re-send resumes it as a first send to
-        # a parked worker does. The fake's new tab reuses pane id w1:p1.
+        # spec/domains/herdr-transport.spec.html#acceptance-say-rate-limit-parked:
+        # the worker is parked while the send waits out a rate limit, so the
+        # re-send resumes it as a first send to a parked worker does. The fake's
+        # new tab reuses pane id w1:p1.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w1:p1", name="implementer-ann-1", role="implementer")
         log = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes/ann45.handoffs.jsonl"
@@ -1135,9 +1154,10 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("agent prompt w1:p1 hi", self.calls())
 
     def test_say_resumes_a_parked_worker_past_lines_that_are_not_json(self):
-        # acceptance-park-bad-line, acceptance-park-bad-line-named: another
-        # lane's log holds lines that are not one JSON object, each skipped and
-        # named once by its log and number; the worker still resumes.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-bad-line,
+        # acceptance-park-bad-line-named: another lane's log holds lines that
+        # are not one JSON object, each skipped and named once by its log and
+        # number; the worker still resumes.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
         self.parked_line("ann46", pane="w2:p3", name="implementer-ann-2", role="implementer")
@@ -1169,7 +1189,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual((r.returncode, json.loads(r.stdout)["pane"], r.stderr), (0, "w2:p3", named))
 
     def test_say_resumes_a_parked_worker_whose_line_names_no_role(self):
-        # acceptance-park-no-role, transport-resume: the role its spawn name carries.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-no-role,
+        # transport-resume: the role its spawn name carries.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w1:p7", name="code-reviewer-ann-1")
         self.gone_file.write_text("w1:p7\ncode-reviewer-ann-1\n")
@@ -1195,7 +1216,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("agent prompt w1:p1 what are you waiting on?", self.calls())
 
     def test_a_second_message_to_a_resumed_owner_starts_no_second_copy(self):
-        # acceptance-park-wake-once: the old pane is gone, its name is live.
+        # spec/domains/herdr-transport.spec.html#acceptance-park-wake-once: the
+        # old pane is gone, its name is live.
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\n")
         r = self.say("w9:p2", "hi")
@@ -1204,7 +1226,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("agent prompt ann45 hi", self.calls())
 
     def test_say_never_resumes_a_lane_parked_in_another_session(self):
-        # acceptance-session-wake: the parked owner is in the default session.
+        # spec/domains/herdr-transport.spec.html#acceptance-session-wake: the
+        # parked owner is in the default session.
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\nann45\n")
         r = self.say("w9:p2", "hi", HERDR_SESSION="s2")
@@ -1257,10 +1280,11 @@ class HerdrWrapperTest(unittest.TestCase):
         return m and m.group(1)
 
     def test_await_sends_the_work_then_wakes_its_caller_naming_the_stop(self):
-        # transport-await, roles-goal: the wake is a message to the caller's
-        # pane, so it reaches a Codex or pi owner as it does a Claude one
-        # (acceptance-codex-owner-worker-ended, -pi-owner-worker-ended). The
-        # stop names Herdr's state_change_seq, so a re-wait can pass it back.
+        # spec/domains/herdr-transport.spec.html#transport-await, roles-goal:
+        # the wake is a message to the caller's pane, so it reaches a Codex or
+        # pi owner as it does a Claude one (acceptance-codex-owner-worker-ended,
+        # -pi-owner-worker-ended). The stop names Herdr's state_change_seq, so a
+        # re-wait can pass it back.
         r = self.awaits("implementer-ann-1", "brief ANN-1", FAKE_WAIT_STATUS="blocked")
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
         self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=blocked seq=42")
@@ -1274,8 +1298,9 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertLess(wait, wake)
 
     def test_await_bounds_every_herdr_wait_and_waits_again_at_the_bound(self):
-        # transport-await: an agent still working at the bound is waited on
-        # again while its caller's pane is there.
+        # spec/domains/herdr-transport.spec.html#transport-await: an agent still
+        # working at the bound is waited on again while its caller's pane is
+        # there.
         gate = Path(self.tmp.name) / "gate"
         self.awaits("implementer-ann-1", FAKE_WAIT_GATE=str(gate))
         waits = lambda: [c for c in self.calls().splitlines() if c.startswith("agent wait ")]
@@ -1288,17 +1313,18 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertRegex(c, r"^agent wait implementer-ann-1 --timeout [1-9]\d*$")
 
     def test_await_ends_as_gone_at_its_bound_on_an_agent_whose_tab_closed(self):
-        # acceptance-worker-tab-closed, transport-close-waits: the worker's tab
-        # closed from the Herdr UI, no herdr-close, Herdr holds its wait on it;
-        # at the bound the wait finds no agent and wakes the owner.
+        # spec/domains/herdr-transport.spec.html#acceptance-worker-tab-closed,
+        # transport-close-waits: the worker's tab closed from the Herdr UI, no
+        # herdr-close, Herdr holds its wait on it; at the bound the wait finds
+        # no agent and wakes the owner.
         self.waiting("implementer-ann-1")
         self.gone_file.write_text("implementer-ann-1\n")
         self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=gone (agent_not_found)")
 
     def test_await_whose_caller_is_gone_ends_at_its_bound_waking_no_one(self):
-        # transport-await: a caller gone other than by herdr-close of its tab,
-        # its tab closed from the Herdr UI, leaves its detached wait to end at
-        # the bound, waking no one.
+        # spec/domains/herdr-transport.spec.html#transport-await: a caller gone
+        # other than by herdr-close of its tab, its tab closed from the Herdr
+        # UI, leaves its detached wait to end at the bound, waking no one.
         tab = self.waiting("implementer-ann-1")
         self.gone_file.write_text("w5:p2\n")
         self.assertTrue(self.until(lambda: not self.tagged_pids(tab)), "the wait outlived its caller")
@@ -1306,9 +1332,10 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("agent prompt w5:p2", self.calls())
 
     def test_await_ends_waking_no_one_when_its_caller_closes_the_agent(self):
-        # transport-close-waits, acceptance-worker-closed-no-wait: an owner that
-        # closes the worker it waits on gets no stop message from that close,
-        # which would read as news of a worker spawned again under its name.
+        # spec/domains/herdr-transport.spec.html#transport-close-waits,
+        # acceptance-worker-closed-no-wait: an owner that closes the worker it
+        # waits on gets no stop message from that close, which would read as
+        # news of a worker spawned again under its name.
         tab = self.waiting("implementer-ann-1")
         listed = json.dumps({"result": {"agents": [
             {"name": "implementer-ann-1", "pane_id": "w9:p1", "tab_id": "w9:t1", "workspace_id": "w9"}]}})
@@ -1319,8 +1346,9 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIsNone(self.woken(within=1), "its caller's own close woke it")
 
     def test_await_waits_again_when_herdr_errs_on_its_caller_at_the_bound(self):
-        # transport-await: only a caller Herdr finds no agent for ends it; a
-        # Herdr error on the lookup, its socket down a moment, waits again.
+        # spec/domains/herdr-transport.spec.html#transport-await: only a caller
+        # Herdr finds no agent for ends it; a Herdr error on the lookup, its
+        # socket down a moment, waits again.
         gate = Path(self.tmp.name) / "gate"
         self.awaits("implementer-ann-1", FAKE_WAIT_GATE=str(gate),
                     FAKE_AGENT_GET_ERROR='{"error":{"code":"server_unavailable","message":"no server"}}')
@@ -1335,9 +1363,10 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("agent prompt implementer-ann-1", self.calls())
 
     def test_await_since_a_stop_ends_only_once_the_agent_worked_and_stopped_again(self):
-        # roles-goal, transport-await: a worker still at its task (idle on its
-        # own background command) at the stop its owner read never wakes the
-        # owner again until it has worked and stopped.
+        # spec/domains/herdr-transport.spec.html#roles-goal, transport-await: a
+        # worker still at its task (idle on its own background command) at the
+        # stop its owner read never wakes the owner again until it has worked
+        # and stopped.
         r = self.awaits("--since", "42", "implementer-ann-1")
         self.assertEqual((r.returncode, r.stderr), (0, ""))
         self.assertIsNone(self.woken(within=0.5), "woke on a worker that has not moved")
@@ -1345,17 +1374,18 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=44")
 
     def test_await_since_a_stop_ends_at_once_on_an_agent_that_moved_before_it_started(self):
-        # acceptance-worker-moved-unseen: a worker that works and stops before
-        # the wait starts still ends it, where a wait for its next work hangs.
+        # spec/domains/herdr-transport.spec.html#acceptance-worker-moved-unseen:
+        # a worker that works and stops before the wait starts still ends it,
+        # where a wait for its next work hangs.
         Path(self.env["FAKE_WORKED"]).touch()
         self.awaits("--since", "42", "implementer-ann-1")
         self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=44")
 
     def test_await_since_a_stop_ends_on_an_agent_that_moved_between_two_waits(self):
-        # transport-await, acceptance-worker-moved-unseen: the worker works and
-        # stops just as the wait reads it still at the stop its caller read, so
-        # Herdr's wait for its next work holds; at its bound the stop is read
-        # again.
+        # spec/domains/herdr-transport.spec.html#transport-await,
+        # acceptance-worker-moved-unseen: the worker works and stops just as the
+        # wait reads it still at the stop its caller read, so Herdr's wait for
+        # its next work holds; at its bound the stop is read again.
         self.awaits("--since", "42", "implementer-ann-1", FAKE_WORKS_AFTER_WAIT="1")
         self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=idle seq=44")
 
@@ -1399,10 +1429,11 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.until(killed), "herdr-await: implementer-ann-3 stop=gone (herdr agent wait exit 143)")
 
     def test_await_wakes_a_caller_blocked_on_a_dialog_once_it_frees(self):
-        # transport-await: a caller at a dialog (a Codex approval, any Claude
-        # dialog) as its worker stops refuses the wake (herdr-say exit 75),
-        # which is sent again once the caller frees, until it lands: one wake
-        # for one stop. Herdr holds a wait on the caller for the states asked.
+        # spec/domains/herdr-transport.spec.html#transport-await: a caller at a
+        # dialog (a Codex approval, any Claude dialog) as its worker stops
+        # refuses the wake (herdr-say exit 75), which is sent again once the
+        # caller frees, until it lands: one wake for one stop. Herdr holds a
+        # wait on the caller for the states asked.
         self.blocked_file.write_text("w5:p2\n")
         self.awaits("implementer-ann-1")
         wake = "agent prompt w5:p2 herdr-await: implementer-ann-1 stop=idle seq=42 --wait "
@@ -1439,9 +1470,10 @@ class HerdrWrapperTest(unittest.TestCase):
         return p, tab
 
     def test_await_notice_ends_its_callers_own_task_naming_the_stop(self):
-        # transport-await, acceptance-await-notice: a Claude caller's wait runs
-        # in its own background task, which ends on the stop with the stop line
-        # as its output, and no message is typed to the caller's pane.
+        # spec/domains/herdr-transport.spec.html#transport-await,
+        # acceptance-await-notice: a Claude caller's wait runs in its own
+        # background task, which ends on the stop with the stop line as its
+        # output, and no message is typed to the caller's pane.
         r = self.awaits("--notice", "implementer-ann-1", "brief ANN-1", FAKE_WAIT_STATUS="blocked")
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "herdr-await: implementer-ann-1 stop=blocked seq=42\n", ""))
         calls = self.calls()
@@ -1450,8 +1482,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.tagged_pids(r.tab), [], "the wait outlived its task")
 
     def test_await_notice_keeps_since_and_a_failed_send(self):
-        # transport-await: --since and a failed send end a notice wait as they
-        # end a detached one.
+        # spec/domains/herdr-transport.spec.html#transport-await: --since and a
+        # failed send end a notice wait as they end a detached one.
         r = self.awaits("--notice", "--since", "42", "implementer-ann-1", FAKE_WORKS_AFTER_WAIT="1")
         self.assertEqual(r.stdout, "herdr-await: implementer-ann-1 stop=idle seq=44\n")
         self.gone_file.write_text("implementer-ann-1\n")
@@ -1460,9 +1492,10 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("agent prompt w5:p2", self.calls())
 
     def test_await_notice_its_caller_closes_ends_as_closed_by_its_caller(self):
-        # transport-close-waits, acceptance-worker-closed-no-wait: the caller's
-        # herdr-close of the agent ends its notice wait on it whole, the notice
-        # naming that close, never a stop.
+        # spec/domains/herdr-transport.spec.html#transport-close-waits,
+        # acceptance-worker-closed-no-wait: the caller's herdr-close of the
+        # agent ends its notice wait on it whole, the notice naming that close,
+        # never a stop.
         p, tab = self.noticing("implementer-ann-1")
         listed = json.dumps({"result": {"agents": [
             {"name": "implementer-ann-1", "pane_id": "w9:p1", "tab_id": "w9:t1", "workspace_id": "w9"}]}})
@@ -1474,7 +1507,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("agent prompt w5:p2", self.calls())
 
     def test_await_notice_ends_with_its_callers_tab(self):
-        # transport-await: closing or parking the caller ends its notice wait.
+        # spec/domains/herdr-transport.spec.html#transport-await: closing or
+        # parking the caller ends its notice wait.
         p, tab = self.noticing("implementer-ann-1")
         self.assertEqual(subprocess.run([str(CLOSE), tab], capture_output=True, env=self.env).returncode, 0)
         p.communicate(timeout=5)
@@ -1510,11 +1544,12 @@ class HerdrWrapperTest(unittest.TestCase):
         return f"agent prompt {pane} "
 
     def test_wake_send_keeps_delivering_past_its_send_bound(self):
-        # transport-wake-bound, acceptance-wake-rate-limit-persistent: Spec
-        # Chat runs send in its own session, kills that process group at its
-        # bound, and counts it sent (review-serve.py run_wake). This resume is
-        # held past the kill, then still delivers; the resumed owner's every
-        # turn dies on a rate limit, so the operator is told, once.
+        # spec/domains/herdr-transport.spec.html#transport-wake-bound,
+        # acceptance-wake-rate-limit-persistent: Spec Chat runs send in its own
+        # session, kills that process group at its bound, and counts it sent
+        # (review-serve.py run_wake). This resume is held past the kill, then
+        # still delivers; the resumed owner's every turn dies on a rate limit,
+        # so the operator is told, once.
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\nann45\n")
@@ -1554,9 +1589,10 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("not processed: API rate limit", prompts[0])
 
     def test_wake_send_failing_within_its_send_bound_tells_only_spec_chat(self):
-        # transport-wake-bound: Spec Chat holds a failure within its bound and
-        # retries it, so the operator hears of none of its attempts. The owner
-        # gone between check and send fails at once; a 69 takes hours.
+        # spec/domains/herdr-transport.spec.html#transport-wake-bound: Spec Chat
+        # holds a failure within its bound and retries it, so the operator hears
+        # of none of its attempts. The owner gone between check and send fails
+        # at once; a 69 takes hours.
         told = self.operator()
         r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready", FAKE_PROMPT_NOT_FOUND="1")
         self.assertEqual(r.returncode, 1, r.stderr)
@@ -1583,8 +1619,9 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn(self.wake(*send, pane="w1:p9").returncode, (0, 75))
 
     def test_wake_reaches_an_owner_in_the_session_it_names(self):
-        # acceptance-session-wake-owner: a service in one session, pinned to
-        # its socket, wakes an owner of session s2, parked or live.
+        # spec/domains/herdr-transport.spec.html#acceptance-session-wake-owner:
+        # a service in one session, pinned to its socket, wakes an owner of
+        # session s2, parked or live.
         envlog = Path(self.tmp.name) / "env.log"
         here = {"FAKE_ENV_LOG": str(envlog), "HERDR_SOCKET_PATH": "/here.sock"}
         self.assertEqual(self.wake("check", "s2/w1:p1", **here).returncode, 0)
@@ -1614,7 +1651,7 @@ class HerdrWrapperTest(unittest.TestCase):
         return {"PATH": str(launcher)}
 
     def test_wake_reaches_herdr_outside_the_callers_search_path(self):
-        # acceptance-wake-search-path
+        # spec/domains/install.spec.html#acceptance-wake-search-path
         bare = self.bare_path()
         self.assertEqual(self.wake("check", "w1:p1", **bare).returncode, 0)
         r = self.wake("send", "w1:p1", "a.spec.html", "hand-off ready", **bare)
@@ -1622,7 +1659,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("agent prompt w1:p1 hand-off ready", self.calls())
 
     def test_wake_names_herdr_as_not_found(self):
-        # acceptance-wake-no-herdr
+        # spec/domains/install.spec.html#acceptance-wake-no-herdr
         bare = self.bare_path(herdr=False)
         for args in (("check", "w1:p1"), ("send", "w1:p1", "a.spec.html", "m")):
             r = self.wake(*args, **bare)
@@ -1631,7 +1668,8 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertIn("herdr not found", r.stderr)
 
     def test_wake_names_an_owner_pane_gone_from_its_session(self):
-        # acceptance-wake-owner-gone: gone from Herdr, or resolving elsewhere.
+        # spec/domains/install.spec.html#acceptance-wake-owner-gone: gone from
+        # Herdr, or resolving elsewhere.
         self.gone_file.write_text("w1:p9\n")
         for owner, session in (("w1:p9", "default"), ("s2/w1:p9", "s2"), ("w1:p2", "default")):
             for args in (("check", owner), ("send", owner, "a.spec.html", "m")):
@@ -1688,12 +1726,13 @@ class HerdrWrapperTest(unittest.TestCase):
         return r.stdout
 
     def test_state_of_a_named_session_is_its_own_dir(self):
-        # acceptance-session-dir
+        # spec/domains/herdr-transport.spec.html#acceptance-session-dir
         self.assertEqual(self.state(HERDR_SESSION="s2"),
                          f"{self.env['XDG_STATE_HOME']}/octo-lite/sessions/s2\n")
 
     def test_state_of_the_default_session_is_the_top_dir(self):
-        # acceptance-session-default: the one holding onboarding.toml
+        # spec/domains/herdr-transport.spec.html#acceptance-session-default: the
+        # one holding onboarding.toml
         self.assertEqual(self.state(), f"{self.env['XDG_STATE_HOME']}/octo-lite\n")
 
     # --- start command ---------------------------------------------------
@@ -1726,7 +1765,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         argv = self.start_argv()
         self.assertEqual(argv[:3], ["agent", "start", "orchestrator-worktree"])
-        # acceptance-lane-claude-names: the owner starts under the lane's name.
+        # spec/domains/herdr-transport.spec.html#acceptance-lane-claude-names:
+        # the owner starts under the lane's name.
         self.assertEqual(argv[-4:], ["--name", "orchestrator-worktree", "--agent", "orchestrator"])
 
     def test_start_codex_takes_the_orchestrator_contract(self):

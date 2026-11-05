@@ -52,17 +52,19 @@ class LaneRecordTests(unittest.TestCase):
             self.assertNotIn("[[tickets]]", path.read_text(encoding="utf-8"), path)
 
     def test_contracts_locate_session_state_through_octo_lite_state(self) -> None:
-        # spec #session-state: lane and operator files live in the caller's
-        # Herdr session state directory, located only through octo-lite-state.
+        # spec/domains/herdr-transport.spec.html#session-state: lane and operator files
+        # live in the caller's Herdr session state directory, located only through
+        # octo-lite-state.
         docs = [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/SKILL.md"), ROOT / "README.md"]
         for path in docs:
             self.assertNotRegex(path.read_text(encoding="utf-8"), r"octo-lite/(lanes|operator)", path)
 
     def test_owner_archives_record_log_and_notes_at_close(self) -> None:
-        # spec #acceptance-lane-archive, #delivery-notes: exploration notes live
-        # only in the lane's notes directory; the owner moves record, log, and
-        # notes unchanged into archive/ after worker teardown, before its close
-        # report; the operator touches no record.
+        # spec/domains/herdr-transport.spec.html#acceptance-lane-archive, spec
+        # #delivery-notes: exploration notes live only in the lane's notes
+        # directory; the owner moves record, log, and notes unchanged into archive/
+        # after worker teardown, before its close report; the operator touches no
+        # record.
         explore = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
         self.assertRegex(
             explore,
@@ -423,7 +425,8 @@ class LaneRecordTests(unittest.TestCase):
             self.assertEqual(git("show", f"{holding}:reports/qa.report.html"), "final")
 
     def test_owner_logs_closed_line_on_closing_a_consumed_worker(self) -> None:
-        # spec #acceptance-lane-log-close, #transport-close-line: the owner
+        # spec #acceptance-lane-log-close,
+        # spec/domains/herdr-transport.spec.html#transport-close-line: the owner
         # appends what herdr-close prints, its closed line, to the lane's log.
         deliver = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
         self.assertRegex(
@@ -433,10 +436,10 @@ class LaneRecordTests(unittest.TestCase):
         )
 
     def test_worker_result_send_is_bounded_then_goes_to_operator(self) -> None:
-        # spec #roles-goal, #acceptance-worker-owner-gone(-stops): 3 sends to
-        # the owner, then one to the operator pane, then stop; the operator
-        # forwards to that pane's lane by name and relaunches only a gone,
-        # unparked owner.
+        # spec/domains/herdr-transport.spec.html#roles-goal,
+        # #acceptance-worker-owner-gone(-stops): 3 sends to the owner, then one to
+        # the operator pane, then stop; the operator forwards to that pane's lane by
+        # name and relaunches only a gone, unparked owner.
         # #acceptance-worker-owner-rate-limited: exit 69 already re-sent, so it
         # goes to the operator at once, never re-sent.
         # #transport-native, #acceptance-native-*: natively to a live Claude
@@ -464,10 +467,10 @@ class LaneRecordTests(unittest.TestCase):
         )
 
     def test_claude_roles_report_natively_to_the_pane_session(self) -> None:
-        # spec #transport-native: every Claude role contract allows the native
-        # send, and the one recipe addresses the target pane's Claude session
-        # (#transport-claude-session), never a box-wide name, falling back to
-        # herdr-say; every report line points at that recipe.
+        # spec/domains/herdr-transport.spec.html#transport-native: every Claude role
+        # contract allows the native send, and the one recipe addresses the target
+        # pane's Claude session (#transport-claude-session), never a box-wide name,
+        # falling back to herdr-say; every report line points at that recipe.
         for path in ROOT.glob("agents/*.md"):
             tools = re.search(r"^tools: (\[.*\])$", path.read_text(encoding="utf-8"), flags=re.MULTILINE)
             self.assertIn("SendMessage", json.loads(tools.group(1)), path.name)
@@ -479,7 +482,8 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIn("herdr-comms/SKILL.md#send-a-report)", (ROOT / doc).read_text(encoding="utf-8"), doc)
 
     def test_waiter_keeps_one_herdr_wait_on_each_agent_it_sets_to_work(self) -> None:
-        # spec #roles-goal, #transport-await, #acceptance-worker-ended,
+        # spec/domains/herdr-transport.spec.html#roles-goal, #transport-await,
+        # #acceptance-worker-ended,
         # #acceptance-codex-owner-worker-ended, #acceptance-pi-owner-worker-ended,
         # #acceptance-worker-api-error(-resumed), #acceptance-owner-api-error-resumed,
         # #acceptance-worker-moved-unseen: the owner (orchestrator, implement-spec)

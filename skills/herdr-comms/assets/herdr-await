@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The one wait on a lane agent (spec #transport-await): roles never run
-# `herdr agent wait` themselves.
+# The one wait on a lane agent (spec/domains/herdr-transport.spec.html#transport-await):
+# roles never run `herdr agent wait` themselves.
 #
 #   herdr-await [--notice] [--since SEQ] NAME [MESSAGE]
 #

@@ -13,7 +13,7 @@ Every wrapper acts only in the caller's Herdr session,
 `${HERDR_SESSION:-default}`: pane, tab, and space ids repeat across sessions.
 `octo-lite-state` prints the caller's session state directory, holding `lanes/`
 (lane records, hand-off logs, notes, `archive/`), `operator.toml`, and
-`operator.handoffs.jsonl` (spec `#session-state`).
+`operator.handoffs.jsonl` (`spec/domains/herdr-transport.spec.html#session-state`).
 
 ## Spawn an agent
 
@@ -101,14 +101,16 @@ catches detached children that close alone leaves running, and ends whole each
 `herdr-await` of the caller's own pane on an agent in it, by name or pane id,
 read from `herdr agent list` before the close, sending no message (a `--notice`
 wait prints `closed by its caller`): you closed it, so no stop reads as news of
-an agent spawned again under the same name (spec `#transport-close-waits`).
+an agent spawned again under the same name
+(`spec/domains/herdr-transport.spec.html#transport-close-waits`).
 Another caller's wait on it ends as gone at its bound. Parking (below) closes
 the same way. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
 own space, or only its owner tab when the lane started in a shared space.
-Prints one closed hand-off line (`at kind tab|space close_rc killed`; spec
-`#transport-close-line`), which an owner closing a consumed worker appends to
-the lane's hand-off log, and exits with the close status.
+Prints one closed hand-off line (`at kind tab|space close_rc killed`;
+`spec/domains/herdr-transport.spec.html#transport-close-line`), which an owner
+closing a consumed worker appends to the lane's hand-off log, and exits with
+the close status.
 
 ## Park an idle agent
 
@@ -134,8 +136,9 @@ herdr-claude-session PANE
 ```
 
 The one lookup `herdr-close --park`, `herdr-say`, and a
-[native report](#send-a-report) share (spec
-`#transport-claude-session`). Prints one JSON line: Claude's own record
+[native report](#send-a-report) share
+(`spec/domains/herdr-transport.spec.html#transport-claude-session`).
+Prints one JSON line: Claude's own record
 `~/.claude/sessions/<pid>.json` plus `transcript`, the path of
 `~/.claude/projects/*/<sessionId>.jsonl`, `null` before its first message.
 Exits 1 when no record counts. A record counts when its live process carries
@@ -171,8 +174,9 @@ Native Herdr refuses to prompt a blocked agent, so an open dialog is never
 typed into.
 
 A Claude agent whose turn dies at once on an API rate limit (credentials
-cooling down) has not processed the message, though Herdr saw it work (spec
-`#transport-say-rate-limit`). After each send, the transcript of the pane's
+cooling down) has not processed the message, though Herdr saw it work
+(`spec/domains/herdr-transport.spec.html#transport-say-rate-limit`).
+After each send, the transcript of the pane's
 Claude session (`herdr-claude-session`) decides: processed unless the
 message's own reply, within a few seconds, is a rate-limit error. Its own reply
 is the first reply after the record carrying it, a slash command's as Claude
@@ -212,7 +216,8 @@ and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
 
 ## Send a report
 
-A report is a status, result, or blocker (spec `#transport-native`). A Claude
+A report is a status, result, or blocker
+(`spec/domains/herdr-transport.spec.html#transport-native`). A Claude
 agent sends it to a Claude agent by Claude's own messaging, so the receiver
 records it as a peer's message from the sender's name: a message `herdr-say`
 types is recorded as the operator's input. Address the target pane's Claude
@@ -230,7 +235,7 @@ reports the send failed, or a later `[Cross-session delivery notice]` says it
 was held, denied, or expired. A confirmed native send is never sent again: a
 receiver that exits before reading it loses it, and a turn that dies on a rate
 limit spends it, so a lost result is read from the sender's pane when the
-owner's wait on it ends (spec `#roles-goal`).
+owner's wait on it ends (`spec/domains/herdr-transport.spec.html#roles-goal`).
 
 Only a Claude turn sends natively: a Codex or pi agent and every shell sender
 (`herdr-wake`, `herdr-await`) send by `herdr-say`. Work is never a report: a
@@ -244,8 +249,9 @@ in and a relayed answer must read as the human's.
 herdr-await [--notice] [--since SEQ] NAME [MESSAGE]
 ```
 
-The one wait on a lane agent (spec `#transport-await`): never run `herdr agent
-wait` yourself. It sends MESSAGE to NAME with `herdr-say` when given, then
+The one wait on a lane agent (`spec/domains/herdr-transport.spec.html#transport-await`):
+never run `herdr agent wait` yourself. It sends MESSAGE to NAME with
+`herdr-say` when given, then
 waits until NAME is idle, done, or blocked on interactive input, or gone: its
 agent exited, its tab closed, or no agent has that name. Its end is one stop
 line naming NAME and the stop:
@@ -280,7 +286,8 @@ included, ends the caller's waits on it, sending no message; a `--notice` wait
 so ended prints `herdr-await: NAME closed by its caller`, never a stop: you
 closed it, so nothing to do.
 
-The wait recipe (spec `#roles-goal`), for an owner on each worker it sets to
+The wait recipe (`spec/domains/herdr-transport.spec.html#roles-goal`), for an
+owner on each worker it sets to
 work and the operator on an owner it awaits a reply from. Run every
 `herdr-await` here as above, on Claude with `--notice` in the background. The
 wait's end is your only wake: no timer or poll. When relaunched from a park,

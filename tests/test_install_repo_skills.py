@@ -1,6 +1,6 @@
 """install-octo-lite --project links the skills a target declares on its
 AGENTS.md `Repo skills:` line from the given checkout, and warns on a stale
-link without touching it. Spec: spec/domains/octo-lite.spec.html
+link without touching it. Spec: spec/domains/install.spec.html
 #install-repo-skills; criteria #acceptance-repo-skills-link and
 #acceptance-repo-skills-stale."""
 
