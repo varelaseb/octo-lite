@@ -14,6 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
+# skillfile stubbed unreachable: installer runs never fetch.
+OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
 # Only genuinely third-party skills stay skillfile-managed. spec-chat is a
 # peer repository linked from a clone, so it is not part of this invariant.
 MANAGED_SKILLS = ("tdd",)
@@ -32,6 +34,7 @@ class InstallSkillMirrorTests(unittest.TestCase):
             [str(INSTALLER), "--prefix", str(self.prefix), *extra],
             capture_output=True,
             text=True,
+            env={**os.environ, "PATH": OFFLINE},
         )
 
     def test_install_mirrors_managed_skill_into_both_platforms(self) -> None:
