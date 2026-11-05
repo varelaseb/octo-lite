@@ -180,6 +180,7 @@ A process counts whether or not Herdr reports it as the pane's foreground, since
 A record counts only when the process start time it records matches the live process at its pid, so a record an ended Claude left at a pid since reused is never read.
 Of the records that count, the pane's session is the one whose transcript holds the pane's latest reply.</p>
 <p data-anchor="transport-wake-bound" id="transport-wake-bound"><code>herdr-wake send</code> runs <code>herdr-say</code> in a session of its own and returns its exit when it ends within Spec Chat's send bound: 0 sent, 75 deferred, and any other failed, with its one-line reason.
+A send to an owner Herdr reports working types nothing and exits 75, deferred, so Spec Chat retries the hand-off after the turn ends.
 A send that outlives that bound, resuming a parked owner or waiting out a rate limit, keeps delivering after Spec Chat counts it sent, so a spec review hand-off whose first wake dies on a rate limit still reaches its owner.
 When such a send then ends deferred or failed, Spec Chat no longer waits on it, so <code>herdr-wake</code> sends its one-line reason, naming the owner, once to the operator's pane, read from the <code>operator.toml</code> of the owner's session.</p>
 <p data-anchor="transport-spawn-bare" id="transport-spawn-bare"><code>herdr-spawn</code> starts the agent bare, and its brief follows by <code>herdr-say</code>.</p>
