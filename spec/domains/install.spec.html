@@ -58,7 +58,7 @@ Any other dangling link, including one at a path the installer links, belongs to
 A declared skill's existing link that resolves anywhere but that checkout is stale: with or without <code>--check</code>, the installer warns, naming the link and where it points, leaves it untouched, and continues.
 It never links a project skill from another clone and never repairs a link.</p>
 <p data-anchor="install-peers" id="install-peers">Each peer links only what it owns (<a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/toolchain-ownership.spec.html#toolchain-install">toolchain ownership</a>); Spec Chat's installer links Spec Chat's own skills.
-Only the third-party tdd skill is pinned, by <code>Skillfile</code> into <code>agents/skills</code> (ADR 0002).</p>
+Only the third-party tdd skill is pinned, by <code>Skillfile</code> into <code>agents/skills</code> (<a href="../adr/0006-tdd-skill-vendoring.spec.html">ADR 0006</a>).</p>
 <p data-anchor="install-floors" id="install-floors"><code>--check</code> also reports version floors: for each tool octo-lite uses at runtime (git, herdr, jq, gh, node, python3, and at least one of claude or codex), it prints ok, missing, or too old (found version vs minimum) with the upgrade source.
 The installer never upgrades anything without the user's explicit consent.</p>
 <p data-anchor="install-consent" id="install-consent">With <code>--onboard</code>, the installer asks once whether agents may push, open pull requests, and file issues, and keeps the answers in octo-lite's one onboarding file, <code>$XDG_STATE_HOME/octo-lite/onboarding.toml</code>, beside its published onboarding status, done once answers are kept.
