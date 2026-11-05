@@ -229,6 +229,20 @@ for base in "$prefix/.codex/octo-lite" "$prefix/.claude/octo-lite"; do
   link_one "$root/agents" "$base/adapters"
 done
 
+# Stageshow is pinned in Skillfile and never committed (install.spec.html
+# #install-peers): skillfile fetches it at its pin into agents/skills, which git
+# ignores, then npm ci adds the filming dependencies its lockfile names, rerun
+# only when that lockfile is newer than npm's record of the last install. A
+# failed fetch leaves it out; everything else still links.
+if [[ "$check" != true ]]; then
+  stageshow="$root/agents/skills/stageshow"
+  (cd "$root" && skillfile install -q) &&
+    { [[ -e "$stageshow/node_modules/.package-lock.json" &&
+         ! "$stageshow/package-lock.json" -nt "$stageshow/node_modules/.package-lock.json" ]] ||
+      (cd "$stageshow" && npm ci --no-audit --no-fund --loglevel=error); } ||
+    echo "Stageshow not installed: its pinned fetch failed; agents work without it" >&2
+fi
+
 # Managed skills live in the skillfile install target agents/skills (ADR 0002).
 # They mirror into every platform skills dir. Locally authored skills/ skills
 # that a managed entry does not shadow install alongside them.

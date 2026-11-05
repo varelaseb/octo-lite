@@ -14,6 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
+# skillfile stubbed unreachable: installer runs never fetch.
+OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
 SKILL_DIRS = (".claude/skills", ".codex/skills", ".agents/skills")
 
 
@@ -46,6 +48,7 @@ class InstallRepoSkillsTests(unittest.TestCase):
             [str(INSTALLER), "--prefix", str(self.prefix), *extra],
             capture_output=True,
             text=True,
+            env={**os.environ, "PATH": OFFLINE},
         )
 
     def test_links_each_declared_skill_from_checkout(self) -> None:
