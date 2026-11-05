@@ -47,7 +47,7 @@ model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
 ## Target Spec Format Capability
 
 - Spec format: spec-chat
-- Canonical spec paths: spec/domains/octo-lite.spec.html, spec/domains/herdr-transport.spec.html, spec/domains/install.spec.html
+- Canonical spec paths: spec/domains/octo-lite.spec.html, spec/domains/herdr-transport.spec.html, spec/domains/install.spec.html, spec/domains/command-time.spec.html
 - Canonical ADR paths: spec/adr/0006-tdd-skill-vendoring.spec.html, spec/adr/0007-herdr-ticket-graph-delivery.spec.html
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.

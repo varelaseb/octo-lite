@@ -44,7 +44,101 @@ wake_file="$state_home/spec-chat/hosting/default/providers/wake.toml"
 waker="$prefix/.local/bin/herdr-wake"
 wake_toml="check = [\"$waker\", \"check\", \"{owner}\"]
 send = [\"$waker\", \"send\", \"{owner}\", \"{artifact}\", \"{message}\"]"
+
+# The command-time hook (command-time.spec.html) is registered in each agent
+# CLI's hook settings, beside the operator's and other tools' entries
+# (install.spec.html#install-hooks). Each CLI reads hooks only from these files,
+# so here alone the installer edits a file instead of linking one. MODE install
+# adds, check verifies, undo removes, only the entries running the hook's link;
+# a file it cannot read as settings, or write, is left untouched and reported.
+# check stops at its first failure, so the last error line names it.
+# Claude's PostToolUse and PostToolUseFailure inputs carry the command's
+# duration; Codex's PostToolUse does not, so its PreToolUse stamps the start.
+# Codex runs a new or changed entry only once the operator trusts it there;
+# nothing here records that trust.
+hook_settings() {
+  python3 - "$1" "$prefix/.local/bin/octo-lite-command-time" \
+    "$prefix/.claude/settings.json" PostToolUse,PostToolUseFailure \
+    "$prefix/.codex/hooks.json" PreToolUse,PostToolUse <<'PY'
+import json, os, shlex, shutil, sys
+
+mode, command, *files = sys.argv[1:]
+command = shlex.quote(command)
+
+
+def report(problem):
+    print(problem, file=sys.stderr)
+    if mode == "check":
+        sys.exit(1)
+
+
+for path, events in zip(files[::2], files[1::2]):
+    events = events.split(",")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        hooks = data.setdefault("hooks", {})
+        if not all(isinstance(g["hooks"], list) for e in hooks.values() for g in e):
+            raise TypeError
+    except FileNotFoundError:
+        hooks = {}
+        data = {"hooks": hooks}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        report(f"hook settings not readable as settings, left untouched: {path}")
+        continue
+    ours = lambda h: isinstance(h, dict) and h.get("command") == command
+    has = lambda e: any(ours(h) for g in hooks.get(e, []) for h in g["hooks"])
+    missing = [e for e in events if not has(e)]
+    if mode == "check":
+        if missing:
+            report(f"missing command-time hook ({', '.join(missing)}): {path}")
+        continue
+    if mode == "install":
+        for e in missing:
+            hooks.setdefault(e, []).append(
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]})
+        changed = bool(missing)
+    else:
+        changed = False
+        for e in list(hooks):
+            kept = []
+            for g in hooks[e]:
+                rest = [h for h in g["hooks"] if not ours(h)]
+                if len(rest) < len(g["hooks"]):
+                    changed = True
+                    if not rest:
+                        continue
+                    g["hooks"] = rest
+                kept.append(g)
+            if kept or not hooks[e]:
+                hooks[e] = kept
+            else:
+                del hooks[e]
+        if changed and not hooks:
+            del data["hooks"]
+    if changed:
+        real = os.path.realpath(path)
+        tmp = f"{real}.octo-lite.{os.getpid()}"
+        try:
+            os.makedirs(os.path.dirname(real), exist_ok=True)
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            if os.path.exists(real):
+                shutil.copymode(real, tmp)
+            os.replace(tmp, real)
+        except OSError:
+            report(f"hook settings not writable, left untouched: {path}")
+            continue
+        print(f"command-time hook {'registered in' if mode == 'install' else 'removed from'}: {path}")
+    if mode == "install" and path.endswith("/.codex/hooks.json"):
+        print("Codex runs octo-lite's command-time hook only once you trust it in Codex"
+              " (/hooks); octo-lite never records that trust for you.")
+PY
+}
+
 if [[ "$undo" == true ]]; then
+  hook_settings undo
   [[ -f "$wake_file" ]] && echo "kept wake provider: $wake_file (spec-chat depends on it)"
   exit 0
 fi
@@ -396,6 +490,8 @@ check_floors() {
     echo "  agent CLI: missing (need claude >= 1.0.0 or codex >= 0.1.0)" >&2
   fi
 }
+
+hook_settings "$([[ "$check" == true ]] && echo check || echo install)"
 
 if [[ "$check" == true ]]; then
   echo "octo-lite links checked at $prefix"

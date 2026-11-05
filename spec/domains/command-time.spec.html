@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Command time</title>
+<link rel="stylesheet" href="../.style/spec.css">
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1" data-spec-contract="shaped-sections-v1">
+<header data-anchor="header" id="header">
+<h1>Command time</h1>
+<nav><a href="../index.spec.html">Specifications</a> / Command time</nav>
+<p data-anchor="header-scope" id="header-scope">This spec states what every agent octo-lite installs, Claude Code or Codex, is told after each shell command it runs: how long the command took, and a warning when it is repeating a slow command after an edit.</p>
+<p data-anchor="header-related" id="header-related">How the installer registers the hook with each agent CLI is in the <a href="./install.spec.html#install-hooks">octo-lite install</a> spec.</p>
+</header>
+
+<section data-spec-section="user-stories" data-anchor="user-stories" id="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-command-time" id="user-story-command-time" data-user-facing="true" data-guided-journey="no">As an agent octo-lite installs, Claude Code or Codex, after each shell command I run I am told how long it took, with any wait for the box lock told apart from the command's own run, so I can weigh what running it again costs.</p>
+<p data-user-story data-anchor="user-story-slow-loop" id="user-story-slow-loop" data-user-facing="true" data-guided-journey="no">As an agent that runs the same slow command again after an edit, such as a full test suite after a one-line change, I am warned that I am in a slow iteration loop and told what to run instead.</p>
+<p data-user-story data-anchor="user-story-inform-only" id="user-story-inform-only" data-user-facing="true" data-guided-journey="no">As an operator, the command-time hook only informs my agents: it never blocks, denies, or changes a command, and when it fails, every command and its result are as they would be without it.</p>
+</section>
+
+<section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
+<h2>Acceptance criteria</h2>
+<p data-acceptance-criterion data-anchor="acceptance-time-claude" id="acceptance-time-claude" data-story="user-story-command-time"><span data-acceptance-scenario>Given a Claude Code agent on a box where octo-lite is installed, When the agent runs a shell command,</span> <span data-acceptance-observable>Then the agent is told, beside the command's result, how long the command took: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-time-codex" id="acceptance-time-codex" data-story="user-story-command-time"><span data-acceptance-scenario>Given a Codex agent on a box where octo-lite is installed and the operator has trusted octo-lite's hook in Codex, When the agent runs a shell command,</span> <span data-acceptance-observable>Then the agent is told, beside the command's result, how long the command took: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-time-lock-reported" id="acceptance-time-lock-reported" data-story="user-story-command-time"><span data-acceptance-scenario>Given an agent on a box where another job holds the box lock for a while, a fixture that must be added to provide it, When the agent runs a command that takes the box lock and reports its wait,</span> <span data-acceptance-observable>Then the agent is told how long it waited for the box lock and how long the command ran, each apart: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-time-lock-unreported" id="acceptance-time-lock-unreported" data-story="user-story-command-time"><span data-acceptance-scenario>Given an agent on a box where another job holds the box lock for a while, a fixture that must be added to provide it, When the agent runs a command that takes the box lock without reporting its wait,</span> <span data-acceptance-observable>Then the agent is told how long the command took, that this includes its wait for the box lock, and how to take the lock so the wait is told apart: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-loop-warn" id="acceptance-loop-warn" data-story="user-story-slow-loop"><span data-acceptance-scenario>Given an agent that has run a slow command once in its session, a fixture that must be added to provide it, When the agent edits a file in the command's repository, then runs the same command again,</span> <span data-acceptance-observable>Then the agent is told it is in a slow iteration loop, how many times it has run the command and their time in all, and to run only the tests for what it touched, and the full suite once, on the final head: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-loop-no-edit" id="acceptance-loop-no-edit" data-story="user-story-slow-loop"><span data-acceptance-scenario>Given an agent that has run a slow command once in its session, a fixture that must be added to provide it, When the agent runs the same command again without editing a file,</span> <span data-acceptance-observable>Then the agent is told how long the command took, with no slow-loop warning: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-loop-fast" id="acceptance-loop-fast" data-story="user-story-slow-loop"><span data-acceptance-scenario>Given an agent that has run a command that is not slow once in its session, When the agent edits a file in the command's repository, then runs the same command again,</span> <span data-acceptance-observable>Then the agent is told how long the command took, with no slow-loop warning: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-loop-lock" id="acceptance-loop-lock" data-story="user-story-slow-loop"><span data-acceptance-scenario>Given an agent that has run, once in its session, a command that waited long for the box lock, reported its wait, and ran briefly, a fixture that must be added to provide it, When the agent edits a file in the command's repository, then runs the same command again with the same wait,</span> <span data-acceptance-observable>Then the agent is told its wait and its run apart, with no slow-loop warning: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-inform-warned" id="acceptance-inform-warned" data-story="user-story-inform-only"><span data-acceptance-scenario>Given an agent that has been warned of a slow iteration loop, When the agent runs the same command again,</span> <span data-acceptance-observable>Then the command runs and its result reaches the agent, with the warning beside it: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-inform-fail" id="acceptance-inform-fail" data-story="user-story-inform-only"><span data-acceptance-scenario>Given an agent on a box where octo-lite's command-time hook fails, needs an induced failure: the hook cannot keep its records, When the agent runs a shell command,</span> <span data-acceptance-observable>Then the command runs and its result reaches the agent as it would without the hook: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-hooks-inform-rule" id="acceptance-hooks-inform-rule" data-story="user-story-inform-only" data-project-rule="Agent hooks only inform, never block"><span data-acceptance-scenario>Given an octo-lite contributor's change to any feature that adds or changes a hook octo-lite registers with an agent CLI, When an agent runs a command that hook sees,</span> <span data-acceptance-observable>Then the command runs and its result reaches the agent as it would without the hook, with at most the hook's added context beside it: no hook octo-lite registers blocks, denies, or changes a command, or stops an agent (<a href="#inform-only">why</a>): no screen shows it.</span></p>
+</section>
+
+<section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
+<h2>Modular boundaries</h2>
+<p data-modular-boundary data-anchor="boundary-command-time" id="boundary-command-time">
+<span data-boundary-responsibility>The command-time hook owns timing each shell command an agent runs, telling a wait for the box lock apart from the run, and judging a slow iteration loop.</span>
+<span data-boundary-seam>The caller-facing seam is each agent CLI's tool hook: the CLI passes the hook each shell command it ran, and the hook returns the line the agent reads.</span>
+<span data-boundary-dependency>Direction is external-provider: the hook depends on Claude Code's and Codex's hook contracts; neither CLI, nor any octo-lite role or skill, depends on the hook.</span>
+<span data-boundary-scope>Observable scope: the line added to an agent's context after each shell command.</span>
+</p>
+</section>
+
+<section data-anchor="time" id="time">
+<h2>Command time</h2>
+<p data-anchor="time-line" id="time-line">After each shell command an agent runs, octo-lite's command-time hook adds one line to the agent's context, beside the command's result, telling how long the command took.
+A command still running when its tool call returns, such as one the agent starts in the background or one moved to the background as it runs, has not finished, so it gets no line.</p>
+<p data-anchor="time-lock" id="time-lock">The box lock is <code>heavy.lock</code> in octo-lite's state directory, which a box's heavy jobs may take so they run one at a time.
+A command that takes the box lock may wait for another job before it runs, and that wait is not the command's own run.
+A command reports its wait by printing it, as <code>flock --verbose</code> does.</p>
+<figure data-anchor="time-table-figure">
+<h3 data-anchor="time-table-heading">What the line tells</h3>
+<div class="table-scroll" data-anchor="time-table-wrap">
+<table data-anchor="time-table">
+<thead><tr><th>The command</th><th>The line tells</th></tr></thead>
+<tbody>
+<tr data-anchor="time-row-plain"><td>Takes no box lock</td><td>How long it took.</td></tr>
+<tr data-anchor="time-row-lock-reported"><td>Takes the box lock and reports its wait</td><td>How long it waited for the box lock and how long it ran, each apart.</td></tr>
+<tr data-anchor="time-row-lock-unreported"><td>Takes the box lock without reporting its wait</td><td>How long it took, that this includes its wait for the box lock, and that taking the lock with <code>flock --verbose</code> tells the wait apart.</td></tr>
+<tr data-anchor="time-row-loop"><td>Is a run in a slow iteration loop</td><td>The above, then the <a href="#loop-warning">slow-loop warning</a>.</td></tr>
+<tr data-anchor="time-row-background"><td>Is still running when its tool call returns, such as one started in the background</td><td>Nothing: no line.</td></tr>
+</tbody>
+</table>
+</div>
+<figcaption data-anchor="time-table-caption">Every finished command gets one line; only the box lock's wait is told apart from the run.</figcaption>
+</figure>
+</section>
+
+<section data-anchor="loop" id="loop">
+<h2>Slow iteration loop</h2>
+<p data-anchor="loop-slow" id="loop-slow">A command is slow when its own run takes at least a minute; a reported wait for the box lock is not counted, and a run whose wait was not reported counts in full.</p>
+<p data-anchor="loop-rule" id="loop-rule">An agent is in a slow iteration loop when, in one session, it runs a slow command again after a file in the command's repository changed since that command's last run.
+The same command is the same command text, ignoring the white space around it.
+A slow command run again with no file changed, such as one that waits on something else, is not a loop, and neither is a command outside a repository.</p>
+<p data-anchor="loop-warning" id="loop-warning">The line for each run in a slow iteration loop adds a warning: how many times the agent has run the command in this session and their time in all, then what to run instead, only the tests for what it touched, and the full suite once, on the final head.</p>
+</section>
+
+<section data-anchor="inform" id="inform">
+<h2>Inform only</h2>
+<p data-anchor="inform-only" id="inform-only">The hook only informs, as every hook octo-lite registers does (<a href="#acceptance-hooks-inform-rule">rule</a>): it never blocks, denies, or changes a command, and never stops an agent.
+It is not a guardrail: the warning is the agent's recipe at the point of action, and the agent decides what to run.
+When the hook fails, it adds nothing, and the command and its result are as they would be without it.</p>
+</section>
+</article>
+</body>
+</html>
