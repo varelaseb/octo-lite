@@ -46,7 +46,7 @@ model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
 
 - Spec format: spec-chat
 - Canonical spec paths: spec/domains/octo-lite.spec.html
-- Canonical ADR paths: spec/adr/0002-tdd-skill-vendoring.spec.html, spec/adr/0005-herdr-ticket-graph-delivery.spec.html
+- Canonical ADR paths: spec/adr/0006-tdd-skill-vendoring.spec.html, spec/adr/0007-herdr-ticket-graph-delivery.spec.html
 - octo-lite's own canonical specifications and ADRs use native spec-chat
   `*.spec.html` documents under `spec/`.
 - A target repo may opt into native spec-chat documents by declaring the exact
