@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""octo-lite's command-time hook (spec/domains/command-time.spec.html).
+
+Claude Code and Codex run it on their tool hooks for each shell command
+(matcher Bash). After a command it adds one line to the agent's context: how
+long the command took, a box lock wait told apart, and a slow iteration loop
+warning. It only informs (#inform-only): it never blocks, denies, or changes a
+command, and on any failure it prints nothing and exits 0.
+
+Claude's PostToolUse and PostToolUseFailure inputs carry duration_ms. Codex's
+PostToolUse input has none, so its PreToolUse stamps the start by tool_use_id.
+Records live in octo-lite's state directory, one file per agent session.
+"""
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+SLOW = 60  # seconds of a command's own run (#loop-slow)
+LOCK = "heavy.lock"  # the box lock, in octo-lite's state directory (#time-lock)
+WAIT = re.compile(r"flock: getting lock took ([0-9.]+) seconds")
+
+
+def records() -> Path:
+    state = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"
+    path = Path(state) / "octo-lite/command-time"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def name(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", text)
+
+
+def span(seconds: float) -> str:
+    if seconds < SLOW:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(round(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s"
+    return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def git(cwd: str, *args: str) -> str:
+    return subprocess.run(["git", "-C", cwd, *args], capture_output=True,
+                          text=True, check=True).stdout
+
+
+def change_mark(cwd: str) -> str | None:
+    """What a file change in the command's repository changes, or None
+    outside a repository: HEAD, plus each changed or untracked path with its
+    modification time, so editing an already-changed file shows too."""
+    try:
+        top = git(cwd, "rev-parse", "--show-toplevel").strip()
+        status = git(top, "status", "--porcelain", "-z", "--untracked-files=all")
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    head = subprocess.run(["git", "-C", top, "rev-parse", "-q", "--verify", "HEAD"],
+                          capture_output=True, text=True).stdout
+    mark = [top, head]
+    tokens = iter(status.split("\0"))
+    for token in tokens:
+        if not token:
+            continue
+        if token[0] in "RC":
+            next(tokens, None)  # a rename's or copy's source path
+        path = Path(top, token[3:])
+        mark.append(f"{token}:{path.stat().st_mtime_ns if path.exists() else '-'}")
+    return hashlib.sha256("\0".join(mark).encode()).hexdigest()
+
+
+def post(event: dict, command: str, store: Path) -> str | None:
+    stamp = store / f"{name(event.get('tool_use_id', ''))}.start"
+    if event.get("duration_ms") is not None:
+        took = event["duration_ms"] / 1000
+    elif stamp.exists():
+        took = time.time() - float(stamp.read_text())
+    else:
+        return None
+    stamp.unlink(missing_ok=True)
+
+    output = json.dumps([event.get("tool_response"), event.get("error")])
+    waits = WAIT.findall(output)
+    if waits:
+        waited = sum(map(float, waits))
+        run = max(took - waited, 0.0)
+        line = f"waited {span(waited)} for the box lock, then ran {span(run)}."
+    elif LOCK in command:
+        run = took
+        line = (f"took {span(took)}, including its wait for the box lock; "
+                f"take the lock with flock --verbose to tell the wait apart.")
+    else:
+        run = took
+        line = f"took {span(took)}."
+    line = "octo-lite: this command " + line
+
+    session = store / f"{name(event.get('session_id', ''))}.json"
+    seen = json.loads(session.read_text()) if session.exists() else {}
+    key = command.strip()
+    last = seen.get(key, {"runs": 0, "total": 0.0, "mark": None})
+    mark = change_mark(event.get("cwd") or ".") if run >= SLOW else None
+    now = {"runs": last["runs"] + 1, "total": last["total"] + took, "mark": mark}
+    if mark and last["mark"] and mark != last["mark"]:
+        line += (f" Slow iteration loop: you have run this command {now['runs']} times"
+                 f" this session, {span(now['total'])} in all."
+                 " Run only the tests for what you touched,"
+                 " and the full suite once, on the final head.")
+    seen[key] = now
+    tmp = session.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(seen))
+    tmp.replace(session)
+    return line
+
+
+def main() -> None:
+    event = json.load(sys.stdin)
+    command = event.get("tool_input", {}).get("command")
+    if not isinstance(command, str):
+        command = json.dumps(command)
+    if event.get("tool_input", {}).get("run_in_background"):
+        return  # not finished when its start returns: no line (#time-line)
+    store = records()
+    hook = event.get("hook_event_name")
+    if hook == "PreToolUse":
+        (store / f"{name(event.get('tool_use_id', ''))}.start").write_text(str(time.time()))
+        return
+    line = post(event, command, store)
+    if line:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": hook, "additionalContext": line}}))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        pass  # inform only: a failed hook adds nothing (#inform-only)
+    sys.exit(0)
