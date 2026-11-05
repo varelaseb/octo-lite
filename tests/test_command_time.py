@@ -192,6 +192,12 @@ class SlowLoopTests(HookCase):
         self.edit()
         self.assertIn("3 times this session, 2m 23s in all", self.told(self.claude(self.SUITE, 70000)))
 
+    def test_edit_before_a_fast_run_is_not_since_the_last_run(self) -> None:
+        self.told(self.claude(self.SUITE, 70000))
+        self.edit()
+        self.told(self.claude(self.SUITE, 3000))
+        self.assertEqual("octo-lite: this command took 1m 10s.", self.told(self.claude(self.SUITE, 70000)))
+
     def test_slow_rerun_with_no_edit_is_not_warned(self) -> None:
         self.told(self.claude(self.SUITE, 70000))
         self.assertEqual("octo-lite: this command took 1m 10s.", self.told(self.claude(self.SUITE, 70000)))

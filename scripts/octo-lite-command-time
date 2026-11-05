@@ -121,10 +121,10 @@ def post(event: dict, command: str, store: Path) -> str | None:
                 record.unlink()
     key = command.strip()
     last = seen.get(key, {"runs": 0, "total": 0.0, "mark": None})
-    mark = change_mark(event.get("cwd") or ".") if run >= SLOW else None
-    # A fast run keeps the last slow run's mark, so the loop holds through it.
-    now = {"runs": last["runs"] + 1, "total": last["total"] + took, "mark": mark or last["mark"]}
-    if mark and last["mark"] and mark != last["mark"]:
+    # A fast rerun of a once-slow command marks too: a change counts from its last run.
+    mark = change_mark(event.get("cwd") or ".") if run >= SLOW or last["mark"] else None
+    now = {"runs": last["runs"] + 1, "total": last["total"] + took, "mark": mark}
+    if run >= SLOW and mark and last["mark"] and mark != last["mark"]:
         line += (f" Slow iteration loop: you have run this command {now['runs']} times"
                  f" this session, {span(now['total'])} in all."
                  " Run only the tests for what you touched,"
