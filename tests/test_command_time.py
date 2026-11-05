@@ -188,7 +188,8 @@ class SlowLoopTests(HookCase):
     def test_fast_run_between_slow_runs_keeps_the_loop(self) -> None:
         self.told(self.claude(self.SUITE, 70000))
         self.edit()
-        self.told(self.claude(self.SUITE, 3000))  # say, an import error
+        fast = self.told(self.claude(self.SUITE, 3000))  # say, an import error
+        self.assertEqual("octo-lite: this command took 3.0s.", fast)
         self.edit()
         self.assertIn("3 times this session, 2m 23s in all", self.told(self.claude(self.SUITE, 70000)))
 
