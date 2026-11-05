@@ -51,7 +51,7 @@
 <section data-anchor="time" id="time">
 <h2>Command time</h2>
 <p data-anchor="time-line" id="time-line">After each shell command an agent runs, octo-lite's command-time hook adds one line to the agent's context, beside the command's result, telling how long the command took.
-A command the agent starts in the background has not finished when its start returns, so it gets no line.</p>
+A command still running when its tool call returns, such as one the agent starts in the background or one moved to the background as it runs, has not finished, so it gets no line.</p>
 <p data-anchor="time-lock" id="time-lock">The box lock is <code>heavy.lock</code> in octo-lite's state directory, which a box's heavy jobs may take so they run one at a time.
 A command that takes the box lock may wait for another job before it runs, and that wait is not the command's own run.
 A command reports its wait by printing it, as <code>flock --verbose</code> does.</p>
@@ -65,7 +65,7 @@ A command reports its wait by printing it, as <code>flock --verbose</code> does.
 <tr data-anchor="time-row-lock-reported"><td>Takes the box lock and reports its wait</td><td>How long it waited for the box lock and how long it ran, each apart.</td></tr>
 <tr data-anchor="time-row-lock-unreported"><td>Takes the box lock without reporting its wait</td><td>How long it took, that this includes its wait for the box lock, and that taking the lock with <code>flock --verbose</code> tells the wait apart.</td></tr>
 <tr data-anchor="time-row-loop"><td>Is a run in a slow iteration loop</td><td>The above, then the <a href="#loop-warning">slow-loop warning</a>.</td></tr>
-<tr data-anchor="time-row-background"><td>Was started in the background</td><td>Nothing: no line.</td></tr>
+<tr data-anchor="time-row-background"><td>Is still running when its tool call returns, such as one started in the background</td><td>Nothing: no line.</td></tr>
 </tbody>
 </table>
 </div>
