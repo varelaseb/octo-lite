@@ -35,6 +35,7 @@
 <p data-acceptance-criterion data-anchor="acceptance-loop-lock" id="acceptance-loop-lock" data-story="user-story-slow-loop"><span data-acceptance-scenario>Given an agent that has run, once in its session, a command that waited long for the box lock, reported its wait, and ran briefly, a fixture that must be added to provide it, When the agent edits a file in the command's repository, then runs the same command again with the same wait,</span> <span data-acceptance-observable>Then the agent is told its wait and its run apart, with no slow-loop warning: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-inform-warned" id="acceptance-inform-warned" data-story="user-story-inform-only"><span data-acceptance-scenario>Given an agent that has been warned of a slow iteration loop, When the agent runs the same command again,</span> <span data-acceptance-observable>Then the command runs and its result reaches the agent, with the warning beside it: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-inform-fail" id="acceptance-inform-fail" data-story="user-story-inform-only"><span data-acceptance-scenario>Given an agent on a box where octo-lite's command-time hook fails, needs an induced failure: the hook cannot keep its records, When the agent runs a shell command,</span> <span data-acceptance-observable>Then the command runs and its result reaches the agent as it would without the hook: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-hooks-inform-rule" id="acceptance-hooks-inform-rule" data-story="user-story-inform-only" data-project-rule="Agent hooks only inform, never block"><span data-acceptance-scenario>Given an octo-lite contributor's change to any feature that adds or changes a hook octo-lite registers with an agent CLI, When an agent runs a command that hook sees,</span> <span data-acceptance-observable>Then the command runs and its result reaches the agent as it would without the hook, with at most the hook's added context beside it: no hook octo-lite registers blocks, denies, or changes a command, or stops an agent (<a href="#inform-only">why</a>): no screen shows it.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
@@ -83,7 +84,7 @@ A slow command run again with no file changed, such as one that waits on somethi
 
 <section data-anchor="inform" id="inform">
 <h2>Inform only</h2>
-<p data-anchor="inform-only" id="inform-only">The hook only informs: it never blocks, denies, or changes a command, and never stops an agent.
+<p data-anchor="inform-only" id="inform-only">The hook only informs, as every hook octo-lite registers does (<a href="#acceptance-hooks-inform-rule">rule</a>): it never blocks, denies, or changes a command, and never stops an agent.
 It is not a guardrail: the warning is the agent's recipe at the point of action, and the agent decides what to run.
 When the hook fails, it adds nothing, and the command and its result are as they would be without it.</p>
 </section>
