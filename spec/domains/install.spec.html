@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>octo-lite install</title>
+<link rel="stylesheet" href="../.style/spec.css">
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1" data-spec-contract="shaped-sections-v1">
+<header data-anchor="header" id="header">
+<h1>octo-lite install</h1>
+<nav><a href="../index.spec.html">Specifications</a> / octo-lite install</nav>
+<p data-anchor="header-scope" id="header-scope">This spec states how octo-lite links its skills, roles, and helpers, and a project's declared skills, into a box's agent profiles, and keeps them current after a pull.</p>
+<p data-anchor="header-related" id="header-related">What the linked roles and skills do is in the <a href="./octo-lite.spec.html">octo-lite</a> spec.</p>
+</header>
+
+<section data-spec-section="user-stories" data-anchor="user-stories" id="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script, and after any pull of its clone the after-pull step octo-lite publishes keeps the box current with no hand step; on a box with an existing setup, the installer adopts compatible links, skips what belongs to someone else, and never overwrites or fails.</p>
+<p data-user-story data-anchor="user-story-repo-skills" id="user-story-repo-skills" data-user-facing="true" data-guided-journey="no">As an operator whose project keeps its own skills, such as its design rules, every implementer on my lanes loads the ones its ticket needs from my live main checkout, and onboarding warns me when a skill link points at a stale clone.</p>
+</section>
+
+<section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
+<h2>Acceptance criteria</h2>
+<p data-acceptance-criterion data-anchor="acceptance-install" id="acceptance-install" data-story="user-story-install"><span data-acceptance-scenario>Given an operator on a box where some install paths are already occupied by someone else's files, When the operator runs the installer,</span> <span data-acceptance-observable>Then it reports each occupied path as skipped, links every other item, and exits successfully, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-after-pull" id="acceptance-after-pull" data-story="user-story-install"><span data-acceptance-scenario>Given an operator whose installed octo-lite clone was fast-forwarded to a commit that ships a new helper, a fixture that must be added to provide it, When a host runs the after-pull step octo-lite publishes,</span> <span data-acceptance-observable>Then the new helper is linked and the step exits successfully, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-after-pull-fail" id="acceptance-after-pull-fail" data-story="user-story-install"><span data-acceptance-scenario>Given an operator whose installed octo-lite clone was fast-forwarded and whose box holds a leftover the check rejects, needs an induced failure: a leftover link the check rejects, When a host runs the after-pull step octo-lite publishes,</span> <span data-acceptance-observable>Then the step exits non-zero and the last line of its error output names the failed check, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-install-consent" id="acceptance-install-consent" data-story="user-story-install"><span data-acceptance-scenario>Given an operator installing octo-lite with no kept consent answers, When the operator runs the installer with onboarding and answers whether agents may push, open pull requests, and file issues,</span> <span data-acceptance-observable>Then the answers are kept in octo-lite's published onboarding status, which reads done, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-wake-provider" id="acceptance-wake-provider" data-story="user-story-install"><span data-acceptance-scenario>Given an operator on a box with Herdr, When the operator installs octo-lite, then uninstalls it,</span> <span data-acceptance-observable>Then octo-lite is registered as Spec Chat's wake provider after install and stays registered after uninstall, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-wake-search-path" id="acceptance-wake-search-path" data-story="user-story-install"><span data-acceptance-scenario>Given an operator on a box with Herdr whose review service was started with a search path that lacks Herdr's directory, a fixture that must be added to provide it, When a spec review hand-off for a live lane owner's row is sent,</span> <span data-acceptance-observable>Then the hand-off reaches that owner, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-wake-no-herdr" id="acceptance-wake-no-herdr" data-story="user-story-install"><span data-acceptance-scenario>Given an operator on a box whose wake provider cannot find Herdr, needs an induced failure: Herdr is missing, When a spec review hand-off for a lane owner's row is sent,</span> <span data-acceptance-observable>Then the wake check fails and its error output names Herdr as not found, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-wake-owner-gone" id="acceptance-wake-owner-gone" data-story="user-story-install"><span data-acceptance-scenario>Given an operator with a lane owner whose pane is gone and was never parked, When a spec review hand-off for that owner's row is sent,</span> <span data-acceptance-observable>Then the wake check fails and its error output names the owner pane as not found in its session, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-repo-skills-link" id="acceptance-repo-skills-link" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given an operator whose project's instructions declare the project's own skills, When the operator runs the installer with the project's live main checkout,</span> <span data-acceptance-observable>Then each declared skill is linked from that checkout for Claude and Codex agents, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-repo-skills-stale" id="acceptance-repo-skills-stale" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given an operator whose project declares a skill whose existing link points into another clone of the project, When the operator runs the installer with the project's live main checkout,</span> <span data-acceptance-observable>Then the installer warns that the link is stale, naming it and the clone it points into, leaves it untouched, and exits successfully, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-repo-skills-load" id="acceptance-repo-skills-load" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given a lane owner delivering a ticket in a project that declares a skill bearing on that ticket, When the implementer finishes the ticket and reports to the owner,</span> <span data-acceptance-observable>Then the report names that declared skill as loaded.</span></p>
+</section>
+
+<section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
+<h2>Modular boundaries</h2>
+<p data-modular-boundary data-anchor="boundary-install" id="boundary-install">
+<span data-boundary-responsibility>The installer owns linking octo-lite's skills, roles, and helpers, and a project's declared skills, into the agent profiles.</span>
+<span data-boundary-seam>The caller-facing seam is the installer's flags and the target <code>AGENTS.md</code> <code>Repo skills:</code> line.</span>
+<span data-boundary-dependency>Direction is external-provider: the installer reads the target's declaration from its checkout; the target names no octo-lite path, and octo-lite names no project skill.</span>
+<span data-boundary-scope>Observable scope: links in the profile skill, agent, and helper directories, and the installer's printed report.</span>
+</p>
+</section>
+
+<section data-anchor="install" id="install">
+<h2>Install</h2>
+<p data-anchor="install-symlink" id="install-symlink"><code>scripts/install-octo-lite</code> symlinks <code>skills/*</code> into the Claude, Codex, and shared <code>~/.agents</code> skill directories, <code>agents/*.md</code> into the Claude and Codex agent directories, the <code>agents</code> directory as each profile's <code>octo-lite/adapters</code>, and executable helpers into <code>~/.local/bin</code>; <code>--check</code> verifies the links.</p>
+<p data-anchor="install-collision" id="install-collision">When a target path is already occupied, the installer classifies it: a symlink resolving into a different clone of this repository (matched by <code>git remote get-url origin</code>) is adopted and reported; any other existing file or symlink is skipped and reported; the installer never overwrites, never fails on an occupied path, and continues with the remaining items.
+A dangling link whose target was inside this repository is pruned.
+Any other dangling link, including one at a path the installer links, belongs to someone else: it is reported and left untouched, never replaced.</p>
+<p data-anchor="install-repo-skills" id="install-repo-skills">A target repository declares its own skills in its root <code>AGENTS.md</code> with one line, <code>Repo skills:</code> followed by comma-separated repository-relative paths to skill directories.
+<code>install-octo-lite --project &lt;checkout&gt;</code> reads that line from the project's live main checkout, the clone the operator keeps on main, and links each declared skill from that checkout under its directory name, into the same skill directories as octo-lite's own skills.
+A declared skill's existing link that resolves anywhere but that checkout is stale: with or without <code>--check</code>, the installer warns, naming the link and where it points, leaves it untouched, and continues.
+It never links a project skill from another clone and never repairs a link.</p>
+<p data-anchor="install-peers" id="install-peers">Each peer links only what it owns (<a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/toolchain-ownership.spec.html#toolchain-install">toolchain ownership</a>); Spec Chat's installer links Spec Chat's own skills.
+Only the third-party tdd skill is pinned, by <code>Skillfile</code> into <code>agents/skills</code> (<a href="../adr/0006-tdd-skill-vendoring.spec.html">ADR 0006</a>).</p>
+<p data-anchor="install-floors" id="install-floors"><code>--check</code> also reports version floors: for each tool octo-lite uses at runtime (git, herdr, jq, gh, node, python3, and at least one of claude or codex), it prints ok, missing, or too old (found version vs minimum) with the upgrade source.
+The installer never upgrades anything without the user's explicit consent.</p>
+<p data-anchor="install-consent" id="install-consent">With <code>--onboard</code>, the installer asks once whether agents may push, open pull requests, and file issues, and keeps the answers in octo-lite's one onboarding file, <code>$XDG_STATE_HOME/octo-lite/onboarding.toml</code>, beside its published onboarding status, done once answers are kept.
+Kept answers are not asked again; deleting that file asks afresh.</p>
+<p data-anchor="install-after-pull" id="install-after-pull">The installer publishes its after-pull step in the same onboarding file: <code>after_pull</code>, a list of arguments a host runs with no shell, after fast-forwarding this clone, to bring the box onto the pulled code.
+It runs <code>install-octo-lite --after-pull</code> from this clone with the prefix and project the installer last ran with.
+<code>--after-pull</code> installs as a plain run does, asking nothing, then verifies as <code>--check</code> does, and exits non-zero, the last line of its error output naming the first failed check, when the verification fails.
+Every run rewrites <code>after_pull</code>, so the step a host runs next is the pulled clone's.</p>
+<p data-anchor="install-wake" id="install-wake">On a box with Herdr, the installer registers <code>herdr-wake</code> as Spec Chat's wake provider; a provider file someone else wrote is kept unchanged, and <code>--undo</code> leaves the registration in place because Spec Chat's review service depends on it.
+<code>herdr-wake</code>, and the <code>herdr-say</code> it runs, reach Herdr on their caller's search path or in Herdr's install directory, <code>~/.local/bin</code>, so a review service started by any launcher (a box user service, a timed job, a shell) wakes owners as a pane does.
+A failed <code>check</code> or <code>send</code> writes a one-line reason to its error output: Herdr not found, naming the path searched; the owner pane not found in its session; Herdr not answering; or Herdr's own error.</p>
+</section>
+</article>
+</body>
+</html>

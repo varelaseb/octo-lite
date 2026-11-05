@@ -76,8 +76,9 @@ Do not create extra workflow labels unless the operator explicitly asks.
   `octo-lite/<issue-number>-<slug>`.
 - Continue the shaped unit's existing draft PR. Open it only when shaping did
   not already create it. Never create a second implementation PR for the unit.
-- For Linear-first work, the PR body starts with `Tracks <LINEAR-KEY>` and
-  includes `## Summary` and `## Validation`.
+- For Linear-first work, the PR body starts with `Closes <LINEAR-KEY>` lines,
+  one for the spec issue and each implementation ticket, as implement-spec
+  puts them, and includes `## Summary` and `## Validation`.
 - For GitHub-first work, the PR body starts with `Closes #<issue-number>` and
   includes `## Summary` and `## Validation`.
 - Post or update a compact `## octo-lite handoff` PR comment.

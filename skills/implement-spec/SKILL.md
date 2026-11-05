@@ -24,8 +24,9 @@ Require:
 - target root `AGENTS.md`
 
 A ticket whose behavior the existing spec on main already states needs no
-shaping or new acceptance: that spec's commit on main is the spec acceptance
-receipt, and the ticket is the spec issue (a spec change goes back to shaping).
+shaping or new acceptance: that spec's commit on main stands as its accepted
+commit, in place of a new receipt, and the ticket is the spec issue (a spec
+change goes back to shaping; spec `#delivery-single-ticket`).
 The primary issue is the one-node graph: Start step 1 files nothing, and only
 filing is skipped. Every worker step still runs: one implementer in its own
 worktree, one integrator, one reviewer. The primary issue stays open until merge.
@@ -50,12 +51,6 @@ Do not copy ticket or spec prose into agent messages. Send essential absolute
 source paths in the message body; artifact metadata alone is insufficient.
 
 The lane owner keeps its lane record current as the lane-record hook in `agents/orchestrator.md` and `spec/domains/octo-lite.spec.html#lane-record` define.
-
-Record the requested handoff in the existing brief. Manual QA readiness means
-a usable feature deployment, required dependencies, working account roles and
-starting scenarios, with a secure credential pointer and stated limitations.
-Do not replace that outcome with exhaustive agent proof. Required spec/target
-evidence still applies; human QA, code readiness and acceptance are separate.
 
 ## Start
 
@@ -96,9 +91,9 @@ and fill available capacity from the current frontier.
 
 Spawn every worker into the owner's space, `--workspace "$HERDR_WORKSPACE_ID"`,
 named `<role>-<ticket>` lowercase (`implementer-ann-64`; a lane-wide worker such
-as the integrator carries the primary issue key), per spec
-`#transport-spawn-name`. Close a worker before reusing its name. Herdr owns
-session selection. Spawn Claude workers
+as the integrator carries the primary issue key), per
+`spec/domains/herdr-transport.spec.html#transport-spawn-name`. Close a worker
+before reusing its name. Herdr owns session selection. Spawn Claude workers
 (`-- claude`, CLI default model; brief via `herdr-say`); Codex only when the operator
 explicitly selects it. Keep the worker-specific nuance: every writer still
 gets its own worktree, and only one integrator writes the integration branch.
@@ -111,7 +106,7 @@ For each ready ticket:
    contract. Prompt it with pointers to the ticket, spec, target `AGENTS.md`,
    optional research notes, integration branch, and relevant prior commits.
    Name the accepted mockup of each screen the ticket changes: its file in the
-   spec's mockup set at the spec acceptance receipt's commit, and for a
+   spec's mockup set at the spec's accepted commit, and for a
    prototyped screen its prototype's components at that commit as where the
    build starts (spec `#delivery-mockup`).
    Cite each repo-wide rule the ticket bears on by its marked criterion's spec
@@ -133,9 +128,9 @@ message that sets a worker to work (brief, resume, repair) with
 `herdr-await <name> <message>` instead, by name, on Claude as
 `herdr-await --notice` run in the background, never `herdr agent wait`
 yourself, and when that wait ends follow the
-[wait recipe](../herdr-comms/SKILL.md#wait-on-an-agent) (spec `#roles-goal`,
-`#transport-await`). Keep messages sparse. A status pointer or
-commit is better than a recap.
+[wait recipe](../herdr-comms/SKILL.md#wait-on-an-agent)
+(`spec/domains/herdr-transport.spec.html#roles-goal`, `#transport-await`).
+Keep messages sparse. A status pointer or commit is better than a recap.
 
 ## Integrate and advance
 
@@ -167,7 +162,7 @@ worker to end (`agents/orchestrator.md`).
 Record one truthful current state, next action and dependency.
 Do not end delivery at startup, dispatch, worker completion or review forwarding.
 
-## Validation and preview setup
+## Validation
 
 Read target `AGENTS.md` and applicable CI commands before broad validation,
 including DB isolation, shard/file concurrency, schema and dependencies.
@@ -181,24 +176,13 @@ when target rules permit; final-head required checks and integration-sensitive
 tests remain required. Repeat or broaden tests only for a change, failure,
 unresolved risk or explicit required check, not because a handoff occurred.
 
-Use one preview deployment/fork owner. Its current receipt in existing control
-state binds feature SHA, revision, DB fork/schema, scoped access, fixture
-namespace and secure credential pointer. A base-only healthy preview is not the
-feature. Share the receipt and setup window; do not infer access from another
-identity's grants. Before recreation, preserve fixtures/paid progress and agree
-closure with affected owners; restore and verify after the new receipt. Keep
-rollback and target safety checks. No new receipt framework is required.
-Stop watching an operation after its terminal outcome is consumed. Retry a
-known deployment/access blocker only after a relevant state change; continue
-independent work and report the exact remaining dependency.
-
 ## Review and finish
 
-Order, every lane: build only after the spec acceptance receipt; integrate every ticket; code review clear and its notes ended by the finish rule (spec `#delivery-finish`); the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head, then ended by the finish rule; then one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`), in that contract's merge-ask template: plain summary lines, then the PR link, every detail in the PR body (spec `#delivery-merge-ask`). A merge ask covers its whole issue (spec `#delivery-finish`): in-scope work that cannot be done before merge is named, with why, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`) as a [report](../herdr-comms/SKILL.md#send-a-report), asking whether to cut it, in place of the merge ask. A merge ask never goes out ahead of a step it needs.
+Order, every lane: build only after spec acceptance (its receipt, spec `#acceptance-receipt`, or a single ticket's accepted commit, `#delivery-single-ticket`); integrate every ticket; code review clear and its notes ended by the finish rule (spec `#delivery-finish`); the target's required validation; any evidence the target's AGENTS.md requires before a merge ask (for example a QA evidence bundle for changes a person can observe); every failed QA criterion triaged by annotateanything's owner triage rule (`docs/specs/jev-capture.spec.html#qa-rules-owner-triage`), a failure carried from an older head first recaptured at the merge ask's head, then ended by the finish rule; then one merge ask that carries the review result, the PR body's Changelog line, that evidence, and its QA call, and goes out with its gate line (`agents/orchestrator.md`, spec `#handoff-kind-gate`), in that contract's merge-ask template: plain summary lines, then the PR link, every detail in the PR body (spec `#delivery-merge-ask`). A merge ask covers its whole issue (spec `#delivery-finish`): in-scope work that cannot be done before merge is named, with why, to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`) as a [report](../herdr-comms/SKILL.md#send-a-report), asking whether to cut it, in place of the merge ask. A merge ask never goes out ahead of a step it needs.
 
 As soon as a capture or recapture of the PR publishes its bundle, run `qa down <owner>/<repo>#<n>` before your next step (spec `#delivery-qa-down`); only a recapture brings an environment back, and it goes down again once that recapture publishes its bundle.
 
-The merge ask lists, in its PR body, each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome, the end the finish rule gives it; one the rule files is also listed under `## Review notes`, tagged with its category and its consequence as a review note is, so the lane closer files it with its Health label. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (spec `spec/domains/octo-lite.spec.html#delivery-qa-triage`).
+The merge ask lists, in its PR body, each failed criterion as judged at the merge ask's head, never as carried, with the bundle row's `evidence_state`, its `decision_source` and judged head, its triage, its cause or reason, and its outcome, the end the finish rule gives it; one the rule files is also listed under `## Review notes`, tagged with its category and its consequence as a review note is, so the lane closer files it with its Health label. A failure whose `evidence_state` is `complete` is listed as a code fault unless a specific capture cause is named, such as a wrong fixture, a wrong page reached, or the criterion's shape (annotateanything's owner triage rule, `docs/specs/jev-capture.spec.html#qa-rules-owner-triage`).
 
 After every ticket is integrated:
 
@@ -236,23 +220,19 @@ After every ticket is integrated:
 3. Run the target repo's required validation.
 4. Mark the PR ready for review only when the final review is clear, every
    required validation succeeds, and any required evidence (QA bundle) is
-   published. The Human inbox derives its gate from PR draft status
-   (ANN-373): ready means the merge ask is out; draft means work is still in
+   published. Ready means the merge ask is out; draft means work is still in
    progress. Otherwise keep it draft and report the blocker. Keep the spec
    issue open until human review or repository automation closes it.
 5. Close each consumed worker with
    `herdr-close TAB >> $(octo-lite-state)/lanes/<lane record name>.handoffs.jsonl`,
-   which also ends its detached processes and appends its closed line (spec
-   `#transport-close-line`). A worker you would keep idle through a long wait (human
-   gate, another lane) is parked instead, never a consumed one:
+   which also ends its detached processes and appends its closed line
+   (`spec/domains/herdr-transport.spec.html#transport-close-line`). A worker you
+   would keep idle through a long wait (human gate, another lane) is parked
+   instead, never a consumed one:
    `herdr-close --park <pane> >> $(octo-lite-state)/lanes/<lane record name>.handoffs.jsonl`;
    `herdr-say <name>` resumes it. Remove every temporary worker worktree only after it is
    clean and its commits are reachable from the integration branch. Never
    force-remove a worktree with uncommitted or unmerged work.
-
-Continue any authorized deployment/seeding/manual-QA handoff after code review
-readiness; report its actual state separately. Human acceptance, preproduction
-promotion and live traffic shifts still require explicit human instruction.
 
 Return the PR, integrated tickets, validation, review result, and any truthful
 remaining blocker.
