@@ -57,7 +57,8 @@ class HookCase(unittest.TestCase):
         return out["hookSpecificOutput"]["additionalContext"]
 
     def claude(self, command: str, ms: float, *, cwd: Path | None = None, session: str = "s1",
-               output: str = "", event: str = "PostToolUse", **tool_input) -> subprocess.CompletedProcess:
+               output: str = "", event: str = "PostToolUse", task: str | None = None,
+               **tool_input) -> subprocess.CompletedProcess:
         self.calls += 1
         payload = {
             "session_id": session, "transcript_path": "/dev/null", "cwd": str(cwd or self.repo),
@@ -69,6 +70,8 @@ class HookCase(unittest.TestCase):
             payload |= {"error": f"Exit code 1\n{output}", "is_interrupt": False}
         else:
             payload["tool_response"] = {"stdout": "", "stderr": output, "interrupted": False}
+            if task:  # Claude 2.1's Bash output while the command runs on in the background
+                payload["tool_response"]["backgroundTaskId"] = task
         return self.hook(payload)
 
     def codex(self, event: str, command: str, call: str, output: str = "") -> subprocess.CompletedProcess:
@@ -101,8 +104,29 @@ class CommandTimeTests(HookCase):
         self.assertGreaterEqual(seconds(took.group(1)), 0.3)
 
     def test_background_command_gets_no_line(self) -> None:
-        result = self.claude("sleep 100", 12, run_in_background=True)
+        result = self.claude("sleep 100", 12, run_in_background=True, task="b7k2q")
         self.assertEqual((0, ""), (result.returncode, result.stdout))
+
+    def test_command_still_running_when_its_call_returns_gets_no_line_and_no_record(self) -> None:
+        moved = self.claude("python3 -m unittest", 120000, task="b9x4m")  # timed out, moved on
+        self.codex("PreToolUse", "python3 -m unittest", "call_2")
+        outlived = self.codex(  # Codex 0.166 unified exec past its yield
+            "PostToolUse", "python3 -m unittest", "call_2",
+            "Chunk ID: 5c1e\nWall time: 10.0012 seconds\nProcess running with session ID 81\n"
+            "Original token count: 4\nOutput:\nrunning 12 tests\n")
+        for result in (moved, outlived):
+            self.assertEqual((0, ""), (result.returncode, result.stdout))
+        self.assertEqual([], list((self.state / "octo-lite/command-time").glob("*.json")))
+
+    def test_records_older_than_a_week_are_dropped_when_a_session_starts(self) -> None:
+        store = self.state / "octo-lite/command-time"
+        store.mkdir(parents=True)
+        old, stamp, recent = store / "old.json", store / "call_9.start", store / "recent.json"
+        for path, days in ((old, 8), (stamp, 8), (recent, 1)):
+            path.write_text("{}")
+            os.utime(path, (time.time() - days * 86400,) * 2)
+        self.told(self.claude("ls", 10, session="fresh"))
+        self.assertEqual({"fresh.json", "recent.json"}, {p.name for p in store.iterdir()})
 
 
 class BoxLockTests(HookCase):
@@ -161,6 +185,13 @@ class SlowLoopTests(HookCase):
         self.edit("new_test.py")
         self.assertIn("3 times this session, 3m 35s in all", self.told(self.claude(self.SUITE, 70000)))
 
+    def test_fast_run_between_slow_runs_keeps_the_loop(self) -> None:
+        self.told(self.claude(self.SUITE, 70000))
+        self.edit()
+        self.told(self.claude(self.SUITE, 3000))  # say, an import error
+        self.edit()
+        self.assertIn("3 times this session, 2m 23s in all", self.told(self.claude(self.SUITE, 70000)))
+
     def test_slow_rerun_with_no_edit_is_not_warned(self) -> None:
         self.told(self.claude(self.SUITE, 70000))
         self.assertEqual("octo-lite: this command took 1m 10s.", self.told(self.claude(self.SUITE, 70000)))
@@ -195,6 +226,17 @@ class InformOnlyTests(HookCase):
         (self.repo / "app.py").write_text("x = 2\n")
         result = self.claude(SlowLoopTests.SUITE, 70000, event="PostToolUseFailure", output="FAILED")
         self.assertIn(LOOP, self.told(result, "PostToolUseFailure"))
+
+    def test_hook_leaves_the_agents_git_index_alone(self) -> None:
+        """git status refreshes and rewrites a stale index under index.lock,
+        which fails the agent's own concurrent git add or commit."""
+        app, index = self.repo / "app.py", self.repo / ".git/index"
+        stamp = app.stat().st_mtime_ns - 5 * 10**9
+        os.utime(app, ns=(stamp, stamp))  # stat changed, content not: the index is stale
+        before = index.stat()
+        self.told(self.claude(SlowLoopTests.SUITE, 70000))
+        after = index.stat()
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
 
     def test_hook_that_cannot_keep_its_records_adds_nothing(self) -> None:
         self.state.write_text("not a directory")
