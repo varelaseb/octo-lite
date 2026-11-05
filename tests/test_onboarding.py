@@ -12,6 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/install-octo-lite"
+# skillfile stubbed unreachable: installer runs never fetch.
+OFFLINE = f"{ROOT / 'tests/offline-bin'}:{os.environ['PATH']}"
 
 
 class OnboardingTest(unittest.TestCase):
@@ -22,7 +24,7 @@ class OnboardingTest(unittest.TestCase):
         # --prefix is the one root: an exported XDG home must stay untouched.
         self.sentinel = Path(tmp.name) / "xdg"
         self.sentinel.mkdir()
-        self.env = {**os.environ, "XDG_STATE_HOME": str(self.sentinel / "state"),
+        self.env = {**os.environ, "PATH": OFFLINE, "XDG_STATE_HOME": str(self.sentinel / "state"),
                     "XDG_CONFIG_HOME": str(self.sentinel / "config")}
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
 
@@ -120,7 +122,7 @@ class OnboardingTest(unittest.TestCase):
         self.assertTrue(self.wake.exists())
 
     def test_no_herdr_no_wake_file(self):
-        self.env["PATH"] = "/usr/bin:/bin"
+        self.env["PATH"] = f"{ROOT / 'tests/offline-bin'}:/usr/bin:/bin"
         self.install()
         self.assertFalse(self.wake.exists())
 
@@ -252,7 +254,7 @@ class AfterPullTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name)
         self.prefix = base / "prefix"
-        self.env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        self.env = {**os.environ, "PATH": OFFLINE, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         self.upstream = base / "upstream"
         (self.upstream / "scripts").mkdir(parents=True)

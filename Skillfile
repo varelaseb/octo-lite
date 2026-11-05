@@ -14,6 +14,10 @@ install-path  octo-lite  skill  agents/skills
 # links its skills straight from its clone, so a pull there is live with no pin
 # to bump.
 github  skill  tdd  mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d  skills/engineering/tdd
+# Stageshow is never committed: its folder carries artwork under its owners'
+# terms. agents/skills ignores it, and the installer fetches it at this pin with
+# the filming dependencies its lockfile names (install.spec.html#install-peers).
+github  skill  stageshow  benjitaylor/skills@299140fafd08df55a9c234e610c3f64af3f45531  stageshow
 
 # octo-lite's own skills, authored locally under skills/.
 local  skill  commit                  skills/commit
