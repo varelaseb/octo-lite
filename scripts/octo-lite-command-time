@@ -9,7 +9,8 @@ command, and on any failure it prints nothing and exits 0.
 
 Claude's PostToolUse and PostToolUseFailure inputs carry duration_ms. Codex's
 PostToolUse input has none, so its PreToolUse stamps the start by tool_use_id.
-Records live in octo-lite's state directory, one file per agent session.
+Records live in octo-lite's state directory, one file per agent session;
+a new session drops every record older than a week.
 """
 
 import hashlib
@@ -24,6 +25,9 @@ from pathlib import Path
 SLOW = 60  # seconds of a command's own run (#loop-slow)
 LOCK = "heavy.lock"  # the box lock, in octo-lite's state directory (#time-lock)
 WAIT = re.compile(r"flock: getting lock took ([0-9.]+) seconds")
+AGE = 7 * 86400  # seconds a record is kept
+# Codex 0.166's exec output while the command runs past its yield.
+RUNNING = re.compile(r"^Process running with session ID \d+$", re.M)
 
 
 def records() -> Path:
@@ -46,9 +50,18 @@ def span(seconds: float) -> str:
     return f"{minutes // 60}h {minutes % 60:02d}m"
 
 
-def git(cwd: str, *args: str) -> str:
-    return subprocess.run(["git", "-C", cwd, *args], capture_output=True,
-                          text=True, check=True).stdout
+def git(cwd: str, *args: str, check: bool = True) -> str:
+    # No optional locks: git status never rewrites the agent's index (#inform-only).
+    return subprocess.run(["git", "--no-optional-locks", "-C", cwd, *args],
+                          capture_output=True, text=True, check=check).stdout
+
+
+def running(response: object) -> bool:
+    """The command still runs when its call returns: Claude moved it to the
+    background, or Codex's exec outlived its yield (#time-line)."""
+    if isinstance(response, dict):
+        return bool(response.get("backgroundTaskId"))
+    return isinstance(response, str) and bool(RUNNING.search(response))
 
 
 def change_mark(cwd: str) -> str | None:
@@ -60,8 +73,7 @@ def change_mark(cwd: str) -> str | None:
         status = git(top, "status", "--porcelain", "-z", "--untracked-files=all")
     except (OSError, subprocess.CalledProcessError):
         return None
-    head = subprocess.run(["git", "-C", top, "rev-parse", "-q", "--verify", "HEAD"],
-                          capture_output=True, text=True).stdout
+    head = git(top, "rev-parse", "-q", "--verify", "HEAD", check=False)
     mark = [top, head]
     tokens = iter(status.split("\0"))
     for token in tokens:
@@ -100,11 +112,18 @@ def post(event: dict, command: str, store: Path) -> str | None:
     line = "octo-lite: this command " + line
 
     session = store / f"{name(event.get('session_id', ''))}.json"
-    seen = json.loads(session.read_text()) if session.exists() else {}
+    if session.exists():
+        seen = json.loads(session.read_text())
+    else:
+        seen = {}
+        for record in store.iterdir():
+            if record.stat().st_mtime < time.time() - AGE:
+                record.unlink()
     key = command.strip()
     last = seen.get(key, {"runs": 0, "total": 0.0, "mark": None})
     mark = change_mark(event.get("cwd") or ".") if run >= SLOW else None
-    now = {"runs": last["runs"] + 1, "total": last["total"] + took, "mark": mark}
+    # A fast run keeps the last slow run's mark, so the loop holds through it.
+    now = {"runs": last["runs"] + 1, "total": last["total"] + took, "mark": mark or last["mark"]}
     if mark and last["mark"] and mark != last["mark"]:
         line += (f" Slow iteration loop: you have run this command {now['runs']} times"
                  f" this session, {span(now['total'])} in all."
@@ -122,8 +141,8 @@ def main() -> None:
     command = event.get("tool_input", {}).get("command")
     if not isinstance(command, str):
         command = json.dumps(command)
-    if event.get("tool_input", {}).get("run_in_background"):
-        return  # not finished when its start returns: no line (#time-line)
+    if running(event.get("tool_response")):
+        return  # not finished when its call returns: no line, no record (#time-line)
     store = records()
     hook = event.get("hook_event_name")
     if hook == "PreToolUse":

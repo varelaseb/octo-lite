@@ -61,9 +61,9 @@ unchanged. After each shell command the agent is told how long it took, any
 box lock wait (`flock --verbose ~/.local/state/octo-lite/heavy.lock CMD`) told
 apart, and a warning when it reruns a slow command after an edit
 ([Command time](spec/domains/command-time.spec.html)). The hook only informs:
-it never blocks or changes a command. A file not readable as settings is left
-untouched and reported. `--check` fails naming the settings file that lacks the
-hook, and `--undo` removes only octo-lite's entries.
+it never blocks or changes a command. A file it cannot read as settings, or
+write, is left untouched and reported. `--check` fails naming the settings file
+that lacks the hook, and `--undo` removes only octo-lite's entries.
 
 Codex runs a new or changed hook only once you trust it, one time, in Codex
 (`/hooks`). The installer says so and never records that trust for you. Until

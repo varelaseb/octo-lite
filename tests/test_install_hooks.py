@@ -105,6 +105,15 @@ class InstallHooksTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn(str(self.claude), result.stderr.splitlines()[-1])
 
+    def test_check_stops_at_the_first_failed_check(self) -> None:
+        self.install()
+        self.claude.write_text(json.dumps(CLAUDE_SETTINGS, indent=2))
+        self.codex.write_text(json.dumps(CODEX_HOOKS, indent=2))
+        result = self.install("--check", ok=False)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(str(self.claude), result.stderr.splitlines()[-1])
+        self.assertNotIn(str(self.codex), result.stderr)
+
     def test_undo_removes_only_octo_lites_hook(self) -> None:
         self.install()
         self.install("--undo")
@@ -117,6 +126,26 @@ class InstallHooksTests(unittest.TestCase):
         self.assertEqual("{not json", self.claude.read_text())
         self.assertIn(str(self.claude), result.stderr)
         self.assertIn(self.hook, self.codex.read_text())
+        self.claude.chmod(0o000)
+        self.addCleanup(self.claude.chmod, 0o644)
+        self.codex.write_text(json.dumps(CODEX_HOOKS, indent=2))
+        result = self.install()
+        self.assertIn(str(self.claude), result.stderr)
+        self.assertIn(self.hook, self.codex.read_text())
+
+    def test_settings_the_installer_cannot_write_are_left_untouched_and_reported(self) -> None:
+        locked = self.prefix / "dotfiles"
+        locked.mkdir()
+        (locked / "settings.json").write_text(self.claude.read_text())
+        self.claude.unlink()
+        self.claude.symlink_to(locked / "settings.json")
+        locked.chmod(0o555)
+        self.addCleanup(locked.chmod, 0o755)
+        result = self.install()
+        self.assertEqual(CLAUDE_SETTINGS, json.loads(self.claude.read_text()))
+        self.assertIn(str(self.claude), result.stderr)
+        self.assertIn(self.hook, self.codex.read_text())
+        self.assertTrue((self.prefix / ".local/state/octo-lite/onboarding.toml").exists())
 
     def test_settings_keep_their_link_and_mode(self) -> None:
         real = self.prefix / "dotfiles/settings.json"

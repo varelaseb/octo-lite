@@ -50,7 +50,8 @@ send = [\"$waker\", \"send\", \"{owner}\", \"{artifact}\", \"{message}\"]"
 # (install.spec.html#install-hooks). Each CLI reads hooks only from these files,
 # so here alone the installer edits a file instead of linking one. MODE install
 # adds, check verifies, undo removes, only the entries running the hook's link;
-# a file that is not readable as settings is left untouched and reported.
+# a file it cannot read as settings, or write, is left untouched and reported.
+# check stops at its first failure, so the last error line names it.
 # Claude's PostToolUse and PostToolUseFailure inputs carry the command's
 # duration; Codex's PostToolUse does not, so its PreToolUse stamps the start.
 # Codex runs a new or changed entry only once the operator trusts it there;
@@ -63,7 +64,14 @@ import json, os, shlex, shutil, sys
 
 mode, command, *files = sys.argv[1:]
 command = shlex.quote(command)
-failed = False
+
+
+def report(problem):
+    print(problem, file=sys.stderr)
+    if mode == "check":
+        sys.exit(1)
+
+
 for path, events in zip(files[::2], files[1::2]):
     events = events.split(",")
     try:
@@ -75,17 +83,15 @@ for path, events in zip(files[::2], files[1::2]):
     except FileNotFoundError:
         hooks = {}
         data = {"hooks": hooks}
-    except (ValueError, TypeError, KeyError, AttributeError):
-        print(f"hook settings not readable as settings, left untouched: {path}", file=sys.stderr)
-        failed = True
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        report(f"hook settings not readable as settings, left untouched: {path}")
         continue
     ours = lambda h: isinstance(h, dict) and h.get("command") == command
     has = lambda e: any(ours(h) for g in hooks.get(e, []) for h in g["hooks"])
     missing = [e for e in events if not has(e)]
     if mode == "check":
         if missing:
-            print(f"missing command-time hook ({', '.join(missing)}): {path}", file=sys.stderr)
-            failed = True
+            report(f"missing command-time hook ({', '.join(missing)}): {path}")
         continue
     if mode == "install":
         for e in missing:
@@ -112,19 +118,22 @@ for path, events in zip(files[::2], files[1::2]):
             del data["hooks"]
     if changed:
         real = os.path.realpath(path)
-        os.makedirs(os.path.dirname(real), exist_ok=True)
         tmp = f"{real}.octo-lite.{os.getpid()}"
-        with open(tmp, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
-        if os.path.exists(real):
-            shutil.copymode(real, tmp)
-        os.replace(tmp, real)
+        try:
+            os.makedirs(os.path.dirname(real), exist_ok=True)
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            if os.path.exists(real):
+                shutil.copymode(real, tmp)
+            os.replace(tmp, real)
+        except OSError:
+            report(f"hook settings not writable, left untouched: {path}")
+            continue
         print(f"command-time hook {'registered in' if mode == 'install' else 'removed from'}: {path}")
     if mode == "install" and path.endswith("/.codex/hooks.json"):
         print("Codex runs octo-lite's command-time hook only once you trust it in Codex"
               " (/hooks); octo-lite never records that trust for you.")
-sys.exit(1 if failed and mode == "check" else 0)
 PY
 }
 
