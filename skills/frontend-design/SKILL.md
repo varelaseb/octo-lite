@@ -1,6 +1,6 @@
 ---
 name: frontend-design
-description: Apply production-quality frontend design practice during octo-lite implementer work when the shaped issue touches UI, styling, interaction, or visual polish.
+description: Apply production-quality frontend design practice during octo-lite implementer work when the shaped issue or prototype brief touches UI, styling, interaction, or visual polish.
 ---
 
 # Frontend Design
@@ -10,12 +10,14 @@ description: Apply production-quality frontend design practice during octo-lite 
 Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
-Use this skill only when the Linear/GitHub issue, specs, ADRs, repo instructions, or
-code clearly put UI/frontend work in scope.
+Use this skill only when the Linear/GitHub issue, prototype brief, specs, ADRs,
+repo instructions, or code clearly put UI/frontend work in scope.
 
 When the target has a domain-specific UI skill or design constitution, load it
 before making visual or interaction decisions. That source supplies the local
-language; this skill supplies the general frontend practice.
+language and outranks this skill only where it states its own rule; this skill
+supplies the general frontend practice, which still holds wherever that source
+is silent.
 
 ## Accepted mockup
 
@@ -29,6 +31,10 @@ fills only what no mockup draws and never overrides one.
 - Respect existing design systems, component libraries, tokens, and patterns.
 - Build the actual requested interface, not a marketing placeholder.
 - Keep layouts responsive, readable, and free of text overlap.
+- Avoid unnecessary secondary labels and descriptions. Let the layout do the
+  explaining: grouping, order, alignment, and spacing show what each part is
+  and how the parts relate. Add a caption, helper line, or subtitle only where
+  the layout cannot show it.
 - Use target repo assets and UI libraries before inventing new ones.
 - Use icons for common tool actions when the project has an icon library.
 - Validate through the target repo's normal checks and browser/screenshot
