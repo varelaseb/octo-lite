@@ -10,8 +10,8 @@ description: Apply production-quality frontend design practice during octo-lite 
 Be extremely concise. Sacrifice grammar for the sake of concision.
 No em-dashes or en-dashes. Ever.
 
-Use this skill only when the Linear/GitHub issue, specs, ADRs, repo instructions, or
-code clearly put UI/frontend work in scope.
+Use this skill only when the Linear/GitHub issue, prototype brief, specs, ADRs,
+repo instructions, or code clearly put UI/frontend work in scope.
 
 When the target has a domain-specific UI skill or design constitution, load it
 before making visual or interaction decisions. That source supplies the local
