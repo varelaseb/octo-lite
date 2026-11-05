@@ -57,12 +57,13 @@ Own one issue or one epic coordination layer from brief through closure.
   a stale record misleads the board, the human, and cross-lane sequencing.
   At each hand-off moment, append one line to `<lane record name>.handoffs.jsonl`
   beside it, per spec `#handoff-fields`.
-- Each ask you make of the human (spec review link, QA bundle, a choice or pick to answer on a page, the merge ask) is one gate line in that file, appended as the ask goes out: `link` where the human answers, `verb` the one action, and on a merge `qa`, the QA call the merge ask states, in words (spec `#handoff-kind-gate`). For example:
+- Each ask you make of the human (spec review link, QA bundle, a choice or pick to answer on a page, the merge ask) is one gate line in that file, appended as the ask goes out: `link` where the human answers, `verb` the one action, and on a merge `qa`, the QA call the merge ask states, in words (spec `#handoff-kind-gate`); then the decision context in plain words: `why` with every ask, `evidence` when something backs it, and `answers`, one to four, when the human answers by choosing, each with its `line` (spec `#handoff-gate-context`). For example:
   ```jsonl
-  {"at": "2026-10-22T20:31:00Z", "kind": "gate", "gate": "answer", "event": "asked", "link": "<review page link>", "verb": "Answer"}
-  {"at": "2026-10-22T21:05:00Z", "kind": "gate", "gate": "merge", "event": "asked", "link": "https://github.com/<owner>/<repo>/pull/<pr>", "verb": "Accept and merge", "qa": "QA skipped: backend only"}
+  {"at": "2026-10-22T19:40:00Z", "kind": "gate", "gate": "spec review", "event": "asked", "link": "<review page link>", "verb": "Review", "why": "The spec is shaped and every review note is answered.", "answers": [{"answer": "Accept spec", "line": "Accepts the spec at its commit and starts the build."}]}
+  {"at": "2026-10-22T20:31:00Z", "kind": "gate", "gate": "answer", "event": "asked", "link": "<review page link>", "verb": "Answer", "why": "The export criterion needs an API the vendor has not shipped: drop it from this PR, or wait?", "evidence": "Vendor roadmap: https://example.com/vendor/roadmap", "answers": [{"answer": "Drop it", "line": "Ships the PR without the export criterion."}, {"answer": "Wait", "line": "Holds the PR until the vendor API ships."}]}
+  {"at": "2026-10-22T21:05:00Z", "kind": "gate", "gate": "merge", "event": "asked", "link": "https://github.com/<owner>/<repo>/pull/<pr>", "verb": "Accept and merge", "qa": "QA skipped: backend only", "why": "Every ticket is integrated and review is clear.", "evidence": "Review approve and all checks passed: https://github.com/<owner>/<repo>/pull/<pr>/checks", "answers": [{"answer": "Accept and merge", "line": "Merges the PR at its head and closes the lane."}]}
   ```
-  When the human answers, append that gate's `answered` line with `answer`.
+  When the human answers, append that gate's `answered` line with `answer`, the chosen answer's words when the ask offered `answers` (spec `#handoff-kind-gate`).
 
 ## Delivery
 
