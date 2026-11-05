@@ -325,11 +325,15 @@ class LaneRecordTests(unittest.TestCase):
         )
 
     def gate_examples(self) -> dict[str, dict]:
-        # The owner's gate lines, read against the spec's gate row: every
-        # example uses only the gates, verbs, and fields that row declares.
+        # The owner's gate lines, read against the spec's gate row and its
+        # decision context: every example uses only the gates, verbs, and
+        # fields those declare, says why it asks, and gives each answer a line.
         html = unescape(SPEC.read_text(encoding="utf-8"))
         row = re.search(r'<tr data-anchor="handoff-kind-gate">(.*?)</tr>', html)
         self.assertIsNotNone(row, "gate row is missing")
+        context = re.search(r'<p data-anchor="handoff-gate-context".*?</p>', html, flags=re.DOTALL)
+        self.assertIsNotNone(context, "gate decision context is missing")
+        fields = {"at", "kind"} | set(re.findall(r"<code>(\w+)</code>", row.group(1) + context.group(0)))
         gates = re.search(r"<code>gate</code> \((.*?)\)", row.group(1)).group(1)
         gates = {g.split(":")[0].strip() for g in gates.split(", ")}
         verbs = re.search(r"<code>verb</code>, the one action \((.*?)\)", row.group(1)).group(1)
@@ -344,6 +348,12 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIn(line["gate"], gates)
             self.assertIn(line["verb"], verbs)
             self.assertTrue(line["link"])
+            self.assertLessEqual(set(line), fields)
+            self.assertTrue(line["why"])
+            self.assertLessEqual(len(line.get("answers", [])), 4)
+            for choice in line.get("answers", []):
+                self.assertEqual(set(choice), {"answer", "line"})
+                self.assertTrue(choice["answer"] and choice["line"])
         return {line["gate"]: line for line in lines}
 
     def test_owner_writes_one_gate_line_per_ask(self) -> None:
@@ -377,6 +387,35 @@ class LaneRecordTests(unittest.TestCase):
             "and goes out with its gate line (`agents/orchestrator.md`",
             skill,
         )
+
+    def test_question_gate_line_carries_why_evidence_and_each_answer(self) -> None:
+        # spec #acceptance-lane-gate-answers, #handoff-gate-context: a question
+        # with two answers goes out with one gate line asked carrying why it
+        # asks, its evidence, and both answers, each with its own line.
+        self.assertRegex(
+            (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"),
+            r"`why` with every ask, `evidence` when something backs it, and `answers` when the human "
+            r"answers by choosing, each with its `line` \(spec `#handoff-gate-context`\)",
+        )
+        answer = self.gate_examples()["answer"]
+        self.assertTrue(answer["evidence"])
+        self.assertEqual(len(answer["answers"]), 2)
+
+    def test_merge_ask_gate_line_offers_accept_and_merge(self) -> None:
+        # spec #acceptance-lane-gate-merge-answer: a merge ask's gate line
+        # carries why it asks, its evidence, and the answer Accept and merge
+        # with its own line.
+        merge = self.gate_examples()["merge"]
+        self.assertTrue(merge["evidence"])
+        self.assertEqual([choice["answer"] for choice in merge["answers"]], ["Accept and merge"])
+
+    def test_spec_review_gate_line_offers_accept_spec(self) -> None:
+        # spec #acceptance-lane-gate-spec-answer: a spec review link goes out
+        # with one gate line asked carrying why it asks and the answer Accept
+        # spec with its own line.
+        spec = self.gate_examples()["spec review"]
+        self.assertEqual(spec["verb"], "Review")
+        self.assertEqual([choice["answer"] for choice in spec["answers"]], ["Accept spec"])
 
     def test_close_links_each_report_kept_outside_main_before_rows_go(self) -> None:
         # spec #acceptance-close-report-link, #roles-teardown: before review
