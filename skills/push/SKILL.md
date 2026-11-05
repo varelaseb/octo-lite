@@ -30,20 +30,22 @@ update the PR for shaped Linear-first work or an explicitly GitHub-first issue.
 3. Push with upstream tracking, naming the branch, as its own command (never
    `HEAD`, never chained): `git push -u origin <branch>`.
 4. If push is rejected because the branch is stale, use the `pull` skill, rerun
-   validation, then push again.
+   validation, then push again. Never force-push, `--force-with-lease`
+   included: a pushed branch is never rebased or force-pushed.
 5. Prove each commit you will report (spec `#gates-push-proof`):
    `git fetch origin <branch>`, then
    `git merge-base --is-ancestor <commit> origin/<branch>` per commit. One that
    fails, such as one made on a worktree that left its branch, goes onto the
    branch (merge it, keeping its id) and is pushed first, then proved again.
-6. Use `--force-with-lease` only when history was deliberately rewritten.
-7. Create or update exactly one PR for the issue.
-8. PR title should match the Linear issue or GitHub issue title unless the
+6. Create or update exactly one PR for the issue.
+7. PR title should match the Linear issue or GitHub issue title unless the
    target repo has a stronger convention.
-9. For Linear-first work, PR body must start with `Tracks <LINEAR-KEY>` and
-   include `## Summary` and `## Validation`. For GitHub-first work, PR body
-   must start with `Closes #<issue-number>` and include those sections.
-10. Return the PR URL.
+8. For Linear-first work, PR body must start with `Closes <LINEAR-KEY>` lines,
+   one for the spec issue and each implementation ticket, as implement-spec
+   puts them, and include `## Summary` and `## Validation`. For GitHub-first
+   work, PR body must start with `Closes #<issue-number>` and include those
+   sections.
+9. Return the PR URL.
 
 Do not merge. Surface auth, permissions, branch protection, and workflow errors
 directly instead of changing remotes or bypassing policy.
