@@ -15,16 +15,16 @@
 </header>
 <section data-spec-section="user-stories" data-anchor="user-stories">
 <h2>User stories</h2>
-<p data-user-story data-anchor="user-story-find-canonical-source" data-user-facing="true" data-guided-journey="no">As an operator or agent, I can open one index and reach the canonical octo-lite spec and decision records.</p>
+<p data-user-story data-anchor="user-story-find-canonical-source" data-user-facing="true" data-guided-journey="no">As an operator or agent, I can open one index and reach the canonical octo-lite, Herdr transport, and octo-lite install specs and decision records.</p>
 </section>
 <section data-spec-section="acceptance" data-anchor="acceptance">
 <h2>Acceptance criteria</h2>
-<p data-acceptance-criterion data-anchor="acceptance-find-canonical-source" data-story="user-story-find-canonical-source"><span data-acceptance-scenario>Given an operator in the octo-lite repository, When the operator opens the specifications index,</span> <span data-acceptance-observable>Then it links the octo-lite domain spec and each decision record, each with one line saying what it holds.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-find-canonical-source" data-story="user-story-find-canonical-source"><span data-acceptance-scenario>Given an operator in the octo-lite repository, When the operator opens the specifications index,</span> <span data-acceptance-observable>Then it links the octo-lite, Herdr transport, and octo-lite install domain specs and each decision record, each with one line saying what it holds.</span></p>
 </section>
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries">
 <h2>Modular boundaries</h2>
 <p data-modular-boundary data-anchor="boundary-index">
-<span data-boundary-responsibility>The index owns listing octo-lite's canonical spec and decision records with one line each.</span>
+<span data-boundary-responsibility>The index owns listing the canonical octo-lite, Herdr transport, and octo-lite install domain specs and decision records with one line each.</span>
 <span data-boundary-seam>The caller-facing seam is this page's links to each spec and ADR page.</span>
 <span data-boundary-dependency>Direction is self-contained: the index depends on the pages it links, and no page depends on the index.</span>
 <span data-boundary-scope>Observable scope: the links on this page.</span>
