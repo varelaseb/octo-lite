@@ -13,7 +13,7 @@
 <h1>ADR 0006: pinned upstream TDD skill</h1>
 <nav><a href="../index.spec.html">Specifications</a> / <a href="../domains/octo-lite.spec.html">octo-lite</a> / ADR 0006</nav>
 <p data-anchor="supersedes">Supersedes <a href="./0002-tdd-skill-vendoring.spec.html">ADR 0002</a>.
-Decision behind <a href="../domains/octo-lite.spec.html#install-peers">the tdd pin</a> and <a href="../domains/octo-lite.spec.html#roles-tdd-seams">spec-named test seams</a>.</p>
+Decision behind <a href="../domains/install.spec.html#install-peers">the tdd pin</a> and <a href="../domains/octo-lite.spec.html#roles-tdd-seams">spec-named test seams</a>.</p>
 </header>
 
 <section data-anchor="user-stories">
@@ -35,7 +35,7 @@ Decision behind <a href="../domains/octo-lite.spec.html#install-peers">the tdd p
 <p data-anchor="decision-upstream">octo-lite's tdd skill is mattpocock/skills <code>skills/engineering/tdd</code>, pinned at an exact upstream commit and unchanged but for one patch.</p>
 <p data-anchor="decision-single-patch">The one patch takes test seams from the canonical spec, never the user, as <a href="../domains/octo-lite.spec.html#roles-tdd-seams">test seams</a> states.</p>
 <p data-anchor="decision-refactor-verbatim">The upstream rule that refactoring is not part of the red-green loop stays verbatim; cleanup reaches a PR as <a href="../domains/octo-lite.spec.html#health-notes">review notes</a> marked to fix.</p>
-<p data-anchor="decision-skillfile">skillfile manages the pin: its manifest and lockfile hold the upstream commit, and it carries the patch across upstream updates (<a href="../domains/octo-lite.spec.html#install-peers">install</a>).</p>
+<p data-anchor="decision-skillfile">skillfile manages the pin: its manifest and lockfile hold the upstream commit, and it carries the patch across upstream updates (<a href="../domains/install.spec.html#install-peers">install</a>).</p>
 </section>
 
 <section data-anchor="why">
