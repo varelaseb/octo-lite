@@ -12,14 +12,15 @@
 <header data-anchor="header" id="header">
 <h1>octo-lite install</h1>
 <nav><a href="../index.spec.html">Specifications</a> / octo-lite install</nav>
-<p data-anchor="header-scope" id="header-scope">This spec states how octo-lite links its skills, roles, and helpers, and a project's declared skills, into a box's agent profiles, and keeps them current after a pull.</p>
-<p data-anchor="header-related" id="header-related">What the linked roles and skills do is in the <a href="./octo-lite.spec.html">octo-lite</a> spec.</p>
+<p data-anchor="header-scope" id="header-scope">This spec states how octo-lite links its skills, roles, and helpers, and a project's declared skills, into a box's agent profiles, registers its command-time hook with each agent CLI, and keeps them current after a pull.</p>
+<p data-anchor="header-related" id="header-related">What the linked roles and skills do is in the <a href="./octo-lite.spec.html">octo-lite</a> spec; what the command-time hook tells an agent is in the <a href="./command-time.spec.html">Command time</a> spec.</p>
 </header>
 
 <section data-spec-section="user-stories" data-anchor="user-stories" id="user-stories">
 <h2>User stories</h2>
 <p data-user-story data-anchor="user-story-install" id="user-story-install" data-user-facing="true" data-guided-journey="no">As an operator, I can install or verify octo-lite with one script, and after any pull of its clone the after-pull step octo-lite publishes keeps the box current with no hand step; on a box with an existing setup, the installer adopts compatible links, skips what belongs to someone else, and never overwrites or fails.</p>
 <p data-user-story data-anchor="user-story-repo-skills" id="user-story-repo-skills" data-user-facing="true" data-guided-journey="no">As an operator whose project keeps its own skills, such as its design rules, every implementer on my lanes loads the ones its ticket needs from my live main checkout, and onboarding warns me when a skill link points at a stale clone.</p>
+<p data-user-story data-anchor="user-story-hooks" id="user-story-hooks" data-user-facing="true" data-guided-journey="no">As an operator, installing octo-lite registers its command-time hook with every agent CLI on my box, Claude Code and Codex, beside the hooks other tools registered, and undoing the install removes only octo-lite's.</p>
 </section>
 
 <section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
@@ -35,15 +36,19 @@
 <p data-acceptance-criterion data-anchor="acceptance-repo-skills-link" id="acceptance-repo-skills-link" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given an operator whose project's instructions declare the project's own skills, When the operator runs the installer with the project's live main checkout,</span> <span data-acceptance-observable>Then each declared skill is linked from that checkout for Claude and Codex agents, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-repo-skills-stale" id="acceptance-repo-skills-stale" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given an operator whose project declares a skill whose existing link points into another clone of the project, When the operator runs the installer with the project's live main checkout,</span> <span data-acceptance-observable>Then the installer warns that the link is stale, naming it and the clone it points into, leaves it untouched, and exits successfully, proven by a unit test: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-repo-skills-load" id="acceptance-repo-skills-load" data-story="user-story-repo-skills"><span data-acceptance-scenario>Given a lane owner delivering a ticket in a project that declares a skill bearing on that ticket, When the implementer finishes the ticket and reports to the owner,</span> <span data-acceptance-observable>Then the report names that declared skill as loaded.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-hooks-register" id="acceptance-hooks-register" data-story="user-story-hooks"><span data-acceptance-scenario>Given an operator on a box where Claude Code and Codex already hold another tool's hooks, a fixture that must be added to provide it, When the operator runs the installer,</span> <span data-acceptance-observable>Then each CLI's hook settings hold octo-lite's command-time hook beside the other tool's hooks, which are unchanged: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-hooks-codex-trust" id="acceptance-hooks-codex-trust" data-story="user-story-hooks"><span data-acceptance-scenario>Given an operator on a box with Codex, When the operator runs the installer,</span> <span data-acceptance-observable>Then its report says Codex runs octo-lite's command-time hook only once the operator trusts it in Codex, and the box holds no trust for it the operator did not give: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-hooks-check" id="acceptance-hooks-check" data-story="user-story-hooks"><span data-acceptance-scenario>Given an operator whose Claude Code hook settings lack octo-lite's command-time hook, a fixture that must be added to provide it, When the operator verifies the install,</span> <span data-acceptance-observable>Then the check fails and its error output names the hook settings that lack the hook: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-hooks-undo" id="acceptance-hooks-undo" data-story="user-story-hooks"><span data-acceptance-scenario>Given an operator with octo-lite's command-time hook registered beside another tool's hooks, a fixture that must be added to provide it, When the operator runs the installer's undo,</span> <span data-acceptance-observable>Then octo-lite's hook is gone from each CLI's hook settings and the other tool's hooks are unchanged: no screen shows it.</span></p>
 </section>
 
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
 <h2>Modular boundaries</h2>
 <p data-modular-boundary data-anchor="boundary-install" id="boundary-install">
-<span data-boundary-responsibility>The installer owns linking octo-lite's skills, roles, and helpers, and a project's declared skills, into the agent profiles.</span>
+<span data-boundary-responsibility>The installer owns linking octo-lite's skills, roles, and helpers, and a project's declared skills, into the agent profiles, and registering octo-lite's command-time hook in each agent CLI's hook settings.</span>
 <span data-boundary-seam>The caller-facing seam is the installer's flags and the target <code>AGENTS.md</code> <code>Repo skills:</code> line.</span>
 <span data-boundary-dependency>Direction is external-provider: the installer reads the target's declaration from its checkout; the target names no octo-lite path, and octo-lite names no project skill.</span>
-<span data-boundary-scope>Observable scope: links in the profile skill, agent, and helper directories, and the installer's printed report.</span>
+<span data-boundary-scope>Observable scope: links in the profile skill, agent, and helper directories, octo-lite's entries in each agent CLI's hook settings, and the installer's printed report.</span>
 </p>
 </section>
 
@@ -67,6 +72,12 @@ Kept answers are not asked again; deleting that file asks afresh.</p>
 It runs <code>install-octo-lite --after-pull</code> from this clone with the prefix and project the installer last ran with.
 <code>--after-pull</code> installs as a plain run does, asking nothing, then verifies as <code>--check</code> does, and exits non-zero, the last line of its error output naming the first failed check, when the verification fails.
 Every run rewrites <code>after_pull</code>, so the step a host runs next is the pulled clone's.</p>
+<p data-anchor="install-hooks" id="install-hooks">The installer registers octo-lite's <a href="./command-time.spec.html">command-time hook</a> in each agent CLI's hook settings, Claude Code's <code>.claude/settings.json</code> and Codex's <code>.codex/hooks.json</code> under the prefix, as the entries that hook needs.
+These files hold the operator's and other tools' settings, and each CLI reads hooks only from them, so here alone the installer edits a file instead of linking one: it adds only its own entries, changes no other entry or setting, and leaves a file it cannot read as settings untouched, reporting it.
+Each entry runs the hook through its link in <code>~/.local/bin</code>, so a pull changes what the hook does without changing the entry.
+<code>--check</code> fails, naming the settings file, when octo-lite's entries are missing from it, and <code>--undo</code> removes only octo-lite's entries.
+Codex runs a new or changed hook only once the operator trusts it in Codex: the installer's report says so, and the installer never records that trust for the operator.
+Installing, pulling, and trusting the hook in Codex are safe in any order: until each one an agent CLI needs has happened, its agents are not told command times, and no command is affected.</p>
 <p data-anchor="install-wake" id="install-wake">On a box with Herdr, the installer registers <code>herdr-wake</code> as Spec Chat's wake provider; a provider file someone else wrote is kept unchanged, and <code>--undo</code> leaves the registration in place because Spec Chat's review service depends on it.
 <code>herdr-wake</code>, and the <code>herdr-say</code> it runs, reach Herdr on their caller's search path or in Herdr's install directory, <code>~/.local/bin</code>, so a review service started by any launcher (a box user service, a timed job, a shell) wakes owners as a pane does.
 A failed <code>check</code> or <code>send</code> writes a one-line reason to its error output: Herdr not found, naming the path searched; the owner pane not found in its session; Herdr not answering; or Herdr's own error.</p>
