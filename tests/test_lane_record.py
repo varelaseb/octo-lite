@@ -350,7 +350,6 @@ class LaneRecordTests(unittest.TestCase):
             self.assertTrue(line["link"])
             self.assertLessEqual(set(line), fields)
             self.assertTrue(line["why"])
-            self.assertLessEqual(len(line.get("answers", [])), 4)
             for choice in line.get("answers", []):
                 self.assertEqual(set(choice), {"answer", "line"})
                 self.assertTrue(choice["answer"] and choice["line"])
@@ -394,7 +393,7 @@ class LaneRecordTests(unittest.TestCase):
         # asks, its evidence, and both answers, each with its own line.
         self.assertRegex(
             (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"),
-            r"`why` with every ask, `evidence` when something backs it, and `answers` when the human "
+            r"`why` with every ask, `evidence` when something backs it, and `answers`, one to four, when the human "
             r"answers by choosing, each with its `line` \(spec `#handoff-gate-context`\)",
         )
         answer = self.gate_examples()["answer"]
