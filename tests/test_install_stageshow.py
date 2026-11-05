@@ -27,7 +27,7 @@ PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stage
 SKILLFILE = """#!/usr/bin/env python3
 import json, sys
 from pathlib import Path
-assert sys.argv[1] == "install"
+assert sys.argv[1:] == ["install", "-q"], sys.argv
 pin = json.loads(Path("Skillfile.lock").read_text())["github/skill/stageshow"]
 skill = Path("agents/skills/stageshow")
 if not skill.exists():
@@ -115,7 +115,7 @@ class FetchFailsTest(unittest.TestCase):
             env = {**os.environ, "PATH": OFFLINE}
             r = run([str(INSTALLER), "--prefix", str(prefix)], env)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("Stageshow not installed", r.stderr)
+            self.assertIn("Stageshow not installed: skillfile install failed", r.stderr)
             check = run([str(INSTALLER), "--prefix", str(prefix), "--check"], env)
             self.assertEqual(check.returncode, 0, check.stderr)
             for skill_dir in SKILL_DIRS:

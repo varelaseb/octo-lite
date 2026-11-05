@@ -39,6 +39,9 @@ committed; Stageshow never is: the installer fetches it at its pin with
 `skillfile install` and its filming dependencies with `npm ci`. When the fetch
 fails it prints `Stageshow not installed`, links everything else, and exits 0.
 
+Prerequisite: `skillfile` ([github.com/eljulians/skillfile](https://github.com/eljulians/skillfile))
+on `PATH`; without it Stageshow is not installed.
+
 Install or verify all links:
 
 ```bash
