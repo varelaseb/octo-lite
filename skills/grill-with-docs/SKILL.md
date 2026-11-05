@@ -70,8 +70,15 @@ Use these shaping patterns:
 - Record a repo-wide rule once, as an every-feature acceptance criterion in
   its home spec marked
   [`data-project-rule`](https://github.com/0xTomDaniel/spec-chat/blob/main/docs/specs/project-rules.spec.html#declare-mark)
-  (octo-lite spec `#roles-repo-wide-rule`).
-  Surface ADR-worthy decisions before readiness.
+  (octo-lite spec `#roles-repo-wide-rule`), only for a promise the product or
+  system makes, one a user would notice breaking or a later feature could
+  plausibly break.
+- Record a design-system convention (how the UI looks or moves, or which
+  shared part draws a pattern) in the design system, never as a project rule:
+  its one source such as `DESIGN.md`, the shared part that carries it, and a
+  code check that fails on a hand-rolled version; recommend that when grilling
+  surfaces one (octo-lite spec `#roles-design-system`).
+- Surface ADR-worthy decisions before readiness.
 - Propose follow-up issues only when the work is independently valuable or a
   real prerequisite. Create one only on explicit operator instruction.
 - Treat the final ready gate as a quality bar, not a formatting step.
@@ -124,7 +131,10 @@ new ADR naming the one it supersedes; the old ADR gains only the line
 number). Git holds the history.
 
 A repo-wide rule lives once, in its home spec, as an acceptance criterion
-stating it applies to every feature, marked `data-project-rule`. An ADR links
+stating it applies to every feature, marked `data-project-rule`; a
+design-system convention lives in the design system instead, under at most one
+project rule that UI uses its shared parts (octo-lite spec
+`#roles-design-system`). An ADR links
 that criterion (e.g. see `<home-spec>#<rule-anchor>`), never
 restates it: why in the ADR, what in the
 criterion, mechanics in code and the PR. Mechanics no caller depends on
