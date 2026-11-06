@@ -216,32 +216,36 @@ and wakes a `SESSION/PANE` owner in that session, a bare pane in its caller's.
 
 ## Send a report
 
-A report is a status, result, or blocker
-(`spec/domains/herdr-transport.spec.html#transport-native`). A Claude
-agent sends it to a Claude agent by Claude's own messaging, so the receiver
-records it as a peer's message from the sender's name: a message `herdr-say`
-types is recorded as the operator's input. Address the target pane's Claude
-session, never a box-wide name, so it never reaches another Herdr session:
+Reports go natively; work goes by `herdr-say`
+(`spec/domains/herdr-transport.spec.html#transport-native`). A report (a
+status, result, or blocker) goes Claude to Claude by Claude's own messaging.
+Work (a brief, a resume, a repair, or a human's answer the operator relays)
+goes by `herdr-say` or `herdr-await`, since a wait starts from a send Herdr saw
+taken in and a relayed answer must read as the human's. Only a Claude turn
+sends natively: a Codex or pi agent and every shell sender (`herdr-wake`,
+`herdr-await`) send by `herdr-say`.
+
+A native report is recorded as a peer's message from the sender's name: a
+message `herdr-say` types is recorded as the operator's input. Address the
+target pane's Claude session, never a box-wide name, so it never reaches
+another Herdr session:
 
 ```
 herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'
 ```
 
-then `SendMessage` with `to` set to `uds:<that path>`. Claude reporting it in
-the receiver's inbox confirms it. Send it with `herdr-say PANE REPORT` instead,
-under its exit codes, when the lookup exits 1 or prints nothing (a parked,
-closed, Codex, or pi agent; `herdr-say` resumes a parked one), or when Claude
-reports the send failed, or a later `[Cross-session delivery notice]` says it
-was held, denied, or expired. A confirmed native send is never sent again: a
-receiver that exits before reading it loses it, and a turn that dies on a rate
-limit spends it, so a lost result is read from the sender's pane when the
-owner's wait on it ends (`spec/domains/herdr-transport.spec.html#roles-goal`).
-
-Only a Claude turn sends natively: a Codex or pi agent and every shell sender
-(`herdr-wake`, `herdr-await`) send by `herdr-say`. Work is never a report: a
-brief, a resume, a repair, or a human's answer the operator relays goes by
-`herdr-say` or `herdr-await`, since a wait starts from a send Herdr saw taken
-in and a relayed answer must read as the human's.
+then `SendMessage` with `to` set to `uds:<that path>`. It counts as sent once
+Claude reports it delivered to the receiver's inbox or reports it timed out: a
+timed-out send may still have been delivered, so it is no failure. Send it with
+`herdr-say PANE REPORT` instead, under its exit codes, only when the lookup
+exits 1 or prints nothing (a parked, closed, Codex, or pi agent; `herdr-say`
+resumes a parked one), when Claude reports it undelivered (the receiver refuses
+it), or when a later `[Cross-session delivery notice]` says it was held,
+denied, or expired. A native send counted as sent is never sent again, so no
+report arrives twice. If it is lost anyway (timed out and never delivered,
+unread by a receiver that exits, or spent by a turn that dies on a rate limit),
+a lost result is read from the sender's pane when the owner's wait on it ends
+(`spec/domains/herdr-transport.spec.html#roles-goal`).
 
 ## Wait on an agent
 
