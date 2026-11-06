@@ -1,0 +1,10 @@
+{
+  "name": "prototype-video",
+  "private": true,
+  "engines": {
+    "node": ">=20.19"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}
