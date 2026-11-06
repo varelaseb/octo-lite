@@ -157,6 +157,37 @@ if [[ "$undo" == true ]]; then
   exit 0
 fi
 
+# Onboarding: octo-lite asks its own consent questions and keeps the answers
+# as the [consent] table of its one onboarding file, beside the status it
+# publishes for any reader. Kept answers are not asked again; delete the file
+# to be asked afresh. after_pull is the argv a host runs, no shell, after
+# fast-forwarding this clone; every run rewrites it from this run's scope, and
+# commit records this clone's commit it ran at, so herdr-spawn can tell the
+# clone moved since (install.spec.html#install-after-pull). Written before any
+# step that can stop the run, so a failing run is recorded too and herdr-spawn
+# runs it once per move. The file is rewritten in place: herdr-spawn holds its
+# lock while it runs the step.
+if [[ "$check" != true ]]; then
+  onboarding="$state_home/octo-lite/onboarding.toml"
+  consent="$(sed -n '/^\[consent\]$/,$p' "$onboarding" 2>/dev/null || true)"
+  if [[ "$onboard" == true && -z "$consent" ]]; then
+    consent="[consent]"
+    for pair in "push:push branches" "pull_request:open pull requests" "issues:file issues"; do
+      read -r -p "May octo-lite agents ${pair#*:}? [y/N] " answer || answer=""
+      [[ "$answer" == [yY]* ]] && value=true || value=false
+      consent+=$'\n'"${pair%%:*} = $value"
+    done
+  fi
+  status=pending
+  [[ -n "$consent" ]] && status=done && consent=$'\n'"$consent"$'\n'
+  step="$(printf ', "%s"' "$root/scripts/install-octo-lite" --after-pull "${scope[@]}")"
+  mkdir -p "$(dirname "$onboarding")"
+  commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
+  printf 'status = "%s"\ndoc = "%s"\nafter_pull = [%s]\ncommit = "%s"\n%s' "$status" \
+    "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" "${step:2}" "$commit" "$consent" >"$onboarding"
+  echo "onboarding $status: $onboarding"
+fi
+
 # Canonical owner/repo from a git remote URL so SSH and HTTPS match:
 #   git@github.com:o/r.git  ->  o/r
 #   https://github.com/o/r.git  ->  o/r
@@ -215,6 +246,8 @@ link_one() {
     [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
     # A symlink from a different clone with the same origin is adoptable.
     [[ -L "$target" ]] && is_same_origin_clone "$(readlink -f "$target")" && return
+    # A dangling link of ours is the prune's, which named it.
+    [[ -L "$target" && ! -e "$target" ]] && is_ours "$(readlink -m "$target")" && return
     if [[ -e "$target" || -L "$target" ]]; then
       problem "bad link: $target (occupied by $(occupant "$target"))" "move it aside, then run $install_cmd"
     else
@@ -223,9 +256,8 @@ link_one() {
     return
   fi
   mkdir -p "$(dirname "$target")"
-  # A dangling link into a clone of this repo is ours and may be replaced; any
-  # other dangling link is someone else's and falls through to skip below.
-  [[ -L "$target" && ! -e "$target" ]] && is_ours "$(readlink -m "$target")" && rm -f "$target"
+  # A dangling link of ours is pruned before linking; any other dangling link
+  # is someone else's and falls through to skip below.
   if [[ -e "$target" || -L "$target" ]]; then
     [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
     # Adopt: symlink from a different clone with the same origin.
@@ -304,12 +336,15 @@ for legacy in "${legacy_links[@]}"; do
   fi
 done
 
-# A dangling link whose target was inside a clone of this repository is a known
-# legacy path: prune it. Any other dangling link is reported and left untouched.
+# A dangling link whose target was inside a clone of this repository is ours:
+# prune it from every directory the installer links into, so linking finds none,
+# and --check names it once, fixed by installing. Any other dangling link is
+# reported and left untouched.
 prune_dangling_skills() {
   local d f target pruned=0
-  for d in "$prefix/.claude/skills" "$prefix/.codex/skills" \
-           "$prefix/.claude/agents" "$prefix/.codex/agents" "$prefix/.local/bin"; do
+  for d in "$prefix/.claude/skills" "$prefix/.codex/skills" "$prefix/.agents/skills" \
+           "$prefix/.claude/agents" "$prefix/.codex/agents" "$prefix/.local/bin" \
+           "$prefix/.claude/octo-lite" "$prefix/.codex/octo-lite"; do
     [[ -d "$d" ]] || continue
     for f in "$d"/*; do
       [[ -L "$f" && ! -e "$f" ]] || continue
@@ -528,38 +563,12 @@ elif command -v herdr >/dev/null; then
   echo "wake provider registered: $wake_file"
 fi
 
-# Onboarding: octo-lite asks its own consent questions and keeps the answers
-# as the [consent] table of its one onboarding file, beside the status it
-# publishes for any reader. Kept answers are not asked again; delete the file
-# to be asked afresh. after_pull is the argv a host runs, no shell, after
-# fast-forwarding this clone; every run rewrites it from this run's scope, and
-# commit records this clone's commit it ran at, so herdr-spawn can tell the
-# clone moved since (install.spec.html#install-after-pull). The file is
-# rewritten in place: herdr-spawn holds its lock while it runs the step.
-onboarding="$state_home/octo-lite/onboarding.toml"
-consent="$(sed -n '/^\[consent\]$/,$p' "$onboarding" 2>/dev/null || true)"
-if [[ "$onboard" == true && -z "$consent" ]]; then
-  consent="[consent]"
-  for pair in "push:push branches" "pull_request:open pull requests" "issues:file issues"; do
-    read -r -p "May octo-lite agents ${pair#*:}? [y/N] " answer || answer=""
-    [[ "$answer" == [yY]* ]] && value=true || value=false
-    consent+=$'\n'"${pair%%:*} = $value"
-  done
-fi
-status=pending
-[[ -n "$consent" ]] && status=done && consent=$'\n'"$consent"$'\n'
-step="$(printf ', "%s"' "$root/scripts/install-octo-lite" --after-pull "${scope[@]}")"
-mkdir -p "$(dirname "$onboarding")"
-commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
-printf 'status = "%s"\ndoc = "%s"\nafter_pull = [%s]\ncommit = "%s"\n%s' "$status" \
-  "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" "${step:2}" "$commit" "$consent" >"$onboarding"
-echo "onboarding $status: $onboarding"
-
-# --after-pull verifies the install it just made, naming each problem, a pinned
-# skill not installed among them.
+# --after-pull verifies the install it just made, naming each problem.
+checked=0
 if [[ "$after_pull" == true ]]; then
-  exec "$root/scripts/install-octo-lite" --check "${scope[@]}"
+  "$root/scripts/install-octo-lite" --check "${scope[@]}" || checked=1
 fi
-# Last, so it is the line an operator sees: a pinned skill not installed fails
-# the install (install.spec.html#install-peers).
+# Last, so it is the line an operator sees: a pinned skill this run could not
+# fetch fails the install (install.spec.html#install-peers).
 [[ -z "$why" ]] || { problem "Stageshow not installed: $why" "$stageshow_fix"; exit 1; }
+exit "$checked"
