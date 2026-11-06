@@ -16,6 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
 # skillfile stubbed unreachable: installer runs never fetch.
 OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
+
+
+def problems(run):
+    """The problems a run names, but Stageshow's: offline, it is never fetched."""
+    return [line for line in run.stderr.splitlines()
+            if "; fix: " in line and not line.startswith("Stageshow not installed")]
 SKILL_DIRS = (".claude/skills", ".codex/skills", ".agents/skills")
 
 
@@ -53,7 +59,7 @@ class InstallRepoSkillsTests(unittest.TestCase):
 
     def test_links_each_declared_skill_from_checkout(self) -> None:
         result = self._install("--project", str(self.checkout))
-        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], problems(result), result.stderr)
         for rel in ("skills/ui-rules", "tools/lint/house-style"):
             for skill_dir in SKILL_DIRS:
                 link = self.prefix / skill_dir / Path(rel).name
@@ -61,12 +67,12 @@ class InstallRepoSkillsTests(unittest.TestCase):
                     self.assertTrue(link.is_symlink(), f"missing {link}")
                     self.assertEqual(str(self.checkout / rel), os.path.realpath(link))
         check = self._install("--check", "--project", str(self.checkout))
-        self.assertEqual(0, check.returncode, check.stderr)
+        self.assertEqual([], problems(check), check.stderr)
 
     def test_check_fails_when_declared_skill_is_not_linked(self) -> None:
-        self.assertEqual(0, self._install().returncode)
+        self.assertEqual([], problems(self._install()))
         check = self._install("--check", "--project", str(self.checkout))
-        self.assertNotEqual(0, check.returncode, "--check must flag a declared skill left unlinked")
+        self.assertNotEqual([], problems(check), "--check must flag a declared skill left unlinked")
 
     def _plant_stale(self) -> Path:
         stale = self.prefix / ".claude" / "skills" / "ui-rules"
@@ -75,7 +81,7 @@ class InstallRepoSkillsTests(unittest.TestCase):
         return stale
 
     def _assert_stale_warned(self, result: subprocess.CompletedProcess, stale: Path) -> None:
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual([], problems(result), result.stdout + result.stderr)
         warning = [l for l in result.stderr.splitlines() if "stale" in l and str(stale) in l]
         self.assertTrue(warning, f"no stale warning naming {stale}: {result.stderr}")
         self.assertIn(str(self.other_clone), warning[0])
@@ -92,7 +98,7 @@ class InstallRepoSkillsTests(unittest.TestCase):
         self.assertEqual(str(self.checkout / "tools" / "lint" / "house-style"), os.path.realpath(house))
 
     def test_check_warns_on_stale_link_and_exits_zero(self) -> None:
-        self.assertEqual(0, self._install("--project", str(self.checkout)).returncode)
+        self.assertEqual([], problems(self._install("--project", str(self.checkout))))
         stale = self.prefix / ".claude" / "skills" / "ui-rules"
         stale.unlink()
         stale.symlink_to(self.other_clone / "skills" / "ui-rules")
