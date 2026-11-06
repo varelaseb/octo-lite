@@ -239,12 +239,12 @@ Claude reports it delivered to the receiver's inbox or reports it timed out: a
 timed-out send may still have been delivered, so it is no failure. Send it with
 `herdr-say PANE REPORT` instead, under its exit codes, only when the lookup
 exits 1 or prints nothing (a parked, closed, Codex, or pi agent; `herdr-say`
-resumes a parked one), when Claude reports it undelivered (the receiver refuses
-it), or when a later `[Cross-session delivery notice]` says it was held,
-denied, or expired. A native send counted as sent is never sent again, so no
-report arrives twice. If it is lost anyway (timed out and never delivered,
-unread by a receiver that exits, or spent by a turn that dies on a rate limit),
-a lost result is read from the sender's pane when the owner's wait on it ends
+resumes a parked one), when Claude reports it undelivered (as when the receiver
+refuses it), or when a later `[Cross-session delivery notice]` says it was
+held, denied, or expired. A native send counted as sent is sent again only on
+such a later notice, so no report arrives twice. If it is lost anyway (timed
+out and never delivered, unread by a receiver that exits, or spent by a turn
+that dies on a rate limit), a lost result is read from the sender's pane when the owner's wait on it ends
 (`spec/domains/herdr-transport.spec.html#roles-goal`).
 
 ## Wait on an agent
