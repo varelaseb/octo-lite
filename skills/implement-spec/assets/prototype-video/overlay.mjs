@@ -12,9 +12,11 @@ export const EDGE = 2
 export const TOUCH = { radius: 13, band: 3, halo: 2.5 }
 export const MARK = { radius: 21, band: 4, halo: 3, ms: 650, full: [70, 330] }
 
-// Runs in each document the recording page loads, before the page's own scripts. A phone draws the touch on each
-// touchstart; a desktop draws the arrow wherever the mouse is and the mark on each mousedown. The overlay sits in the top
-// layer and goes back on top whenever the page opens a dialog or popover there, so nothing the page shows covers it.
+// Runs in each document the recording page loads, before the page's own scripts. A phone draws the touch and the mark on
+// each touchstart; a desktop draws the arrow wherever the mouse is and the mark on each mousedown. A document the page
+// opens starts from what the recorder last drew, which it asks of the recorder (recorder.mjs), so the cursor stays at
+// rest and a press that opened the page shows through it. The overlay sits in the top layer and goes back on top
+// whenever the page opens a dialog or popover there, so nothing the page shows covers it.
 export function overlay({ ARROW, EDGE, TOUCH, MARK, touch }) {
   const host = document.createElement('octo-lite-cursor')
   host.setAttribute('popover', 'manual')
@@ -47,7 +49,8 @@ export function overlay({ ARROW, EDGE, TOUCH, MARK, touch }) {
     cursor.style.display = ''
     cursor.style.transform = `translate(${x}px, ${y}px)`
   }
-  const mark = (x, y) => {
+  // A mark `since` ms into its run, as one a press started in the document before goes on in this one.
+  const mark = (x, y, since) => {
     const el = document.createElement('div')
     el.className = 'mark'
     el.style.left = `${x}px`
@@ -61,23 +64,25 @@ export function overlay({ ARROW, EDGE, TOUCH, MARK, touch }) {
       { transform: 'scale(1.25)', opacity: 0 },
     ], MARK.ms)
     animation.id = 'octo-lite-recorder' // the recorder's own motion, which a step never waits on
+    animation.currentTime = since
     animation.finished.then(() => el.remove())
+  }
+  let lift
+  const press = (x, y, since = 0) => {
+    place(x, y)
+    mark(x, y, since)
+    if (!touch) return
+    // The finger taps, and lifts away slowly enough for its press to read.
+    cursor.firstChild.setAttribute('data-down', '')
+    clearTimeout(lift)
+    lift = setTimeout(() => cursor.firstChild.removeAttribute('data-down'), 350 - since)
   }
   const options = { capture: true, passive: true }
   if (touch) {
-    let lift
-    addEventListener('touchstart', e => {
-      const { clientX: x, clientY: y } = e.touches[0]
-      place(x, y)
-      clearTimeout(lift)
-      cursor.firstChild.setAttribute('data-down', '')
-      mark(x, y)
-    }, options)
-    // The finger lifts away slowly enough for its press to read.
-    addEventListener('touchend', () => { lift = setTimeout(() => cursor.firstChild.removeAttribute('data-down'), 350) }, options)
+    addEventListener('touchstart', e => press(e.touches[0].clientX, e.touches[0].clientY), options)
   } else {
     addEventListener('mousemove', e => place(e.clientX, e.clientY), options)
-    addEventListener('mousedown', e => mark(e.clientX, e.clientY), options)
+    addEventListener('mousedown', e => press(e.clientX, e.clientY), options)
   }
   addEventListener('toggle', e => {
     if (e.target !== host && e.newState === 'open' && host.isConnected) {
@@ -86,4 +91,11 @@ export function overlay({ ARROW, EDGE, TOUCH, MARK, touch }) {
     }
   }, true)
   addEventListener('DOMContentLoaded', mount)
+  // The recorder's pointer is the top document's; a frame inside it draws only what its own events show.
+  if (window === top) {
+    octoLiteRecorder().then(({ rest, last }) => {
+      if (rest) place(rest.x, rest.y)
+      if (last && last.since < MARK.ms) press(last.x, last.y, last.since)
+    })
+  }
 }

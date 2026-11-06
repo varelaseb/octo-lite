@@ -2,10 +2,10 @@
 // writes for its lane. It reads the screen's mockup file, loads its route on the worker's running prototype, and
 // reaches each walkthrough step by its actions as Spec Chat does (mockups #prototype-steps), as a person would, at the
 // pace of Stageshow's motion rules: the cursor, on a phone a touch, travels to each part an action names, the page
-// first scrolling it into view, rests on it so its hover shows, and presses it with a mark; typed text goes in one key
-// at a time; each change plays at the product's own speed and each step's result holds before the next. It checks
-// each video (check.mjs) and keeps every viewport's, with its captions, where Spec Chat reads them (mockups
-// #round-video-store), only once all pass.
+// first scrolling it into view, rests on it so its hover shows, and presses it with a mark where the press lands on
+// what Spec Chat presses; typed text goes in one key at a time; each change plays at the product's own speed and each
+// step's result holds before the next. It checks each video (check.mjs) and keeps every viewport's, with its captions,
+// where Spec Chat reads them (mockups #round-video-store), only once all pass.
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -24,6 +24,10 @@ const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, 
 // Stageshow motion.md, Pace and easing: travel's curve, and a person's timing in ms.
 const TRAVEL = [0.45, 0, 0.1, 1]
 const PACE = { open: 1200, reach: 500, rest: 400, press: 90, key: 90, hold: 1400, last: 2200 }
+// What acts of its own when pressed, as Spec Chat tells a press through a prototype from a click on nothing that acts
+// (its runtime's PROTOTYPE_ACTS).
+const ACTS = 'a[href],button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],[role=menuitem],'
+  + '[role=checkbox],[role=radio],[role=switch],[contenteditable]'
 
 const sleep = ms => new Promise(done => setTimeout(done, ms))
 
@@ -41,13 +45,13 @@ export async function main(argv) {
   let browser
   let files = []
   try {
-    const { route, steps } = walkthrough(readFileSync(mockup, 'utf8'))
+    browser = await launch()
+    const { route, steps } = await walkthrough(browser, readFileSync(mockup, 'utf8'))
     const commit = execFileSync('git', ['-C', dirname(resolve(mockup)), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
     const url = new URL(route.replace(/^\/+/, ''), address.replace(/\/*$/, '/')).href
     const videos = join(args.values.spool ?? `${realpathSync(mockup)}.review`, 'videos')
     files = viewports.map(viewport => ({ viewport, part: join(videos, `.${commit}-${viewport}.part.webm`), name: join(videos, `${commit}-${viewport}`) }))
     mkdirSync(videos, { recursive: true })
-    browser = await launch()
     for (const file of files) file.captions = await record(browser, url, steps, file.viewport, file.part)
     for (const { part, name, captions } of files) {
       writeFileSync(`${name}.vtt`, captions)
@@ -89,16 +93,23 @@ export async function record(browser, url, steps, viewport, file, check = verify
   const { jpegjs } = createRequire(import.meta.url)('playwright-core/lib/utilsBundle')
   const context = await browser.newContext({ viewport: size, ...(touch && { isMobile: true, hasTouch: true }) })
   try {
+    // The video opens on the first step's finished screen, the cursor resting below the middle of it.
+    const pointer = { x: Math.round(size.width * 0.62), y: Math.round(size.height * 0.68) }
+    const presses = []
+    // What each document the page opens draws first (overlay.mjs): the cursor at rest, a phone's touch resting
+    // nowhere, and the last press, so one that opened the document still shows.
+    await context.exposeBinding('octoLiteRecorder', () => {
+      const last = presses.at(-1)
+      return { rest: !touch && pointer, last: last && { x: last.x, y: last.y, since: Date.now() - last.at } }
+    })
     await context.addInitScript(overlay, { ARROW, EDGE, MARK, TOUCH, touch })
     const page = await context.newPage()
     await page.goto(url)
     await settle(page)
-    // The video opens on the first step's finished screen, the cursor resting below the middle of it.
-    const pointer = { x: Math.round(size.width * 0.62), y: Math.round(size.height * 0.68) }
     if (!touch) await page.mouse.move(pointer.x, pointer.y)
     const frames = []
-    const presses = []
     const cues = []
+    const decode = frame => jpegjs.decode(frame.data, { useTArray: true, formatAsRGBA: true })
     const start = Date.now()
     await page.screencast.start({ path: file, size, onFrame: ({ data, timestamp }) => { frames.push({ data, timestamp }) } })
     for (const [n, step] of steps.entries()) {
@@ -110,8 +121,8 @@ export async function record(browser, url, steps, viewport, file, check = verify
       check(viewport, step.name, presses.splice(0).map(({ action, x, y, at }) => {
         const [from, to] = MARK.full.map(ms => at + ms)
         const seen = [frames.findLast(f => f.timestamp <= from), ...frames.filter(f => f.timestamp > from && f.timestamp <= to)]
-        return { action, crops: seen.filter(Boolean).map(f => crop(jpegjs.decode(f.data, { useTArray: true, formatAsRGBA: true }), x, y)) }
-      }))
+        return { action, crops: seen.filter(Boolean).map(f => crop(decode(f), x, y)) }
+      }), !touch && crop(decode(frames.at(-1)), pointer.x, pointer.y))
       frames.splice(0, frames.length - 1)
     }
     const end = Date.now() - start
@@ -137,8 +148,12 @@ async function act(page, step, action, touch, pointer, presses) {
     await target.evaluate(el => el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }))
     box = await scrolled(target)
   }
-  // Inside the part but off its words (Stageshow motion.md, The cursor).
-  const to = { x: Math.round(box.x + box.width * (box.width > 40 ? 0.85 : 0.5)), y: Math.round(box.y + box.height * 0.6) }
+  // Inside the part but off its words (Stageshow motion.md, The cursor), else its middle: the first where a press lands
+  // on what Spec Chat presses, the part itself and nothing inside it that acts of its own.
+  const points = [[box.width > 40 ? 0.85 : 0.5, 0.6], [0.5, 0.5]]
+    .map(([across, down]) => ({ x: Math.round(box.x + box.width * across), y: Math.round(box.y + box.height * down) }))
+  const to = points[await target.evaluate(landing, { points, acts: ACTS })]
+  if (!to) throw new Error(`step "${step.name}": a press on "${selector}" lands on another part, over it or acting inside it`)
   if (touch) await sleep(PACE.reach)
   else await travel(page, pointer, to)
   await sleep(PACE.rest)
@@ -156,6 +171,16 @@ async function act(page, step, action, touch, pointer, presses) {
     await page.keyboard.type(action.text, { delay: PACE.key })
   }
   await settle(page)
+}
+
+// The first point where a press presses the part as Spec Chat's click on it does: what lies there is the part or inside
+// it, with nothing between that acts of its own.
+function landing(part, { points, acts }) {
+  return points.findIndex(({ x, y }) => {
+    const hit = document.elementFromPoint(x, y)
+    const own = hit?.closest(acts)
+    return hit && part.contains(hit) && (!own || own === part || !part.contains(own))
+  })
 }
 
 // Where the part comes to rest once the page has scrolled it into view.

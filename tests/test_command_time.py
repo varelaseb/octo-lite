@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / "scripts" / "octo-lite-command-time"
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
+OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
 LOOP = "Slow iteration loop"
 SECONDS = re.compile(r"(?:(\d+)m )?([0-9.]+)s")
 
@@ -258,8 +259,8 @@ class HooksInformRuleTests(HookCase):
 
     def test_every_registered_hook_only_informs(self) -> None:
         prefix = self.tmp / "prefix"
-        done = subprocess.run([str(INSTALLER), "--prefix", str(prefix)], capture_output=True,
-                              text=True, env=self.env, stdin=subprocess.DEVNULL)
+        done = subprocess.run([str(INSTALLER), "--prefix", str(prefix)], capture_output=True, text=True,
+                              env={**self.env, "PATH": OFFLINE}, stdin=subprocess.DEVNULL)
         self.assertEqual(0, done.returncode, done.stderr)
         registered = []
         for settings in (prefix / ".claude/settings.json", prefix / ".codex/hooks.json"):

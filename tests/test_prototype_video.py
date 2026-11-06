@@ -1,33 +1,59 @@
-"""octo-lite's round video recorder fails a recording that would skip a step or hide a press, naming the step.
-Spec: spec/domains/octo-lite.spec.html #delivery-round-video; criteria #acceptance-video-unknown-action and
-#acceptance-video-check. Neither needs the recorder's npm dependencies or a browser: an action the recorder does not
-know fails before it starts one, and the check reads crops of frames the recorder recorded, kept as fixtures."""
+"""octo-lite's round video recorder fails a recording that would skip a step or hide a press, naming the step, and
+records real use of a prototype. Spec: spec/domains/octo-lite.spec.html #delivery-round-video; criteria
+#acceptance-video-unknown-action and #acceptance-video-check. The recorder reads a mockup file in its browser, so these
+tests need its pinned driver and browser, as the installer adds them (install.spec.html #install-recorder): run
+`npm ci && npx playwright-core install chromium` in its folder once per clone. The check reads crops of frames the
+recorder recorded, kept as fixtures."""
 
 from __future__ import annotations
 
+import functools
+import os
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RECORDER = ROOT / "skills" / "implement-spec" / "assets" / "prototype-video"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "prototype-video"
 
+# Valid HTML a hand-written parser misreads: each item's end tag implied, a named entity in a caption.
 MOCKUP = """<!doctype html>
 <html lang="en">
-<head>
 <meta charset="utf-8">
 <meta name="mockup-prototype" content="/plan/week">
 <title>Week plan - mockup</title>
-</head>
-<body>
 <ol data-mockup-steps>
-<li data-step="week">The week with its open cards</li>
-<li data-step="planned" data-illustrates="plan-drop">The card sits on Tuesday<ul><li data-press=".card"></li><li data-drag=".card" data-to=".day[data-day=tue]"></li></ul></li>
+<li data-step="week">The week with its open cards
+<li data-step="planned" data-illustrates="plan-drop">The card sits on Tuesday &rarr; planned<ul><li data-press=".card"><li data-drag=".card" data-to=".day[data-day=tue]"></ul>
 </ol>
-</body>
-</html>
+"""
+
+# The fixture site's week: its card, which a trailing button overlaps, opens Tuesday, whose link leads back. Both
+# presses open another page.
+ROUND = """<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="mockup-prototype" content="/week/">
+<title>Week - mockup</title>
+<ol data-mockup-steps>
+<li data-step="week">The week with Tuesday's card
+<li data-step="day">Tuesday opens &rarr; its plan<ul><li data-press=".card"></ul>
+<li data-step="back">Back to the week<ul><li data-press="a.back"></ul>
+</ol>
+"""
+
+COVERED = """<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="mockup-prototype" content="/covered/">
+<ol data-mockup-steps>
+<li data-step="tile">A tile
+<li data-step="open">The tile opens<ul><li data-press=".tile"></ul>
+</ol>
 """
 
 # Reads crops kept as binary PGM, one byte of luma a pixel, and hands each step's press to the check.
@@ -45,6 +71,22 @@ for (const step of steps) {
   verify(viewport, name, [{ action: 'press .card', crops: [crop(file)] }])
 }
 """
+
+
+class Site(ThreadingHTTPServer):
+    """The fixture prototype, served on a free port."""
+
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), functools.partial(self.Handler, directory=FIXTURES / "site"))
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    @property
+    def address(self):
+        return f"http://127.0.0.1:{self.server_address[1]}/"
 
 
 class UnknownActionTest(unittest.TestCase):
@@ -81,6 +123,47 @@ class VideoCheckTest(unittest.TestCase):
             with self.subTest(viewport=viewport):
                 result = self.check(viewport, ("team-open", "shown"), ("export", "shown"))
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class RecordingTest(unittest.TestCase):
+    """A round recorded from the fixture site at each viewport, from a mockup committed in a repo of its own."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        self.site = Site()
+        self.addCleanup(self.site.server_close)
+        self.addCleanup(self.site.shutdown)
+
+    def record(self, mockup, *viewports):
+        (self.repo / "screen.mockup.html").write_text(mockup)
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t"}
+        for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "screen"]):
+            subprocess.run(["git", "-C", str(self.repo), *argv], check=True, env=env)
+        return subprocess.run([str(RECORDER / "prototype-video"), str(self.repo / "screen.mockup.html"),
+                               self.site.address, *(f"--viewport={v}" for v in viewports)],
+                              capture_output=True, text=True, cwd=self.repo)
+
+    def test_presses_that_open_pages_record_and_pass_their_check(self):
+        """The card's press lands on the card, not the button over its right; each press opens a page, through which
+        the cursor, on a phone the touch, and its mark still show, and the cursor rests on the page it opened."""
+        result = self.record(ROUND, "desktop", "phone")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        videos = self.repo / "screen.mockup.html.review" / "videos"
+        commit = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True,
+                                text=True).stdout.strip()
+        self.assertEqual(sorted(p.name for p in videos.iterdir()),
+                         [f"{commit}-{v}.{ext}" for v in ("desktop", "phone") for ext in ("vtt", "webm")])
+        cues = (videos / f"{commit}-phone.vtt").read_text().split("\n\n")[1:]
+        self.assertEqual([cue.splitlines()[2] for cue in cues],
+                         ["The week with Tuesday's card", "Tuesday opens \u2192 its plan", "Back to the week"])
+
+    def test_part_no_press_reaches_fails_naming_its_step(self):
+        result = self.record(COVERED, "desktop")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('step "open": a press on ".tile" lands on another part', result.stderr)
 
 
 if __name__ == "__main__":

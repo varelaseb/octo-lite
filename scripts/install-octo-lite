@@ -328,8 +328,9 @@ done
 # ignores. It and the round video recorder (#install-recorder) get the
 # dependencies their lockfiles name by npm ci, rerun only when that lockfile is
 # newer than npm's record of the last install; the recorder's pinned driver
-# then installs its browser, a no-op once there. A failed step is named and
-# leaves that item out; everything else still links.
+# then installs its browser, a no-op once there. A failed step is named: it
+# leaves Stageshow out, and leaves the recorder linked, which names what it
+# lacks when run. Everything else still links.
 recorder="$root/skills/implement-spec/assets/prototype-video"
 npm_deps() {
   [[ -e "$1/node_modules/.package-lock.json" &&
