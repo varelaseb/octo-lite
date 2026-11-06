@@ -6,6 +6,8 @@
 
 __pycache__/
 *.pyc
+# The round video recorder's pinned driver, installed by npm ci in its folder.
+node_modules/
 .claude/worktrees/
 
 # skillfile materializes this repo's own skills here alongside the genuine
