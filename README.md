@@ -103,8 +103,8 @@ scripts/install-octo-lite --onboard
 octo-lite-start --cwd WORKTREE [--name LANE] [--runtime claude|codex|pi] [--operating-model FILE]
 ```
 
-`--onboard` installs the links, then asks whether agents may push, open pull
-requests, and file issues, each defaulting to no. Every install publishes
+`--onboard` first asks whether agents may push, open pull requests, and file
+issues, each defaulting to no, then installs the links. Every install publishes
 octo-lite's one onboarding file,
 `${XDG_STATE_HOME:-~/.local/state}/octo-lite/onboarding.toml`: `status`
 (`pending` until consent is kept, then `done`), `doc`, a link here, and the

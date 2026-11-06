@@ -235,6 +235,22 @@ class OnboardingTest(unittest.TestCase):
         self.assertIn("version floors", r.stdout)
         self.assertIn("git:", r.stdout)
 
+    def test_check_names_a_dangling_link_of_ours_once_fixed_by_install(self):
+        """Install replaces a dangling link of ours, so the check names it once
+        with install as its fix, never as a link to move aside."""
+        self.run_installer()
+        for rel in (".claude/skills/commit", ".agents/skills/commit"):
+            with self.subTest(rel):
+                link = self.prefix / rel
+                link.unlink()
+                link.symlink_to(ROOT / "skills/gone")
+                r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
+                                   capture_output=True, text=True, env=self.env)
+                self.assertEqual(problems(r), [f"dangling legacy link: {link};"
+                                               f" fix: run {INSTALLER} --prefix {self.prefix}"])
+                self.run_installer()
+                self.assertEqual(link.resolve(), ROOT / "skills/commit")
+
     def test_check_output_says_checked(self):
         """--check says 'checked', plain install says 'installed' (F-D7)."""
         r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
@@ -267,12 +283,12 @@ class AfterPullTest(unittest.TestCase):
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
         # Stageshow is installed: skillfile finds its pin deployed, and its
         # filming dependencies are current. Herdr is faked.
-        bindir = base / "bin"
-        bindir.mkdir()
+        self.bin = base / "bin"
+        self.bin.mkdir()
         for name, body in (("skillfile", "#!/bin/sh\n"), ("herdr", FAKE_HERDR)):
-            (bindir / name).write_text(body)
-            (bindir / name).chmod(0o755)
-        self.env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "HOME": str(self.prefix),
+            (self.bin / name).write_text(body)
+            (self.bin / name).chmod(0o755)
+        self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.prefix),
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         self.env.pop("XDG_STATE_HOME", None)
@@ -358,6 +374,26 @@ class AfterPullTest(unittest.TestCase):
         second = self.started(self.spawn("w2"))
         self.assertRegex(first, f"bad link: {self.linked} .*; fix: ")
         self.assertNotIn("bad link", second)
+
+    def test_a_failed_stageshow_fetch_fails_the_step_and_the_spawn_prints_it(self):
+        # The pulled pin cannot be fetched; the last install's Stageshow stays.
+        (self.bin / "skillfile").write_text("#!/bin/sh\nexit 1\n")
+        named = "Stageshow not installed: skillfile install failed; fix: "
+        self.assertIn(named, self.started(self.spawn("w1")))
+        r = self.after_pull()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(named, r.stderr.splitlines()[-1])
+
+    def test_a_step_stopping_early_is_printed_by_the_first_spawn_only(self):
+        # A declared project skill is gone: the step stops there, before its end.
+        project = self.prefix.parent / "project"
+        project.mkdir()
+        (project / "AGENTS.md").write_text("Repo skills: skills/gone\n")
+        text = self.onboarding.read_text()
+        self.onboarding.write_text(text.replace("]\ncommit", f', "--project", "{project}"]\ncommit', 1))
+        first = self.started(self.spawn("w1"))
+        self.assertIn(f"missing source: {project}/skills/gone", first)
+        self.assertEqual(self.started(self.spawn("w2")), "")
 
     def test_parallel_spawns_run_the_step_once(self):
         # An owner spawns several workers at once: one runs the step, the
