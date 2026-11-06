@@ -481,14 +481,15 @@ class LaneRecordTests(unittest.TestCase):
         # #acceptance-worker-owner-rate-limited: exit 69 already re-sent, so it
         # goes to the operator at once, never re-sent.
         # #transport-native, #acceptance-native-*: natively to a live Claude
-        # session, else, or when Claude reports it failed or held, herdr-say.
+        # session; a timed-out native send counts as sent (#acceptance-native-timeout);
+        # herdr-say only when undelivered, or a later notice says held, denied, expired.
         for role in ("implementer", "integrator", "code-reviewer"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
                 "natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. "
-                "Only a native send Claude reports delivered, or a `herdr-say` exit 0, confirms the send; "
-                "one Claude reports failed or held goes by `herdr-say`; "
+                "Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; "
+                "one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; "
                 "on exit 69, which `herdr-say` already re-sent for hours, send it no more; "
                 "on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, "
                 "naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). "
@@ -509,13 +510,17 @@ class LaneRecordTests(unittest.TestCase):
         # contract allows the native send, and the one recipe addresses the target
         # pane's Claude session (#transport-claude-session), never a box-wide name,
         # falling back to herdr-say; every report line points at that recipe.
+        # #acceptance-native-timeout: a timed-out send counts as sent, never sent
+        # again; its backstop (#roles-goal) is the sender's pane, read when the wait ends.
         for path in ROOT.glob("agents/*.md"):
             tools = re.search(r"^tools: (\[.*\])$", path.read_text(encoding="utf-8"), flags=re.MULTILINE)
             self.assertIn("SendMessage", json.loads(tools.group(1)), path.name)
         recipe = (ROOT / "skills/herdr-comms/SKILL.md").read_text(encoding="utf-8")
         recipe = recipe.split("\n## Send a report\n", 1)[1].split("\n## ", 1)[0]
-        for token in ("herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'", "`uds:<that path>`", "`herdr-say PANE REPORT`"):
-            self.assertIn(token, recipe)
+        for token in ("herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'", "`uds:<that path>`", "`herdr-say PANE REPORT`",
+                      "It counts as sent once Claude reports it delivered to the receiver's inbox or reports it timed out",
+                      "a lost result is read from the sender's pane when the owner's wait on it ends"):
+            self.assertIn(token, " ".join(recipe.split()))
         for doc in ("agents/orchestrator.md", "agents/meta-operator.md", "skills/implement-spec/SKILL.md", "skills/repo-health/SKILL.md"):
             self.assertIn("herdr-comms/SKILL.md#send-a-report)", (ROOT / doc).read_text(encoding="utf-8"), doc)
 
