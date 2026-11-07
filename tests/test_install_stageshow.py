@@ -3,7 +3,10 @@ failed fetch installs everything else, then fails naming it with its fix; the
 check names every problem with its fix. Spec: spec/domains/install.spec.html
 #install-peers and #install-check; criteria #acceptance-pinned-install,
 #acceptance-pinned-install-fail, #acceptance-pinned-no-skillfile, and
-#acceptance-check-all. skillfile and npm are stubbed: nothing fetches."""
+#acceptance-check-all; and every install run passes as the first, each skill
+folder holding only its tracked files: #install-recorder,
+#acceptance-install-again, and #acceptance-after-pull-recorder-deps. skillfile
+and npm are stubbed: nothing fetches."""
 
 from __future__ import annotations
 
@@ -25,9 +28,10 @@ PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stage
 
 # skillfile's observable contract: `skillfile install` deploys each pin in
 # Skillfile.lock into agents/skills, with its cache in .skillfile/cache, and
-# leaves files it already deployed unchanged.
+# leaves files it already deployed unchanged. It writes a local skill's tracked
+# files only, so a local skill folder holding a file git does not track fails it.
 SKILLFILE = """#!/usr/bin/env python3
-import json, sys
+import json, subprocess, sys
 from pathlib import Path
 assert sys.argv[1:] == ["install", "-q"], sys.argv
 pin = json.loads(Path("Skillfile.lock").read_text())["github/skill/stageshow"]
@@ -39,6 +43,17 @@ if not skill.exists():
         (skill / name).write_text("{}")
     Path(".skillfile/cache/stageshow").mkdir(parents=True)
     Path(".skillfile/cache/stageshow/SKILL.md").write_text("{}")
+for entry in Path("Skillfile").read_text().splitlines():
+    field = entry.split()
+    if field[:2] != ["local", "skill"] or not Path(field[3]).is_dir():
+        continue
+    name, folder = field[2:4]
+    files = sum(f.is_file() for f in Path(folder).rglob("*"))
+    written = len(subprocess.run(["git", "ls-files", "--", folder], capture_output=True,
+                                 text=True, check=True).stdout.splitlines())
+    if written < files:
+        sys.exit(f"error: failed to install '{name}' to octo-lite skill (agents/skills):"
+                 f" only {written} of {files} expected file(s) were written")
 """
 # npm ci installs the lockfile's packages and records them in node_modules;
 # npm exec runs the recorder driver's browser install.
@@ -77,16 +92,17 @@ class CloneCase(unittest.TestCase):
             shutil.copy2(ROOT / rel, upstream / rel)
         (upstream / "agents").mkdir()
         (upstream / "agents/role.md").write_text("role\n")
+        for name in ("package.json", "package-lock.json"):
+            (upstream / name).write_text("{}")
         recorder = upstream / "skills/implement-spec/assets/prototype-video"
         recorder.mkdir(parents=True)
-        for name in ("package.json", "package-lock.json"):
-            (recorder / name).write_text("{}")
         (recorder / "prototype-video").write_text("#!/bin/sh\n")
         (recorder / "prototype-video").chmod(0o755)
         for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "octo-lite"]):
             subprocess.run(["git", "-C", str(upstream), *argv], check=True, env=self.env)
         self.clone = base / "clone"
         subprocess.run(["git", "clone", "-q", str(upstream), str(self.clone)], check=True, env=self.env)
+        self.recorder = self.clone / recorder.relative_to(upstream)
         self.installer = str(self.clone / "scripts/install-octo-lite")
         self.fix = f"run {self.installer} --prefix {self.prefix}"
 
@@ -119,6 +135,24 @@ class PinnedInstallTest(CloneCase):
         status = run(["git", "-C", str(self.clone), "status", "--porcelain"], self.env)
         self.assertEqual(status.stdout, "", "the clone must hold no changed or untracked file")
         self.install("--check")
+
+    def assert_skills_hold_only_tracked_files(self):
+        status = run(["git", "-C", str(self.clone), "status", "--porcelain", "--ignored", "--", "skills"], self.env)
+        self.assertEqual(status.stdout, "", "a skill folder must hold only its tracked files")
+
+    def test_second_install_passes_as_the_first(self):
+        # spec/domains/install.spec.html#acceptance-install-again
+        self.install()
+        self.install()
+        self.assert_skills_hold_only_tracked_files()
+
+    def test_after_pull_removes_recorder_deps_left_in_its_folder(self):
+        # spec/domains/install.spec.html#acceptance-after-pull-recorder-deps
+        stray = self.recorder / "node_modules/playwright-core"
+        stray.mkdir(parents=True)
+        (stray / "package.json").write_text("{}")
+        self.install("--after-pull")
+        self.assert_skills_hold_only_tracked_files()
 
     def test_reinstall_keeps_the_filming_dependencies(self):
         self.install()
