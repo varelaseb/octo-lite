@@ -399,6 +399,31 @@ class LaneRecordTests(unittest.TestCase):
             skill,
         )
 
+    def test_merge_ask_carries_see_it_lines(self) -> None:
+        # spec #delivery-see-it, #acceptance-see-it-ask, -open, -pr, -unnamed,
+        # -relay, -no-gate: the implementer names each changed screen and
+        # state, the owner writes one See it line each after the PR link, the
+        # operator relays them, and no reviewer judges them.
+        def read(path: str) -> str:
+            return " ".join((ROOT / path).read_text(encoding="utf-8").split())
+
+        orchestrator = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        self.assertRegex(orchestrator, r"pull/<pr>\n  See it: <screen and state, in plain words> -> <link>\n  ```")
+        orchestrator = read("agents/orchestrator.md")
+        for phrase in (
+            "the PR body and merge ask carry one `See it: <label> -> <link>` line per screen or state it changes",
+            "in what the target root `AGENTS.md` says a See it link opens",
+            "When it names none, say in plain words where the change can be seen, in place of the link.",
+            "A See it line never gates",
+        ):
+            self.assertIn(phrase, orchestrator)
+        self.assertIn("for a ticket that changes a screen, each screen and state it changes, in plain words",
+                      read("agents/implementer.md"))
+        self.assertIn("A merge ask you relay keeps every See it line the owner sent, without the human asking",
+                      read("agents/meta-operator.md"))
+        self.assertIn("then the PR link, then the PR body's See it lines", read("skills/implement-spec/SKILL.md"))
+        self.assertNotIn("See it", read("agents/code-reviewer.md"))
+
     def test_question_gate_line_carries_why_evidence_and_each_answer(self) -> None:
         # spec #acceptance-lane-gate-answers, #handoff-gate-context: a question
         # with two answers goes out with one gate line asked carrying why it
