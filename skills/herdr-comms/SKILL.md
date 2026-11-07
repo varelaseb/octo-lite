@@ -145,11 +145,15 @@ Herdr state with nothing typed into its prompt, it sends LAST, which asks for
 the hand-over, by `herdr-say`. Any message the agent is sent, or text typed into
 its prompt, starts the ten minutes again, so it never starts while a human is
 in dialogue with it; Claude's own suggestion, drawn dim, is nothing typed. Once
-the agent is idle again with nothing typed, it ends that Claude (TERM to the
-pid of the pane's Claude session) and starts Claude fresh in the pane, as a
-spawn into it in place of a new tab, under the old session's name (its
+the agent is idle again with nothing typed, it goes on as a spawn into the pane
+in place of a new tab: once the box is current (the after-pull step), it ends
+that Claude (TERM to the pid of the pane's Claude session), waits up to a
+minute until Herdr, which holds an ended agent's name a while, finds no agent
+in the pane, and starts Claude fresh there under the old session's name (its
 record's), role (its transcript's latest `agent-setting`), and goal (its
-latest `goal_status`; none once met), then sends FIRST, then `/goal GOAL`. The
+latest `goal_status`; none once met or failed), then sends FIRST, then
+`/goal GOAL`. Its errors print to the pane's terminal, so a failure once that
+Claude has ended shows at the shell prompt left in the pane. The
 pane keeps its id, so no record naming it changes. The old session's
 background tasks, its waits included, end with it, and its conversation stays
 in its transcript, unread by the fresh session. A pane with no Claude session
