@@ -82,10 +82,49 @@ class InstallSkillMirrorTests(unittest.TestCase):
         self.assertEqual([], problems(check), check.stdout + check.stderr)
 
     def test_check_fails_when_managed_mirror_is_broken(self) -> None:
+        """Both links resolve, into two clones of this repo: each is adoptable,
+        so only the mirror check names it."""
         self.assertEqual([], problems(self._install()))
-        (self.prefix / ".codex" / "skills" / MANAGED_SKILLS[0]).unlink()
+        origin = subprocess.run(["git", "-C", str(ROOT), "remote", "get-url", "origin"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        clone = Path(self._tmp.name) / "other-clone"
+        subprocess.run(["git", "init", "-q", str(clone)], check=True)
+        subprocess.run(["git", "-C", str(clone), "remote", "add", "origin", origin], check=True)
+        (clone / "agents" / "skills" / MANAGED_SKILLS[0]).mkdir(parents=True)
+        claude = self.prefix / ".claude" / "skills" / MANAGED_SKILLS[0]
+        codex = self.prefix / ".codex" / "skills" / MANAGED_SKILLS[0]
+        claude.unlink()
+        claude.symlink_to(clone / "agents" / "skills" / MANAGED_SKILLS[0])
         check = self._install("--check")
-        self.assertNotEqual([], problems(check), "--check must flag a broken managed-skill mirror")
+        self.assertEqual([f"managed skill mirror broken: {MANAGED_SKILLS[0]}; fix: remove {claude}"
+                          f" and {codex}, then run {INSTALLER} --prefix {self.prefix}"],
+                         problems(check))
+
+    def test_check_names_a_missing_or_dangling_managed_link_once(self) -> None:
+        """Installing fixes a missing or dangling managed link, so the check
+        names it once, with no hand step."""
+        self.assertEqual([], problems(self._install()))
+        claude = self.prefix / ".claude" / "skills" / MANAGED_SKILLS[0]
+        for name, plant in (("missing", lambda: None),
+                            ("dangling", lambda: claude.symlink_to(ROOT / "agents" / "skills" / "gone"))):
+            with self.subTest(name):
+                claude.unlink(missing_ok=True)
+                plant()
+                check = self._install("--check")
+                self.assertEqual(1, len(problems(check)), check.stderr)
+                self.assertNotIn("mirror", check.stderr)
+                self.assertEqual([], problems(self._install()))
+                self.assertEqual([], problems(self._install("--check")))
+
+    def test_check_names_an_occupied_managed_path_once(self) -> None:
+        """Someone else's directory there is to move aside, never to remove."""
+        self.assertEqual([], problems(self._install()))
+        claude = self.prefix / ".claude" / "skills" / MANAGED_SKILLS[0]
+        claude.unlink()
+        claude.mkdir()
+        check = self._install("--check")
+        self.assertEqual([f"bad link: {claude} (occupied by directory); fix: move it aside,"
+                          f" then run {INSTALLER} --prefix {self.prefix}"], problems(check))
 
     def test_real_file_collision_skips_without_overwrite(self) -> None:
         target = self.prefix / ".claude" / "skills" / "commit"

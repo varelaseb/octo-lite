@@ -241,7 +241,6 @@ occupant() {
 
 link_one() {
   local source="$1" target="$2"
-  [[ -e "$source" || -L "$source" ]] || { echo "missing source: $source" >&2; exit 66; }
   if [[ "$check" == true ]]; then
     [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
     # A symlink from a different clone with the same origin is adoptable.
@@ -320,10 +319,9 @@ migrate_legacy_link() {
 
 check_legacy_gone() {
   local target="$prefix/$1"
-  [[ -e "$target" || -L "$target" ]] || return 0
-  # Only a dangling link, or one still resolving into this repo, is a leftover
-  # of ours. This mirrors migrate_legacy_link, so installing removes it.
-  [[ -L "$target" && ! -e "$target" || "$(readlink -f "$target")" == "$root"/* ]] &&
+  # A link still resolving into this repo is a leftover of ours, which
+  # migrate_legacy_link removes; a dangling one is the prune's, which names it.
+  [[ -L "$target" && -e "$target" && "$(readlink -f "$target")" == "$root"/* ]] &&
     problem "leftover legacy link: $target" "run $install_cmd"
   return 0
 }
@@ -424,14 +422,18 @@ for source in "$root"/skills/*; do
 done
 
 # ADR 0002 mirror invariant: every managed skill present in agents/skills must
-# resolve identically from .claude/skills and .codex/skills.
+# resolve identically from .claude/skills and .codex/skills. link_one names a
+# link missing, dangling, or someone else's; it passes one adopted from another
+# clone of this repo, so two links resolving into different clones are named here.
 if [[ "$check" == true ]]; then
   for name in $managed_skills; do
     claude_skill="$prefix/.claude/skills/$name"
     codex_skill="$prefix/.codex/skills/$name"
-    [[ -e "$claude_skill" && -e "$codex_skill" &&
-       "$(readlink -f "$claude_skill")" == "$(readlink -f "$codex_skill")" ]] ||
+    [[ -e "$claude_skill" && -e "$codex_skill" ]] || continue
+    claude_real="$(readlink -f "$claude_skill")" codex_real="$(readlink -f "$codex_skill")"
+    if [[ "$claude_real" != "$codex_real" ]] && is_ours "$claude_real" && is_ours "$codex_real"; then
       problem "managed skill mirror broken: $name" "remove $claude_skill and $codex_skill, then run $install_cmd"
+    fi
   done
 fi
 
@@ -459,6 +461,9 @@ if [[ -n "$project" ]]; then
   while read -r rel; do
     [[ -n "$rel" ]] || continue
     source="$project/$rel"
+    [[ -e "$source" ]] || {
+      problem "missing source: $source" "correct its path on the Repo skills line of $project/AGENTS.md, then run $install_cmd"
+      continue; }
     for dir in .codex/skills .agents/skills .claude/skills; do
       target="$prefix/$dir/$(basename "$rel")"
       if [[ -L "$target" && "$(readlink -f "$target")" != "$(readlink -f "$source")" ]]; then
@@ -564,11 +569,11 @@ elif command -v herdr >/dev/null; then
 fi
 
 # --after-pull verifies the install it just made, naming each problem.
-checked=0
 if [[ "$after_pull" == true ]]; then
-  "$root/scripts/install-octo-lite" --check "${scope[@]}" || checked=1
+  "$root/scripts/install-octo-lite" --check "${scope[@]}" || problems=$((problems + 1))
 fi
 # Last, so it is the line an operator sees: a pinned skill this run could not
-# fetch fails the install (install.spec.html#install-peers).
-[[ -z "$why" ]] || { problem "Stageshow not installed: $why" "$stageshow_fix"; exit 1; }
-exit "$checked"
+# fetch fails the install (install.spec.html#install-peers). Any problem this
+# run named fails it.
+[[ -z "$why" ]] || problem "Stageshow not installed: $why" "$stageshow_fix"
+exit $((problems > 0))
