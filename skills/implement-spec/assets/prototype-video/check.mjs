@@ -1,6 +1,7 @@
 // The recorder's check of each video it records (octo-lite #delivery-round-video): every press shows the cursor, on a
-// phone the touch, and the press mark, in a frame the video shows while the mark is full; a step with a press that
-// does not fails, naming the step and its viewport. It reads the frames for the shapes overlay.mjs draws.
+// phone the touch, and the press mark, in a frame the video shows while the mark is full, and on a desktop each step's
+// result shows the cursor at rest; a step that does not fails, naming the step and its viewport. It reads the frames
+// for the shapes overlay.mjs draws.
 
 import { ARROW, EDGE, MARK, TOUCH } from './overlay.mjs'
 
@@ -77,13 +78,16 @@ function drawn({ size, luma }, probes) {
   return read.length >= SHOWN * probes.length
 }
 
-// One step's presses, each with its crops of the frames the video shows while its mark is full.
-export function verify(viewport, step, presses) {
+// One step's presses, each with its crops of the frames the video shows while its mark is full, and on a desktop the
+// crop of the step's last frame where the cursor rests.
+export function verify(viewport, step, presses, rest) {
   const { cursor, mark } = SHAPES[viewport]
+  const missing = (what, why = '') => new Error(`the ${viewport} video does not show the ${what} at step "${step}"${why}; `
+    + 'fix the prototype and record again')
   for (const press of presses) {
     if (!press.crops.some(frame => drawn(frame, cursor) && drawn(frame, mark))) {
-      throw new Error(`the ${viewport} video does not show the ${viewport === 'phone' ? 'touch' : 'cursor'} and its press mark `
-        + `at step "${step}" (${press.action}); fix the prototype and record again`)
+      throw missing(`${viewport === 'phone' ? 'touch' : 'cursor'} and its press mark`, ` (${press.action})`)
     }
   }
+  if (rest && !drawn(rest, cursor)) throw missing('cursor at rest')
 }

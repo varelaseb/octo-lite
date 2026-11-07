@@ -76,6 +76,9 @@ model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
 
 - Check Markdown and TOML syntax after edits.
 - Run `python3 -m unittest tests.test_herdr` after changing the Herdr wrappers.
+- The suite drives the round video recorder in a browser: once per clone, run
+  `npm ci && npx playwright-core install chromium` in
+  `skills/implement-spec/assets/prototype-video`, as CI does.
 - Verify skill symlinks point at this source repo when installing locally.
 - Run `scripts/install-octo-lite --check` after installed-surface changes.
 

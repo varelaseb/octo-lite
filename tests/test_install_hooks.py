@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
+OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
 
 MOSHI = "'/opt/moshi/bin/moshi-hook' {}-hook"
 CLAUDE_SETTINGS = {
@@ -59,8 +60,8 @@ class InstallHooksTests(unittest.TestCase):
         self.hook = str(self.prefix / ".local/bin/octo-lite-command-time")
 
     def install(self, *extra: str, ok: bool = True) -> subprocess.CompletedProcess:
-        result = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), *extra],
-                                capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        result = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), *extra], capture_output=True,
+                                text=True, stdin=subprocess.DEVNULL, env={**os.environ, "PATH": OFFLINE})
         if ok:
             self.assertEqual(0, result.returncode, result.stderr)
         return result
