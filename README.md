@@ -28,7 +28,8 @@ them into the Claude and Codex profiles:
 ```text
 ~/.{codex,claude}/agents/<role>.md      -> agents/<role>.md
 ~/.{codex,claude,agents}/skills/<skill> -> skills/<skill>, agents/skills/{tdd,stageshow}
-~/.local/bin/<helper>                   -> scripts/*, skills/herdr-comms/assets/*
+~/.local/bin/<helper>                   -> scripts/*, skills/herdr-comms/assets/*,
+                                           skills/implement-spec/assets/prototype-video/prototype-video
 ```
 
 Each peer links only what it owns (ADR-004); Spec Chat's installer links its
@@ -39,6 +40,11 @@ committed; Stageshow never is: the installer fetches it at its pin with
 `skillfile install` and its filming dependencies with `npm ci`. When the fetch
 fails it links everything else, then exits non-zero, its last line
 `Stageshow not installed` naming why and the step that fixes it.
+
+The round video recorder, `prototype-video`, installs the same way: `npm ci`
+fetches the browser driver it pins, which then installs its browser. When that
+fails the installer links everything else, then exits non-zero, printing
+`prototype-video not installed` naming why and the step that fixes it.
 
 Prerequisite: `skillfile` ([github.com/eljulians/skillfile](https://github.com/eljulians/skillfile))
 on `PATH`; without it Stageshow is not installed. Install it with:

@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+// octo-lite's round video recorder (recorder.mjs):
+// prototype-video <mockup.html> <prototype-address> [--viewport desktop|phone]... [--spool <mockup>.review]
+import('./recorder.mjs').then(({ main }) => main(process.argv.slice(2)))

@@ -40,10 +40,12 @@ if not skill.exists():
     Path(".skillfile/cache/stageshow").mkdir(parents=True)
     Path(".skillfile/cache/stageshow/SKILL.md").write_text("{}")
 """
-# npm ci installs the lockfile's packages and records them in node_modules.
+# npm ci installs the lockfile's packages and records them in node_modules;
+# npm exec runs the recorder driver's browser install.
 NPM = """#!/bin/sh
 echo "$PWD $*" >>"{log}"
 [ "$1" = ci ] && mkdir -p node_modules/playwright-core && echo '{{}}' >node_modules/.package-lock.json
+exit 0
 """
 
 
@@ -52,7 +54,8 @@ def run(argv, env, cwd=None):
 
 
 class CloneCase(unittest.TestCase):
-    """A fresh clone carrying this clone's installer, Skillfile, lock, and ignores."""
+    """A fresh clone carrying this clone's installer, Skillfile, lock, and
+    ignores, and the round video recorder's stand-in folder."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -60,7 +63,7 @@ class CloneCase(unittest.TestCase):
         base = Path(tmp.name).resolve()
         self.prefix = base / "prefix"
         self.npm_log = base / "npm.log"
-        bindir = base / "bin"
+        self.bindir = bindir = base / "bin"
         bindir.mkdir()
         for name, body in (("skillfile", SKILLFILE), ("npm", NPM.format(log=self.npm_log))):
             (bindir / name).write_text(body)
@@ -74,6 +77,12 @@ class CloneCase(unittest.TestCase):
             shutil.copy2(ROOT / rel, upstream / rel)
         (upstream / "agents").mkdir()
         (upstream / "agents/role.md").write_text("role\n")
+        recorder = upstream / "skills/implement-spec/assets/prototype-video"
+        recorder.mkdir(parents=True)
+        for name in ("package.json", "package-lock.json"):
+            (recorder / name).write_text("{}")
+        (recorder / "prototype-video").write_text("#!/bin/sh\n")
+        (recorder / "prototype-video").chmod(0o755)
         for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "octo-lite"]):
             subprocess.run(["git", "-C", str(upstream), *argv], check=True, env=self.env)
         self.clone = base / "clone"
@@ -115,7 +124,8 @@ class PinnedInstallTest(CloneCase):
         self.install()
         self.install()
         skill = self.clone / "agents/skills/stageshow"
-        self.assertEqual(self.npm_log.read_text().splitlines(),
+        self.assertEqual([line for line in self.npm_log.read_text().splitlines()
+                          if line.startswith(f"{skill} ")],
                          [f"{skill} ci --no-audit --no-fund --loglevel=error"])
 
 
@@ -136,7 +146,8 @@ class NoSkillfileTest(CloneCase):
 
     def setUp(self):
         super().setUp()
-        self.env["PATH"] = ":".join(d for d in os.environ["PATH"].split(":")
+        (self.bindir / "skillfile").unlink()
+        self.env["PATH"] = ":".join(d for d in self.env["PATH"].split(":")
                                     if not os.path.exists(os.path.join(d, "skillfile")))
         self.skillfile_fix = ("curl -fsSL https://github.com/eljulians/skillfile/releases/latest/download/"
                               f"install.sh | sh, then {self.fix}")

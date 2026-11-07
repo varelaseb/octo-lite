@@ -1,0 +1,5 @@
+#!/bin/sh
+# npm on a box that cannot reach its registry. Installer runs in tests put this
+# first on PATH, so they never fetch or write into this clone's recorder folder.
+echo "npm: registry unreachable" >&2
+exit 1

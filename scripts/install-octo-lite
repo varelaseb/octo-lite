@@ -340,27 +340,39 @@ done
 
 # Stageshow is pinned in Skillfile and never committed (install.spec.html
 # #install-peers): skillfile fetches it at its pin into agents/skills, which git
-# ignores, then npm ci adds the filming dependencies its lockfile names, rerun
-# only when that lockfile is newer than npm's record of the last install, which
-# is also what --check takes as installed. A failed step leaves it out and
-# everything else still links; every mode then fails naming why, last. Only
-# --check skips the fetch, so only a fetch failure is install's alone.
+# ignores. It and the round video recorder (#install-recorder) get the
+# dependencies their lockfiles name by npm ci, rerun only when that lockfile is
+# newer than npm's record of the last install, which is also what --check takes
+# as installed; the recorder's pinned driver then installs its browser, a no-op
+# once there. A failed step leaves Stageshow out, leaves the recorder linked,
+# and everything else still links; every mode then fails naming why, last.
+# Only --check skips the fetch, so only a fetch failure is install's alone.
 stageshow="$root/agents/skills/stageshow"
+recorder="$root/skills/implement-spec/assets/prototype-video"
 deps_current() {
-  [[ -e "$stageshow/node_modules/.package-lock.json" &&
-     ! "$stageshow/package-lock.json" -nt "$stageshow/node_modules/.package-lock.json" ]]
+  [[ -e "$1/node_modules/.package-lock.json" &&
+     ! "$1/package-lock.json" -nt "$1/node_modules/.package-lock.json" ]]
 }
+npm_deps() { deps_current "$1" || (cd "$1" && npm ci --no-audit --no-fund --loglevel=error); }
 if command -v skillfile >/dev/null; then why="" stageshow_fix="run $install_cmd"
 else why="skillfile not found" stageshow_fix="$skillfile_install, then run $install_cmd"
 fi
 if [[ "$check" != true && -z "$why" ]]; then
   if ! (cd "$root" && skillfile install -q); then why="skillfile install failed"
-  elif ! deps_current && ! (cd "$stageshow" && npm ci --no-audit --no-fund --loglevel=error); then
-    why="npm ci failed"
+  elif ! npm_deps "$stageshow"; then why="npm ci failed"
   fi
   [[ -z "$why" ]] || stageshow_fix="resolve its error above, then $stageshow_fix"
 fi
-[[ -n "$why" ]] || deps_current || why="filming dependencies not installed"
+[[ -n "$why" ]] || deps_current "$stageshow" || why="filming dependencies not installed"
+recorder_why="" recorder_fix="run $install_cmd"
+if [[ "$check" != true ]]; then
+  if ! npm_deps "$recorder"; then recorder_why="npm ci failed"
+  elif ! (cd "$recorder" && npm exec -- playwright-core install chromium); then
+    recorder_why="browser install failed"
+  fi
+  [[ -z "$recorder_why" ]] || recorder_fix="resolve its error above, then $recorder_fix"
+fi
+[[ -n "$recorder_why" ]] || deps_current "$recorder" || recorder_why="browser driver not installed"
 
 # Managed skills live in the skillfile install target agents/skills (ADR 0002).
 # They mirror into every platform skills dir. Locally authored skills/ skills
@@ -418,7 +430,7 @@ for source in "$root"/scripts/*; do
   [[ -x "$source" && -f "$source" ]] || continue
   link_one "$source" "$prefix/.local/bin/$(basename "$source")"
 done
-for source in "$root"/skills/herdr-comms/assets/*; do
+for source in "$root"/skills/herdr-comms/assets/* "$recorder/prototype-video"; do
   [[ -x "$source" ]] || continue
   link_one "$source" "$prefix/.local/bin/$(basename "$source")"
 done
@@ -538,8 +550,9 @@ if [[ "$verify" == true ]]; then
   echo "version floors:"
   check_floors
 fi
-# Last, so it is the line an operator sees: a pinned skill not installed fails
-# every mode alike (install.spec.html#install-peers). Any problem this run
-# named fails it.
+# Last, so it is the line an operator sees: a pinned skill or the recorder not
+# installed fails every mode alike (install.spec.html#install-peers,
+# #install-recorder). Any problem this run named fails it.
+[[ -z "$recorder_why" ]] || problem "prototype-video not installed: $recorder_why" "$recorder_fix"
 [[ -z "$why" ]] || problem "Stageshow not installed: $why" "$stageshow_fix"
 exit $((problems > 0))

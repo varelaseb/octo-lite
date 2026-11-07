@@ -14,14 +14,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
-# skillfile stubbed unreachable: installer runs never fetch.
+# skillfile and npm stubbed unreachable: installer runs never fetch.
 OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
 
 
 def problems(run):
-    """The problems a run names, but Stageshow's: offline, it is never fetched."""
+    """The problems a run names, but Stageshow's and the recorder's: offline,
+    neither is fetched."""
     return [line for line in run.stderr.splitlines()
-            if "; fix: " in line and not line.startswith("Stageshow not installed")]
+            if "; fix: " in line
+            and not line.startswith(("Stageshow not installed", "prototype-video not installed"))]
 # Only genuinely third-party skills stay skillfile-managed. spec-chat is a
 # peer repository linked from a clone, so it is not part of this invariant.
 MANAGED_SKILLS = ("tdd",)

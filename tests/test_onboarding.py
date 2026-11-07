@@ -13,14 +13,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/install-octo-lite"
 SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
-# skillfile stubbed unreachable: installer runs never fetch.
+# skillfile and npm stubbed unreachable: installer runs never fetch.
 OFFLINE = f"{ROOT / 'tests/offline-bin'}:{os.environ['PATH']}"
 
 
 def problems(run):
-    """The problems a run names, but Stageshow's: offline, it is never fetched."""
+    """The problems a run names, but Stageshow's and the recorder's: offline,
+    neither is fetched."""
     return [line for line in run.stderr.splitlines()
-            if "; fix: " in line and not line.startswith("Stageshow not installed")]
+            if "; fix: " in line
+            and not line.startswith(("Stageshow not installed", "prototype-video not installed"))]
 
 
 class OnboardingTest(unittest.TestCase):
@@ -311,10 +313,11 @@ class AfterPullTest(unittest.TestCase):
         self.prefix = base / "prefix"
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
         # Stageshow is installed: skillfile finds its pin deployed, and its
-        # filming dependencies are current. Herdr is faked.
+        # filming dependencies are current. So is the recorder: its driver is
+        # current, and npm finds its browser installed. Herdr is faked.
         self.bin = base / "bin"
         self.bin.mkdir()
-        for name, body in (("skillfile", "#!/bin/sh\n"), ("herdr", FAKE_HERDR)):
+        for name, body in (("skillfile", "#!/bin/sh\n"), ("npm", "#!/bin/sh\n"), ("herdr", FAKE_HERDR)):
             (self.bin / name).write_text(body)
             (self.bin / name).chmod(0o755)
         self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.prefix),
@@ -325,14 +328,18 @@ class AfterPullTest(unittest.TestCase):
         (self.upstream / "scripts").mkdir(parents=True)
         (self.upstream / "agents").mkdir()
         (self.upstream / "agents/role.md").write_text("role\n")
+        recorder = self.upstream / "skills/implement-spec/assets/prototype-video"
+        recorder.mkdir(parents=True)
+        (recorder / "package-lock.json").write_text("{}")
         shutil.copy2(INSTALLER, self.upstream / "scripts/install-octo-lite")
         self.git(self.upstream, "init", "-q")
         self.commit("installer")
         self.clone = base / "clone"
         self.git(base, "clone", "-q", str(self.upstream), str(self.clone))
-        deps = self.clone / "agents/skills/stageshow/node_modules"
-        deps.mkdir(parents=True)
-        (deps / ".package-lock.json").write_text("{}")
+        for deps in (self.clone / "agents/skills/stageshow/node_modules",
+                     self.clone / "skills/implement-spec/assets/prototype-video/node_modules"):
+            deps.mkdir(parents=True)
+            (deps / ".package-lock.json").write_text("{}")
         self.run_ok([str(self.clone / "scripts/install-octo-lite"), "--prefix", str(self.prefix)])
         # upstream ships a new helper; the host fast-forwards the clone
         helper = self.upstream / "scripts/new-helper"
