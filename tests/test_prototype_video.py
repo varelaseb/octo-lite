@@ -75,9 +75,10 @@ for (const step of steps) {
 """
 
 
-# Runs the recorder on its arguments and reads the frames its video is made of, as its screencast hands them over: for
-# each tap, whether the touch shows at its point in the last frame before the tap, and in the last frame before the next
-# hover, or the video's last, once the finger has lifted.
+# Runs the recorder on its arguments and reads the frames its video is made of, as its screencast hands them over:
+# whether any frame before the first hover shows the touch at the page's corner, where the page's own first hover at 0, 0
+# lands, by the probes on the frame there; and for each tap, whether the touch shows at its point in the last frame
+# before the tap, and in the last frame before the next hover, or the video's last, once the finger has lifted.
 TAPS = """
 import { createRequire } from 'node:module'
 const [dir, ...argv] = process.argv.slice(1)
@@ -109,12 +110,16 @@ chromium.launch = async options => {
 }
 await main(argv)
 const before = at => frames.findLast(frame => frame.timestamp < at)
-const touch = (frame, { x, y }) => drawn(crop(jpegjs.decode(frame.data, { useTArray: true, formatAsRGBA: true }), x, y),
-  SHAPES.phone.cursor)
-console.log(JSON.stringify(taps.map(tap => {
-  const next = moves.find(move => move.at > tap.at)
-  return { rested: touch(before(tap.at), tap), after: touch(next ? before(next.at) : frames.at(-1), tap) }
-})))
+const touch = (frame, { x, y }, probes = SHAPES.phone.cursor) =>
+  drawn(crop(jpegjs.decode(frame.data, { useTArray: true, formatAsRGBA: true }), x, y), probes)
+const corner = SHAPES.phone.cursor.filter(([dx, dy]) => dx >= 0 && dy >= 0)
+console.log(JSON.stringify({
+  corner: frames.filter(frame => frame.timestamp < moves[0].at).some(frame => touch(frame, { x: 0, y: 0 }, corner)),
+  taps: taps.map(tap => {
+    const next = moves.find(move => move.at > tap.at)
+    return { rested: touch(before(tap.at), tap), after: touch(next ? before(next.at) : frames.at(-1), tap) }
+  }),
+}))
 """
 
 
@@ -242,12 +247,14 @@ class RecordingTest(unittest.TestCase):
 
     def test_phone_touch_rests_from_its_hover_until_its_tap(self):
         """On a phone the recorder hovers a part before it taps it, which shows the part's hover, so the touch rests on
-        that point from the hover until the tap: every change has a cause on screen. The tap lifts the finger, so once
-        it has lifted no touch shows there, on a page the tap opens either: Tuesday, which the card opens only once its
-        press mark has run, and the week, which the back link opens while it runs."""
+        that point from the hover until the tap: every change has a cause on screen. Before its first hover no finger
+        rests, so the page's own hover at 0, 0 draws no touch at the corner. The tap lifts the finger, so once it has
+        lifted no touch shows there, on a page the tap opens either: Tuesday, which the card opens only once its press
+        mark has run, and the week, which the back link opens while it runs."""
         result = self.record(ROUND.replace("/week/", "/wait/"), "phone", program=TAPS)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout.splitlines()[-1]), [{"rested": True, "after": False}] * 2)
+        self.assertEqual(json.loads(result.stdout.splitlines()[-1]),
+                         {"corner": False, "taps": [{"rested": True, "after": False}] * 2})
 
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
