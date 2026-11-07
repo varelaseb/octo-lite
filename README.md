@@ -62,13 +62,16 @@ scripts/install-octo-lite --check
 scripts/install-octo-lite --after-pull
 ```
 
-`--check` names every problem it finds, never stopping at the first: a link
-missing or wrong, a leftover link of an earlier install, a pinned skill not
-installed, or missing hook entries. Each is one stderr line, the problem then
-`; fix: ` and the step that fixes it, and the check exits non-zero when it finds
-any. It also reports version floors for each tool octo-lite uses at runtime
-(git, herdr, jq, gh, and at least one of claude or codex), printing ok,
-missing, or too old with the upgrade source.
+`--check` reads the box, changes nothing, and names every problem it finds,
+never stopping at the first: a link missing or wrong, a leftover link of an
+earlier install, a pinned skill not installed, missing hook entries, a version
+floor not met, or a stale project skill link. Each is one stderr line, the
+problem then `; fix: ` and the step that fixes it, and the check exits non-zero
+when it finds any. Every stderr line is such a problem: what is not, such as
+another owner's link left untouched, goes to stdout. Version floors cover each
+tool octo-lite uses at runtime (git, herdr, jq, gh, node, python3, and at least
+one of claude or codex): stdout gets the version found when it meets its floor;
+a tool missing or too old is a problem whose fix is its upgrade source.
 
 `--after-pull` installs as a plain run does, asking nothing, then verifies as
 `--check` does, and exits non-zero when the verification fails, naming each
@@ -100,8 +103,9 @@ unattended `codex exec` still starts and runs.
 `AGENTS.md` [`Repo skills:` line](#repo-skills) from that checkout, the
 project's live main clone, into the same skill directories, each under its
 directory name. An existing link at one of those names that resolves anywhere
-else is stale: install and `--check` warn, naming the link and where it points,
-leave it untouched, and continue. Nothing repairs it.
+else is stale: install warns, naming the link and where it points, leaves it
+untouched, and continues; `--check` and `--after-pull` name it as a problem
+whose fix is to move it aside, then install again. Nothing repairs it.
 
 ## Onboarding
 
@@ -120,10 +124,14 @@ kept answers as a `[consent]` table (see
 again, and a plain install keeps them; delete the file to answer afresh.
 `after_pull` is the argument list a host runs, with no shell, after
 fast-forwarding this clone: `install-octo-lite --after-pull` from this clone
-with the `--prefix` and `--project` the last install ran with. Every install
-rewrites it, so the step a host runs next is the pulled clone's, and records
-beside it as `commit` the clone's commit it ran at; `herdr-spawn` runs the step
-when the clone's commit differs.
+with the `--prefix` and `--project` the last install ran with. Every run but
+`--check` and `--undo` rewrites it, so the step a host runs next is the pulled
+clone's, and records beside it as `commit` the clone's commit it ran at;
+`herdr-spawn` runs the step when the clone's commit differs. `check` is the argument list a host runs, with
+no shell, to learn octo-lite's setup problems: `install-octo-lite --check` from
+this clone with the same `--prefix` and `--project`. Every run but `--check`
+and `--undo` rewrites it beside `after_pull`, and those two leave the onboarding
+file as it is.
 
 `octo-lite-start`, installed on `PATH`, creates a Herdr space labelled with the
 lane name and starts the lane's orchestrator alone in it at the worktree,

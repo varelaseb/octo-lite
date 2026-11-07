@@ -16,6 +16,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OFFLINE = ROOT / "tests" / "offline-bin"
+# Runtime tools stubbed at their floors: a verifying run finds them on any box.
+FLOORS = ROOT / "tests" / "floor-bin"
 RECORDER = "skills/implement-spec/assets/prototype-video"
 
 # npm ci installs the lockfile's packages and records them in node_modules;
@@ -45,7 +47,7 @@ class RecorderInstallTest(unittest.TestCase):
         self.bindir = base / "bin"
         self.bindir.mkdir()
         self.npm(fail="none")
-        self.env = {**os.environ, "PATH": f"{self.bindir}:{OFFLINE}:{os.environ['PATH']}",
+        self.env = {**os.environ, "PATH": f"{self.bindir}:{OFFLINE}:{FLOORS}:{os.environ['PATH']}",
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         upstream = base / "upstream"

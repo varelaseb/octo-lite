@@ -1,8 +1,9 @@
 """install-octo-lite --project links the skills a target declares on its
 AGENTS.md `Repo skills:` line from the given checkout, and warns on a stale
-link without touching it. Spec: spec/domains/install.spec.html
-#install-repo-skills; criteria #acceptance-repo-skills-link and
-#acceptance-repo-skills-stale."""
+link without touching it, which a verifying run names as a problem. Spec:
+spec/domains/install.spec.html #install-repo-skills; criteria
+#acceptance-repo-skills-link, #acceptance-repo-skills-stale, and
+#acceptance-repo-skills-stale-check."""
 
 from __future__ import annotations
 
@@ -15,7 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
 # skillfile and npm stubbed unreachable: installer runs never fetch.
-OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
+# Runtime tools stubbed at their floors: a verifying run finds them on any box.
+OFFLINE = f"{ROOT / 'tests/offline-bin'}:{ROOT / 'tests/floor-bin'}:{os.environ['PATH']}"
 
 
 def problems(run):
@@ -113,12 +115,22 @@ class InstallRepoSkillsTests(unittest.TestCase):
         house = self.prefix / ".claude" / "skills" / "house-style"
         self.assertEqual(str(self.checkout / "tools" / "lint" / "house-style"), os.path.realpath(house))
 
-    def test_check_warns_on_stale_link_and_exits_zero(self) -> None:
-        self.assertEqual([], problems(self._install("--project", str(self.checkout))))
-        stale = self.prefix / ".claude" / "skills" / "ui-rules"
-        stale.unlink()
-        stale.symlink_to(self.other_clone / "skills" / "ui-rules")
-        self._assert_stale_warned(self._install("--check", "--project", str(self.checkout)), stale)
+    def test_a_verifying_run_names_a_stale_link_with_its_fix(self) -> None:
+        # spec/domains/install.spec.html#acceptance-repo-skills-stale-check
+        for mode in ("--check", "--after-pull"):
+            with self.subTest(mode=mode):
+                self.assertEqual([], problems(self._install("--project", str(self.checkout))))
+                stale = self.prefix / ".claude" / "skills" / "ui-rules"
+                stale.unlink()
+                stale.symlink_to(self.other_clone / "skills" / "ui-rules")
+                result = self._install(mode, "--project", str(self.checkout))
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertEqual([f"stale link: {stale} -> {self.other_clone}/skills/ui-rules"
+                                  f" (not from {self.checkout}); fix: move it aside, then run"
+                                  f" {INSTALLER} --prefix {self.prefix} --project {self.checkout}"],
+                                 problems(result))
+                self.assertEqual(str(self.other_clone / "skills" / "ui-rules"), os.readlink(stale))
+                stale.unlink()
 
     def test_dangling_link_into_removed_clone_is_stale(self) -> None:
         stale = self._plant_stale()

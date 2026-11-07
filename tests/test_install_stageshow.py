@@ -22,6 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
 OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}"
+# Runtime tools stubbed at their floors: a verifying run finds them on any box.
+FLOORS = ROOT / "tests" / "floor-bin"
 SKILL_DIRS = (".claude/skills", ".codex/skills", ".agents/skills")
 PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stageshow$",
                 (ROOT / "Skillfile").read_text(), re.M).group(1)
@@ -83,7 +85,7 @@ class CloneCase(unittest.TestCase):
         for name, body in (("skillfile", SKILLFILE), ("npm", NPM.format(log=self.npm_log))):
             (bindir / name).write_text(body)
             (bindir / name).chmod(0o755)
-        self.env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+        self.env = {**os.environ, "PATH": f"{bindir}:{FLOORS}:{os.environ['PATH']}",
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         upstream = base / "upstream"

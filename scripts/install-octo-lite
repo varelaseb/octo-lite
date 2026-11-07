@@ -14,7 +14,7 @@ while (($#)); do
     --onboard) onboard=true; shift ;;
     --undo) undo=true; shift ;;
     --after-pull) after_pull=true; shift ;;
-    --project) project="$(cd "${2:?}" && pwd -P)"; shift 2 ;;
+    --project) project="$(readlink -m "${2:?}")"; shift 2 ;;
     *) echo "usage: install-octo-lite [--prefix PATH] [--project CHECKOUT] [--check | --onboard | --after-pull | --undo]" >&2; exit 64 ;;
   esac
 done
@@ -22,10 +22,11 @@ done
 root="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 # One root: --prefix owns every path it writes, state and config included;
 # without it, XDG decides under $HOME. scope keeps this run's prefix and
-# project for the after-pull step it publishes.
+# project for the after-pull step it publishes. Each resolves whether or not
+# it exists, so --check creates neither (install.spec.html#install-check).
 scope=()
 if [[ -n "$prefix" ]]; then
-  prefix="$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)"
+  prefix="$(readlink -m "$prefix")"
   state_home="$prefix/.local/state"
   scope+=(--prefix "$prefix")
 else
@@ -172,12 +173,15 @@ fi
 # as the [consent] table of its one onboarding file, beside the status it
 # publishes for any reader. Kept answers are not asked again; delete the file
 # to be asked afresh. after_pull is the argv a host runs, no shell, after
-# fast-forwarding this clone; every run rewrites it from this run's scope, and
-# commit records this clone's commit it ran at, so herdr-spawn can tell the
-# clone moved since (install.spec.html#install-after-pull). Written before any
-# step that can stop the run, so a failing run is recorded too and herdr-spawn
-# runs it once per move. The file is rewritten in place: herdr-spawn holds its
-# lock while it runs the step.
+# fast-forwarding this clone; every run but --check and --undo rewrites it
+# from this run's scope, and commit records this clone's commit it ran at, so
+# herdr-spawn can tell the clone moved since
+# (install.spec.html#install-after-pull). check is the argv a host runs, no
+# shell, to learn the setup problems of the box this run set up
+# (#install-setup-check); this clone's own script, so a pull changes it at once.
+# Written before any step that can stop the run, so a failing run is recorded
+# too and herdr-spawn runs it once per move. The file is rewritten in place:
+# herdr-spawn holds its lock while it runs the step.
 if [[ "$check" != true ]]; then
   onboarding="$state_home/octo-lite/onboarding.toml"
   consent="$(sed -n '/^\[consent\]$/,$p' "$onboarding" 2>/dev/null || true)"
@@ -191,11 +195,12 @@ if [[ "$check" != true ]]; then
   fi
   status=pending
   [[ -n "$consent" ]] && status=done && consent=$'\n'"$consent"$'\n'
-  step="$(printf ', "%s"' "$root/scripts/install-octo-lite" --after-pull "${scope[@]}")"
+  argv() { local a; a="$(printf ', "%s"' "$root/scripts/install-octo-lite" "$1" "${scope[@]}")"; echo "[${a:2}]"; }
   mkdir -p "$(dirname "$onboarding")"
   commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
-  printf 'status = "%s"\ndoc = "%s"\nafter_pull = [%s]\ncommit = "%s"\n%s' "$status" \
-    "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" "${step:2}" "$commit" "$consent" >"$onboarding"
+  printf 'status = "%s"\ndoc = "%s"\nafter_pull = %s\ncheck = %s\ncommit = "%s"\n%s' "$status" \
+    "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" \
+    "$(argv --after-pull)" "$(argv --check)" "$commit" "$consent" >"$onboarding"
   echo "onboarding $status: $onboarding"
 fi
 
@@ -315,7 +320,8 @@ done
 
 # A dangling link whose target was inside a clone of this repository is ours:
 # install prunes it, so linking finds none, and --check names it. Any other
-# dangling link is reported and left untouched. The prune walks every directory
+# dangling link is reported, not a problem, so on standard output, and left
+# untouched (install.spec.html#install-check). The prune walks every directory
 # the installer links into or a legacy link lies in.
 prune() { rm -f "$1"; echo "pruned: $1"; }
 for d in "$prefix/.claude/skills" "$prefix/.codex/skills" "$prefix/.agents/skills" \
@@ -326,7 +332,7 @@ for d in "$prefix/.claude/skills" "$prefix/.codex/skills" "$prefix/.agents/skill
     if is_ours "$(readlink -m "$f")"; then
       act "dangling legacy link: $f" prune "$f"
     else
-      echo "dangling link (not ours): $f -> $(readlink "$f")" >&2
+      echo "dangling link (not ours): $f -> $(readlink "$f")"
     fi
   done
 done
@@ -443,9 +449,13 @@ done
 # Project skills: the target's AGENTS.md declares them on one line,
 # `Repo skills: a/skill, b/skill`, and they link from the given live main
 # checkout only. An existing link resolving anywhere else is stale: warn,
-# leave it, continue. Never repair it, never link from another clone.
+# leave it, continue; a verifying run names it as a problem. Never repair it,
+# never link from another clone. An AGENTS.md it cannot read, the checkout gone
+# or without one, is one problem, and the run goes on.
 if [[ -n "$project" ]]; then
-  repo_skills="$(sed -n '/^[-*[:space:]]*Repo skills:/{s///p;q;}' "$project/AGENTS.md")"
+  repo_skills="$(sed -n '/^[-*[:space:]]*Repo skills:/{s///p;q;}' "$project/AGENTS.md" 2>/dev/null)" ||
+    problem "project AGENTS.md not readable: $project/AGENTS.md" \
+      "run ${install_cmd% --project *} --project <the project's live main checkout>"
   while read -r rel; do
     [[ -n "$rel" ]] || continue
     source="$project/$rel"
@@ -455,7 +465,10 @@ if [[ -n "$project" ]]; then
     for dir in .codex/skills .agents/skills .claude/skills; do
       target="$prefix/$dir/$(basename "$rel")"
       if [[ -L "$target" && "$(readlink -f "$target")" != "$(readlink -f "$source")" ]]; then
-        echo "stale link: $target -> $(readlink "$target") (not from $project)" >&2
+        stale="stale link: $target -> $(readlink "$target") (not from $project)"
+        if [[ "$verify" == true ]]; then problem "$stale" "move it aside, then run $install_cmd"
+        else echo "$stale" >&2
+        fi
         continue
       fi
       link_one "$source" "$target"
@@ -463,14 +476,13 @@ if [[ -n "$project" ]]; then
   done <<< "${repo_skills//,/$'\n'}"
 fi
 
-# Version floors: each tool octo-lite uses at runtime, with the minimum version
-# it needs and the upgrade source. --check reports each as ok, missing, or too
-# old (found vs needed). Install mode prints them as advisory; --check treats
-# missing or too old as a non-zero exit only when it is the tool that the
-# installer itself needs (herdr for wake, git for links).
+# Version floors (install.spec.html#install-floors): each tool octo-lite uses
+# at runtime, with the minimum version it needs and where to get it. A
+# verifying run prints each version found that meets its floor, and names each
+# tool missing or too old as a problem, fixed by getting it from its source.
 floor_tools=(
   "git:2.25.0:https://git-scm.com/downloads"
-  "herdr:0.1.0:install herdr from https://github.com/herdrdev/herdr"
+  "herdr:0.1.0:https://github.com/herdrdev/herdr"
   "jq:1.6:https://jqlang.github.io/jq/download/"
   "gh:2.0.0:https://cli.github.com/"
   "claude:1.0.0:https://docs.anthropic.com/en/docs/claude-code"
@@ -508,32 +520,29 @@ version_ge() {
 }
 
 check_floors() {
-  local entry cmd min_ver source found agent_ok=false
+  local entry cmd min_ver source found agents=""
   for entry in "${floor_tools[@]}"; do
     IFS=: read -r cmd min_ver source <<< "$entry"
     if ! command -v "$cmd" >/dev/null 2>&1; then
-      # claude and codex: at least one must be present
-      [[ "$cmd" == claude || "$cmd" == codex ]] && continue
-      echo "  $cmd: missing (need >= $min_ver; $source)" >&2
+      # claude and codex: one is enough; both missing is one problem, below
+      if [[ "$cmd" == claude || "$cmd" == codex ]]; then agents+="${agents:+ or }$cmd >= $min_ver from $source"
+      else problem "$cmd missing (need >= $min_ver)" "get it from $source"
+      fi
       continue
     fi
     # A tool that prints no version fails its pipeline; it is installed all the same.
     found="$(version_of "$cmd")" || found=""
     if [[ -z "$found" ]]; then
       echo "  $cmd: installed (version unknown, need >= $min_ver)"
-      [[ "$cmd" == claude || "$cmd" == codex ]] && agent_ok=true
       continue
     fi
     if version_ge "$found" "$min_ver"; then
       echo "  $cmd: ok ($found)"
-      [[ "$cmd" == claude || "$cmd" == codex ]] && agent_ok=true
     else
-      echo "  $cmd: too old ($found < $min_ver; $source)" >&2
+      problem "$cmd too old ($found < $min_ver)" "get it from $source"
     fi
   done
-  if ! $agent_ok; then
-    echo "  agent CLI: missing (need claude >= 1.0.0 or codex >= 0.1.0)" >&2
-  fi
+  [[ "$agents" != *" or "* ]] || problem "agent CLI missing (need claude or codex)" "get $agents"
 }
 
 if [[ "$check" == true ]]; then

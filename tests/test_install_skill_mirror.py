@@ -15,7 +15,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
 # skillfile and npm stubbed unreachable: installer runs never fetch.
-OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
+# Runtime tools stubbed at their floors: a verifying run finds them on any box.
+OFFLINE = f"{ROOT / 'tests/offline-bin'}:{ROOT / 'tests/floor-bin'}:{os.environ['PATH']}"
 
 
 def problems(run):
@@ -80,6 +81,7 @@ class InstallSkillMirrorTests(unittest.TestCase):
             [str(link), "--prefix", str(self.prefix), "--check"],
             capture_output=True,
             text=True,
+            env={**os.environ, "PATH": OFFLINE},
         )
         self.assertEqual([], problems(check), check.stdout + check.stderr)
 

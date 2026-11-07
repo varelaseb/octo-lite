@@ -1,0 +1,6 @@
+#!/bin/sh
+# A tool octo-lite needs at runtime, at a version above every floor. Installer
+# tests put this folder first on PATH, so a verifying run finds the same tools
+# on any box; git and python3, which the installer runs, stay the box's own.
+# Each other tool here links to this file.
+echo "$(basename "$0") 99.0.0"
