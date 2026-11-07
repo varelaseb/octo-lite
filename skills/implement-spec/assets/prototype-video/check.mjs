@@ -64,12 +64,12 @@ function ringProbes({ radius, band, halo }, clear = () => true) {
   })
 }
 const clearOfArrow = ([dx, dy]) => !inside([dx + 0.5, dy + 0.5], ARROW) && distance([dx + 0.5, dy + 0.5], ARROW) > EDGE + 4
-const SHAPES = {
+export const SHAPES = {
   desktop: { cursor: ARROW_PROBES, mark: ringProbes(MARK, clearOfArrow) },
   phone: { cursor: ringProbes(TOUCH), mark: ringProbes(MARK) },
 }
 
-function drawn({ size, luma }, probes) {
+export function drawn({ size, luma }, probes) {
   const read = probes.filter(([dx, dy, light]) => {
     const value = luma[(HALF + dy) * size + HALF + dx]
     return light ? value > LIGHT : value < DARK
