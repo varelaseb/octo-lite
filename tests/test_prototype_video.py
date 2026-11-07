@@ -75,35 +75,46 @@ for (const step of steps) {
 """
 
 
-# Hovers the ungated week's card on a phone, as the recorder does before a tap, once with no finger resting and once with
-# the recorder resting one there, and reads whether the touch shows at that point by the check's own shapes.
-REST = """
+# Runs the recorder on its arguments and reads the frames its video is made of, as its screencast hands them over: for
+# each tap, whether the touch shows at its point in the last frame before the tap, and in the last frame before the next
+# hover, or the video's last, once the finger has lifted.
+TAPS = """
 import { createRequire } from 'node:module'
-const [dir, address] = process.argv.slice(1)
+const [dir, ...argv] = process.argv.slice(1)
 const require = createRequire(`${dir}/recorder.mjs`)
 const { chromium } = require('playwright-core')
 const { jpegjs } = require('playwright-core/lib/utilsBundle')
-const { ARROW, EDGE, MARK, TOUCH, overlay } = await import(`${dir}/overlay.mjs`)
 const { SHAPES, crop, drawn } = await import(`${dir}/check.mjs`)
-const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {})
-const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
-let rest = false
-await context.exposeBinding('octoLiteRecorder', () => ({ rest }))
-await context.addInitScript(overlay, { ARROW, EDGE, MARK, TOUCH, touch: true })
-const page = await context.newPage()
-await page.goto(`${address}ungated/`)
-const box = await page.locator('.card').boundingBox()
-const at = { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) }
-const shown = async () => {
-  await page.mouse.move(at.x, at.y)
-  await page.waitForTimeout(300)
-  const shot = jpegjs.decode(await page.screenshot({ type: 'jpeg', quality: 95 }), { useTArray: true, formatAsRGBA: true })
-  return drawn(crop(shot, at.x, at.y), SHAPES.phone.cursor)
+const { main } = await import(`${dir}/recorder.mjs`)
+const frames = []
+const moves = []
+const taps = []
+const launch = chromium.launch.bind(chromium)
+chromium.launch = async options => {
+  const browser = await launch(options)
+  const newContext = browser.newContext.bind(browser)
+  browser.newContext = async options => {
+    const context = await newContext(options)
+    context.on('page', ({ mouse, touchscreen, screencast }) => {
+      const logged = (calls, call) => (x, y, ...rest) => (calls.push({ x, y, at: Date.now() }), call(x, y, ...rest))
+      mouse.move = logged(moves, mouse.move.bind(mouse))
+      touchscreen.tap = logged(taps, touchscreen.tap.bind(touchscreen))
+      const start = screencast.start.bind(screencast)
+      screencast.start = ({ onFrame, ...rest }) =>
+        start({ ...rest, onFrame: frame => (frames.push(frame), onFrame(frame)) })
+    })
+    return context
+  }
+  return browser
 }
-const unrested = await shown()
-rest = at
-console.log(JSON.stringify({ unrested, rested: await shown() }))
-await browser.close()
+await main(argv)
+const before = at => frames.findLast(frame => frame.timestamp < at)
+const touch = (frame, { x, y }) => drawn(crop(jpegjs.decode(frame.data, { useTArray: true, formatAsRGBA: true }), x, y),
+  SHAPES.phone.cursor)
+console.log(JSON.stringify(taps.map(tap => {
+  const next = moves.find(move => move.at > tap.at)
+  return { rested: touch(before(tap.at), tap), after: touch(next ? before(next.at) : frames.at(-1), tap) }
+})))
 """
 
 
@@ -195,13 +206,16 @@ class RecordingTest(unittest.TestCase):
         self.addCleanup(self.site.server_close)
         self.addCleanup(self.site.shutdown)
 
-    def record(self, mockup, *viewports):
+    def record(self, mockup, *viewports, program=None):
+        """The recorder's run on the mockup, or `program`'s, which runs it (TAPS)."""
         (self.repo / "screen.mockup.html").write_text(mockup)
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                "GIT_COMMITTER_EMAIL": "t@t"}
         for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "screen"]):
             subprocess.run(["git", "-C", str(self.repo), *argv], check=True, env=env)
-        return subprocess.run([str(RECORDER / "prototype-video"), str(self.repo / "screen.mockup.html"),
+        recorder = ["node", "--input-type=module", "-e", program, str(RECORDER)] if program else [
+            str(RECORDER / "prototype-video")]
+        return subprocess.run([*recorder, str(self.repo / "screen.mockup.html"),
                                self.site.address, *(f"--viewport={v}" for v in viewports)],
                               capture_output=True, text=True, cwd=self.repo)
 
@@ -226,14 +240,14 @@ class RecordingTest(unittest.TestCase):
         result = self.record(ROUND.replace("/week/", "/ungated/"), "phone")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_phone_touch_rests_where_its_hover_shows(self):
-        """On a phone the recorder hovers a part before it taps, which shows the part's hover, so the touch rests on
-        that point from then: every change has a cause on screen. A hover with no finger resting, as the page's first
-        at 0, 0, draws none."""
-        result = subprocess.run(["node", "--input-type=module", "-e", REST, str(RECORDER), self.site.address],
-                                capture_output=True, text=True)
+    def test_phone_touch_rests_from_its_hover_until_its_tap(self):
+        """On a phone the recorder hovers a part before it taps it, which shows the part's hover, so the touch rests on
+        that point from the hover until the tap: every change has a cause on screen. The tap lifts the finger, so once
+        it has lifted no touch shows there, on a page the tap opens either: Tuesday, which the card opens only once its
+        press mark has run, and the week, which the back link opens while it runs."""
+        result = self.record(ROUND.replace("/week/", "/wait/"), "phone", program=TAPS)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"unrested": False, "rested": True})
+        self.assertEqual(json.loads(result.stdout.splitlines()[-1]), [{"rested": True, "after": False}] * 2)
 
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
