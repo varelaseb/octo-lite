@@ -377,6 +377,8 @@ class OnboardingTest(unittest.TestCase):
         checkout.mkdir()
         (checkout / "AGENTS.md").write_text("# project\n")
         self.run_installer("--project", str(checkout))
+        foreign = self.prefix / ".claude/skills/someone-elses"
+        foreign.symlink_to(self.prefix.parent / "gone")
         published = tomllib.loads(self.onboarding.read_text())["check"]
         fix = f"run {INSTALLER} --prefix {self.prefix.resolve()} --project <the project's live main checkout>"
         for gone in (checkout / "AGENTS.md", checkout):
@@ -389,6 +391,7 @@ class OnboardingTest(unittest.TestCase):
                 for line in r.stderr.splitlines():
                     self.assertIn("; fix: ", line)
                 self.assertIn("octo-lite links checked", r.stdout)
+                self.assertIn(f"dangling link (not ours): {foreign}", r.stdout)
                 self.assertIn("version floors:", r.stdout)
 
     def test_check_at_a_missing_prefix_creates_nothing(self):

@@ -173,10 +173,11 @@ fi
 # as the [consent] table of its one onboarding file, beside the status it
 # publishes for any reader. Kept answers are not asked again; delete the file
 # to be asked afresh. after_pull is the argv a host runs, no shell, after
-# fast-forwarding this clone; every run rewrites it from this run's scope, and
-# commit records this clone's commit it ran at, so herdr-spawn can tell the
-# clone moved since (install.spec.html#install-after-pull). check is the argv a
-# host runs, no shell, to learn the setup problems of the box this run set up
+# fast-forwarding this clone; every run but --check and --undo rewrites it
+# from this run's scope, and commit records this clone's commit it ran at, so
+# herdr-spawn can tell the clone moved since
+# (install.spec.html#install-after-pull). check is the argv a host runs, no
+# shell, to learn the setup problems of the box this run set up
 # (#install-setup-check); this clone's own script, so a pull changes it at once.
 # Written before any step that can stop the run, so a failing run is recorded
 # too and herdr-spawn runs it once per move. The file is rewritten in place:
