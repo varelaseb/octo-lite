@@ -12,11 +12,12 @@ export const EDGE = 2
 export const TOUCH = { radius: 13, band: 3, halo: 2.5 }
 export const MARK = { radius: 21, band: 4, halo: 3, ms: 650, full: [70, 330] }
 
-// Runs in each document the recording page loads, before the page's own scripts. A phone draws the touch and the mark on
-// each touchstart; a desktop draws the arrow wherever the mouse is and the mark on each mousedown. A document the page
-// opens starts from what the recorder last drew, which it asks of the recorder (recorder.mjs), so the cursor stays at
-// rest and a press that opened the page shows through it. The overlay sits in the top layer and goes back on top
-// whenever the page opens a dialog or popover there, so nothing the page shows covers it.
+// Runs in each document the recording page loads, before the page's own scripts. A phone draws the touch resting where
+// the mouse hovers while the recorder rests a finger there, so the hover a tap applies shows with its cause, and the
+// touch and the mark on each touchstart; a desktop draws the arrow wherever the mouse is and the mark on each mousedown.
+// Whether a finger rests, and what a document the page opens starts from, it asks of the recorder (recorder.mjs), so
+// the cursor stays at rest and a press that opened the page shows through it. The overlay sits in the top layer and
+// goes back on top whenever the page opens a dialog or popover there, so nothing the page shows covers it.
 export function overlay({ ARROW, EDGE, TOUCH, MARK, touch }) {
   const host = document.createElement('octo-lite-cursor')
   host.setAttribute('popover', 'manual')
@@ -67,18 +68,25 @@ export function overlay({ ARROW, EDGE, TOUCH, MARK, touch }) {
     animation.currentTime = since
     animation.finished.then(() => el.remove())
   }
+  // A cursor rests where it is drawn; a phone's finger rests on the screen.
+  const rest = (x, y) => {
+    place(x, y)
+    if (touch) cursor.firstChild.setAttribute('data-down', '')
+  }
   let lift
   const press = (x, y, since = 0) => {
-    place(x, y)
+    rest(x, y)
     mark(x, y, since)
     if (!touch) return
     // The finger taps, and lifts away slowly enough for its press to read.
-    cursor.firstChild.setAttribute('data-down', '')
     clearTimeout(lift)
     lift = setTimeout(() => cursor.firstChild.removeAttribute('data-down'), 350 - since)
   }
   const options = { capture: true, passive: true }
   if (touch) {
+    // A hover with no finger resting, as the page's first at 0, 0 or the one a tap makes, draws none.
+    const hover = e => octoLiteRecorder().then(({ rest: at }) => at && rest(e.clientX, e.clientY))
+    addEventListener('mousemove', hover, options)
     addEventListener('touchstart', e => press(e.touches[0].clientX, e.touches[0].clientY), options)
   } else {
     addEventListener('mousemove', e => place(e.clientX, e.clientY), options)
@@ -93,8 +101,8 @@ export function overlay({ ARROW, EDGE, TOUCH, MARK, touch }) {
   addEventListener('DOMContentLoaded', mount)
   // The recorder's pointer is the top document's; a frame inside it draws only what its own events show.
   if (window === top) {
-    octoLiteRecorder().then(({ rest, last }) => {
-      if (rest) place(rest.x, rest.y)
+    octoLiteRecorder().then(({ rest: at, last }) => {
+      if (at) rest(at.x, at.y)
       if (last && last.since < MARK.ms) press(last.x, last.y, last.since)
     })
   }
