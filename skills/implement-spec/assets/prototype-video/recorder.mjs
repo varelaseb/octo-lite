@@ -2,10 +2,10 @@
 // writes for its lane. It reads the screen's mockup file, loads its route on the worker's running prototype, and
 // reaches each walkthrough step by its actions as Spec Chat does (mockups #prototype-steps), as a person would, at the
 // pace of Stageshow's motion rules: the cursor, on a phone a touch, travels to each part an action names, the page
-// first scrolling it into view, rests on it so its hover shows, and presses it with a mark where, judged once rested,
-// the press lands on what Spec Chat presses; typed text goes in one key at a time; each change plays at the product's
-// own speed and each step's result holds before the next. It checks each video (check.mjs) and keeps every viewport's,
-// with its captions, where Spec Chat reads them (mockups #round-video-store), only once all pass.
+// first scrolling it into view, rests on it so its hover shows, and presses it with a mark where, judged with the hover
+// the press will have, the press lands on what Spec Chat presses; typed text goes in one key at a time; each change
+// plays at the product's own speed and each step's result holds before the next. It checks each video (check.mjs) and
+// keeps every viewport's, with its captions, where Spec Chat reads them (mockups #round-video-store), only once all pass.
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -150,14 +150,19 @@ async function act(page, step, action, touch, pointer, presses) {
   }
   // Inside the part but off its words (Stageshow motion.md, The cursor), else its middle. The cursor goes to the first
   // where a press would press what Spec Chat presses, and presses once it has rested there if a press still would,
-  // judged then, as its hover may show a part over that point; else it goes on to the next.
+  // judged then, as its hover may show a part over that point; else it goes on to the next. A phone's tap hovers the
+  // point before it presses there, so the mouse, which a phone's overlay never draws, hovers it first.
   const lands = point => target.evaluate(pressesPart, { ...point, acts: ACTS })
   let to
   for (const [across, down] of [[box.width > 40 ? 0.85 : 0.5, 0.6], [0.5, 0.5]]) {
     const point = { x: Math.round(box.x + box.width * across), y: Math.round(box.y + box.height * down) }
     if (!await lands(point)) continue
-    if (touch) await sleep(PACE.reach)
-    else await travel(page, pointer, point)
+    if (touch) {
+      await sleep(PACE.reach)
+      await page.mouse.move(point.x, point.y)
+    } else {
+      await travel(page, pointer, point)
+    }
     await sleep(PACE.rest)
     if (await lands(point)) {
       to = point
