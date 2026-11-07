@@ -32,8 +32,9 @@ MOCKUP = """<!doctype html>
 </ol>
 """
 
-# The fixture site's week: its card, which a trailing button overlaps, opens Tuesday, whose link leads back. Both
-# presses open another page.
+# The fixture site's week: its card opens Tuesday, whose link leads back. A trailing button over the card's right removes
+# it instead: on a desktop it shows only once the cursor rests on the card, on a phone always. Both presses open another
+# page.
 ROUND = """<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -147,8 +148,9 @@ class RecordingTest(unittest.TestCase):
                               capture_output=True, text=True, cwd=self.repo)
 
     def test_presses_that_open_pages_record_and_pass_their_check(self):
-        """The card's press lands on the card, not the button over its right; each press opens a page, through which
-        the cursor, on a phone the touch, and its mark still show, and the cursor rests on the page it opened."""
+        """The card's press lands on the card, not the button over its right, on a desktop judged once the cursor
+        rests there, where the card's hover shows that button; each press opens a page, through which the cursor, on a
+        phone the touch, and its mark still show."""
         result = self.record(ROUND, "desktop", "phone")
         self.assertEqual(result.returncode, 0, result.stderr)
         videos = self.repo / "screen.mockup.html.review" / "videos"

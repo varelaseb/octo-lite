@@ -8,8 +8,10 @@
   .card { position: relative; width: min(640px, 100%); box-sizing: border-box; padding: 24px; background: #fff;
           border: 1px solid #ccc; border-radius: 8px; cursor: pointer }
   .remove { position: absolute; top: 8px; right: 8px; bottom: 8px; width: 40% }
+  @media (hover: hover) { .remove { display: none } .card:hover .remove { display: block } }
 </style>
-<!-- A wide card that opens its day, with a trailing button over the right of it that removes it instead. -->
+<!-- A wide card that opens its day, with a trailing button over the right of it that removes it instead: shown while
+     the card is hovered where a pointer hovers, always on a phone. -->
 <div class="card">Tuesday<button class="remove" type="button">Remove</button></div>
 <script>
   document.querySelector('.card').addEventListener('click', () => { location.href = '../day/' })

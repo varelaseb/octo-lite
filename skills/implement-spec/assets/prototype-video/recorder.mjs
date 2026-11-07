@@ -2,10 +2,10 @@
 // writes for its lane. It reads the screen's mockup file, loads its route on the worker's running prototype, and
 // reaches each walkthrough step by its actions as Spec Chat does (mockups #prototype-steps), as a person would, at the
 // pace of Stageshow's motion rules: the cursor, on a phone a touch, travels to each part an action names, the page
-// first scrolling it into view, rests on it so its hover shows, and presses it with a mark where the press lands on
-// what Spec Chat presses; typed text goes in one key at a time; each change plays at the product's own speed and each
-// step's result holds before the next. It checks each video (check.mjs) and keeps every viewport's, with its captions,
-// where Spec Chat reads them (mockups #round-video-store), only once all pass.
+// first scrolling it into view, rests on it so its hover shows, and presses it with a mark where, judged once rested,
+// the press lands on what Spec Chat presses; typed text goes in one key at a time; each change plays at the product's
+// own speed and each step's result holds before the next. It checks each video (check.mjs) and keeps every viewport's,
+// with its captions, where Spec Chat reads them (mockups #round-video-store), only once all pass.
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -87,7 +87,7 @@ async function launch() {
 }
 
 // One viewport's video into `file`, each step checked once its result has held; returns its captions.
-export async function record(browser, url, steps, viewport, file, check = verify) {
+async function record(browser, url, steps, viewport, file) {
   const size = VIEWPORTS[viewport]
   const touch = viewport === 'phone'
   const { jpegjs } = createRequire(import.meta.url)('playwright-core/lib/utilsBundle')
@@ -118,11 +118,11 @@ export async function record(browser, url, steps, viewport, file, check = verify
       for (const action of step.actions) await act(page, step, action, touch, pointer, presses)
       await settle(page) // a step the screen reaches on its own plays with the cursor at rest
       await sleep(n === steps.length - 1 ? PACE.last : PACE.hold)
-      check(viewport, step.name, presses.splice(0).map(({ action, x, y, at }) => {
+      verify(viewport, step.name, presses.splice(0).map(({ action, x, y, at }) => {
         const [from, to] = MARK.full.map(ms => at + ms)
         const seen = [frames.findLast(f => f.timestamp <= from), ...frames.filter(f => f.timestamp > from && f.timestamp <= to)]
         return { action, crops: seen.filter(Boolean).map(f => crop(decode(f), x, y)) }
-      }), !touch && crop(decode(frames.at(-1)), pointer.x, pointer.y))
+      }))
       frames.splice(0, frames.length - 1)
     }
     const end = Date.now() - start
@@ -148,15 +148,23 @@ async function act(page, step, action, touch, pointer, presses) {
     await target.evaluate(el => el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }))
     box = await scrolled(target)
   }
-  // Inside the part but off its words (Stageshow motion.md, The cursor), else its middle: the first where a press lands
-  // on what Spec Chat presses, the part itself and nothing inside it that acts of its own.
-  const points = [[box.width > 40 ? 0.85 : 0.5, 0.6], [0.5, 0.5]]
-    .map(([across, down]) => ({ x: Math.round(box.x + box.width * across), y: Math.round(box.y + box.height * down) }))
-  const to = points[await target.evaluate(landing, { points, acts: ACTS })]
+  // Inside the part but off its words (Stageshow motion.md, The cursor), else its middle. The cursor goes to the first
+  // where a press would press what Spec Chat presses, and presses once it has rested there if a press still would,
+  // judged then, as its hover may show a part over that point; else it goes on to the next.
+  const lands = point => target.evaluate(pressesPart, { ...point, acts: ACTS })
+  let to
+  for (const [across, down] of [[box.width > 40 ? 0.85 : 0.5, 0.6], [0.5, 0.5]]) {
+    const point = { x: Math.round(box.x + box.width * across), y: Math.round(box.y + box.height * down) }
+    if (!await lands(point)) continue
+    if (touch) await sleep(PACE.reach)
+    else await travel(page, pointer, point)
+    await sleep(PACE.rest)
+    if (await lands(point)) {
+      to = point
+      break
+    }
+  }
   if (!to) throw new Error(`step "${step.name}": a press on "${selector}" lands on another part, over it or acting inside it`)
-  if (touch) await sleep(PACE.reach)
-  else await travel(page, pointer, to)
-  await sleep(PACE.rest)
   presses.push({ action: `${action.press ? 'press' : 'type into'} ${selector}`, ...to, at: Date.now() })
   if (touch) {
     await page.touchscreen.tap(to.x, to.y)
@@ -173,14 +181,12 @@ async function act(page, step, action, touch, pointer, presses) {
   await settle(page)
 }
 
-// The first point where a press presses the part as Spec Chat's click on it does: what lies there is the part or inside
-// it, with nothing between that acts of its own.
-function landing(part, { points, acts }) {
-  return points.findIndex(({ x, y }) => {
-    const hit = document.elementFromPoint(x, y)
-    const own = hit?.closest(acts)
-    return hit && part.contains(hit) && (!own || own === part || !part.contains(own))
-  })
+// Whether a press at x, y presses the part as Spec Chat's click on it does: what lies there is the part or inside it,
+// with nothing between that acts of its own.
+function pressesPart(part, { x, y, acts }) {
+  const hit = document.elementFromPoint(x, y)
+  const own = hit?.closest(acts)
+  return Boolean(hit && part.contains(hit) && (!own || own === part || !part.contains(own)))
 }
 
 // Where the part comes to rest once the page has scrolled it into view.
