@@ -417,7 +417,7 @@ class LaneRecordTests(unittest.TestCase):
             "A See it line never gates",
         ):
             self.assertIn(phrase, orchestrator)
-        self.assertIn("for a ticket that changes a screen each screen and state it changes in plain words",
+        self.assertIn("for a ticket that changes a screen, each screen and state it changes, in plain words",
                       read("agents/implementer.md"))
         self.assertIn("A merge ask you relay keeps every See it line the owner sent, without the human asking",
                       read("agents/meta-operator.md"))
