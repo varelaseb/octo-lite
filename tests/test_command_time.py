@@ -18,8 +18,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / "scripts" / "octo-lite-command-time"
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
+# skillfile stubbed unreachable: installer runs never fetch.
+OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
 LOOP = "Slow iteration loop"
 SECONDS = re.compile(r"(?:(\d+)m )?([0-9.]+)s")
+
+
+def problems(run):
+    """The problems a run names, but Stageshow's: offline, it is never fetched."""
+    return [line for line in run.stderr.splitlines()
+            if "; fix: " in line and not line.startswith("Stageshow not installed")]
 
 
 def seconds(text: str) -> float:
@@ -258,9 +266,9 @@ class HooksInformRuleTests(HookCase):
 
     def test_every_registered_hook_only_informs(self) -> None:
         prefix = self.tmp / "prefix"
-        done = subprocess.run([str(INSTALLER), "--prefix", str(prefix)], capture_output=True,
-                              text=True, env=self.env, stdin=subprocess.DEVNULL)
-        self.assertEqual(0, done.returncode, done.stderr)
+        done = subprocess.run([str(INSTALLER), "--prefix", str(prefix)], capture_output=True, text=True,
+                              env={**self.env, "PATH": OFFLINE}, stdin=subprocess.DEVNULL)
+        self.assertEqual([], problems(done), done.stderr)
         registered = []
         for settings in (prefix / ".claude/settings.json", prefix / ".codex/hooks.json"):
             for event, groups in json.loads(settings.read_text())["hooks"].items():

@@ -285,16 +285,28 @@ class LaneRecordTests(unittest.TestCase):
 
     def test_operator_relays_gates_decisions_blockers_lane_closes(self) -> None:
         # spec #roles-operator-writes, #acceptance-operator-quiet,
-        # #acceptance-operator-bundle, #acceptance-operator-trade-off.
+        # #acceptance-operator-bundle, #acceptance-operator-trade-off,
+        # #roles-box-problem, #acceptance-box-problem-human.
         text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
         self.assertIn("You are the filter (spec `#roles-operator-writes`): relay to the human only gates, decisions, "
-                      "real blockers, and lane closes, plus the one addendum receipt line; progress gets one line "
-                      "or nothing.", text)
+                      "real blockers, lane closes, and each problem of the box an owner reports (spec "
+                      "`#roles-box-problem`) once with the step that fixes it, however many lanes report it, plus the "
+                      "one addendum receipt line; progress gets one line or nothing.", text)
         self.assertIn("go together as one question asking whether to take your recommendations, one plain line "
                       "per question naming its recommendation", text)
         self.assertIn("A question that weighs real trade-offs goes alone, never in that bundle.", text)
         self.assertNotIn("status only when they ask", text)
         self.assertNotIn("you consume without a message", text)
+
+    def test_owner_reports_each_box_problem_to_operator_once(self) -> None:
+        # spec #roles-box-problem, #acceptance-box-problem-owner: the owner reports
+        # each problem of the box once, apart from the review link that also says it.
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("- Box problems (spec `#roles-box-problem`): a part of the box you or a worker works without "
+                      "because it is missing or out of date, such as Stageshow not installed", owner)
+        self.assertIn("The first time you meet one, in a worker's report or a step of your own, report it to the "
+                      "operator once in its own message, naming the problem and the step that fixes it", owner)
+        self.assertIn("besides saying so where this contract says its fallback is said", owner)
 
     def test_operator_starts_each_lane_under_an_unused_name(self) -> None:
         # spec #lane-record: a lane record's name is never reused, archived included.

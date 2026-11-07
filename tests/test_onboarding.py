@@ -12,8 +12,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/install-octo-lite"
+SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
 # skillfile stubbed unreachable: installer runs never fetch.
 OFFLINE = f"{ROOT / 'tests/offline-bin'}:{os.environ['PATH']}"
+
+
+def problems(run):
+    """The problems a run names, but Stageshow's: offline, it is never fetched."""
+    return [line for line in run.stderr.splitlines()
+            if "; fix: " in line and not line.startswith("Stageshow not installed")]
 
 
 class OnboardingTest(unittest.TestCase):
@@ -28,10 +35,14 @@ class OnboardingTest(unittest.TestCase):
                     "XDG_CONFIG_HOME": str(self.sentinel / "config")}
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
 
-    def install(self, *extra, answers=""):
+    def run_installer(self, *extra, answers=""):
         r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), *extra],
                            input=answers, capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(problems(r), [], r.stderr)
+        return r
+
+    def install(self, *extra, answers=""):
+        self.run_installer(*extra, answers=answers)
         return tomllib.loads(self.onboarding.read_text())
 
     def test_plain_install_is_pending_and_asks_nothing(self):
@@ -67,10 +78,13 @@ class OnboardingTest(unittest.TestCase):
     def test_check_writes_no_state(self):
         self.install()
         self.onboarding.unlink()
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
-                           capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.run_installer("--check")
         self.assertFalse(self.onboarding.exists())
+
+    def test_every_run_records_the_clone_commit(self):
+        head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(self.install()["commit"], head)
 
     def test_start_command_is_on_path(self):
         self.install()
@@ -134,9 +148,7 @@ class OnboardingTest(unittest.TestCase):
         skills.mkdir(parents=True)
         foreign = skills / "my-own-skill"
         foreign.symlink_to("/nonexistent/foreign/path")
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
-                           capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_installer()
         self.assertTrue(foreign.is_symlink(), "foreign dangling link was deleted")
         self.assertIn("not ours", r.stderr)
 
@@ -146,9 +158,7 @@ class OnboardingTest(unittest.TestCase):
         skills.mkdir(parents=True)
         foreign = skills / "commit"
         foreign.symlink_to("/nonexistent/foreign/commit")
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
-                           capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_installer()
         self.assertEqual(os.readlink(foreign), "/nonexistent/foreign/commit")
         self.assertIn(f"skipped: {foreign}", r.stdout)
 
@@ -158,9 +168,7 @@ class OnboardingTest(unittest.TestCase):
         skills.mkdir(parents=True)
         own = skills / "deleted-skill"
         own.symlink_to(str(ROOT / "nonexistent-deleted-skill"))
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
-                           capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_installer()
         self.assertFalse(own.exists() or own.is_symlink(), "own dangling link was not pruned")
         self.assertIn("pruned", r.stdout)
 
@@ -175,9 +183,7 @@ class OnboardingTest(unittest.TestCase):
         agents.mkdir(parents=True)
         own = agents / "merger.md"
         own.symlink_to(str(clone / "agents/merger.md"))
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
-                           capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_installer()
         self.assertFalse(own.is_symlink(), "same-origin dangling link was not pruned")
         self.assertNotIn("not ours", r.stderr)
 
@@ -197,9 +203,7 @@ class OnboardingTest(unittest.TestCase):
         agents.mkdir(parents=True)
         link = agents / "implementer.md"
         link.symlink_to(str(clone / "agents/implementer.md"))
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
-                           capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_installer()
         self.assertIn(f"adopted: {link}", r.stdout)
 
     def test_foreign_dangling_link_in_bin_is_left(self):
@@ -226,14 +230,55 @@ class OnboardingTest(unittest.TestCase):
 
     def test_check_reports_version_floors(self):
         """--check prints version floor status for runtime tools."""
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
-                           capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
-                           capture_output=True, text=True, env=self.env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.run_installer()
+        r = self.run_installer("--check")
         self.assertIn("version floors", r.stdout)
         self.assertIn("git:", r.stdout)
+
+    def test_check_names_a_dangling_link_of_ours_once_fixed_by_install(self):
+        """Install replaces a dangling link of ours, so the check names it once
+        with install as its fix, never as a link to move aside."""
+        self.run_installer()
+        for rel in (".claude/skills/commit", ".agents/skills/commit"):
+            with self.subTest(rel):
+                link = self.prefix / rel
+                link.unlink()
+                link.symlink_to(ROOT / "skills/gone")
+                r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
+                                   capture_output=True, text=True, env=self.env)
+                self.assertEqual(problems(r), [f"dangling legacy link: {link};"
+                                               f" fix: run {INSTALLER} --prefix {self.prefix}"])
+                self.run_installer()
+                self.assertEqual(link.resolve(), ROOT / "skills/commit")
+
+    def test_check_names_a_dangling_legacy_link_once(self):
+        """A dangling legacy link of ours, in a linked directory or not, is
+        named once by the check and removed by installing."""
+        self.run_installer()
+        for rel in (".codex/octo-lite/roles", ".codex/octo-lite-role-skills.json"):
+            with self.subTest(rel):
+                link = self.prefix / rel
+                link.symlink_to(ROOT / "gone-legacy")
+                r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
+                                   capture_output=True, text=True, env=self.env)
+                self.assertEqual(problems(r), [f"dangling legacy link: {link};"
+                                               f" fix: run {INSTALLER} --prefix {self.prefix}"])
+                self.run_installer()
+                self.assertFalse(link.is_symlink())
+
+    def test_dangling_legacy_link_not_ours_is_left_by_check_and_install(self):
+        """A legacy path dangling into a deleted clone of someone else's is
+        not ours in either mode: named so, never removed."""
+        self.run_installer()
+        link = self.prefix / ".claude/agents/octo-lite-implementer.md"
+        link.symlink_to(self.prefix.parent / "deleted-clone/agents/octo-lite-implementer.md")
+        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(problems(r), [])
+        self.assertIn(f"dangling link (not ours): {link}", r.stderr)
+        r = self.run_installer()
+        self.assertTrue(link.is_symlink(), "install removed a link the check called not ours")
+        self.assertIn(f"dangling link (not ours): {link}", r.stderr)
 
     def test_check_output_says_checked(self):
         """--check says 'checked', plain install says 'installed' (F-D7)."""
@@ -245,17 +290,37 @@ class OnboardingTest(unittest.TestCase):
         self.assertIn("checked", r.stdout)
 
 
+# Herdr as herdr-spawn sees it: a tab, an agent started with no dialog, a status.
+FAKE_HERDR = """#!/bin/sh
+case "$1 $2" in
+  "tab create") echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
+  "agent get") echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+esac
+"""
+
+
 class AfterPullTest(unittest.TestCase):
     """A host fast-forwards an installed clone, then runs the published
-    after_pull argv with no shell (spec/domains/install.spec.html#install-after-pull)."""
+    after_pull argv with no shell, or no host does and a lane owner spawns a
+    worker (spec/domains/install.spec.html#install-after-pull)."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name)
         self.prefix = base / "prefix"
-        self.env = {**os.environ, "PATH": OFFLINE, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
+        # Stageshow is installed: skillfile finds its pin deployed, and its
+        # filming dependencies are current. Herdr is faked.
+        self.bin = base / "bin"
+        self.bin.mkdir()
+        for name, body in (("skillfile", "#!/bin/sh\n"), ("herdr", FAKE_HERDR)):
+            (self.bin / name).write_text(body)
+            (self.bin / name).chmod(0o755)
+        self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.prefix),
+                    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        self.env.pop("XDG_STATE_HOME", None)
         self.upstream = base / "upstream"
         (self.upstream / "scripts").mkdir(parents=True)
         (self.upstream / "agents").mkdir()
@@ -265,6 +330,9 @@ class AfterPullTest(unittest.TestCase):
         self.commit("installer")
         self.clone = base / "clone"
         self.git(base, "clone", "-q", str(self.upstream), str(self.clone))
+        deps = self.clone / "agents/skills/stageshow/node_modules"
+        deps.mkdir(parents=True)
+        (deps / ".package-lock.json").write_text("{}")
         self.run_ok([str(self.clone / "scripts/install-octo-lite"), "--prefix", str(self.prefix)])
         # upstream ships a new helper; the host fast-forwards the clone
         helper = self.upstream / "scripts/new-helper"
@@ -286,23 +354,112 @@ class AfterPullTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def after_pull(self):
-        onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
-        argv = tomllib.loads(onboarding.read_text())["after_pull"]
+        argv = tomllib.loads(self.onboarding.read_text())["after_pull"]
         return subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, env=self.env)
+
+    def spawn(self, name):
+        return subprocess.Popen(
+            [str(SPAWN), "--workspace", "w1", "--name", name, "--label", name,
+             "--cwd", str(self.clone), "--role", "implementer", "--", "claude"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=self.env)
+
+    def started(self, spawn):
+        out, err = spawn.communicate()
+        self.assertEqual(spawn.returncode, 0, err)
+        self.assertIn("name=", out)
+        return err
+
+    def plant_leftover(self):
+        leftover = self.prefix / "elsewhere"
+        leftover.write_text("")
+        self.linked.symlink_to(leftover)
 
     def test_after_pull_links_the_new_helper(self):
         r = self.after_pull()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.linked.resolve(), (self.clone / "scripts/new-helper").resolve())
 
-    def test_after_pull_fails_naming_the_failed_check(self):
-        leftover = self.prefix / "elsewhere"
-        leftover.write_text("")
-        self.linked.symlink_to(leftover)
+    def test_after_pull_fails_naming_the_failed_check_with_its_fix(self):
+        self.plant_leftover()
         r = self.after_pull()
         self.assertNotEqual(r.returncode, 0)
-        self.assertEqual(r.stderr.splitlines()[-1], f"bad link: {self.linked}")
+        self.assertIn(f"bad link: {self.linked} (occupied by symlink -> {self.prefix / 'elsewhere'});"
+                      " fix: move it aside, then run ", r.stderr)
+
+    def test_spawn_runs_the_after_pull_step_and_starts(self):
+        # spec/domains/install.spec.html#acceptance-after-pull-spawn
+        self.started(self.spawn("w1"))
+        self.assertEqual(self.linked.resolve(), (self.clone / "scripts/new-helper").resolve())
+        head = subprocess.run(["git", "-C", str(self.clone), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(tomllib.loads(self.onboarding.read_text())["commit"], head)
+
+    def test_a_failing_step_is_printed_by_the_first_spawn_only(self):
+        # spec/domains/install.spec.html#acceptance-after-pull-spawn-fail
+        self.plant_leftover()
+        first = self.started(self.spawn("w1"))
+        second = self.started(self.spawn("w2"))
+        self.assertRegex(first, f"bad link: {self.linked} .*; fix: ")
+        self.assertNotIn("bad link", second)
+
+    def test_a_failed_stageshow_fetch_fails_the_step_and_the_spawn_prints_it(self):
+        # The pulled pin cannot be fetched; the last install's Stageshow stays.
+        (self.bin / "skillfile").write_text("#!/bin/sh\nexit 1\n")
+        named = "Stageshow not installed: skillfile install failed; fix: "
+        self.assertIn(named, self.started(self.spawn("w1")))
+        r = self.after_pull()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(named, r.stderr.splitlines()[-1])
+
+    def with_a_declared_skill_gone(self):
+        project = self.prefix.parent / "project"
+        project.mkdir()
+        (project / "AGENTS.md").write_text("Repo skills: skills/gone\n")
+        text = self.onboarding.read_text()
+        self.onboarding.write_text(text.replace("]\ncommit", f', "--project", "{project}"]\ncommit', 1))
+        return f"missing source: {project}/skills/gone; fix: "
+
+    def test_a_declared_skill_gone_fails_the_step_only_once_it_is_done(self):
+        named = self.with_a_declared_skill_gone()
+        r = self.after_pull()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(named, r.stderr)
+        self.assertIn("version floors", r.stdout)
+
+    def test_after_pull_names_each_problem_once(self):
+        """Install and verify are one pass: a problem both would name, a
+        declared skill gone or Stageshow neither fetched nor installed, and a
+        link not ours, is one line of the step's error output."""
+        named = self.with_a_declared_skill_gone()
+        (self.bin / "skillfile").write_text("#!/bin/sh\nexit 1\n")
+        shutil.rmtree(self.clone / "agents/skills/stageshow/node_modules")
+        (self.prefix / ".claude/skills/not-ours").symlink_to(self.prefix.parent / "gone")
+        r = self.after_pull()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        lines = r.stderr.splitlines()
+        for start in (named, "Stageshow not installed", "dangling link (not ours)"):
+            self.assertEqual(1, sum(line.startswith(start) for line in lines), r.stderr)
+        self.assertEqual(len(lines), len(set(lines)), r.stderr)
+
+    def test_a_declared_skill_gone_is_printed_by_the_first_spawn_only(self):
+        named = self.with_a_declared_skill_gone()
+        self.assertIn(named, self.started(self.spawn("w1")))
+        self.assertEqual(self.started(self.spawn("w2")), "")
+
+    def test_parallel_spawns_run_the_step_once(self):
+        # An owner spawns several workers at once: one runs the step, the
+        # others wait for it and find the clone current.
+        log, wrapper = self.prefix / "steps.log", self.prefix / "step"
+        wrapper.write_text(f'#!/bin/sh\necho run >>"{log}"\nsleep 1\nexec "$@"\n')
+        wrapper.chmod(0o755)
+        text = self.onboarding.read_text()
+        self.onboarding.write_text(text.replace("after_pull = [", f'after_pull = ["{wrapper}", ', 1))
+        for spawn in [self.spawn(f"w{i}") for i in range(3)]:
+            self.assertEqual(self.started(spawn), "")
+        self.assertEqual(log.read_text(), "run\n")
+        self.assertEqual(self.linked.resolve(), (self.clone / "scripts/new-helper").resolve())
 
 
 if __name__ == "__main__":

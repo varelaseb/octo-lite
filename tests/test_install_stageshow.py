@@ -1,7 +1,9 @@
 """The installer fetches the pinned Stageshow skill, never committing it, and a
-failed fetch installs everything else. Spec: spec/domains/install.spec.html
-#install-peers; criteria #acceptance-pinned-install and
-#acceptance-pinned-install-fail. skillfile and npm are stubbed: nothing fetches."""
+failed fetch installs everything else, then fails naming it with its fix; the
+check names every problem with its fix. Spec: spec/domains/install.spec.html
+#install-peers and #install-check; criteria #acceptance-pinned-install,
+#acceptance-pinned-install-fail, #acceptance-pinned-no-skillfile, and
+#acceptance-check-all. skillfile and npm are stubbed: nothing fetches."""
 
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
-OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
+OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}"
 SKILL_DIRS = (".claude/skills", ".codex/skills", ".agents/skills")
 PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stageshow$",
                 (ROOT / "Skillfile").read_text(), re.M).group(1)
@@ -49,7 +51,7 @@ def run(argv, env, cwd=None):
     return subprocess.run(argv, capture_output=True, text=True, env=env, cwd=cwd)
 
 
-class PinnedInstallTest(unittest.TestCase):
+class CloneCase(unittest.TestCase):
     """A fresh clone carrying this clone's installer, Skillfile, lock, and ignores."""
 
     def setUp(self):
@@ -77,7 +79,18 @@ class PinnedInstallTest(unittest.TestCase):
         self.clone = base / "clone"
         subprocess.run(["git", "clone", "-q", str(upstream), str(self.clone)], check=True, env=self.env)
         self.installer = str(self.clone / "scripts/install-octo-lite")
+        self.fix = f"run {self.installer} --prefix {self.prefix}"
 
+    def run_installer(self, *extra):
+        return run([self.installer, "--prefix", str(self.prefix), *extra], self.env)
+
+    def assert_linked_the_rest(self):
+        for rel, source in ((".claude/agents/role.md", "agents/role.md"),
+                            (".local/bin/install-octo-lite", "scripts/install-octo-lite")):
+            self.assertEqual(os.path.realpath(self.prefix / rel), str(self.clone / source))
+
+
+class PinnedInstallTest(CloneCase):
     def install(self, *extra):
         r = run([self.installer, "--prefix", str(self.prefix), *extra], self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -106,21 +119,60 @@ class PinnedInstallTest(unittest.TestCase):
                          [f"{skill} ci --no-audit --no-fund --loglevel=error"])
 
 
-class FetchFailsTest(unittest.TestCase):
+class FetchFailsTest(CloneCase):
     """The box cannot reach Stageshow's upstream repository."""
 
-    def test_reports_stageshow_not_installed_and_links_the_rest(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            prefix = Path(tmp) / "prefix"
-            env = {**os.environ, "PATH": OFFLINE}
-            r = run([str(INSTALLER), "--prefix", str(prefix)], env)
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("Stageshow not installed: skillfile install failed", r.stderr)
-            check = run([str(INSTALLER), "--prefix", str(prefix), "--check"], env)
-            self.assertEqual(check.returncode, 0, check.stderr)
-            for skill_dir in SKILL_DIRS:
-                for name in ("tdd", "commit"):
-                    self.assertTrue((prefix / skill_dir / name).is_symlink(), f"{skill_dir}/{name}")
+    def test_reports_stageshow_not_installed_with_its_fix_and_links_the_rest(self):
+        self.env["PATH"] = f"{OFFLINE}:{os.environ['PATH']}"
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stderr.splitlines()[-1], "Stageshow not installed: skillfile install failed;"
+                         f" fix: resolve its error above, then {self.fix}")
+        self.assert_linked_the_rest()
+
+
+class NoSkillfileTest(CloneCase):
+    """The box has no skillfile."""
+
+    def setUp(self):
+        super().setUp()
+        self.env["PATH"] = ":".join(d for d in os.environ["PATH"].split(":")
+                                    if not os.path.exists(os.path.join(d, "skillfile")))
+        self.skillfile_fix = ("curl -fsSL https://github.com/eljulians/skillfile/releases/latest/download/"
+                              f"install.sh | sh, then {self.fix}")
+
+    def test_names_the_command_that_installs_skillfile_and_links_the_rest(self):
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stderr.splitlines()[-1],
+                         f"Stageshow not installed: skillfile not found; fix: {self.skillfile_fix}")
+        self.assert_linked_the_rest()
+
+    def test_every_mode_names_it_over_an_earlier_stageshow(self):
+        """An earlier install's Stageshow stays with its filming dependencies
+        current, but no pin change can arrive: check, install, and after-pull
+        give one verdict, named last."""
+        deps = self.clone / "agents/skills/stageshow/node_modules"
+        deps.mkdir(parents=True)
+        (deps / ".package-lock.json").write_text("{}")
+        named = f"Stageshow not installed: skillfile not found; fix: {self.skillfile_fix}"
+        for mode in ((), ("--check",), ("--after-pull",)):
+            with self.subTest(mode=mode):
+                r = self.run_installer(*mode)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(r.stderr.splitlines()[-1], named)
+
+    def test_check_names_every_problem_with_its_fix(self):
+        self.run_installer()
+        leftover = self.prefix / ".claude/agents/qa-capture.md"
+        leftover.symlink_to(self.clone / "agents/role.md")
+        r = self.run_installer("--check")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        problems = [line for line in r.stderr.splitlines() if "; fix: " in line]
+        self.assertEqual(problems, [
+            f"leftover legacy link: {leftover}; fix: {self.fix}",
+            f"Stageshow not installed: skillfile not found; fix: {self.skillfile_fix}",
+        ])
 
 
 if __name__ == "__main__":
