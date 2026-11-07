@@ -8,6 +8,7 @@ recorder recorded, kept as fixtures."""
 from __future__ import annotations
 
 import functools
+import json
 import os
 import subprocess
 import tempfile
@@ -74,6 +75,54 @@ for (const step of steps) {
 """
 
 
+# Runs the recorder on its arguments and reads the frames its video is made of, as its screencast hands them over:
+# whether any frame before the first hover shows the touch at the page's corner, where the page's own first hover at 0, 0
+# lands, by the probes on the frame there; and for each tap, whether the touch shows at its point in the last frame
+# before the tap, and in the last frame before the next hover, or the video's last, once the finger has lifted.
+TAPS = """
+import { createRequire } from 'node:module'
+const [dir, ...argv] = process.argv.slice(1)
+const require = createRequire(`${dir}/recorder.mjs`)
+const { chromium } = require('playwright-core')
+const { jpegjs } = require('playwright-core/lib/utilsBundle')
+const { SHAPES, crop, drawn } = await import(`${dir}/check.mjs`)
+const { main } = await import(`${dir}/recorder.mjs`)
+const frames = []
+const moves = []
+const taps = []
+const launch = chromium.launch.bind(chromium)
+chromium.launch = async options => {
+  const browser = await launch(options)
+  const newContext = browser.newContext.bind(browser)
+  browser.newContext = async options => {
+    const context = await newContext(options)
+    context.on('page', ({ mouse, touchscreen, screencast }) => {
+      const logged = (calls, call) => (x, y, ...rest) => (calls.push({ x, y, at: Date.now() }), call(x, y, ...rest))
+      mouse.move = logged(moves, mouse.move.bind(mouse))
+      touchscreen.tap = logged(taps, touchscreen.tap.bind(touchscreen))
+      const start = screencast.start.bind(screencast)
+      screencast.start = ({ onFrame, ...rest }) =>
+        start({ ...rest, onFrame: frame => (frames.push(frame), onFrame(frame)) })
+    })
+    return context
+  }
+  return browser
+}
+await main(argv)
+const before = at => frames.findLast(frame => frame.timestamp < at)
+const touch = (frame, { x, y }, probes = SHAPES.phone.cursor) =>
+  drawn(crop(jpegjs.decode(frame.data, { useTArray: true, formatAsRGBA: true }), x, y), probes)
+const corner = SHAPES.phone.cursor.filter(([dx, dy]) => dx >= 0 && dy >= 0)
+console.log(JSON.stringify({
+  corner: frames.filter(frame => frame.timestamp < moves[0].at).some(frame => touch(frame, { x: 0, y: 0 }, corner)),
+  taps: taps.map(tap => {
+    const next = moves.find(move => move.at > tap.at)
+    return { rested: touch(before(tap.at), tap), after: touch(next ? before(next.at) : frames.at(-1), tap) }
+  }),
+}))
+"""
+
+
 class Site(ThreadingHTTPServer):
     """The fixture prototype, served on a free port."""
 
@@ -100,6 +149,31 @@ class UnknownActionTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('step "planned" is reached by the action "drag"', result.stderr)
             self.assertFalse((Path(tmp) / "week.mockup.html.review").exists())
+
+
+class LaunchHintTest(unittest.TestCase):
+    """With no browser starting, the recorder's fix is the installer's own line with the box's scope, as the installer
+    publishes it in its after-pull step (install.spec.html #install-after-pull), so following it keeps that scope."""
+
+    def test_no_browser_names_the_installer_with_the_box_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            env = {**os.environ, "XDG_STATE_HOME": str(state), "CHROME_PATH": str(Path(tmp) / "no-chrome")}
+            argv = [str(RECORDER / "prototype-video"), "screen.mockup.html", "http://127.0.0.1:9/"]
+            installer, prefix, project = "/clone/scripts/install-octo-lite", "/box", "/work/project"
+            for published, fix in (
+                    (None, "install-octo-lite"),
+                    ([installer, "--after-pull", "--prefix", prefix, "--project", project],
+                     f"{installer} --prefix {prefix} --project {project}")):
+                with self.subTest(fix=fix):
+                    if published:
+                        (state / "octo-lite").mkdir(parents=True)
+                        quoted = ", ".join(f'"{arg}"' for arg in published)
+                        (state / "octo-lite/onboarding.toml").write_text(
+                            f'status = "pending"\nafter_pull = [{quoted}]\ncheck = []\ncommit = ""\n')
+                    result = subprocess.run(argv, capture_output=True, text=True, cwd=tmp, env=env)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertTrue(result.stderr.rstrip().endswith(f": run {fix}, or set CHROME_PATH"), result.stderr)
 
 
 class VideoCheckTest(unittest.TestCase):
@@ -137,13 +211,16 @@ class RecordingTest(unittest.TestCase):
         self.addCleanup(self.site.server_close)
         self.addCleanup(self.site.shutdown)
 
-    def record(self, mockup, *viewports):
+    def record(self, mockup, *viewports, program=None):
+        """The recorder's run on the mockup, or `program`'s, which runs it (TAPS)."""
         (self.repo / "screen.mockup.html").write_text(mockup)
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                "GIT_COMMITTER_EMAIL": "t@t"}
         for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "screen"]):
             subprocess.run(["git", "-C", str(self.repo), *argv], check=True, env=env)
-        return subprocess.run([str(RECORDER / "prototype-video"), str(self.repo / "screen.mockup.html"),
+        recorder = ["node", "--input-type=module", "-e", program, str(RECORDER)] if program else [
+            str(RECORDER / "prototype-video")]
+        return subprocess.run([*recorder, str(self.repo / "screen.mockup.html"),
                                self.site.address, *(f"--viewport={v}" for v in viewports)],
                               capture_output=True, text=True, cwd=self.repo)
 
@@ -167,6 +244,17 @@ class RecordingTest(unittest.TestCase):
         is judged before the tap: the touch presses the card's middle and Tuesday opens."""
         result = self.record(ROUND.replace("/week/", "/ungated/"), "phone")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_phone_touch_rests_from_its_hover_until_its_tap(self):
+        """On a phone the recorder hovers a part before it taps it, which shows the part's hover, so the touch rests on
+        that point from the hover until the tap: every change has a cause on screen. Before its first hover no finger
+        rests, so the page's own hover at 0, 0 draws no touch at the corner. The tap lifts the finger, so once it has
+        lifted no touch shows there, on a page the tap opens either: Tuesday, which the card opens only once its press
+        mark has run, and the week, which the back link opens while it runs."""
+        result = self.record(ROUND.replace("/week/", "/wait/"), "phone", program=TAPS)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout.splitlines()[-1]),
+                         {"corner": False, "taps": [{"rested": True, "after": False}] * 2})
 
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")

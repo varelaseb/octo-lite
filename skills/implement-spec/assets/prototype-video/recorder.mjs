@@ -10,6 +10,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { crop, verify } from './check.mjs'
@@ -75,12 +76,24 @@ async function launch() {
   try {
     ({ chromium } = createRequire(import.meta.url)('playwright-core'))
   } catch {
-    throw new Error('playwright-core is not installed: run install-octo-lite')
+    throw new Error(`playwright-core is not installed: run ${installer()}`)
   }
   try {
     return await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {})
   } catch (e) {
-    throw new Error(`no browser starts (${e.message.split('\n')[0]}): run install-octo-lite, or set CHROME_PATH`)
+    throw new Error(`no browser starts (${e.message.split('\n')[0]}): run ${installer()}, or set CHROME_PATH`)
+  }
+}
+
+// The installer's own fix line, with the prefix and project it last ran with, read from the after-pull step it
+// publishes in the box's onboarding file (install.spec.html #install-after-pull); with none, the installer alone.
+function installer() {
+  const onboarding = join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'octo-lite/onboarding.toml')
+  try {
+    const step = JSON.parse(readFileSync(onboarding, 'utf8').match(/^after_pull = (.*)$/m)[1])
+    return step.filter(arg => arg !== '--after-pull').join(' ')
+  } catch {
+    return 'install-octo-lite'
   }
 }
 
@@ -91,14 +104,15 @@ async function record(browser, url, steps, viewport, file) {
   const { jpegjs } = createRequire(import.meta.url)('playwright-core/lib/utilsBundle')
   const context = await browser.newContext({ viewport: size, ...(touch && { isMobile: true, hasTouch: true }) })
   try {
-    // The video opens on the first step's finished screen, the cursor resting below the middle of it.
-    const pointer = { x: Math.round(size.width * 0.62), y: Math.round(size.height * 0.68) }
+    // The video opens on the first step's finished screen, the cursor resting below the middle of it; a phone's finger
+    // rests only from when it reaches a part until it taps it (act).
+    const pointer = { x: Math.round(size.width * 0.62), y: Math.round(size.height * 0.68), resting: !touch }
     const presses = []
-    // What each document the page opens draws first (overlay.mjs): the cursor at rest, a phone's touch resting
-    // nowhere, and the last press, so one that opened the document still shows.
+    // What each document the page opens draws first, and a phone draws on each hover (overlay.mjs): the cursor, or a
+    // phone's finger, where it rests, and the last press, so one that opened the document still shows.
     await context.exposeBinding('octoLiteRecorder', () => {
       const last = presses.at(-1)
-      return { rest: !touch && pointer, last: last && { x: last.x, y: last.y, since: Date.now() - last.at } }
+      return { rest: pointer.resting && pointer, last: last && { x: last.x, y: last.y, since: Date.now() - last.at } }
     })
     await context.addInitScript(overlay, { ARROW, EDGE, MARK, TOUCH, touch })
     const page = await context.newPage()
@@ -149,7 +163,7 @@ async function act(page, step, action, touch, pointer, presses) {
   // Inside the part but off its words (Stageshow motion.md, The cursor), else its middle. The cursor goes to the first
   // where a press would press what Spec Chat presses, and presses once it has rested there if a press still would,
   // judged then, as its hover may show a part over that point; else it goes on to the next. A phone's tap hovers the
-  // point before it presses there, so the mouse, which a phone's overlay never draws, hovers it first.
+  // point before it presses there, so the mouse hovers it first, the finger resting there as the cause of that hover.
   const lands = point => target.evaluate(pressesPart, { ...point, acts: ACTS })
   let to
   for (const [across, down] of [[box.width > 40 ? 0.85 : 0.5, 0.6], [0.5, 0.5]]) {
@@ -157,6 +171,7 @@ async function act(page, step, action, touch, pointer, presses) {
     if (!await lands(point)) continue
     if (touch) {
       await sleep(PACE.reach)
+      Object.assign(pointer, point, { resting: true })
       await page.mouse.move(point.x, point.y)
     } else {
       await travel(page, pointer, point)
@@ -170,6 +185,7 @@ async function act(page, step, action, touch, pointer, presses) {
   if (!to) throw new Error(`step "${step.name}": a press on "${selector}" lands on another part, over it or acting inside it`)
   presses.push({ action: `${action.press ? 'press' : 'type into'} ${selector}`, ...to, at: Date.now() })
   if (touch) {
+    pointer.resting = false // the tap lifts the finger
     await page.touchscreen.tap(to.x, to.y)
   } else {
     await page.mouse.down()

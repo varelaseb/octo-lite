@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  .card { width: min(640px, 100%); box-sizing: border-box; padding: 24px; background: #fff; border: 1px solid #ccc;
+          border-radius: 8px; cursor: pointer }
+</style>
+<!-- The week's card, which opens its day only once its press mark has run, as a page that saves first does. -->
+<div class="card">Tuesday</div>
+<script>
+  document.querySelector('.card').addEventListener('click', () => setTimeout(() => { location.href = '../day/' }, 1000))
+</script>
