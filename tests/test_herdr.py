@@ -75,6 +75,15 @@ gone() { [[ -f "${FAKE_GONE:-}" ]] && grep -qxF "$1" "$FAKE_GONE"; }
 not_found() { echo '{"error":{"code":"agent_not_found","message":"not found"}}' >&2; exit 1; }
 # FAKE_BLOCKED lists targets blocked on interactive input until the test frees them.
 blocked() { [[ -f "${FAKE_BLOCKED:-}" ]] && grep -qxF "$1" "$FAKE_BLOCKED"; }
+# FAKE_HELD, once written, poses an agent that ended: Herdr still finds it, and
+# refuses its name to a start, for the number of reads FAKE_HELD holds, then
+# frees it; a start then clears it.
+held() { [[ -f "${FAKE_HELD:-}" && "$(cat "$FAKE_HELD")" != 0 ]]; }
+freed() {
+  [[ -f "${FAKE_HELD:-}" ]] || return 1
+  held && { echo $(($(cat "$FAKE_HELD") - 1)) >"$FAKE_HELD"; return 1; }
+  echo "free $1" >>"$FAKE_LOG"
+}
 
 case "$sub" in
   "workspace create")
@@ -96,6 +105,10 @@ case "$sub" in
     [[ -f "$FAKE_START_COUNT" ]] && n="$(cat "$FAKE_START_COUNT")"
     n=$((n + 1)); echo "$n" >"$FAKE_START_COUNT"
     printf '%s\0' "$@" >"$FAKE_START_ARGV"
+    if held; then
+      echo '{"error":{"code":"agent_name_taken","message":"agent name is already used; status=Done"},"id":"cli:agent:start"}' >&2; exit 1
+    fi
+    [[ ! -f "${FAKE_HELD:-}" ]] || mv "$FAKE_HELD" "$FAKE_HELD.started"
     if [[ -n "${FAKE_START_FAIL_OTHER:-}" ]]; then
       echo '{"error":{"code":"agent_pane_not_found","message":"no pane"},"id":"cli:agent:start"}' >&2; exit 1
     fi
@@ -156,7 +169,7 @@ case "$sub" in
   "agent get")
     # FAKE_NEVER_READY poses an agent that starts but never reports a session,
     # which is the window in which a prompt is silently lost.
-    if gone "$3"; then
+    if gone "$3" || freed "$3"; then
       not_found
     elif [[ -n "${FAKE_AGENT_GET_ERROR:-}" ]]; then
       echo "$FAKE_AGENT_GET_ERROR" >&2; exit 1
@@ -930,19 +943,23 @@ class HerdrWrapperTest(unittest.TestCase):
 
     # --- reload --------------------------------------------------------
 
-    def reloaded(self, events, met=False):
+    def reloaded(self, events, goal_end=None, **env):
         # The fleet operator's Claude in its pane, a bash stand-in run as Claude
-        # runs a Bash tool command: it reloads itself as its turn's last step,
-        # and on TERM ends its whole process group, as an ending Claude ends its
-        # tasks. As on the box, its record names no role and its Herdr agent no
-        # name; its transcript's latest agent-setting names its role, and its
-        # latest goal_status holds its goal, met or not. It stays idle, with
-        # Claude's own suggestion in its prompt, but for events, at the minute
-        # each names: the human types into its prompt (type), or clears it
-        # (clear), or the agent works and stops again (work), as on a message
-        # it is sent. sleep is a stand-in that records each wait and holds the first
-        # quiet minute till the test has seen the reload return to its caller.
-        # Returns the stand-in, its pane, and Herdr's calls once the reload ends.
+        # runs a Bash tool command, its stdin the pane's terminal: it reloads
+        # itself as its turn's last step, and on TERM logs `ended` and ends its
+        # whole process group, as an ending Claude ends its tasks, Herdr holding
+        # its name three reads more. As on the box, its record names no role
+        # and its Herdr agent no name; its transcript's latest agent-setting
+        # names its role, and its latest goal_status holds its goal, ended as
+        # goal_end names (met, failed) or not; the box has an after-pull step to
+        # run, which logs `after-pull`. It stays idle, with Claude's own
+        # suggestion in its prompt, but for events, at the minute each names:
+        # the human types into its prompt (type), or clears it (clear), or the
+        # agent works and stops again (work), as on a message it is sent. sleep
+        # is a stand-in that records each wait and holds the first quiet minute
+        # till the test has seen the reload return to its caller. env poses
+        # Herdr further. Returns the stand-in, its pane, Herdr's calls once the
+        # reload ends, and what the pane's terminal shows.
         d = Path(self.tmp.name)
         space = f"w-{uuid.uuid4()}"
         pane, tab = f"{space}:p2N1", f"{space}:t1"
@@ -953,8 +970,8 @@ class HerdrWrapperTest(unittest.TestCase):
             (d / f"agent{seq}.json").write_text(json.dumps({"result": {"agent": {
                 "pane_id": pane, "tab_id": tab, "workspace_id": space, "agent_status": "done",
                 "state_change_seq": seq}}}))
-        (d / "suggested").write_text("❯ \x1b[0m\x1b[2mstatus of the lanes?\x1b[0m\r\n")
-        (d / "typed").write_text("❯ what is in fl\r\n")
+        (d / "suggested").write_text("❯\u00a0\x1b[0m\x1b[2mstatus of the lanes?\x1b[0m\r\n")
+        (d / "typed").write_text("❯\u00a0what is in fl\r\n")
         (d / "agent42.json").replace(agent)
         prompt.write_bytes((d / "suggested").read_bytes())
         real = shutil.which("sleep")
@@ -968,63 +985,102 @@ class HerdrWrapperTest(unittest.TestCase):
             + "".join(f'  {m}) cp "{d}/{acts[e][0]}" "{acts[e][1]}" ;;\n' for m, e in events.items())
             + 'esac\n')
         (bindir / "sleep").chmod(0o755)
-        script = ('trap "trap - TERM; kill 0" TERM; read -r _; "$0" --reload "$@"; echo $? >"$RELOAD_RC"; '
-                  '"$REAL_SLEEP" 600 & wait')
-        p = self.claude(pane, tab, space, "s-op", agent=None, name="ops-10", stdin=subprocess.PIPE,
+        step = d / "after-pull"
+        step.write_text('#!/bin/sh\necho after-pull >>"$FAKE_LOG"\n')
+        step.chmod(0o755)
+        state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "onboarding.toml").write_text(f'commit = "old"\nafter_pull = ["{step}"]\n')
+        master, terminal = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, terminal)
+        script = ('trap \'echo ended >>"$FAKE_LOG"; echo 3 >"$FAKE_HELD"; trap - TERM; kill 0\' TERM; '
+                  'read -r _; "$0" --reload "$@"; echo $? >"$RELOAD_RC"; "$REAL_SLEEP" 600 & wait')
+        p = self.claude(pane, tab, space, "s-op", agent=None, name="ops-10", stdin=terminal,
                         cmd=("bash", "-c", script, str(SPAWN), pane, "write your brief",
                              "contract changed: read your brief"),
                         PATH=f"{bindir}:{self.env['PATH']}", FAKE_AGENT_GET_FILE=str(agent),
-                        FAKE_PROMPT=str(prompt), RELOAD_RC=str(rc), REAL_SLEEP=real)
+                        FAKE_PROMPT=str(prompt), RELOAD_RC=str(rc), REAL_SLEEP=real,
+                        FAKE_HELD=str(d / "held"), **env)
         project = Path(self.env["HOME"]) / ".claude/projects/-home-admin-ops"
         project.mkdir(parents=True)
-        goal = lambda condition, met: {"type": "attachment", "isSidechain": False, "attachment": {
-            "type": "goal_status", "met": met, "condition": condition}}
+        goal = lambda condition, end: {"type": "attachment", "isSidechain": False, "attachment": {
+            "type": "goal_status", "met": end == "met", "condition": condition,
+            **({"failed": True} if end == "failed" else {})}}
         # compact, as Claude writes it
         (project / "s-op.jsonl").write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in (
             {"type": "agent-setting", "agentSetting": "orchestrator", "sessionId": "s-op"},
-            goal("an older goal", False),
+            goal("an older goal", None),
             {"type": "agent-setting", "agentSetting": "meta-operator", "sessionId": "s-op"},
-            goal("keep every lane advancing", met),
+            goal("keep every lane advancing", goal_end),
             {"type": "user", "isSidechain": False, "message": {"content": '"type":"goal_status" quoted'}})))
-        p.stdin.close()
+        os.write(master, b"\n")
         self.assertTrue(self.until(rc.exists), "the reload never returned to its caller")
         self.assertEqual(rc.read_text(), "0\n")
         self.assertNotIn("agent prompt", self.calls(), "it sent before the agent went quiet")
         gate.touch()
         self.assertTrue(self.until(lambda: not self.tagged_pids(tab, "--reload"), within=20),
                         "the reload never ended")
-        return p, pane, self.calls().splitlines()
+        os.set_blocking(master, False)
+        shown = b""
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            shown += chunk
+        return p, pane, self.calls().splitlines(), shown.decode(errors="replace")
 
     def test_reload_replaces_a_quiet_claude_in_its_own_pane_under_its_name_role_and_goal(self):
         # spec/domains/herdr-transport.spec.html#transport-reload: it returns
         # at once and outlives its caller; it sends the last message only once
         # the agent has stayed idle ten minutes with nothing typed, the human's
-        # typing and message starting them again; then it ends the agent,
-        # starts Claude fresh in that same pane, no new tab, and sends the
-        # first message, then the goal.
+        # typing and message starting them again; then, the box current, it
+        # ends the agent, and once Herdr has freed its name starts Claude fresh
+        # in that same pane, no new tab, and sends the first message, then the
+        # goal.
         # The human sends a message at the third minute and types the next
         # from the ninth, but clears it at the eleventh: quiet from there.
-        p, pane, calls = self.reloaded({3: "work", 9: "type", 11: "clear"})
+        p, pane, calls, _ = self.reloaded({3: "work", 9: "type", 11: "clear"})
         self.assertTrue(self.gone(p), "the old Claude was not ended")
         at = lambda pattern: next(i for i, c in enumerate(calls) if re.fullmatch(pattern, c))
         handover = at(rf"agent prompt {pane} write your brief --wait .*")
         self.assertEqual(calls[:handover].count("sleep 60"), 11 + 10)
+        after_pull, ended, free = at("after-pull"), at("ended"), at(f"free {pane}")
         start = at(rf"agent start ops-10 --kind claude --pane {pane} -- .*")
         argv = self.start_argv()
         self.assertEqual(argv[argv.index("--") + 1:], ["--name", "ops-10", "--agent", "meta-operator"])
         first = at(rf"agent prompt {pane} contract changed: read your brief --wait .*")
         goal = at(rf"agent prompt {pane} /goal keep every lane advancing --wait .*")
-        self.assertEqual(sorted([handover, start, first, goal]), [handover, start, first, goal])
+        order = [handover, after_pull, ended, free, start, first, goal]
+        self.assertEqual(sorted(order), order)
+        self.assertEqual(len([c for c in calls if c.startswith("agent start ")]), 1, "it started twice")
         self.assertFalse([c for c in calls if c.startswith(("tab ", "workspace "))], "it opened or closed a tab")
 
     def test_reload_carries_no_goal_once_met(self):
         # Sent a message at the seventh minute, between two reads, it is quiet
         # from there; a goal met is none.
-        p, pane, calls = self.reloaded({7: "work"}, met=True)
+        p, pane, calls, _ = self.reloaded({7: "work"}, goal_end="met")
         handover = calls.index(f"delivered {pane} write your brief")
         self.assertEqual(calls[:handover].count("sleep 60"), 7 + 10)
         self.assertIn(f"delivered {pane} contract changed: read your brief", calls)
         self.assertFalse([c for c in calls if "/goal" in c], "it carried a goal already met")
+
+    def test_reload_carries_no_goal_that_failed(self):
+        # Claude ends a goal unmet as failed: that is none either.
+        p, pane, calls, _ = self.reloaded({}, goal_end="failed")
+        self.assertIn(f"delivered {pane} contract changed: read your brief", calls)
+        self.assertFalse([c for c in calls if "/goal" in c], "it carried a goal that failed")
+
+    def test_reload_failing_once_the_agent_ended_prints_at_the_panes_prompt(self):
+        # A failure after the old Claude ended tells the human at the shell
+        # prompt it left in the pane.
+        p, pane, calls, shown = self.reloaded({}, FAKE_START_FAIL_OTHER="1")
+        self.assertTrue(self.gone(p), "the old Claude was not ended")
+        self.assertIn("herdr-spawn: agent start failed", shown)
+        self.assertNotIn(f"delivered {pane} contract changed: read your brief", calls)
 
     def test_reload_refuses_a_pane_with_no_claude_session_ending_nothing(self):
         # spec/domains/herdr-transport.spec.html#transport-reload: a Codex or

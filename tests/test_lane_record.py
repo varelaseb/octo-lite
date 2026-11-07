@@ -309,7 +309,8 @@ class LaneRecordTests(unittest.TestCase):
                       "as your turn's last step", text)
         self.assertIn("Before each reload (Behavior) it writes `$(octo-lite-state)/operator.brief.md`, its brief", text)
         self.assertIn("reads the brief first, waits again on each owner it names", text)
-        self.assertIn("asks the human again none of the questions it names", text)
+        self.assertIn("asks the human again none of the questions it names: your reply to an answer "
+                      "in your pane names the question it settles, and acts on it", text)
         self.assertIn("It is no rules store: a standing direction", text)
         self.assertIn("It reaches the rest, and you, once that change merges, as a contract change", text)
 

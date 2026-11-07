@@ -82,9 +82,12 @@ if [[ -n "$reload" ]]; then
   pane="$reload"
   if [[ -z "${HERDR_SPAWN_RELOADING:-}" ]]; then
     # Only Claude keeps a session to end and a goal to carry.
-    "$here/herdr-claude-session" "$pane" >/dev/null ||
+    session="$("$here/herdr-claude-session" "$pane")" ||
       { echo "herdr-spawn: no Claude session in $pane; reload is Claude only" >&2; exit 65; }
-    HERDR_SPAWN_RELOADING=1 setsid -f "$here/herdr-spawn" "${argv[@]}" </dev/null >/dev/null 2>&1
+    # Its stderr is the pane's terminal, Claude's stdin, so a failure once that
+    # Claude has ended prints at the shell prompt it leaves in the pane.
+    HERDR_SPAWN_RELOADING=1 setsid -f "$here/herdr-spawn" "${argv[@]}" \
+      </dev/null >/dev/null 2>"/proc/$(jq -r .pid <<<"$session")/fd/0"
     exit
   fi
   unset HERDR_SPAWN_RELOADING
@@ -119,8 +122,9 @@ if [[ -n "$reload" ]]; then
   transcript="$(jq -r '.transcript // empty' <<<"$session")"
   name="$(jq -r .name <<<"$session")"
   role="$(latest agent-setting | jq -r '.agentSetting // empty')"
-  goal="$(latest goal_status | jq -r 'select(.attachment.met == false) | .attachment.condition')"
-  kill -TERM "$(jq -r .pid <<<"$session")"
+  # A goal Claude ended, met or failed, is none.
+  goal="$(latest goal_status | jq -r 'select(.attachment.met == false and (.attachment.failed | not)) | .attachment.condition')"
+  pid="$(jq -r .pid <<<"$session")"
 fi
 
 # The box comes current before the agent starts, its contract included: when
@@ -209,6 +213,14 @@ fi
 
 # A failed spawn closes the tab it created; a reload created none, so its pane stays.
 close_orphan_tab() { [[ -z "$tab" ]] || herdr tab close "$tab" >/dev/null 2>&1 || true; }
+
+# A reload ends the old agent only now, the box current, so it is down for the
+# start alone. Herdr holds its name a while after it ends, refusing it to a
+# start, so the start waits, bounded, until Herdr finds no agent in the pane.
+if [[ -n "$reload" ]]; then
+  kill -TERM "$pid"
+  for _ in $(seq 1 60); do herdr agent get "$pane" >/dev/null 2>&1 || break; sleep 1; done
+fi
 
 # A new root pane may not have reached its shell prompt yet; herdr reports that
 # as the structured error agent_pane_busy. Only that code retries. Any other
