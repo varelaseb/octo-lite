@@ -162,6 +162,12 @@ class RecordingTest(unittest.TestCase):
         self.assertEqual([cue.splitlines()[2] for cue in cues],
                          ["The week with Tuesday's card", "Tuesday opens \u2192 its plan", "Back to the week"])
 
+    def test_phone_tap_judged_with_the_hover_it_applies(self):
+        """On a phone a tap hovers where it lands, so an ungated hover that shows the button over the card's right
+        is judged before the tap: the touch presses the card's middle and Tuesday opens."""
+        result = self.record(ROUND.replace("/week/", "/ungated/"), "phone")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
         self.assertEqual(result.returncode, 1, result.stderr)
