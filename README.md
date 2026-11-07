@@ -124,13 +124,14 @@ kept answers as a `[consent]` table (see
 again, and a plain install keeps them; delete the file to answer afresh.
 `after_pull` is the argument list a host runs, with no shell, after
 fast-forwarding this clone: `install-octo-lite --after-pull` from this clone
-with the `--prefix` and `--project` the last install ran with. Every install
-rewrites it, so the step a host runs next is the pulled clone's, and records
-beside it as `commit` the clone's commit it ran at; `herdr-spawn` runs the step
-when the clone's commit differs. `check` is the argument list a host runs, with
+with the `--prefix` and `--project` the last install ran with. Every run but
+`--check` and `--undo` rewrites it, so the step a host runs next is the pulled
+clone's, and records beside it as `commit` the clone's commit it ran at;
+`herdr-spawn` runs the step when the clone's commit differs. `check` is the argument list a host runs, with
 no shell, to learn octo-lite's setup problems: `install-octo-lite --check` from
 this clone with the same `--prefix` and `--project`. Every run but `--check`
-rewrites it.
+and `--undo` rewrites it beside `after_pull`, and those two leave the onboarding
+file as it is.
 
 `octo-lite-start`, installed on `PATH`, creates a Herdr space labelled with the
 lane name and starts the lane's orchestrator alone in it at the worktree,

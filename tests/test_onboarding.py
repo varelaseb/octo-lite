@@ -38,9 +38,10 @@ class OnboardingTest(unittest.TestCase):
         self.env = {**os.environ, "PATH": OFFLINE, "XDG_STATE_HOME": str(self.sentinel / "state"),
                     "XDG_CONFIG_HOME": str(self.sentinel / "config")}
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
+        self.installer = INSTALLER
 
     def run_installer(self, *extra, answers=""):
-        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), *extra],
+        r = subprocess.run([str(self.installer), "--prefix", str(self.prefix), *extra],
                            input=answers, capture_output=True, text=True, env=self.env)
         self.assertEqual(problems(r), [], r.stderr)
         return r
@@ -303,7 +304,7 @@ class OnboardingTest(unittest.TestCase):
         self.env["PATH"] = f"{ROOT / 'tests/offline-bin'}:{bindir}"
 
     def check(self, *extra):
-        return subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check", *extra],
+        return subprocess.run([str(self.installer), "--prefix", str(self.prefix), "--check", *extra],
                               capture_output=True, text=True, env=self.env)
 
     def test_check_names_a_tool_missing_or_too_old_with_where_to_get_it(self):
@@ -327,6 +328,16 @@ class OnboardingTest(unittest.TestCase):
         owner's dangling link, gets one error line per problem, each with its
         fix; the link it leaves untouched is reported on standard output. A
         change to a checked feature adds its problem here."""
+        # A clone holding only what the problems below need: neither Stageshow
+        # nor the recorder's dependencies are installed in it, on any box.
+        root = (self.prefix.parent / "octo-lite").resolve()
+        for path, text in (("agents/implementer.md", "role\n"),
+                           ("skills/commit/SKILL.md", "---\nname: commit\n---\n")):
+            (root / path).parent.mkdir(parents=True)
+            (root / path).write_text(text)
+        (root / "scripts").mkdir()
+        self.installer = shutil.copy2(INSTALLER, root / "scripts/install-octo-lite")
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
         checkout, other = (self.prefix.parent / name for name in ("project", "old-clone"))
         for clone in (checkout, other):
             (clone / "skills/ui-rules").mkdir(parents=True)
@@ -338,9 +349,9 @@ class OnboardingTest(unittest.TestCase):
         (p / ".claude/skills/commit").unlink()
         (p / ".codex/agents/implementer.md").unlink()
         (p / ".codex/agents/implementer.md").write_text("mine\n")
-        (p / ".claude/agents/qa-capture.md").symlink_to(ROOT / "agents/implementer.md")
+        (p / ".claude/agents/qa-capture.md").symlink_to(root / "agents/implementer.md")
         (p / ".agents/skills/commit").unlink()
-        (p / ".agents/skills/commit").symlink_to(ROOT / "skills/gone")
+        (p / ".agents/skills/commit").symlink_to(root / "skills/gone")
         (p / ".codex/hooks.json").unlink()
         (p / ".claude/settings.json").write_text("not json\n")
         (p / ".claude/skills/ui-rules").unlink()
@@ -359,6 +370,32 @@ class OnboardingTest(unittest.TestCase):
             "missing command-time hook", "herdr missing", "prototype-video not installed",
             "Stageshow not installed"], r.stderr)
         self.assertIn(f"dangling link (not ours): {foreign}", r.stdout)
+
+    def test_a_project_checkout_gone_or_without_agents_md_is_one_problem_and_the_check_goes_on(self):
+        # spec/domains/install.spec.html#acceptance-check-lines
+        checkout = self.prefix.parent / "project"
+        checkout.mkdir()
+        (checkout / "AGENTS.md").write_text("# project\n")
+        self.run_installer("--project", str(checkout))
+        published = tomllib.loads(self.onboarding.read_text())["check"]
+        fix = f"run {INSTALLER} --prefix {self.prefix.resolve()} --project <the project's live main checkout>"
+        for gone in (checkout / "AGENTS.md", checkout):
+            with self.subTest(gone=gone.name):
+                gone.unlink() if gone.is_file() else gone.rmdir()
+                r = subprocess.run(published, capture_output=True, text=True, env=self.env)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(problems(r), [
+                    f"project AGENTS.md not readable: {checkout.resolve()}/AGENTS.md; fix: {fix}"])
+                for line in r.stderr.splitlines():
+                    self.assertIn("; fix: ", line)
+                self.assertIn("octo-lite links checked", r.stdout)
+                self.assertIn("version floors:", r.stdout)
+
+    def test_check_at_a_missing_prefix_creates_nothing(self):
+        # spec/domains/install.spec.html#install-check: reads the box, changes nothing
+        r = self.check()
+        self.assertIn(f"missing link: {self.prefix}/", r.stderr)
+        self.assertFalse(os.path.lexists(self.prefix), "check created the prefix")
 
     def test_check_output_says_checked(self):
         """--check says 'checked', plain install says 'installed' (F-D7)."""

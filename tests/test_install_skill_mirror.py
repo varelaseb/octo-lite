@@ -81,6 +81,7 @@ class InstallSkillMirrorTests(unittest.TestCase):
             [str(link), "--prefix", str(self.prefix), "--check"],
             capture_output=True,
             text=True,
+            env={**os.environ, "PATH": OFFLINE},
         )
         self.assertEqual([], problems(check), check.stdout + check.stderr)
 

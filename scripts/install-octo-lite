@@ -14,7 +14,7 @@ while (($#)); do
     --onboard) onboard=true; shift ;;
     --undo) undo=true; shift ;;
     --after-pull) after_pull=true; shift ;;
-    --project) project="$(cd "${2:?}" && pwd -P)"; shift 2 ;;
+    --project) project="$(readlink -m "${2:?}")"; shift 2 ;;
     *) echo "usage: install-octo-lite [--prefix PATH] [--project CHECKOUT] [--check | --onboard | --after-pull | --undo]" >&2; exit 64 ;;
   esac
 done
@@ -22,10 +22,11 @@ done
 root="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 # One root: --prefix owns every path it writes, state and config included;
 # without it, XDG decides under $HOME. scope keeps this run's prefix and
-# project for the after-pull step it publishes.
+# project for the after-pull step it publishes. Each resolves whether or not
+# it exists, so --check creates neither (install.spec.html#install-check).
 scope=()
 if [[ -n "$prefix" ]]; then
-  prefix="$(mkdir -p "$prefix" && cd "$prefix" && pwd -P)"
+  prefix="$(readlink -m "$prefix")"
   state_home="$prefix/.local/state"
   scope+=(--prefix "$prefix")
 else
@@ -448,9 +449,12 @@ done
 # `Repo skills: a/skill, b/skill`, and they link from the given live main
 # checkout only. An existing link resolving anywhere else is stale: warn,
 # leave it, continue; a verifying run names it as a problem. Never repair it,
-# never link from another clone.
+# never link from another clone. An AGENTS.md it cannot read, the checkout gone
+# or without one, is one problem, and the run goes on.
 if [[ -n "$project" ]]; then
-  repo_skills="$(sed -n '/^[-*[:space:]]*Repo skills:/{s///p;q;}' "$project/AGENTS.md")"
+  repo_skills="$(sed -n '/^[-*[:space:]]*Repo skills:/{s///p;q;}' "$project/AGENTS.md" 2>/dev/null)" ||
+    problem "project AGENTS.md not readable: $project/AGENTS.md" \
+      "run ${install_cmd% --project *} --project <the project's live main checkout>"
   while read -r rel; do
     [[ -n "$rel" ]] || continue
     source="$project/$rel"
