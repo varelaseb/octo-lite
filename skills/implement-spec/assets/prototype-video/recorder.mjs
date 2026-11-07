@@ -11,13 +11,11 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { crop, verify } from './check.mjs'
 import { walkthrough } from './mockup.mjs'
 import { ARROW, EDGE, MARK, TOUCH, overlay } from './overlay.mjs'
 
-const HERE = dirname(fileURLToPath(import.meta.url))
 const USAGE = 'usage: prototype-video <mockup.html> <prototype-address> [--viewport desktop|phone]... [--spool <mockup>.review]'
 // The sizes Spec Chat frames a prototype at (mockups #frame-viewports).
 const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, height: 844 } }
@@ -71,18 +69,18 @@ function fail(message, code) {
   process.exitCode = code
 }
 
-// playwright-core's own Chromium, as `npx playwright-core install chromium` in this folder installs it, or CHROME_PATH.
+// playwright-core's own Chromium, as install-octo-lite installs it (install.spec.html #install-recorder), or CHROME_PATH.
 async function launch() {
   let chromium
   try {
     ({ chromium } = createRequire(import.meta.url)('playwright-core'))
   } catch {
-    throw new Error(`playwright-core is not installed: run npm ci in ${HERE}`)
+    throw new Error('playwright-core is not installed: run install-octo-lite')
   }
   try {
     return await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {})
   } catch (e) {
-    throw new Error(`no browser starts (${e.message.split('\n')[0]}): run npx playwright-core install chromium in ${HERE}, or set CHROME_PATH`)
+    throw new Error(`no browser starts (${e.message.split('\n')[0]}): run install-octo-lite, or set CHROME_PATH`)
   }
 }
 

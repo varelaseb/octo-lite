@@ -43,8 +43,9 @@ fails it links everything else, then exits non-zero, its last line
 
 The round video recorder, `prototype-video`, installs the same way: `npm ci`
 at the clone root, never inside a skill folder, fetches the browser driver it
-pins, which then installs its browser. When that fails the installer links everything else, then exits non-zero, printing
-`prototype-video not installed` naming why and the step that fixes it.
+pins, which then installs its browser. When that fails the installer links
+everything else, then exits non-zero, printing `prototype-video not installed`
+naming why and the step that fixes it.
 
 Prerequisite: `skillfile` ([github.com/eljulians/skillfile](https://github.com/eljulians/skillfile))
 on `PATH`; without it Stageshow is not installed. Install it with:

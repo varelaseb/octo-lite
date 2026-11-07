@@ -94,7 +94,7 @@ class CloneCase(unittest.TestCase):
         (upstream / "agents/role.md").write_text("role\n")
         for name in ("package.json", "package-lock.json"):
             (upstream / name).write_text("{}")
-        self.recorder = recorder = upstream / "skills/implement-spec/assets/prototype-video"
+        recorder = upstream / "skills/implement-spec/assets/prototype-video"
         recorder.mkdir(parents=True)
         (recorder / "prototype-video").write_text("#!/bin/sh\n")
         (recorder / "prototype-video").chmod(0o755)
