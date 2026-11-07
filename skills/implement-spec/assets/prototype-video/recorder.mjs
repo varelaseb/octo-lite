@@ -10,6 +10,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { crop, verify } from './check.mjs'
@@ -75,12 +76,24 @@ async function launch() {
   try {
     ({ chromium } = createRequire(import.meta.url)('playwright-core'))
   } catch {
-    throw new Error('playwright-core is not installed: run install-octo-lite')
+    throw new Error(`playwright-core is not installed: run ${installer()}`)
   }
   try {
     return await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {})
   } catch (e) {
-    throw new Error(`no browser starts (${e.message.split('\n')[0]}): run install-octo-lite, or set CHROME_PATH`)
+    throw new Error(`no browser starts (${e.message.split('\n')[0]}): run ${installer()}, or set CHROME_PATH`)
+  }
+}
+
+// The installer's own fix line, with the prefix and project it last ran with, read from the after-pull step it
+// publishes in the box's onboarding file (install.spec.html #install-after-pull); with none, the installer alone.
+function installer() {
+  const onboarding = join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'octo-lite/onboarding.toml')
+  try {
+    const step = JSON.parse(readFileSync(onboarding, 'utf8').match(/^after_pull = (.*)$/m)[1])
+    return step.filter(arg => arg !== '--after-pull').join(' ')
+  } catch {
+    return 'install-octo-lite'
   }
 }
 

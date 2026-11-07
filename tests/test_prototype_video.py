@@ -102,6 +102,31 @@ class UnknownActionTest(unittest.TestCase):
             self.assertFalse((Path(tmp) / "week.mockup.html.review").exists())
 
 
+class LaunchHintTest(unittest.TestCase):
+    """With no browser starting, the recorder's fix is the installer's own line with the box's scope, as the installer
+    publishes it in its after-pull step (install.spec.html #install-after-pull), so following it keeps that scope."""
+
+    def test_no_browser_names_the_installer_with_the_box_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            env = {**os.environ, "XDG_STATE_HOME": str(state), "CHROME_PATH": str(Path(tmp) / "no-chrome")}
+            argv = [str(RECORDER / "prototype-video"), "screen.mockup.html", "http://127.0.0.1:9/"]
+            installer, prefix, project = "/clone/scripts/install-octo-lite", "/box", "/work/project"
+            for published, fix in (
+                    (None, "install-octo-lite"),
+                    ([installer, "--after-pull", "--prefix", prefix, "--project", project],
+                     f"{installer} --prefix {prefix} --project {project}")):
+                with self.subTest(fix=fix):
+                    if published:
+                        (state / "octo-lite").mkdir(parents=True)
+                        quoted = ", ".join(f'"{arg}"' for arg in published)
+                        (state / "octo-lite/onboarding.toml").write_text(
+                            f'status = "pending"\nafter_pull = [{quoted}]\ncheck = []\ncommit = ""\n')
+                    result = subprocess.run(argv, capture_output=True, text=True, cwd=tmp, env=env)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertTrue(result.stderr.rstrip().endswith(f": run {fix}, or set CHROME_PATH"), result.stderr)
+
+
 class VideoCheckTest(unittest.TestCase):
     """A real recording's frames at a press: one showing the cursor, on a phone the touch, and its mark, and one from
     a page that hid the drawn cursor as that press landed."""
