@@ -6,8 +6,9 @@ description: Spawn Herdr agents and send them messages, over native Herdr.
 # herdr-comms
 
 Thin wrappers over native Herdr. Herdr itself owns the transport; these
-exist only for the failure modes it leaves to the caller, and for parking an
-idle Claude agent so it holds no memory while it waits.
+exist only for the failure modes it leaves to the caller, for parking an
+idle Claude agent so it holds no memory while it waits, and for reloading a
+running Claude agent in its own pane.
 
 Every wrapper acts only in the caller's Herdr session,
 `${HERDR_SESSION:-default}`: pane, tab, and space ids repeat across sessions.
@@ -129,13 +130,39 @@ owner, the owner for a worker. An agent Herdr does not report idle is refused
 with exit 75, a Codex or pi agent (no Claude session file) with 65; nothing is
 closed.
 
+## Reload an agent
+
+```
+herdr-spawn --reload "$HERDR_PANE_ID" LAST FIRST
+```
+
+Replaces a running Claude agent with a fresh session in its own pane
+(`spec/domains/herdr-transport.spec.html#transport-reload`), as the fleet
+operator takes a changed contract. Run it on your own pane as the last step of
+a turn: it returns at once and goes on in a session of its own, so it outlives
+the Claude it ends. Once the agent has gone quiet, idle for ten minutes at one
+Herdr state with nothing typed into its prompt, it sends LAST, which asks for
+the hand-over, by `herdr-say`. Any message the agent is sent, or text typed into
+its prompt, starts the ten minutes again, so it never starts while a human is
+in dialogue with it; Claude's own suggestion, drawn dim, is nothing typed. Once
+the agent is idle again with nothing typed, it ends that Claude (TERM to the
+pid of the pane's Claude session) and starts Claude fresh in the pane, as a
+spawn into it in place of a new tab, under the old session's name (its
+record's), role (its transcript's latest `agent-setting`), and goal (its
+latest `goal_status`; none once met), then sends FIRST, then `/goal GOAL`. The
+pane keeps its id, so no record naming it changes. The old session's
+background tasks, its waits included, end with it, and its conversation stays
+in its transcript, unread by the fresh session. A pane with no Claude session
+(Codex, pi) is refused with exit 65, nothing ended. A LAST send that does not
+exit 0 ends the reload, the agent kept as it was.
+
 ## Find a pane's Claude session
 
 ```
 herdr-claude-session PANE
 ```
 
-The one lookup `herdr-close --park`, `herdr-say`, and a
+The one lookup `herdr-close --park`, `herdr-spawn --reload`, `herdr-say`, and a
 [native report](#send-a-report) share
 (`spec/domains/herdr-transport.spec.html#transport-claude-session`).
 Prints one JSON line: Claude's own record

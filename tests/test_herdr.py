@@ -42,6 +42,7 @@ live Herdr 0.9.0:
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -118,7 +119,8 @@ case "$sub" in
       codexquit)  printf ' Do you trust the contents of this directory?\n   1. Trust and continue\n \xe2\x80\xba 2. Quit\n' ;;
       codextrust) printf ' Do you trust the contents of this directory?\n \xe2\x80\xba 1. Trust and continue\n   2. Quit\n' ;;
       theme)    printf ' Choose the text style\n   1. Auto\n \xe2\x9d\xaf 2. Dark mode\n   3. Light mode\n' ;;
-      *)   printf 'root@box:/tmp# \n' ;;
+      # FAKE_PROMPT holds a Claude agent's input line, as Herdr reads it.
+      *)   printf 'root@box:/tmp# \n'; [[ ! -f "${FAKE_PROMPT:-}" ]] || cat "$FAKE_PROMPT" ;;
     esac ;;
   "pane send-keys")
     key="${4:-}"
@@ -160,6 +162,9 @@ case "$sub" in
       echo "$FAKE_AGENT_GET_ERROR" >&2; exit 1
     elif [[ -n "${FAKE_AGENT_GET_HANG:-}" ]]; then
       exec sleep 30
+    elif [[ -n "${FAKE_AGENT_GET_FILE:-}" ]]; then
+      # The agent as the test last set it.
+      cat "$FAKE_AGENT_GET_FILE"
     elif [[ -n "${FAKE_AGENT_GET:-}" ]]; then
       # FAKE_AGENT_GET_WARN: a successful get that also warns on stderr.
       [[ -z "${FAKE_AGENT_GET_WARN:-}" ]] || echo "$FAKE_AGENT_GET_WARN" >&2
@@ -748,15 +753,17 @@ class HerdrWrapperTest(unittest.TestCase):
 
     # --- park ------------------------------------------------------------
 
-    def claude(self, pane, tab, space, sid, replies=(), stale=False, sidechain=None, agent="implementer", **env):
+    def claude(self, pane, tab, space, sid, replies=(), stale=False, sidechain=None, agent="implementer",
+               name=None, cmd=("sleep", "600"), stdin=None, **env):
         # A detached stand-in for an agent's Claude process in a pane, with
         # Claude's own session file for its pid unless sid is None, recording
         # the process start time, or another one when stale: an ended Claude's
         # record at a pid a process of the pane reuses. replies are the
         # timestamps of the replies in its transcript; none, no transcript yet.
         # sidechain is the timestamp of a subagent's assistant record after them.
-        # agent is the role the record names; None, it names none.
-        p = subprocess.Popen(["sleep", "600"], start_new_session=True, env={
+        # agent is the role the record names; None, it names none. name is
+        # the session name it records; cmd and stdin, what the stand-in runs.
+        p = subprocess.Popen(list(cmd), start_new_session=True, stdin=stdin, env={
             **self.env, "HERDR_PANE_ID": pane, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": space, **env})
         self.addCleanup(lambda: (p.kill(), p.wait()))
         if sid:
@@ -766,7 +773,7 @@ class HerdrWrapperTest(unittest.TestCase):
             start = int(Path(f"/proc/{p.pid}/stat").read_text().split()[21]) + stale
             (sessions / f"{p.pid}.json").write_text(json.dumps({
                 "pid": p.pid, "sessionId": sid, "cwd": str(self.cwd), "procStart": str(start),
-                **({"agent": agent} if agent else {})}))
+                **({"agent": agent} if agent else {}), **({"name": name} if name else {})}))
             if replies:
                 project = home / ".claude/projects" / f"-p-{sid}"
                 project.mkdir(parents=True, exist_ok=True)
@@ -920,6 +927,116 @@ class HerdrWrapperTest(unittest.TestCase):
                 "replies": [other], "sidechain": "2026-10-21T11:00:00.000Z"})])
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(json.loads(r.stdout)["session"], sid)
+
+    # --- reload --------------------------------------------------------
+
+    def reloaded(self, events, met=False):
+        # The fleet operator's Claude in its pane, a bash stand-in run as Claude
+        # runs a Bash tool command: it reloads itself as its turn's last step,
+        # and on TERM ends its whole process group, as an ending Claude ends its
+        # tasks. As on the box, its record names no role and its Herdr agent no
+        # name; its transcript's latest agent-setting names its role, and its
+        # latest goal_status holds its goal, met or not. It stays idle, with
+        # Claude's own suggestion in its prompt, but for events, at the minute
+        # each names: the human types into its prompt (type), or clears it
+        # (clear), or the agent works and stops again (work), as on a message
+        # it is sent. sleep is a stand-in that records each wait and holds the first
+        # quiet minute till the test has seen the reload return to its caller.
+        # Returns the stand-in, its pane, and Herdr's calls once the reload ends.
+        d = Path(self.tmp.name)
+        space = f"w-{uuid.uuid4()}"
+        pane, tab = f"{space}:p2N1", f"{space}:t1"
+        self.addCleanup(self.reap, tab)
+        gate, rc, prompt, agent = d / "gate", d / "reload.rc", d / "prompt", d / "agent.json"
+        self.addCleanup(gate.touch)
+        for seq in (42, 44):
+            (d / f"agent{seq}.json").write_text(json.dumps({"result": {"agent": {
+                "pane_id": pane, "tab_id": tab, "workspace_id": space, "agent_status": "done",
+                "state_change_seq": seq}}}))
+        (d / "suggested").write_text("❯ \x1b[0m\x1b[2mstatus of the lanes?\x1b[0m\r\n")
+        (d / "typed").write_text("❯ what is in fl\r\n")
+        (d / "agent42.json").replace(agent)
+        prompt.write_bytes((d / "suggested").read_bytes())
+        real = shutil.which("sleep")
+        bindir = d / "sleepbin"
+        bindir.mkdir()
+        acts = {"type": ("typed", prompt), "clear": ("suggested", prompt), "work": ("agent44.json", agent)}
+        (bindir / "sleep").write_text(
+            f'#!/bin/sh\necho "sleep $1" >>"{self.log}"\n[ "$1" = 60 ] || exit 0\n'
+            f'case $(grep -c "^sleep 60$" "{self.log}") in\n'
+            f'  1) n=0; until [ -e "{gate}" ] || [ $n -ge 200 ]; do {real} 0.05; n=$((n + 1)); done ;;\n'
+            + "".join(f'  {m}) cp "{d}/{acts[e][0]}" "{acts[e][1]}" ;;\n' for m, e in events.items())
+            + 'esac\n')
+        (bindir / "sleep").chmod(0o755)
+        script = ('trap "trap - TERM; kill 0" TERM; read -r _; "$0" --reload "$@"; echo $? >"$RELOAD_RC"; '
+                  '"$REAL_SLEEP" 600 & wait')
+        p = self.claude(pane, tab, space, "s-op", agent=None, name="ops-10", stdin=subprocess.PIPE,
+                        cmd=("bash", "-c", script, str(SPAWN), pane, "write your brief",
+                             "contract changed: read your brief"),
+                        PATH=f"{bindir}:{self.env['PATH']}", FAKE_AGENT_GET_FILE=str(agent),
+                        FAKE_PROMPT=str(prompt), RELOAD_RC=str(rc), REAL_SLEEP=real)
+        project = Path(self.env["HOME"]) / ".claude/projects/-home-admin-ops"
+        project.mkdir(parents=True)
+        goal = lambda condition, met: {"type": "attachment", "isSidechain": False, "attachment": {
+            "type": "goal_status", "met": met, "condition": condition}}
+        # compact, as Claude writes it
+        (project / "s-op.jsonl").write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in (
+            {"type": "agent-setting", "agentSetting": "orchestrator", "sessionId": "s-op"},
+            goal("an older goal", False),
+            {"type": "agent-setting", "agentSetting": "meta-operator", "sessionId": "s-op"},
+            goal("keep every lane advancing", met),
+            {"type": "user", "isSidechain": False, "message": {"content": '"type":"goal_status" quoted'}})))
+        p.stdin.close()
+        self.assertTrue(self.until(rc.exists), "the reload never returned to its caller")
+        self.assertEqual(rc.read_text(), "0\n")
+        self.assertNotIn("agent prompt", self.calls(), "it sent before the agent went quiet")
+        gate.touch()
+        self.assertTrue(self.until(lambda: not self.tagged_pids(tab, "--reload"), within=20),
+                        "the reload never ended")
+        return p, pane, self.calls().splitlines()
+
+    def test_reload_replaces_a_quiet_claude_in_its_own_pane_under_its_name_role_and_goal(self):
+        # spec/domains/herdr-transport.spec.html#transport-reload: it returns
+        # at once and outlives its caller; it sends the last message only once
+        # the agent has stayed idle ten minutes with nothing typed, the human's
+        # typing and message starting them again; then it ends the agent,
+        # starts Claude fresh in that same pane, no new tab, and sends the
+        # first message, then the goal.
+        # The human sends a message at the third minute and types the next
+        # from the ninth, but clears it at the eleventh: quiet from there.
+        p, pane, calls = self.reloaded({3: "work", 9: "type", 11: "clear"})
+        self.assertTrue(self.gone(p), "the old Claude was not ended")
+        at = lambda pattern: next(i for i, c in enumerate(calls) if re.fullmatch(pattern, c))
+        handover = at(rf"agent prompt {pane} write your brief --wait .*")
+        self.assertEqual(calls[:handover].count("sleep 60"), 11 + 10)
+        start = at(rf"agent start ops-10 --kind claude --pane {pane} -- .*")
+        argv = self.start_argv()
+        self.assertEqual(argv[argv.index("--") + 1:], ["--name", "ops-10", "--agent", "meta-operator"])
+        first = at(rf"agent prompt {pane} contract changed: read your brief --wait .*")
+        goal = at(rf"agent prompt {pane} /goal keep every lane advancing --wait .*")
+        self.assertEqual(sorted([handover, start, first, goal]), [handover, start, first, goal])
+        self.assertFalse([c for c in calls if c.startswith(("tab ", "workspace "))], "it opened or closed a tab")
+
+    def test_reload_carries_no_goal_once_met(self):
+        # Sent a message at the seventh minute, between two reads, it is quiet
+        # from there; a goal met is none.
+        p, pane, calls = self.reloaded({7: "work"}, met=True)
+        handover = calls.index(f"delivered {pane} write your brief")
+        self.assertEqual(calls[:handover].count("sleep 60"), 7 + 10)
+        self.assertIn(f"delivered {pane} contract changed: read your brief", calls)
+        self.assertFalse([c for c in calls if "/goal" in c], "it carried a goal already met")
+
+    def test_reload_refuses_a_pane_with_no_claude_session_ending_nothing(self):
+        # spec/domains/herdr-transport.spec.html#transport-reload: a Codex or
+        # pi agent keeps no Claude session to end.
+        space = f"w-{uuid.uuid4()}"
+        p = self.claude(f"{space}:p1", f"{space}:t1", space, None)
+        r = subprocess.run([str(SPAWN), "--reload", f"{space}:p1", "write your brief", "read your brief"],
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 65, r.stderr)
+        self.assertIn("Claude only", r.stderr)
+        self.assertEqual(self.calls(), "")
+        self.assertIsNone(p.poll(), "a refused reload ended the agent")
 
     def test_claude_session_prints_the_panes_record_and_its_transcript(self):
         # The lookup herdr-say and herdr-close --park share.
