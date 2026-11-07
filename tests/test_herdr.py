@@ -1037,9 +1037,10 @@ class HerdrWrapperTest(unittest.TestCase):
         # spec/domains/herdr-transport.spec.html#transport-reload: it returns
         # at once and outlives its caller; it sends the last message only once
         # the agent has stayed idle ten minutes with nothing typed, the human's
-        # typing and message starting them again; then, the box current, it
-        # ends the agent, and once Herdr has freed its name starts Claude fresh
-        # in that same pane, no new tab, and sends the first message, then the
+        # typing and message starting them again; then it ends the agent at
+        # once, nothing but reads after its last quiet check, and once Herdr
+        # has freed its name and the box is current, starts Claude fresh in
+        # that same pane, no new tab, and sends the first message, then the
         # goal.
         # The human sends a message at the third minute and types the next
         # from the ninth, but clears it at the eleventh: quiet from there.
@@ -1049,12 +1050,15 @@ class HerdrWrapperTest(unittest.TestCase):
         handover = at(rf"agent prompt {pane} write your brief --wait .*")
         self.assertEqual(calls[:handover].count("sleep 60"), 11 + 10)
         after_pull, ended, free = at("after-pull"), at("ended"), at(f"free {pane}")
+        checked = max(i for i, c in enumerate(calls[:ended]) if c.startswith(f"pane read {pane} "))
+        self.assertEqual([c for c in calls[checked + 1:ended] if c not in (f"agent get {pane}", "sleep 1")], [],
+                         "something ran between its last quiet check and the end")
         start = at(rf"agent start ops-10 --kind claude --pane {pane} -- .*")
         argv = self.start_argv()
         self.assertEqual(argv[argv.index("--") + 1:], ["--name", "ops-10", "--agent", "meta-operator"])
         first = at(rf"agent prompt {pane} contract changed: read your brief --wait .*")
         goal = at(rf"agent prompt {pane} /goal keep every lane advancing --wait .*")
-        order = [handover, after_pull, ended, free, start, first, goal]
+        order = [handover, ended, free, after_pull, start, first, goal]
         self.assertEqual(sorted(order), order)
         self.assertEqual(len([c for c in calls if c.startswith("agent start ")]), 1, "it started twice")
         self.assertFalse([c for c in calls if c.startswith(("tab ", "workspace "))], "it opened or closed a tab")
@@ -1076,10 +1080,11 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def test_reload_failing_once_the_agent_ended_prints_at_the_panes_prompt(self):
         # A failure after the old Claude ended tells the human at the shell
-        # prompt it left in the pane.
+        # prompt it left in the pane, naming no tab: a reload closes none.
         p, pane, calls, shown = self.reloaded({}, FAKE_START_FAIL_OTHER="1")
         self.assertTrue(self.gone(p), "the old Claude was not ended")
         self.assertIn("herdr-spawn: agent start failed", shown)
+        self.assertNotIn("closing tab", shown, "a reload closes no tab")
         self.assertNotIn(f"delivered {pane} contract changed: read your brief", calls)
 
     def test_reload_refuses_a_pane_with_no_claude_session_ending_nothing(self):
