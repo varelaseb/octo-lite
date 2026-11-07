@@ -94,13 +94,13 @@ Kept answers are not asked again; deleting that file asks afresh.</p>
 <p data-anchor="install-after-pull" id="install-after-pull">The installer publishes its after-pull step in the same onboarding file: <code>after_pull</code>, a list of arguments a host runs with no shell, after fast-forwarding this clone, to bring the box onto the pulled code.
 It runs <code>install-octo-lite --after-pull</code> from this clone with the prefix and project the installer last ran with.
 <code>--after-pull</code> installs as a plain run does, asking nothing, then verifies as <code>--check</code> does, and exits non-zero when the verification fails, its error output naming each failed check with the step that fixes it.
-Every run rewrites <code>after_pull</code>, so the step a host runs next is the pulled clone's, and records beside it the commit of this clone it ran at.
+Every run but <code>--check</code> and <code>--undo</code> rewrites <code>after_pull</code>, so the step a host runs next is the pulled clone's, and records beside it the commit of this clone it ran at.
 <code>herdr-spawn</code>, through which <code>octo-lite-start</code> also starts each lane owner, first runs the published after-pull step when this clone's commit differs from that record, so a pull no host followed with the step still reaches the box at the next spawn.
 A failing step goes to the spawn's error output and the spawn goes on; since the step's own run records the commit, it runs once per move of the clone, and its failure is printed once.
 Pulling, installing, and spawning are safe in any order: a spawn before the step runs it, and one after finds nothing to do.</p>
 <p data-anchor="install-setup-check" id="install-setup-check">The installer publishes its setup check in the same onboarding file: <code>check</code>, a list of arguments a host runs with no shell to learn octo-lite's setup problems (<a href="https://github.com/varelaseb/annotateanything/blob/main/docs/specs/peer-seams.spec.html#row-o10">peer seams O10</a>).
 It runs <a href="#install-check"><code>install-octo-lite --check</code></a> from this clone with the prefix and project the installer last ran with, so it verifies the box that run set up.
-Every run but <code>--check</code> rewrites it beside <code>after_pull</code>.
+Every run but <code>--check</code> and <code>--undo</code> rewrites it beside <code>after_pull</code>, and those two leave the onboarding file as it is.
 It runs this clone's own script, so a pull changes what it checks at once.
 Pulling, installing, and checking are safe in any order: a check run before the after-pull step names what that step fixes, and one run after it does not.</p>
 <p data-anchor="install-hooks" id="install-hooks">The installer registers octo-lite's <a href="./command-time.spec.html">command-time hook</a> in each agent CLI's hook settings, Claude Code's <code>.claude/settings.json</code> and Codex's <code>.codex/hooks.json</code> under the prefix, as the entries that hook needs.
