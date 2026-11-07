@@ -298,6 +298,22 @@ class LaneRecordTests(unittest.TestCase):
         self.assertNotIn("status only when they ask", text)
         self.assertNotIn("you consume without a message", text)
 
+    def test_operator_reloads_itself_from_its_brief(self) -> None:
+        # spec #roles-contract-change, #roles-operator-brief, #roles-standing-rule,
+        # #acceptance-contract-change-operator(-dialogue, -brief),
+        # herdr-transport spec #transport-reload: a merged change to its own contract
+        # or the operating model reaches the fleet operator by a reload it starts on
+        # itself, handing over through its brief.
+        text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
+        self.assertIn("run `herdr-spawn --reload \"$HERDR_PANE_ID\" '<last message>' '<first message>'` "
+                      "as your turn's last step", text)
+        self.assertIn("Before each reload (Behavior) it writes `$(octo-lite-state)/operator.brief.md`, its brief", text)
+        self.assertIn("reads the brief first, waits again on each owner it names", text)
+        self.assertIn("asks the human again none of the questions it names: your reply to an answer "
+                      "in your pane names the question it settles, and acts on it", text)
+        self.assertIn("It is no rules store: a standing direction", text)
+        self.assertIn("It reaches the rest, and you, once that change merges, as a contract change", text)
+
     def test_owner_reports_each_box_problem_to_operator_once(self) -> None:
         # spec #roles-box-problem, #acceptance-box-problem-owner: the owner reports
         # each problem of the box once, apart from the review link that also says it.

@@ -10,9 +10,13 @@
 #
 # The runtime (model, effort, skills) comes from the agent definition and the
 # CLI's own defaults. This script pins none of it.
+#
+# --reload PANE LAST FIRST spawns into a running Claude agent's own pane instead
+# of a new tab (spec/domains/herdr-transport.spec.html#transport-reload).
 set -euo pipefail
+here="$(dirname "$(readlink -f "$0")")"
 
-workspace=""; name=""; label=""; cwd="$PWD"; role=""; resume=""
+argv=("$@") workspace="" name="" label="" cwd="$PWD" role="" resume="" reload=""
 # The operating model is inherited: each spawn exports it into the tab it creates,
 # so every child spawned from there defaults to the same file.
 model="${OCTO_LITE_OPERATING_MODEL:-}"
@@ -22,9 +26,13 @@ usage() {
 usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
     [--operating-model FILE] [--resume SESSION] -- claude|codex|pi
+  herdr-spawn --reload PANE LAST FIRST
 
 Spawn bare, then send the brief with herdr-say. Claude gets --name NAME and
 --agent ROLE from --role. --resume SESSION continues a parked Claude session (Claude only).
+--reload, run by a Claude agent on its own pane as a turn's last step, returns
+at once; once the agent has gone quiet it sends LAST, then replaces the agent
+in PANE with a fresh Claude under its old name, role, and goal, and sends FIRST.
 
 Prints: name= role= tab= pane= cwd= contract= provider_session_id=
 EOF
@@ -40,12 +48,13 @@ while (($#)); do
     --role) role="${2:?}"; shift 2 ;;
     --operating-model) model="${2:?}"; shift 2 ;;
     --resume) resume="${2:?}"; shift 2 ;;
+    --reload) (($# == 4)) || { usage >&2; exit 64; }; reload="$2" last="$3" first="$4"; set -- claude; break ;;
     --direct) shift ;;                 # accepted and ignored; kept for callers
     --) shift; break ;;
     *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
   esac
 done
-[[ -n "$workspace" && -n "$name" && -n "$role" && $# -gt 0 ]] || { usage >&2; exit 64; }
+[[ -n "$reload" || -n "$workspace" && -n "$name" && -n "$role" && $# -gt 0 ]] || { usage >&2; exit 64; }
 [[ -d "$cwd" ]] || { echo "herdr-spawn: no such worktree: $cwd" >&2; exit 66; }
 cwd="$(cd "$cwd" && pwd -P)"
 if [[ -n "$model" ]]; then
@@ -63,6 +72,67 @@ esac
 (($# == 1)) || { echo "herdr-spawn: no args after the runtime; spawn bare, then send the brief with herdr-say" >&2; exit 64; }
 # Only Claude keeps the per-process session file parking resumes from.
 [[ -z "$resume" || "$kind" == claude ]] || { echo "herdr-spawn: --resume is Claude only" >&2; exit 64; }
+
+# A reload (spec/domains/herdr-transport.spec.html#transport-reload) ends the
+# running Claude agent of PANE once it has gone quiet and had its hand-over,
+# then goes on below as a spawn into that pane, under the name, role, and goal
+# the old session ran under. Run by that agent on itself, it returns at once
+# and goes on in a session of its own, so it outlives the Claude it ends.
+if [[ -n "$reload" ]]; then
+  pane="$reload"
+  if [[ -z "${HERDR_SPAWN_RELOADING:-}" ]]; then
+    # Only Claude keeps a session to end and a goal to carry.
+    session="$("$here/herdr-claude-session" "$pane")" ||
+      { echo "herdr-spawn: no Claude session in $pane; reload is Claude only" >&2; exit 65; }
+    # Its stderr is the pane's terminal, Claude's stdin, so a failure once that
+    # Claude has ended prints at the shell prompt it leaves in the pane.
+    HERDR_SPAWN_RELOADING=1 setsid -f "$here/herdr-spawn" "${argv[@]}" \
+      </dev/null >/dev/null 2>"/proc/$(jq -r .pid <<<"$session")/fd/0"
+    exit
+  fi
+  unset HERDR_SPAWN_RELOADING
+  # True when a human has typed into the agent's prompt. Its input line is the
+  # last one opening on U+276F and a no-break space; Claude draws its own
+  # suggestion there dim, which is nothing typed.
+  typed() {
+    herdr pane read "$pane" --source visible --lines 60 --format ansi 2>/dev/null |
+      sed -n $'s/\e\\[2m[^\e]*//g; s/\e\\[[0-9;]*m//g; s/^\xe2\x9d\xaf\xc2\xa0//p' | tail -1 | grep -q '[^[:space:]]'
+  }
+  # Until the agent has stayed idle at one Herdr state, with nothing typed, for
+  # $1 reads a minute apart after the first: a read that finds it working, at
+  # a new state (it worked between two reads), or with text typed starts them
+  # again. A pane Herdr no longer finds leaves nothing to reload.
+  quiet() {
+    local at="" s n=0
+    while :; do
+      s="$(herdr agent get "$pane" 2>/dev/null | jq -r '.result.agent | "\(.agent_status) \(.state_change_seq)"')" || exit 1
+      if [[ "$s" != @(idle|done)\ * ]] || typed; then at=""
+      elif [[ "$s" != "$at" ]]; then at="$s" n=0
+      fi
+      if [[ -n "$at" ]] && ((n++ >= $1)); then return; fi
+      sleep 60
+    done
+  }
+  # The session's latest transcript record of type $1, or nothing.
+  latest() { grep -F "\"type\":\"$1\"" "$transcript" 2>/dev/null | tail -1 || :; }
+  quiet 10
+  "$here/herdr-say" "$pane" "$last" >/dev/null
+  quiet 0
+  # It ends the agent at once, so nothing reaches it between the last quiet
+  # read and its end, to be lost with it. Its transcript, read after, is final.
+  session="$("$here/herdr-claude-session" "$pane")"
+  kill -TERM "$(jq -r .pid <<<"$session")"
+  transcript="$(jq -r '.transcript // empty' <<<"$session")"
+  name="$(jq -r .name <<<"$session")"
+  role="$(latest agent-setting | jq -r '.agentSetting // empty')"
+  # A goal Claude ended, met or failed, is none.
+  goal="$(latest goal_status | jq -r 'select(.attachment.met == false and (.attachment.failed | not)) | .attachment.condition')"
+  # Herdr holds an ended agent's name a while, refusing it to a start, so the
+  # spawn goes on, bounded, once Herdr finds no agent in the pane. Until the
+  # start, a send to the pane fails at its sender, and a failure prints at the
+  # shell prompt the agent left.
+  for _ in $(seq 1 60); do herdr agent get "$pane" >/dev/null 2>&1 || break; sleep 1; done
+fi
 
 # The box comes current before the agent starts, its contract included: when
 # the octo-lite clone moved since the install last ran, run the after-pull step
@@ -137,14 +207,20 @@ fi
 # A tab starts with the Herdr server's environment, not the caller's. HOME is
 # forwarded so the agent and every descendant keep the caller's git identity,
 # consent, and sessions; the model path likewise.
-tab_env=(--env "HOME=$HOME")
-[[ -z "$model" ]] || tab_env+=(--env "OCTO_LITE_OPERATING_MODEL=$model")
-out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" "${tab_env[@]}" --no-focus)"
-tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
-pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
-[[ -n "$tab" && -n "$pane" ]] || { echo "herdr-spawn: tab create returned no tab or pane" >&2; exit 1; }
+# A reloaded pane has them already.
+tab=""
+if [[ -z "$reload" ]]; then
+  tab_env=(--env "HOME=$HOME")
+  [[ -z "$model" ]] || tab_env+=(--env "OCTO_LITE_OPERATING_MODEL=$model")
+  out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" "${tab_env[@]}" --no-focus)"
+  tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
+  pane="$(jq -r '.result.root_pane.pane_id // empty' <<<"$out")"
+  [[ -n "$tab" && -n "$pane" ]] || { echo "herdr-spawn: tab create returned no tab or pane" >&2; exit 1; }
+fi
 
-close_orphan_tab() { herdr tab close "$tab" >/dev/null 2>&1 || true; }
+# A failed spawn closes the tab it created; a reload created none, so its pane
+# stays, and its failures name no tab.
+close_orphan_tab() { [[ -z "$tab" ]] || herdr tab close "$tab" >/dev/null 2>&1 || true; }
 
 # A new root pane may not have reached its shell prompt yet; herdr reports that
 # as the structured error agent_pane_busy. Only that code retries. Any other
@@ -161,12 +237,12 @@ while :; do
   [[ "$code" == agent_not_ready ]] && break
   if [[ "$code" != agent_pane_busy ]]; then
     [[ -n "$err" ]] && printf '%s\n' "$err" >&2
-    echo "herdr-spawn: agent start failed; closing tab $tab" >&2
+    echo "herdr-spawn: agent start failed${tab:+; closing tab $tab}" >&2
     close_orphan_tab; exit "$rc"
   fi
   if (( attempt >= retries )); then
     printf '%s\n' "$err" >&2
-    echo "herdr-spawn: pane still busy after $retries attempts; closing tab $tab" >&2
+    echo "herdr-spawn: pane still busy after $retries attempts${tab:+; closing tab $tab}" >&2
     close_orphan_tab; exit "$rc"
   fi
   sleep "$delay"; [[ "$delay" == 0.5 ]] && delay=1 || delay=2
@@ -212,12 +288,15 @@ selected_row() { pane_text | grep -E '^[[:space:]]*(❯|›)' | head -1; }
 
 send_key() {
   herdr pane send-keys "$pane" "$1" >/dev/null 2>&1 || {
-    echo "herdr-spawn: dialog keystroke failed; closing tab $tab" >&2
+    echo "herdr-spawn: dialog keystroke failed${tab:+; closing tab $tab}" >&2
     close_orphan_tab; exit 69; }
 }
 
-cleared=0
-for _ in $(seq 1 "${HERDR_SPAWN_TRUST_RETRIES:-14}"); do
+cleared=0 tries="${HERDR_SPAWN_TRUST_RETRIES:-14}"
+# A reloaded pane's folder is trusted already, and its screen still shows the
+# old conversation, which no dialog may be read from.
+[[ -z "$reload" ]] || cleared=1 tries=0
+for _ in $(seq 1 "$tries"); do
   state=0; dialog_state || state=$?
   [[ "$state" == 1 ]] && { cleared=1; break; }
   if [[ "$state" == 0 ]]; then
@@ -268,5 +347,11 @@ if [[ -z "$agent_status" ]]; then
   close_orphan_tab; exit 69
 fi
 [[ -n "$provider_session_id" ]] || provider_session_id="herdr:$name"
+
+# The fresh session opens on FIRST, then takes up the old one's goal.
+if [[ -n "$reload" ]]; then
+  "$here/herdr-say" "$pane" "$first" >/dev/null
+  [[ -z "$goal" ]] || "$here/herdr-say" "$pane" "/goal $goal" >/dev/null
+fi
 
 echo "name=$name role=$role tab=$tab pane=$pane cwd=$cwd contract=$contract provider_session_id=$provider_session_id"
