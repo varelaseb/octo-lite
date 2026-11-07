@@ -34,14 +34,25 @@ else
 fi
 [[ -n "$project" ]] && scope+=(--project "$project")
 
-# --check names every problem it finds, one line each with the step that fixes
-# it, and exits non-zero once all are named (install.spec.html#install-check).
-# Most are fixed by installing again from this clone with this run's scope.
+# One pass judges each path by one rule, whatever the mode: install acts on
+# the verdict, --check names it, so the two cannot disagree on a path. A
+# verifying run, --check or --after-pull, names every problem it finds, one
+# line each with the step that fixes it, and exits non-zero once all are named
+# (install.spec.html#install-check); --after-pull installs and verifies in this
+# one pass, so it names each problem once. Most are fixed by installing again
+# from this clone with this run's scope.
+verify=false
+[[ "$check" == true || "$after_pull" == true ]] && verify=true
 install_cmd="$(printf '%q ' "$root/scripts/install-octo-lite" "${scope[@]}")"
 install_cmd="${install_cmd% }"
 skillfile_install="curl -fsSL https://github.com/eljulians/skillfile/releases/latest/download/install.sh | sh"
 problems=0
 problem() { echo "$1; fix: $2" >&2; problems=$((problems + 1)); }
+# act PROBLEM COMMAND...: a verdict installing fixes. Install runs COMMAND;
+# --check names PROBLEM, fixed by installing.
+act() {
+  if [[ "$check" == true ]]; then problem "$1" "run $install_cmd"; else "${@:2}"; fi
+}
 
 # octo-lite registers herdr-wake as Spec Chat's `wake` provider (Spec Chat owns
 # the format: review-service.spec.html#providers). Written only with Herdr on
@@ -60,25 +71,25 @@ send = [\"$waker\", \"send\", \"{owner}\", \"{artifact}\", \"{message}\"]"
 # so here alone the installer edits a file instead of linking one. MODE install
 # adds, check verifies, undo removes, only the entries running the hook's link;
 # a file it cannot read as settings, or write, is left untouched and reported.
-# check names each problem with its fix and fails once all are named.
+# A verifying run names each problem with its fix and fails once all are named.
 # Claude's PostToolUse and PostToolUseFailure inputs carry the command's
 # duration; Codex's PostToolUse does not, so its PreToolUse stamps the start.
 # Codex runs a new or changed entry only once the operator trusts it there;
 # nothing here records that trust.
 hook_settings() {
-  python3 - "$1" "$prefix/.local/bin/octo-lite-command-time" "$install_cmd" \
+  python3 - "$1" "$verify" "$prefix/.local/bin/octo-lite-command-time" "$install_cmd" \
     "$prefix/.claude/settings.json" PostToolUse,PostToolUseFailure \
     "$prefix/.codex/hooks.json" PreToolUse,PostToolUse <<'PY'
 import json, os, shlex, shutil, sys
 
-mode, command, install, *files = sys.argv[1:]
+mode, verify, command, install, *files = sys.argv[1:]
 command = shlex.quote(command)
 failed = False
 
 
 def report(problem, fix=f"run {install}"):
     global failed
-    if mode == "check":
+    if verify == "true":
         failed = True
         problem += f"; fix: {fix}"
     print(problem, file=sys.stderr)
@@ -239,41 +250,31 @@ occupant() {
   fi
 }
 
+# One verdict per link the installer makes (install.spec.html#install-collision).
 link_one() {
   local source="$1" target="$2"
-  if [[ "$check" == true ]]; then
-    [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
-    # A symlink from a different clone with the same origin is adoptable.
-    [[ -L "$target" ]] && is_same_origin_clone "$(readlink -f "$target")" && return
-    # A dangling link of ours is the prune's, which named it.
-    [[ -L "$target" && ! -e "$target" ]] && is_ours "$(readlink -m "$target")" && return
-    if [[ -e "$target" || -L "$target" ]]; then
+  if [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]]; then
+    return 0
+  elif [[ -L "$target" ]] && is_same_origin_clone "$(readlink -f "$target")"; then
+    echo "adopted: $target -> $(readlink "$target")"
+  elif [[ -L "$target" && ! -e "$target" ]] && is_ours "$(readlink -m "$target")"; then
+    return 0 # the prune's: --check named it, install removed it before linking
+  elif [[ -e "$target" || -L "$target" ]]; then
+    if [[ "$verify" == true ]]; then
       problem "bad link: $target (occupied by $(occupant "$target"))" "move it aside, then run $install_cmd"
     else
-      problem "missing link: $target" "run $install_cmd"
+      echo "skipped: $target (occupied by $(occupant "$target"))"
     fi
-    return
+  else
+    act "missing link: $target" make_link "$source" "$target"
   fi
-  mkdir -p "$(dirname "$target")"
-  # A dangling link of ours is pruned before linking; any other dangling link
-  # is someone else's and falls through to skip below.
-  if [[ -e "$target" || -L "$target" ]]; then
-    [[ -L "$target" && "$(readlink -f "$target")" == "$(readlink -f "$source")" ]] && return
-    # Adopt: symlink from a different clone with the same origin.
-    if [[ -L "$target" ]] && is_same_origin_clone "$(readlink -f "$target")"; then
-      echo "adopted: $target -> $(readlink "$target")"
-      return
-    fi
-    # Skip: any other existing file or symlink.
-    echo "skipped: $target (occupied by $(occupant "$target"))"
-    return
-  fi
-  ln -s "$source" "$target"
 }
+make_link() { mkdir -p "$(dirname "$2")" && ln -s "$1" "$2"; }
 
-# Known legacy octo-lite symlinks from earlier role/adapter names. Migration removes
-# only a dangling link or one that still resolves inside this source repo; any other
-# file or link at these exact paths is left untouched. --check rejects a leftover.
+# Known legacy octo-lite symlinks from earlier role/adapter names. One still
+# resolving into this repo is a leftover of ours; a dangling one is the prune's
+# below, which judges every dangling link by one rule. Any other file or link at
+# these exact paths is left untouched.
 legacy_links=(
   ".codex/octo-lite-role-skills.json"
   ".claude/agents/octo-lite-implementer.md"
@@ -305,60 +306,30 @@ legacy_links=(
   ".codex/skills/qa-evidence-capture"
 )
 
-migrate_legacy_link() {
-  local target="$prefix/$1"
-  [[ -L "$target" ]] || return 0
-  if [[ -e "$target" ]]; then
-    case "$(readlink -f "$target")" in
-      "$root"/*) ;;
-      *) return 0 ;;
-    esac
-  fi
-  rm -f "$target"
-}
-
-check_legacy_gone() {
-  local target="$prefix/$1"
-  # A link still resolving into this repo is a leftover of ours, which
-  # migrate_legacy_link removes; a dangling one is the prune's, which names it.
-  [[ -L "$target" && -e "$target" && "$(readlink -f "$target")" == "$root"/* ]] &&
-    problem "leftover legacy link: $target" "run $install_cmd"
-  return 0
-}
-
 for legacy in "${legacy_links[@]}"; do
-  if [[ "$check" == true ]]; then
-    check_legacy_gone "$legacy"
-  else
-    migrate_legacy_link "$legacy"
+  target="$prefix/$legacy"
+  if [[ -L "$target" && -e "$target" && "$(readlink -f "$target")" == "$root"/* ]]; then
+    act "leftover legacy link: $target" rm -f "$target"
   fi
 done
 
 # A dangling link whose target was inside a clone of this repository is ours:
-# prune it from every directory the installer links into, so linking finds none,
-# and --check names it once, fixed by installing. Any other dangling link is
-# reported and left untouched.
-prune_dangling_skills() {
-  local d f target pruned=0
-  for d in "$prefix/.claude/skills" "$prefix/.codex/skills" "$prefix/.agents/skills" \
-           "$prefix/.claude/agents" "$prefix/.codex/agents" "$prefix/.local/bin" \
-           "$prefix/.claude/octo-lite" "$prefix/.codex/octo-lite"; do
-    [[ -d "$d" ]] || continue
-    for f in "$d"/*; do
-      [[ -L "$f" && ! -e "$f" ]] || continue
-      target="$(readlink "$f")"
-      is_ours "$(readlink -m "$f")" || {
-        echo "dangling link (not ours): $f -> $target" >&2; continue; }
-      if [[ "$check" == true ]]; then
-        problem "dangling legacy link: $f" "run $install_cmd"; continue
-      fi
-      rm -f "$f"; pruned=$((pruned + 1))
-    done
+# install prunes it, so linking finds none, and --check names it. Any other
+# dangling link is reported and left untouched. The prune walks every directory
+# the installer links into or a legacy link lies in.
+prune() { rm -f "$1"; echo "pruned: $1"; }
+for d in "$prefix/.claude/skills" "$prefix/.codex/skills" "$prefix/.agents/skills" \
+         "$prefix/.claude/agents" "$prefix/.codex/agents" "$prefix/.local/bin" \
+         "$prefix/.claude/octo-lite" "$prefix/.codex/octo-lite" "$prefix/.codex"; do
+  for f in "$d"/*; do
+    [[ -L "$f" && ! -e "$f" ]] || continue
+    if is_ours "$(readlink -m "$f")"; then
+      act "dangling legacy link: $f" prune "$f"
+    else
+      echo "dangling link (not ours): $f -> $(readlink "$f")" >&2
+    fi
   done
-  (( pruned )) && echo "pruned $pruned dangling legacy link(s)"
-  return 0
-}
-prune_dangling_skills
+done
 
 # Each peer links only what it owns (ADR-004). Spec Chat's installer links its
 # own skills; octo-lite does not link them.
@@ -425,7 +396,7 @@ done
 # resolve identically from .claude/skills and .codex/skills. link_one names a
 # link missing, dangling, or someone else's; it passes one adopted from another
 # clone of this repo, so two links resolving into different clones are named here.
-if [[ "$check" == true ]]; then
+if [[ "$verify" == true ]]; then
   for name in $managed_skills; do
     claude_skill="$prefix/.claude/skills/$name"
     codex_skill="$prefix/.codex/skills/$name"
@@ -551,29 +522,24 @@ check_floors() {
 if [[ "$check" == true ]]; then
   hook_settings check || problems=$((problems + 1))
   echo "octo-lite links checked at $prefix"
+else
+  hook_settings install || problems=$((problems + 1))
+  echo "octo-lite links installed at $prefix"
+  if [[ -e "$wake_file" && "$(cat "$wake_file")" != "$wake_toml" ]]; then
+    echo "keeping foreign wake provider: $wake_file" >&2
+  elif command -v herdr >/dev/null; then
+    mkdir -p "$(dirname "$wake_file")"
+    printf '%s\n' "$wake_toml" >"$wake_file.tmp.$$"
+    mv -f "$wake_file.tmp.$$" "$wake_file"
+    echo "wake provider registered: $wake_file"
+  fi
+fi
+if [[ "$verify" == true ]]; then
   echo "version floors:"
   check_floors
-  exit $((problems > 0))
-fi
-hook_settings install
-
-echo "octo-lite links installed at $prefix"
-
-if [[ -e "$wake_file" && "$(cat "$wake_file")" != "$wake_toml" ]]; then
-  echo "keeping foreign wake provider: $wake_file" >&2
-elif command -v herdr >/dev/null; then
-  mkdir -p "$(dirname "$wake_file")"
-  printf '%s\n' "$wake_toml" >"$wake_file.tmp.$$"
-  mv -f "$wake_file.tmp.$$" "$wake_file"
-  echo "wake provider registered: $wake_file"
-fi
-
-# --after-pull verifies the install it just made, naming each problem.
-if [[ "$after_pull" == true ]]; then
-  "$root/scripts/install-octo-lite" --check "${scope[@]}" || problems=$((problems + 1))
 fi
 # Last, so it is the line an operator sees: a pinned skill this run could not
 # fetch fails the install (install.spec.html#install-peers). Any problem this
 # run named fails it.
-[[ -z "$why" ]] || problem "Stageshow not installed: $why" "$stageshow_fix"
+[[ "$check" == true || -z "$why" ]] || problem "Stageshow not installed: $why" "$stageshow_fix"
 exit $((problems > 0))
