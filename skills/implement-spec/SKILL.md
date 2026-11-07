@@ -167,9 +167,19 @@ Do not end delivery at startup, dispatch, worker completion or review forwarding
 Read target `AGENTS.md` and applicable CI commands before broad validation,
 including DB isolation, shard/file concurrency, schema and dependencies.
 Do not run parallel destructive suites on one shared DB when CI isolates them.
-Before a heavy job (full suite, QA capture, build), yours or a worker's, check
-box load (`uptime` against `nproc`, `free -m`); when high, run one heavy job at
-a time and say so in worker briefs.
+Before a heavy job (full suite, QA capture, build, recording), yours or a
+worker's, check box load (`uptime` against `nproc`, `free -m`); when high, run
+one heavy job at a time, each under the box lock
+(`spec/domains/command-time.spec.html#time-lock`; box-wide, so not in the
+per-session `$(octo-lite-state)`), taken as the job starts and let go when it ends:
+`flock --verbose "${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/heavy.lock" CMD`.
+Take it around one bounded job only. A server or watcher (prototype server,
+review service, dev server) runs outside it, since it would hold the lock until
+it stopped and stall every heavy job behind it on the box.
+A head before the merge ask's head gets only the tests for what it touched; the
+lane runs the full suite once, on the merge ask's head, and the PR body's
+validation names that run.
+Every worker brief carries that lock recipe line (spec `#roles-load`).
 On topology failures, stop the owned invalid run and diagnose before retrying.
 Reuse passing evidence only for unchanged code and compatible environment
 when target rules permit; final-head required checks and integration-sensitive
