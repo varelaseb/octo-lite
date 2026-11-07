@@ -74,6 +74,20 @@ class InstallRepoSkillsTests(unittest.TestCase):
         check = self._install("--check", "--project", str(self.checkout))
         self.assertNotEqual([], problems(check), "--check must flag a declared skill left unlinked")
 
+    def test_a_declared_skill_gone_from_its_project_is_one_problem_and_the_run_finishes(self) -> None:
+        (self.checkout / "AGENTS.md").write_text("- Repo skills: skills/gone, tools/lint/house-style\n")
+        named = [f"missing source: {self.checkout}/skills/gone; fix: correct its path on the"
+                 f" Repo skills line of {self.checkout}/AGENTS.md, then run {INSTALLER}"
+                 f" --prefix {self.prefix} --project {self.checkout}"]
+        install = self._install("--project", str(self.checkout))
+        self.assertEqual(named, problems(install))
+        self.assertIn("octo-lite links installed", install.stdout)
+        house = self.prefix / ".claude" / "skills" / "house-style"
+        self.assertEqual(str(self.checkout / "tools/lint/house-style"), os.path.realpath(house))
+        check = self._install("--check", "--project", str(self.checkout))
+        self.assertEqual(named, problems(check))
+        self.assertIn("version floors", check.stdout)
+
     def _plant_stale(self) -> Path:
         stale = self.prefix / ".claude" / "skills" / "ui-rules"
         stale.parent.mkdir(parents=True, exist_ok=True)

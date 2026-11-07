@@ -251,6 +251,18 @@ class OnboardingTest(unittest.TestCase):
                 self.run_installer()
                 self.assertEqual(link.resolve(), ROOT / "skills/commit")
 
+    def test_check_names_a_dangling_legacy_link_once(self):
+        """A dangling legacy link of ours is the prune's to name; installing removes it."""
+        self.run_installer()
+        link = self.prefix / ".codex/octo-lite/roles"
+        link.symlink_to(ROOT / "gone-roles")
+        r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(problems(r), [f"dangling legacy link: {link};"
+                                       f" fix: run {INSTALLER} --prefix {self.prefix}"])
+        self.run_installer()
+        self.assertFalse(link.is_symlink())
+
     def test_check_output_says_checked(self):
         """--check says 'checked', plain install says 'installed' (F-D7)."""
         r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix)],
@@ -384,15 +396,24 @@ class AfterPullTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertIn(named, r.stderr.splitlines()[-1])
 
-    def test_a_step_stopping_early_is_printed_by_the_first_spawn_only(self):
-        # A declared project skill is gone: the step stops there, before its end.
+    def with_a_declared_skill_gone(self):
         project = self.prefix.parent / "project"
         project.mkdir()
         (project / "AGENTS.md").write_text("Repo skills: skills/gone\n")
         text = self.onboarding.read_text()
         self.onboarding.write_text(text.replace("]\ncommit", f', "--project", "{project}"]\ncommit', 1))
-        first = self.started(self.spawn("w1"))
-        self.assertIn(f"missing source: {project}/skills/gone", first)
+        return f"missing source: {project}/skills/gone; fix: "
+
+    def test_a_declared_skill_gone_fails_the_step_only_once_it_is_done(self):
+        named = self.with_a_declared_skill_gone()
+        r = self.after_pull()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(named, r.stderr)
+        self.assertIn("version floors", r.stdout)
+
+    def test_a_declared_skill_gone_is_printed_by_the_first_spawn_only(self):
+        named = self.with_a_declared_skill_gone()
+        self.assertIn(named, self.started(self.spawn("w1")))
         self.assertEqual(self.started(self.spawn("w2")), "")
 
     def test_parallel_spawns_run_the_step_once(self):
