@@ -1,5 +1,5 @@
 // spec-chat runtime v0.1 — hydrates semantic islands and mounts the annotation layer.
-// spec-chat-capabilities: address-browser answer-buttons box-picture changed-root-focus conversation custom-style-focus design-set diff-visibility-control error-overlay finish-review git-focus keys-icons manual-resume-status mobile-handoff mobile-pre-wrap mobile-review mockup-chips mockup-questions mockup-review mockup-walkthrough next-tbd one-surface prototype-mockup reopen-thread reply-lane round-video screen-index semantic-islands served-storage shared-style-ownership shell-held spec-acceptance stage-tag tbd-later video-moment wake-reason
+// spec-chat-capabilities: address-browser answer-buttons box-picture changed-root-focus conversation custom-style-focus design-set diff-visibility-control error-overlay finish-review fit-settles git-focus keys-icons manual-resume-status mobile-handoff mobile-pre-wrap mobile-review mockup-chips mockup-directions mockup-questions mockup-review mockup-walkthrough next-screen next-tbd one-surface prototype-mockup reopen-thread reply-lane round-video screen-index semantic-islands served-storage shared-style-ownership shell-held spec-acceptance stage-tag tbd-later typed-kept video-moment wake-reason
 // Transports: FSA (file://, primary) | HTTP review-serve (http(s)://, secondary).
 // Same spools, same event schema either way. See DESIGN.md.
 // Classic script, NOT a module: browsers CORS-block module scripts on file:// pages,
@@ -12,7 +12,7 @@
 (function () {
 'use strict';
 
-// review-service #served-own-address: the page's own address is its document's base address, fragment aside;
+// served-pages #served-own-address: the page's own address is its document's base address, fragment aside;
 // served directly, that is its location. Everything the page addresses comes from it, never from its location.
 // Its query follows what the page shows (#served-rewrite).
 const OWN_ADDRESS = new URL(document.baseURI);
@@ -27,7 +27,7 @@ const SCRIPT_SERVICE = (() => {
   const at = src ? new URL(src) : null;
   return at && /\/static\/comment-layer\.js$/.test(at.pathname) ? new URL('../', at) : null;
 })();
-// comment-layer #shell-ui-page: the comment UI page a shell frames loads the runtime from the same address, marked
+// shell #shell-ui-page: the comment UI page a shell frames loads the runtime from the same address, marked
 // data-comment-ui; it draws only the conversation of the page the shell relays, and reads and writes through the
 // review service it is served by.
 const COMMENT_UI = Boolean(SCRIPT_SERVICE && document.currentScript.hasAttribute('data-comment-ui'));
@@ -111,7 +111,7 @@ const state = {
   outboxBlocked: false,  // a send failed; the offline notice shows until the outbox drains
   storedCount: -1,       // events last kept in browser storage
   mockups: [],           // the spec's mockup set as the service last told it (#chip-source); null until it first answers
-  mockupAsk: false,      // an HTTP page asks for its set with each read; a page that is no spec is told so and stops
+  mockupAsk: false,      // an HTTP page asks for its set, a mockup page its spec's, with each read; a page that is no spec is told so and stops
   mockupAsking: false,
   mockupChips: '',       // what the drawn chips show, so a read that changes only open counts redraws none
   screenIndex: '[]',     // what the drawn Screens index shows (mockups #screen-index-live)
@@ -130,6 +130,7 @@ const MOCKUP_SPEC = (() => {
     && /\.mockup\.html$/.test(parts[parts.length - 1]) && parts[parts.length - 2] ? parts[parts.length - 2] : null;
 })();
 const MOCKUP_VIEWPORTS = [['desktop', 'Desktop'], ['phone', 'Phone']]; // each frame's viewport and label (#frame-viewports)
+const DIRECTIONS_SHOWN = 2; // a mockup's directions list shows from two directions (#directions-what)
 // mockups #prototype-file: a prototype mockup names its route on the lane's running prototype and draws no frame; its
 // page frames the route (#prototype-route). null on any other page.
 const PROTOTYPE_ROUTE = MOCKUP_SPEC ? ((document.querySelector('meta[name="mockup-prototype"]') || {}).content || '').trim() || null : null;
@@ -142,7 +143,7 @@ const proto = {
   reach: 0,              // the latest step asked of the frames; an older replay stops
   earlier: false,        // Earlier rounds shows the older rounds' videos
 };
-// A prototype route its mockup page holds (comment-layer #shell-setting-own): the frame it is, its regions, and the
+// A prototype route its mockup page holds (shell #shell-setting-own): the frame it is, its regions, and the
 // marks its page last sent.
 const protoHeld = { on: false, frame: '', regions: [], pointing: false, marks: null };
 const mockup = {
@@ -160,9 +161,13 @@ const mockup = {
   play: null,            // the walkthrough playing, until it stops (#walkthrough-step)
   question: null,        // the question Next TBD last opened (#mockup-questions-next)
   settle: 0,             // a redraw of marks once the frames' motion settles
+  set: [],               // its spec's set as the service last told it, for its place in it (#next-screen)
+  pager: '',             // what the drawn Previous and Next show, so a read that changes nothing redraws none
+  dirs: null,            // the first round's directions, in its file's order, while its page shows them (#directions-page)
+  view: null,            // the viewport the reviewer toggled the directions to; null follows the screen's width
 };
 
-// comment-layer #shell: a page this runtime runs is alone until a shell holds it (#shell-roles); the comment UI page
+// shell #shell: a page this runtime runs is alone until a shell holds it (#shell-roles); the comment UI page
 // (COMMENT_UI) draws the conversation of whatever page its shell relays (#shell-ui-page). Set before boot runs.
 const shell = {
   held: false,           // a shell at a named origin said hello with comments (#shell-roles-held)
@@ -460,14 +465,14 @@ async function requestEvidence() {
  * screen, version, route, the spec anchors its parts and steps illustrate, and its open threads and open questions. The
  * set draws the See mockup chips and the Screens index (#screen-index), lists each mockup with open threads or questions
  * in the panel, holds Accept spec until they are settled (#accept-gate), and is what Accept spec names (#accept-set). A
- * page that is no spec, a mockup among them, is answered that it has no set and asks no more; an unanswered read keeps
- * the set last told.
+ * mockup page asks for its spec's set, the same set in the same order, for Previous and Next alone (#next-screen). A
+ * page that is no spec is answered that it has no set and asks no more; an unanswered read keeps the set last told.
  */
 async function requestMockups() {
   if (!state.mockupAsk || state.mockupAsking) return;
   state.mockupAsking = true;
   try {
-    const path = COMMENT_UI ? ui.page.path : OWN_ADDRESS.pathname.replace(/^\//, '');
+    const path = (COMMENT_UI ? ui.page.path : MOCKUP_SPEC ? new URL(mockupSpecAddress()).pathname : OWN_ADDRESS.pathname).replace(/^\//, '');
     const response = await fetch(apiPath('mockups?' + new URLSearchParams({ path })));
     if (response.status === 400 || response.status === 404) {
       state.mockupAsk = false;
@@ -485,6 +490,7 @@ const mockupEntry = m => Boolean(m && typeof m.page === 'string' && m.page && ty
   && m.illustrates && typeof m.illustrates === 'object' && !Array.isArray(m.illustrates));
 
 function showMockups(mockups) {
+  if (MOCKUP_SPEC) return renderPager(mockups); // a mockup page draws no chip, index, or gate of its set
   const changed = JSON.stringify(mockups) !== JSON.stringify(state.mockups);
   state.mockups = mockups;
   renderMockupChips();
@@ -492,11 +498,11 @@ function showMockups(mockups) {
   if (changed) renderPanel();
 }
 
-// A mockup page's address from this page's own: its path in the set from the spec's folder, the base this page's
+// A mockup page's address from the spec page's: its path in the set from the spec's folder, the base this page's
 // address names (mockups #before-after: a mockup page compares against its spec page's base), the step to open at
 // (#walkthrough-address), and the part to arrive at.
 function mockupHref(page, part, step) {
-  const at = contextAddress();
+  const at = MOCKUP_SPEC ? new URL(mockupSpecAddress()) : contextAddress();
   const url = new URL(page, at);
   const base = at.searchParams.get('base');
   if (base) url.searchParams.set('base', base);
@@ -577,15 +583,17 @@ function mockupOpenList(mockups) {
 
 // #screen-index: under the spec's header, before its first section, Screens with their count, then one row per mockup
 // of the set this page was last told, in its order, each row one link to its mockup page at the base this page compares
-// (#screen-index-press): the set's status mark, the screen's name, its kind, its viewports, its open counts, and a
-// chevron. Its kind is Prototype and its route, or Drawn mockup; an entry that tells no route names none, so a service
-// of another version still indexes the set (#screen-index-rule). Drawn again only when what it shows changes
-// (#screen-index-live). A page with no set, or none told, shows none; the comment UI page holds no spec to index.
+// (#screen-index-press): the set's status mark, the screen's name, its kind, its directions while its page shows them,
+// its viewports, its open counts, and a chevron. Its kind is Prototype and its route, or Drawn mockup; an entry that
+// tells no route names none, nor directions none, so a service of another version still indexes the set
+// (#screen-index-rule). Drawn again only when what it shows changes (#screen-index-live). A page with no set, or none
+// told, shows none; the comment UI page holds no spec to index.
 function renderScreenIndex() {
   const rows = COMMENT_UI ? [] : (state.mockups || []).map(m => ({
     screen: m.screen, href: mockupHref(m.page, null), open: mockupOpenCounts(m),
     kind: typeof m.route === 'string' ? 'Prototype' : m.route === null ? 'Drawn mockup' : '',
     route: typeof m.route === 'string' ? m.route : '',
+    directions: Number.isInteger(m.directions) && m.directions >= DIRECTIONS_SHOWN ? m.directions + ' directions' : '',
   }));
   const drawn = JSON.stringify(rows);
   if (drawn === state.screenIndex) return;
@@ -613,9 +621,10 @@ function renderScreenIndex() {
     const kind = row.kind ? part(meta, 'hx-screen-kind', row.kind) : null;
     if (row.route) kind.appendChild(document.createElement('code')).textContent = row.route;
     part(meta, 'hx-screen-views', 'Desktop and phone');
+    if (row.directions) part(meta, 'hx-screen-dirs', row.directions);
     part(link, 'hx-screen-open' + (row.open ? ' hx-waiting' : ''), row.open || 'No open threads');
     part(link, 'hx-screen-go').innerHTML = ICONS['chevron-right'];
-    link.setAttribute('aria-label', [row.screen, [row.kind, row.route].filter(Boolean).join(' '), 'Desktop and phone', row.open || 'No open threads'].filter(Boolean).join(', '));
+    link.setAttribute('aria-label', [row.screen, [row.kind, row.route].filter(Boolean).join(' '), row.directions, 'Desktop and phone', row.open || 'No open threads'].filter(Boolean).join(', '));
   }
   keepReading(() => shown ? shown.replaceWith(index) : header ? header.after(index) : first.before(index));
 }
@@ -760,7 +769,7 @@ function openRangePicker(open) {
   if (state.range.pickerOpen) setTimeout(() => document.getElementById('hx-range-input')?.focus(), 0);
 }
 
-// review-service #served-rewrite: the page rewrites its address only while its own address is its location,
+// served-pages #served-rewrite: the page rewrites its address only while its own address is its location,
 // fragment aside; served at another address it changes only what it shows, so a reload opens what the host served.
 function rewriteAddress(edit) {
   const here = new URL(location.href);
@@ -1378,7 +1387,7 @@ function answerBlocks() {
     const b = placedMark(th.ev), block = blocks.get(b.anchorId);
     if (block && b.target && b.target.type === 'element' && block.buttons.has(b.target.key)) block.chosen = block.buttons.get(b.target.key);
   }
-  // A held page's chosen answers are the ones the shell's marks name, by their words (comment-layer #shell-fields-marks).
+  // A held page's chosen answers are the ones the shell's marks name, by their words (shell #shell-fields-marks).
   if (shell.held) for (const [anchor, block] of blocks) {
     block.chosen = [...block.buttons.values()].find(button => button.dataset.specChoice.trim() === shell.answers.get(anchor)) || null;
   }
@@ -1387,6 +1396,7 @@ function answerBlocks() {
 
 function renderChoices() {
   for (const { buttons, chosen } of answerBlocks().values()) for (const b of buttons.values()) b.setAttribute('aria-pressed', String(b === chosen));
+  renderPicks(); // a mockup's directions derive the reviewer's pick the same way (mockups #directions-pick)
 }
 
 // Outside comment mode a press saves the answer on that button and opens nothing; the chosen
@@ -1401,16 +1411,22 @@ function pressAnswer(e) {
 
 // One answer, pressed on the page or in its question's bubble (threads #questions): the same comment on the same button.
 // On the comment UI page an answer is the one its held page published (answerPublished); a held page's press is a pick
-// that page saves (comment-layer #shell-protocol).
+// that page saves (shell #shell-protocol).
 function answerWith(button) {
   if (COMMENT_UI) return answerPublished(button);
   const holder = holderOf(button);
   if (answerBlocks().get(holder.dataset.anchor).chosen === button) return;
-  const desc = elementDescriptor(button, holder);
-  const choice = button.dataset.specChoice.trim();
+  saveAnswer(holder, button, button.dataset.specChoice.trim(), pageStep());
+}
+
+// An answer saved on its block: a comment through the one comment save, its target the element answered with, its text
+// the answer; a held page's a pick its shell saves. A mockup's Pick saves its direction's this way (mockups
+// #directions-pick).
+function saveAnswer(holder, el, choice, spot = {}) {
+  const desc = elementDescriptor(el, holder);
   const target = { type: 'element', key: desc.key };
-  if (shell.held) return pickSpot({ anchor: holder.dataset.anchor, target, quote: desc.quote, answer: choice, ...pageStep() });
-  saveMessage({ kind: 'comment', anchorId: holder.dataset.anchor, target, quote: desc.quote, ...pageStep() }, choice);
+  if (shell.held) return pickSpot({ anchor: holder.dataset.anchor, target, quote: desc.quote, answer: choice, ...spot });
+  saveMessage({ kind: 'comment', anchorId: holder.dataset.anchor, target, quote: desc.quote, ...spot }, choice);
 }
 
 /* ---------------- events -> threads ---------------- */
@@ -1528,7 +1544,7 @@ function commentSpot(b) {
 const spotFields = c => Object.fromEntries(Object.entries(commentSpot(c)).filter(([, v]) => v !== null));
 
 // threads #box-picture: a picture a page made of a boxed spot, as a pick carries it, {type, data}: a PNG, JPEG, or WebP
-// image's type and its bytes in base64, at most 1 MB (comment-layer #shell-fields-pick); null for any other value. The
+// image's type and its bytes in base64, at most 1 MB (shell #shell-fields-pick); null for any other value. The
 // comment carries it to the service, which keeps it beside the comment and stores the comment naming its file.
 const PICTURE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const PICTURE_BYTES = 1024 * 1024;
@@ -1586,7 +1602,7 @@ function reviewerIdentity(storage, random, address) {
   return named(fresh);
 }
 
-// comment-layer #shell-phone-id: the browser id a shell passes in the address fragment, as `#browser=<id>`.
+// shell #shell-phone-id: the browser id a shell passes in the address fragment, as `#browser=<id>`.
 function addressBrowser(fragment) {
   const id = new URLSearchParams(String(fragment || '').replace(/^#/, '')).get('browser');
   return id && /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : null;
@@ -1744,7 +1760,7 @@ function advanceTbd(st, open) {
 // Open TBDs and the addressed anchor share one highlight; the addressed one keeps it while it is the address.
 function renderHighlight() {
   const handoffState = reviewHandoffState(state.threads, openTbdCount(), state.reviewer?.browser, mockupOpen(state.mockups));
-  if (COMMENT_UI) return handoffState; // the comment UI page draws on no page (comment-layer #shell-review-actions)
+  if (COMMENT_UI) return handoffState; // the comment UI page draws on no page (shell #shell-review-actions)
   const openTbds = openTbdMarkers(document.querySelectorAll('[data-spec-tbd]'));
   const addressed = addressPlace();
   renderTbdHighlight(document, tbdHighlightBlocks(openTbds).concat(addressed ? [findAnchor(addressed.anchor)] : []));
@@ -1755,7 +1771,7 @@ function renderHighlight() {
 function arriveAtAddress() {
   renderHighlight();
   const addressed = addressPlace();
-  if (addressed) findAnchor(addressed.anchor).scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (addressed) inView(findAnchor(addressed.anchor)).scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 function renderTbdHighlight(root, blocks) {
@@ -1850,22 +1866,25 @@ function corpusTargetLink(target) {
 }
 
 function goToJevTarget(target) {
-  // review-service #served-move: another spec opens by following a link to its address, never by setting the
-  // location, so a host's link handling receives it as it does the reviewer's own taps.
   const value = String(target || '');
   const hash = value.indexOf('#');
   const path = hash < 0 ? '' : value.slice(0, hash);
   const anchor = hash < 0 ? value : value.slice(hash + 1);
   if (path && path !== OWN_ADDRESS.pathname.replace(/^\//, '')) {
-    const link = document.createElement('a');
-    link.href = new URL((path.startsWith('/') ? path : '/' + path) + (anchor ? '#' + anchor : ''), OWN_ADDRESS).href;
-    link.hidden = true;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    return;
+    return followLink(new URL((path.startsWith('/') ? path : '/' + path) + (anchor ? '#' + anchor : ''), OWN_ADDRESS).href);
   }
   scrollToJevAnchor(anchor || value);
+}
+
+// served-pages #served-move: another page opens by following a link to its address, never by setting the location,
+// so a host's link handling receives it as it does the reviewer's own taps.
+function followLink(href) {
+  const link = document.createElement('a');
+  link.href = href;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 /* ---------------- Jev markers ----------------
@@ -2164,7 +2183,7 @@ function evidenceDiff(proven, read) {
   return parts;
 }
 
-// Plugin bridge (criterion-evidence #plugin-bridge): IDs, never URLs, read from the service's bundle page address.
+// Plugin bridge (host-bridge #plugin-bridge): IDs, never URLs, read from the service's bundle page address.
 function evidenceBundleId(url) {
   try {
     const parts = new URL(url).pathname.split('/');
@@ -2180,11 +2199,11 @@ function evidenceCriterionKey(url) {
   } catch (_) { return null; }
 }
 
-/* ---------------- host bridge (criterion-evidence #plugin-bridge) ----------------
+/* ---------------- host bridge (host-bridge #plugin-bridge) ----------------
  * Self-contained (window, document, navigator only): review-serve inlines this exact block
  * into the review index, so spec pages and the index run one bridge (#bridge-tab-pages). */
 // The parent frame's origin per step its hello offers; null keeps the browser's own behavior. `comments`, the shell's,
-// is set by the page once it takes the shell's hello (comment-layer #shell-roles-held).
+// is set by the page once it takes the shell's hello (shell #shell-roles-held).
 const hostBridge = { evidence: null, tab: null, comments: null };
 
 // Step 2 (#bridge-open, #bridge-intercept): true when sent, so the caller cancels the link; false keeps the link.
@@ -2214,7 +2233,7 @@ function hostTabClick(event) {
   if (!link) return;
   let url;
   try { url = new URL(link.getAttribute('href'), document.baseURI); } catch (_) { return; }
-  if (url.origin !== new URL(document.baseURI).origin) return; // the page's own address (review-service #served-own-address)
+  if (url.origin !== new URL(document.baseURI).origin) return; // the page's own address (served-pages #served-own-address)
   event.preventDefault();
   window.parent.postMessage({ type: 'spec-chat-open-tab', href: url.href }, hostBridge.tab);
 }
@@ -2222,7 +2241,7 @@ function hostTabClick(event) {
 // #bridge-hello-check: only the parent window at a real origin; "evidence" and "tab" each turn on only their own steps,
 // and "comments" only the shell messages: `shell`, a page that can be held, takes the hello (`shell.hello(origin)`),
 // which checks the origin is a named shell before it sets hostBridge.comments, and every later message from that
-// parent at that origin (`shell.message(data)`) (comment-layer #shell-protocol).
+// parent at that origin (`shell.message(data)`) (shell #shell-protocol).
 function listenHost(shell) {
   if (window.parent === window) return;
   window.addEventListener('message', event => {
@@ -2600,7 +2619,7 @@ function renderJev() {
 // Document presentation applies only to standalone spec pages: an embedding host app
 // owns its own look, so embed mode ships the hx-* overlay CSS alone, and so does a mockup
 // page, whose frames keep the mockup's own look (mockups #review-chrome).
-/* design-set icons c5834e773e3a0e88da6343b1540fb0931ca7b2ad begin: the pinned set's icons/, built in by scripts/design-set-sync; never edit by hand */
+/* design-set icons 241c10fe2754d1928d1cbbd9a9902c7c2673ba21 begin: the pinned set's icons/, built in by scripts/design-set-sync; never edit by hand */
 const ICONS = {
   "chevron-down": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M3.5 6L8 10.5 12.5 6\"/></svg>",
   "chevron-left": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M10 3.5L5.5 8l4.5 4.5\"/></svg>",
@@ -2617,7 +2636,7 @@ const ICONS = {
   "threads": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\" stroke=\"currentColor\"><path d=\"M3.5 6h5A1.5 1.5 0 0 1 10 7.5v3A1.5 1.5 0 0 1 8.5 12H6.5L4 14v-2h-.5A1.5 1.5 0 0 1 2 10.5v-3A1.5 1.5 0 0 1 3.5 6z\"/><path d=\"M6 6V3.5A1.5 1.5 0 0 1 7.5 2h5A1.5 1.5 0 0 1 14 3.5v3A1.5 1.5 0 0 1 12.5 8H12v2l-2-1.5\"/></svg>",
 };
 /* design-set icons end */
-/* design-set marks c5834e773e3a0e88da6343b1540fb0931ca7b2ad begin: the pinned set's marks/, built in by scripts/design-set-sync; never edit by hand */
+/* design-set marks 241c10fe2754d1928d1cbbd9a9902c7c2673ba21 begin: the pinned set's marks/, built in by scripts/design-set-sync; never edit by hand */
 const MARKS = {
   "attention": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" stroke=\"var(--ui-attention, currentColor)\"/><path d=\"M8 4.8v3.6\" stroke=\"var(--ui-attention, currentColor)\"/><circle cx=\"8\" cy=\"11\" r=\"1\" fill=\"var(--ui-attention, currentColor)\"/></svg>",
   "fail": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" stroke=\"var(--ui-fail, currentColor)\"/><path d=\"M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4\" stroke=\"var(--ui-fail, currentColor)\"/></svg>",
@@ -2626,6 +2645,15 @@ const MARKS = {
   "running": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><circle cx=\"8\" cy=\"8\" r=\"6.5\" stroke=\"var(--ui-action, currentColor)\"/><path d=\"M8 3.5a4.5 4.5 0 0 1 0 9z\" fill=\"var(--ui-action, currentColor)\"/></svg>",
 };
 /* design-set marks end */
+// The set's Find field: the review index builds it in from here, never a copy (review-index #find-seam); no spec page
+// draws it.
+/* design-set find 241c10fe2754d1928d1cbbd9a9902c7c2673ba21 begin: the pinned set's find/, built in by scripts/design-set-sync; never edit by hand */
+const FIND = {
+  "find.css": "/* design-set Find: the field, its no-match line, and what it hides. Needs tokens.css first.\n   The field is 44px tall and its label tappable across that height: a full-size touch target at every width. */\n.ui-find { display: flex; align-items: center; gap: var(--ui-space-3); min-width: 0; margin: 0; }\n.ui-find label { flex: none; align-self: stretch; display: flex; align-items: center; font-weight: var(--ui-weight-semibold); }\n.ui-find input { flex: 1; box-sizing: border-box; min-width: 0; min-height: calc(var(--ui-space-6) + var(--ui-space-3)); padding: var(--ui-space-1) var(--ui-space-3); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-sm); background: var(--ui-surface); color: var(--ui-ink); font: inherit; font-size: var(--ui-text-sm); }\n.ui-find input::placeholder { color: var(--ui-muted); opacity: 1; }\n.ui-find input:focus-visible { outline: var(--ui-focus-width) solid var(--ui-focus); outline-offset: var(--ui-focus-offset); }\n.ui-find-none { margin: 0; padding: var(--ui-space-3) var(--ui-space-1); color: var(--ui-muted); }\n[data-find][hidden], [data-find-group][hidden], [data-find-empty][hidden], .ui-find-none[hidden] { display: none !important; }\n",
+  "find.html": "<p class=\"ui-find\"><label for=\"ui-find\">Find</label><input id=\"ui-find\" type=\"search\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"{placeholder}\"></p>\n<p class=\"ui-find-none\" hidden>{none}</p>\n",
+  "find.js": "/* design-set Find: filters what the page already holds as the field is typed in, case aside. It fetches nothing and\n   stores nothing. The page marks what it filters (README, Find); load this after it, at the end of the body. */\n(() => {\n  const field = document.querySelector(\".ui-find input\");\n  if (!field) return;\n  const marked = (selector) => [...document.querySelectorAll(selector)];\n  // The nearest group holding an element; null is the page itself.\n  const owner = (el) => el.parentElement?.closest(\"[data-find-group]\") ?? null;\n  const words = new Map(marked(\"[data-find]\").map((item) => [item, item.dataset.find.toLowerCase().split(\"\\n\")]));\n  const groups = marked(\"[data-find-group]\");\n  const empties = marked(\"[data-find-empty]\");\n  const withEmpty = new Set(empties.map(owner));\n  const counts = marked(\"[data-find-count]\");\n  const disclosures = marked(\"details\").filter((details) => details.querySelector(\"[data-find]\"));\n  const none = document.querySelector(\".ui-find-none\");\n  const touched = [...words.keys(), ...groups, ...empties, ...(none ? [none] : [])];\n  let before = null; // the page as it stood before typing, put back once the field is empty\n\n  const apply = () => {\n    const typed = field.value.trim().toLowerCase();\n    if (!typed) {\n      if (!before) return;\n      for (const [el, hidden] of before.hidden) el.hidden = hidden;\n      for (const [count, text] of before.text) count.textContent = text;\n      for (const [details, open] of before.open) details.open = open;\n      before = null;\n      return;\n    }\n    if (!before) before = {\n      hidden: new Map(touched.map((el) => [el, el.hidden])),\n      text: new Map(counts.map((count) => [count, count.textContent])),\n      open: new Map(disclosures.map((details) => [details, details.open])),\n    };\n    // Per group, null the page: how many shown items it holds, and how many of its own groups hold one.\n    const items = new Map();\n    const held = new Map();\n    const add = (map, key) => map.set(key, (map.get(key) || 0) + 1);\n    for (const [item, list] of words) {\n      item.hidden = !list.some((word) => word.includes(typed));\n      if (item.hidden) continue;\n      for (let group = owner(item); ; group = owner(group)) {\n        add(items, group);\n        if (!group) break;\n      }\n    }\n    for (const group of groups) {\n      group.hidden = !items.has(group) && !withEmpty.has(group);\n      if (items.has(group)) add(held, owner(group));\n    }\n    for (const line of empties) line.hidden = items.has(owner(line));\n    for (const count of counts) {\n      const group = count.closest(\"[data-find-group]\");\n      count.textContent = String((count.dataset.findCount === \"groups\" ? held : items).get(group) || 0);\n    }\n    for (const details of disclosures) {\n      if ([...details.querySelectorAll(\"[data-find]\")].some((item) => !item.hidden)) details.open = true;\n    }\n    if (none) none.hidden = items.has(null);\n  };\n\n  const clear = () => {\n    if (!field.value) return;\n    field.value = \"\";\n    apply();\n  };\n  field.addEventListener(\"input\", apply);\n  field.addEventListener(\"keydown\", (event) => { if (event.key === \"Escape\") clear(); });\n  addEventListener(\"pageshow\", (event) => { if (event.persisted) clear(); });\n})();\n",
+};
+/* design-set find end */
 const DOC_CSS = `
 /* document presentation: the spec file stays lean; the dialect's look lives here, every value from the design set the
    chrome CSS opens with (spec-page-design #document) */
@@ -2661,7 +2689,7 @@ body.hx-focus-active tr[data-hx-focus=unchanged]:not([data-hx-focus=unchanged]:n
 }
 `;
 const CSS = `
-/* design-set c5834e773e3a0e88da6343b1540fb0931ca7b2ad begin: the pinned set's tokens.css, built in by scripts/design-set-sync; never edit by hand */
+/* design-set 241c10fe2754d1928d1cbbd9a9902c7c2673ba21 begin: the pinned set's tokens.css, built in by scripts/design-set-sync; never edit by hand */
 /* design-set tokens. Light in :root, dark under prefers-color-scheme.
    tokens.json holds the same values; tests/test_design_set.py checks both. */
 :root {
@@ -2758,8 +2786,11 @@ const CSS = `
 body.hx-panel-open :is(.hx-top-line,.hx-errors){right:330px}
 body:has(> :is(.hx-top-line,.hx-errors)){padding-top:var(--hx-top-space,0px)}
 html:has(> body > :is(.hx-top-line,.hx-errors)){scroll-padding-top:var(--hx-top-space,0px)}
+/* a mockup page's height never changes a width (mockups #review-settle): the scrollbar's room is kept, so sizing the
+   page to the chrome above it, or the frames to their space, never shows or hides the scrollbar beside what it follows */
+html:has(.hx-mockup){scrollbar-gutter:stable}
 :is(.hx-top-line,.hx-panel-head,.hx-thread-dock,.hx-focused-head,.hx-rule-card-source) svg{display:block;flex:0 0 auto}
-/* index link (lane-hosting #index-link): a chevron and Review index at the start of the top line */
+/* index link (review-index #index-link): a chevron and Review index at the start of the top line */
 .hx-service-index-link{flex:0 0 auto;display:inline-flex;align-items:center;gap:var(--ui-space-1);min-height:var(--ui-space-6);box-sizing:border-box;border-radius:var(--ui-radius-sm);color:var(--ui-ink);font:var(--ui-weight-medium) var(--ui-text-xs)/1 var(--ui-font);text-decoration:none}
 .hx-service-index-link:hover{text-decoration:underline;text-underline-offset:3px}
 .hx-service-index-link svg{color:var(--ui-muted)}
@@ -2779,6 +2810,12 @@ html:has(> body > :is(.hx-top-line,.hx-errors)){scroll-padding-top:var(--hx-top-
 .hx-mockup-view button{min-height:var(--ui-space-6);padding:var(--ui-space-2) var(--ui-space-3);border:none;border-radius:var(--ui-radius-sm);background:transparent;color:var(--ui-ink);font:var(--ui-weight-semibold) var(--ui-text-xs) var(--ui-font);cursor:pointer}
 .hx-mockup-view button:hover,.hx-mockup-view button[aria-pressed=true]{background:var(--ui-surface-soft)}
 .hx-mockup-view button[aria-pressed=true]{text-decoration:underline;text-underline-offset:3px}
+/* Previous and Next (mockups #next-screen): around the screen's place in its set, at the start of the range bar's row */
+.hx-pager{flex:0 0 auto;display:inline-flex;align-items:center;gap:var(--ui-space-1);margin-right:var(--ui-space-1)}
+.hx-pager button{display:inline-grid;place-items:center;box-sizing:border-box;width:var(--ui-space-6);min-height:var(--ui-space-6);padding:0;border:none;border-radius:var(--ui-radius-sm);background:transparent;color:var(--ui-ink);cursor:pointer}
+.hx-pager button:hover:not(:disabled){background:var(--ui-surface-soft)}
+.hx-pager button:disabled{color:var(--ui-muted);opacity:.45;cursor:default}
+.hx-pager-place{color:var(--ui-muted);font:var(--ui-weight-medium) var(--ui-text-xs) var(--ui-font);white-space:nowrap}
 .hx-range-picker{flex:1 1 100%;box-sizing:border-box;max-width:720px;margin:var(--ui-space-1) 0 var(--ui-space-2);padding-top:var(--ui-space-2);border-top:1px solid var(--ui-border)}
 .hx-range-commits{display:grid;gap:var(--ui-space-1);max-height:270px;overflow:auto}
 .hx-range-commit{display:grid;grid-template-columns:5.5em 6.5em minmax(0,1fr);gap:var(--ui-space-2);align-items:baseline;width:100%;padding:var(--ui-space-1) var(--ui-space-2);border:1px solid transparent;border-radius:var(--ui-radius-sm);background:transparent;color:var(--ui-ink);text-align:left;font:var(--ui-text-xs)/1.35 var(--ui-font);cursor:pointer}
@@ -2802,6 +2839,12 @@ html:has(> body > :is(.hx-top-line,.hx-errors)){scroll-padding-top:var(--hx-top-
 .hx-range-change{position:absolute;top:env(safe-area-inset-top);right:var(--ui-space-2);min-height:44px}
 .hx-spec-link{line-height:44px;margin-right:calc(3 * var(--ui-space-6) + var(--ui-space-2))} /* clear of the base picker */
 .hx-mockup-view button{min-height:44px}
+/* the range a row of its own, Previous and Next at the end of the row under it, after Before and After (mockups #next-screen-phone) */
+.hx-range-row:has(>.hx-pager){flex-wrap:wrap;row-gap:0}
+.hx-range-row:has(>.hx-pager) .hx-range-copy{flex:1 1 100%}
+.hx-range-row:has(>.hx-pager) .hx-mockup-view{order:1}
+.hx-pager{order:2;margin:0 0 0 auto}
+.hx-pager button{width:44px;min-height:44px;touch-action:manipulation}
 .hx-range-copy{font-size:var(--ui-text-xs)}
 .hx-range-commits{max-height:none}
 .hx-range-commit{grid-template-columns:5.5em 6.5em minmax(0,1fr);padding:var(--ui-space-2) var(--ui-space-1);min-height:44px}
@@ -2981,6 +3024,35 @@ body.hx-comment [data-render-target] canvas{cursor:copy!important}
 .hx-mockup-fit .hx-pin{zoom:calc(1 / var(--hx-zoom,1))}
 .hx-mockup-fit .hx-tbd-open{outline-width:calc(2px / var(--hx-zoom,1));outline-offset:calc(var(--ui-space-1) / var(--hx-zoom,1))}
 .hx-mockup-before :is(.hx-pin,.hx-qmark,.hx-thread-ring,.hx-video-rail,.hx-video-box,#hx-mode){display:none!important}
+/* a first round's directions (mockups #directions-page): the Desktop and Phone toggle above them, then each direction in
+   one frame under its name, the agent's pick's reason, and the line saying what it gives up, on shared rows so the
+   frames start level; Pick on each but the standing pick. Each column's frame at the viewport the toggle does not show
+   is laid out unseen. No other direction takes a comment. While Before shows, the pick's two frames at the base alone. */
+.hx-mockup.hx-directions{flex-direction:column;align-items:stretch;gap:var(--ui-space-4)}
+.hx-dirs-toggle{display:inline-flex;align-self:flex-start;padding:calc(var(--ui-space-1) / 2);border:1px solid var(--ui-border);border-radius:var(--ui-radius);background:var(--ui-surface-soft)}
+.hx-dirs-toggle .hx-btn{margin:0;border-color:transparent;background:transparent;color:var(--ui-muted);white-space:nowrap;transition:background var(--ui-motion-duration) var(--ui-motion-ease),color var(--ui-motion-duration) var(--ui-motion-ease)}
+.hx-dirs-toggle .hx-btn:hover{color:var(--ui-ink)}
+.hx-dirs-toggle .hx-btn[aria-pressed=true]{background:var(--ui-page);border-color:var(--ui-border);color:var(--ui-ink)}
+.hx-dir-row{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);grid-template-rows:auto auto auto auto;column-gap:var(--ui-space-5);row-gap:var(--ui-space-2);align-items:start}
+.hx-dir{display:contents}
+.hx-dir-head{grid-row:1;display:flex;flex-wrap:wrap;align-items:center;gap:var(--ui-space-2);min-width:0;min-height:var(--ui-space-6)}
+.hx-dir-name{min-width:0;overflow-wrap:anywhere;color:var(--ui-ink);font:var(--ui-weight-semibold) var(--ui-text-md)/1.3 var(--ui-font)}
+.hx-dir-tag{padding:calc(var(--ui-space-1) / 2) var(--ui-space-2);border-radius:var(--ui-radius-pill);font:var(--ui-weight-semibold) var(--ui-text-xs)/1.4 var(--ui-font);white-space:nowrap}
+.hx-dir-agent{background:var(--ui-surface-soft);color:var(--ui-muted);border:1px solid var(--ui-border)}
+.hx-dir-yours{background:var(--ui-draft-soft);color:var(--ui-draft);border:1px solid var(--ui-draft)}
+.hx-btn.hx-dir-pick{margin:0 0 0 var(--ui-space-1);white-space:nowrap;transition:background var(--ui-motion-duration) var(--ui-motion-ease)}
+.hx-dir-pick:hover{background:var(--ui-surface-soft)}
+.hx-dir-pick:active{background:var(--ui-muted-soft)}
+.hx-dir-head [hidden]{display:none}
+:is(.hx-dirs-toggle,.hx-dir-head) button:focus-visible{outline:var(--ui-focus-width) solid var(--ui-focus);outline-offset:var(--ui-focus-offset)}
+.hx-dir-why,.hx-dir-gives{grid-row:2;max-width:72ch;margin:0;color:var(--ui-ink);font:var(--ui-text-sm)/1.4 var(--ui-font)}
+.hx-dir-gives{grid-row:3;color:var(--ui-muted)}
+.hx-dir-gives b{color:var(--ui-ink);font-weight:var(--ui-weight-semibold)}
+.hx-dir-frames{grid-row:4;position:relative;display:flex;align-items:flex-start;gap:var(--ui-space-5);min-width:0;margin-top:var(--ui-space-2)}
+.hx-dir-frames>.hx-mockup-slot[data-off]{position:absolute;top:0;left:0;right:0;height:0;overflow:hidden;visibility:hidden}
+.hx-directions .hx-mockup-label{display:none}
+body.hx-mockup-before .hx-directions :is(.hx-dirs-toggle,.hx-dir-head,.hx-dir-why,.hx-dir-gives,.hx-dir-other){display:none}
+body.hx-mockup-before .hx-directions .hx-mockup-label{display:block}
 /* a prototype mockup (mockups #prototype-route): each frame the running route at its viewport's width, as tall as its
    content; Prototype not running in their place (#prototype-down) */
 .hx-mockup[hidden]{display:none}
@@ -3057,6 +3129,7 @@ nav.hx-screens{display:block;margin:var(--ui-space-5) 0 0;padding:0;background:v
 .hx-screens .hx-screen-name{grid-area:name;min-width:0;overflow-wrap:anywhere;color:var(--ui-ink);font:var(--ui-weight-medium) var(--ui-text-sm)/1.4 var(--ui-font)}
 .hx-screens .hx-screen-meta{grid-area:meta;display:grid;grid-template-columns:minmax(0,1fr) 140px;column-gap:var(--ui-space-3);min-width:0;color:var(--ui-muted)}
 .hx-screens .hx-screen-views{grid-column:2}
+.hx-screens .hx-screen-dirs{grid-column:1}
 .hx-screens .hx-screen-kind code{margin-left:var(--ui-space-1);padding:0;background:none;color:var(--ui-muted);font:var(--ui-text-xs) var(--ui-mono);overflow-wrap:anywhere}
 .hx-screens .hx-screen-open{grid-area:open;color:var(--ui-muted)}
 .hx-screens .hx-screen-open.hx-waiting{color:var(--ui-attention);font-weight:var(--ui-weight-medium)}
@@ -3165,7 +3238,7 @@ a.hx-jev-pop-text{text-decoration:underline;text-underline-offset:2px}
 .hx-layer-box .hx-handoff{flex-wrap:wrap;gap:var(--ui-space-1) var(--ui-space-2)}
 .hx-layer-box .hx-offline{font-size:var(--ui-text-xs);font-weight:var(--ui-weight-semibold);color:var(--ui-draft)}
 .hx-layer .hx-toast{bottom:18px}
-/* the comment UI page a shell frames (comment-layer #shell-ui-page): the panel is the whole page, its head closing it */
+/* the comment UI page a shell frames (shell #shell-ui-page): the panel is the whole page, its head closing it */
 .hx-comment-ui{margin:0;background:var(--ui-page)}
 .hx-comment-ui .hx-panel{inset:0;width:auto;height:auto;max-height:none;border-left:0;padding:0 0 env(safe-area-inset-bottom)}
 .hx-comment-ui .hx-panel[hidden]{display:none}
@@ -3189,6 +3262,10 @@ a.hx-jev-pop-text{text-decoration:underline;text-underline-offset:2px}
 body.hx-panel-open{padding-right:0;overflow:hidden}
 .hx-mockup{flex-direction:column;gap:var(--ui-space-4);padding:var(--ui-space-3) var(--ui-space-3) calc(var(--hx-dock-space,112px) + var(--ui-space-5) + env(safe-area-inset-bottom))}
 .hx-mockup-slot{flex:none;width:100%}
+.hx-dir-row{display:flex;flex-direction:column;gap:var(--ui-space-6)}
+.hx-dir{display:flex;flex-direction:column;gap:var(--ui-space-2);width:100%}
+.hx-dir-frames{flex-direction:column;gap:var(--ui-space-4)}
+.hx-dirs-toggle .hx-btn{min-width:88px}
 .hx-rounds{padding:0 var(--ui-space-3) calc(var(--hx-dock-space,112px) + var(--ui-space-5) + env(safe-area-inset-bottom))}
 .hx-round{flex-direction:column;gap:var(--ui-space-2)}
 .hx-round-video{width:100%;height:auto}
@@ -3246,7 +3323,7 @@ tr[data-anchor]:has(> .hx-pin[data-column]) > :has(> .hx-jev-marker){padding-rig
 .hx-jev-marker[data-pending=true]{animation:none}
 }`;
 
-// spec-page-design #top-line, lane-hosting #index-link: one fixed line at the top of an HTTP page holding the back link
+// spec-page-design #top-line, review-index #index-link: one fixed line at the top of an HTTP page holding the back link
 // and the range bar; the body and the dock start under it, at the height it measures (--hx-top-space). An embed host
 // keeps its own look, so it gets no line.
 function mountTopLine() {
@@ -3477,7 +3554,7 @@ function setCommentMode(on) {
   state.commentMode = on;
   document.body.classList.toggle('hx-comment', on);
   setCommentTargets(on);
-  if (PROTOTYPE_ROUTE) pointFrames(on); // the held frames point, a pick or Escape ending it (comment-layer #shell-msg-point)
+  if (PROTOTYPE_ROUTE) pointFrames(on); // the held frames point, a pick or Escape ending it (shell #shell-msg-point)
   document.getElementById('hx-mode')?.setAttribute('aria-pressed', String(on));
   if (on) adoptForeignCharts(); // catch charts the spec script created since the last scan
   for (const info of state.charts.values()) {
@@ -3502,7 +3579,7 @@ function setCommentMode(on) {
   if (on) openPanel(!NARROW.matches);
 }
 function openPanel(open) {
-  // A held page has no panel; the comment UI page is its panel, always open (comment-layer #shell-roles-held).
+  // A held page has no panel; the comment UI page is its panel, always open (shell #shell-roles-held).
   if (shell.held || COMMENT_UI) return void (state.panelOpen = COMMENT_UI);
   const opening = Boolean(open) && !state.panelOpen;
   state.panelOpen = Boolean(open);
@@ -3524,7 +3601,7 @@ function status(msg) { const el = document.getElementById('hx-status'); if (el) 
 
 // `spot`: the step, moment, and box the comment carries (review-state #model-fields-spot).
 function openComposer(anchorId, target, quote, text = '', spot = {}) {
-  // comment-layer #shell-roles-held: a held page's comment is written in the shell's comment UI: the spot is a pick.
+  // shell #shell-roles-held: a held page's comment is written in the shell's comment UI: the spot is a pick.
   if (shell.held) {
     setCommentMode(false);
     return pickSpot(Object.assign({ anchor: anchorId, target, quote }, pageStep(), spot));
@@ -3640,7 +3717,7 @@ function stageNow(route, lane) {
 function startEdit(th, message) {
   const b = message.body;
   state.activeThread = th.id;
-  state.composer = Object.assign({ kind: 'edit', threadId: th.id, supersedes: b.id, anchorId: b.anchorId || th.ev.body.anchorId, target: b.target || th.ev.body.target, quote: b.quote || null, text: b.text || '' }, spotFields(b));
+  state.composer = Object.assign({ kind: 'edit', threadId: th.id, supersedes: b.id, anchorId: b.anchorId || th.ev.body.anchorId, target: b.target || th.ev.body.target, quote: b.quote || null, text: b.text || '', opened: b.text || '' }, spotFields(b));
   renderPanel();
 }
 
@@ -3677,7 +3754,7 @@ function renderPanel() {
   if (!wrap) return;
   // threads #stream-context: the open conversation stays where the reviewer left it, and at its bottom when it was there.
   // A closed one is left alone: openPanel opens it at its bottom, and a hidden stream's scroll read or written while the
-  // page loads moves the page from the place it keeps (#place-restore).
+  // page loads moves the page from the place it keeps (reading-place #place-restore).
   const open = state.panelOpen;
   const stick = open && wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 8;
   const top = open ? wrap.scrollTop : 0;
@@ -3721,7 +3798,7 @@ function renderPanel() {
   }
   drawChildren(wrap, nodes);
   if (open) wrap.scrollTop = stick || (state.composer && state.composer.kind === 'comment') ? wrap.scrollHeight : top;
-  // On the comment UI page the head also names the page, or the host page's open item (comment-layer #shell-ui-page).
+  // On the comment UI page the head also names the page, or the host page's open item (shell #shell-ui-page).
   const named = COMMENT_UI ? contextName() : '';
   document.getElementById('hx-count').textContent = (named ? named + ' · ' : '') + conversationCount(shown.size, questions.length);
   const handoffState = host ? layerHandoffState() : pageHandoffState(renderHighlight());
@@ -3839,6 +3916,7 @@ function spotWords(th, place) {
   }
   const holder = findAnchor(placedMark(th.ev).anchorId);
   if (!holder) return removed;
+  if (MOCKUP_SPEC && holder.matches('[data-mockup-directions]')) return 'Directions · Pick'; // mockups #directions-pick
   // mockups #step-threads-pin: a part of a mockup at a step reads the part's name, then the step's number and name; a
   // part of a prototype, a region or a frame, reads its name with no step too.
   if (PROTOTYPE_ROUTE && (isRegion(holder) || holder.closest('[data-mockup-frame]'))) {
@@ -4053,15 +4131,28 @@ function renderFocus(stream, holder, sheet) {
   const top = list.scrollTop;
   list.replaceChildren(...focusMessages(th));
   list.scrollTop = top;
-  // A resolved thread offers Reply and reopen when its latest message is the agent's (prompt-first-shaping #thread-reopen).
   const editing = state.composer && state.composer.kind === 'edit' && state.composer.threadId === th.id ? state.composer : null;
-  const reopen = th.status === 'resolved' ? threadReplyAction(th) : null;
-  const mode = editing ? 'edit:' + editing.supersedes : th.status !== 'resolved' ? 'reply:' + th.id : reopen ? 'reopen:' + th.id : '';
+  const verb = replyVerb(th);
+  const mode = editing ? 'edit:' + editing.supersedes : verb ? verb + ':' + th.id : '';
   if (mode !== focusView.composer) {
     card.querySelector(':scope > .hx-composer')?.remove();
     focusView.composer = mode;
-    if (mode) card.appendChild(focusComposer(th, editing, reopen ? reopen.label : 'Reply'));
+    if (mode) card.appendChild(focusComposer(th, editing, verb));
   }
+}
+
+// The focused thread's reply box: Reply on a thread not resolved, Reply and reopen on a resolved one whose latest message
+// is the agent's (prompt-first-shaping #thread-reopen), and none on another resolved one.
+function replyVerb(th) {
+  if (th.status !== 'resolved') return 'Reply';
+  const reopen = threadReplyAction(th);
+  return reopen ? reopen.label : null;
+}
+
+// A reply joining the thread, to its latest message.
+function saveReply(th, text) {
+  const root = th.ev.body;
+  saveMessage({ kind: 'reply', threadId: th.id, respondsTo: th.messages[th.messages.length - 1].body.id, anchorId: root.anchorId, target: root.target, quote: null }, text);
 }
 
 // The focused thread's messages: its first with its chip and notes, then every reply; the receipt under its newest
@@ -4182,8 +4273,7 @@ function focusComposer(th, editing, verb) {
     focusView.text = '';
     textarea.value = '';
     grow();
-    const root = th.ev.body;
-    saveMessage({ kind: 'reply', threadId: th.id, respondsTo: th.messages[th.messages.length - 1].body.id, anchorId: root.anchorId, target: root.target, quote: null }, text);
+    saveReply(th, text);
   });
   if (editing) {
     const cancel = box.appendChild(document.createElement('button'));
@@ -4302,7 +4392,7 @@ function resolveThread(th) {
 // which opens if it was closed, and on a phone as a sheet under the spot, the panel over the page closed.
 function selectThread(th, scroll) {
   if (LAYER_SERVICE) return selectLayerThread(th);
-  // comment-layer #shell-roles-held: a held page's pin is a pick; the comment UI page focuses its thread.
+  // shell #shell-roles-held: a held page's pin is a pick; the comment UI page focuses its thread.
   if (shell.held) {
     state.activeThread = th.id;
     shell.shown = null;
@@ -4327,12 +4417,13 @@ function selectThread(th, scroll) {
 // A spot into view: centered, or on a phone under a focused thread's or question's sheet, near the top of the screen
 // above it.
 function scrollToThread(b) {
+  if (mockup.dirs && findAnchor(b.anchorId)?.matches('[data-mockup-directions]')) return scrollToSpot(mockup.stage); // a Pick
   if (PROTOTYPE_ROUTE) return void showInFrames(b.anchorId, b.target);
   scrollToSpot(findAnchor(b.anchorId));
 }
 
 function scrollToSpot(el) {
-  if (!el) return;
+  if (!inView(el)) return;
   if (!NARROW.matches || !(state.focusThread || state.focusQuestion)) return el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   const line = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hx-top-space')) || 0;
   window.scrollBy({ top: el.getBoundingClientRect().top - line - 12, behavior: 'smooth' });
@@ -4558,11 +4649,11 @@ function renderThreadHighlight() {
   let ring = document.querySelector('.hx-thread-ring');
   if (PROTOTYPE_ROUTE) return void (ring && ring.remove(), prototypeMarks()); // its frames ring it in their content
   const th = state.activeThread && state.threads.get(state.activeThread);
-  // a held page rings the spot the shell's show named while no thread is active (comment-layer #shell-msg-show); a
+  // a held page rings the spot the shell's show named while no thread is active (shell #shell-msg-show); a
   // thread at a video's moment shows by its rail mark and its box instead (threads #video-rail)
   const b = th ? showsAtStep(th) && !onVideoRail(th) && placedMark(th.ev) : shell.shown;
   const holder = b && document.querySelector('[data-anchor="' + b.anchorId + '"]');
-  if (!holder) {
+  if (!holder || (MOCKUP_SPEC && (offView(holder) || !holder.getClientRects().length))) { // a frame the toggle hides
     syncChartHighlight(null, null);
     if (ring) ring.hidden = true;
     return;
@@ -5036,7 +5127,7 @@ function pageReviewer() {
   return reviewerIdentity(storage, Math.random, storage === frameStore ? addressBrowser(location.hash) : null);
 }
 
-// review-service #served-storage: a page with no origin has no browser storage, so it keeps its fruit name and outbox in
+// served-pages #served-storage: a page with no origin has no browser storage, so it keeps its fruit name and outbox in
 // its frame's name, which lasts as long as the host's frame: across reloads and moves to the service's other pages in it.
 // The name holds each review service's items apart (the layer's service, or the page's at its own address), so another
 // service's page never gets them; any later page in the frame can read it, so a page's write keeps of every other
@@ -5195,7 +5286,7 @@ async function shownVersion() {
 
 /* ---------------- loops ---------------- */
 async function refresh() {
-  if (shell.held) return flushOutbox(); // comment-layer #shell-ui-page-only: a held page reads no thread
+  if (shell.held) return flushOutbox(); // shell #shell-ui-page-only: a held page reads no thread
   if (LAYER_SERVICE || uiHost()) return refreshLayer();
   if (COMMENT_UI && !ui.dir) return;
   flushOutbox(); // #offline-reopen: waiting events are sent first; the read never waits on a pending save
@@ -5275,13 +5366,14 @@ function pageTop() {
   return parseFloat(document.documentElement.style.getPropertyValue('--hx-top-space')) || 0;
 }
 
+// The block at the screen's top: of a mockup's frames, one the toggle shows, the other laid out unseen (offView).
 function currentPlace() {
   if (window.scrollY <= 0) return null;
   const top = pageTop();
   let place = null;
   for (const el of document.querySelectorAll('[data-anchor]')) {
     const r = el.getBoundingClientRect();
-    if (!r.height || r.top > top || (place && top - r.top >= place.offset)) continue;
+    if (!r.height || r.top > top || (place && top - r.top >= place.offset) || offView(el)) continue;
     place = { anchor: el.dataset.anchor, offset: Math.round(top - r.top) };
   }
   return place;
@@ -5289,7 +5381,7 @@ function currentPlace() {
 
 // Scrolls a place back under the page's top: its block `offset` above it, as currentPlace measured.
 function goToPlace(place) {
-  const el = place && findAnchor(place.anchor);
+  const el = place && inView(findAnchor(place.anchor));
   if (el) window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY + place.offset - pageTop());
 }
 
@@ -5328,8 +5420,9 @@ function keepPlace() {
   const restorePlace = keepPlace();
   const httpPage = !EMBED_REVIEW_DIR && ['http:', 'https:'].includes(OWN_ADDRESS.protocol);
   if (httpPage) state.versionAsked = shownVersion(); // a held page publishes the version it shows (#shell-msg-publish)
-  // Accept spec waits until the set is told; a mockup page is no spec, so it has no set and asks none (mockups #review-chrome)
-  if (httpPage && !MOCKUP_SPEC) Object.assign(state, { mockups: null, mockupAsk: true });
+  // Accept spec waits until the set is told; a mockup page is no spec, so nothing waits on it: it asks its spec's set for
+  // Previous and Next alone (mockups #review-chrome, #next-screen)
+  if (httpPage) Object.assign(state, MOCKUP_SPEC ? { mockupAsk: true } : { mockups: null, mockupAsk: true });
   // Deferred script: the DOM is the served spec until mountUI; compare it, never refetch it.
   if (httpPage) state.range.loaded = anchorSignatures(document);
   mountUI();
@@ -5339,6 +5432,7 @@ function keepPlace() {
   await hydrateIslands();
   adoptForeignCharts();
   restorePlace();
+  window.addEventListener('pagehide', saveTyped); // review-state #offline-leave, after the kept place's (saveTyped)
   renderHighlight();
   window.addEventListener('hashchange', arriveAtAddress);
   // spec scripts can create/recreate charts at any time; rescan when canvases appear
@@ -5476,10 +5570,11 @@ function startLoops() {
  * every element in them is a comment target (#review-targets).
  */
 // The frames into one stage where the first sat, desktop first, each in a slot with its label and a fit box it is zoomed
-// in. Fitted at once, so a kept place or an address is restored onto the fitted page.
+// in; a first round's directions around them (#directions-page). Fitted at once, so a kept place or an address is
+// restored onto the fitted page. The frames are the mockup's own, never another direction's (#markup-frame).
 function mountMockup() {
   const frames = MOCKUP_VIEWPORTS.map(([viewport, name]) => PROTOTYPE_ROUTE ? prototypeFrame(viewport, name)
-    : document.querySelector('[data-mockup-frame="' + viewport + '"]'));
+    : document.querySelector('[data-mockup-frame="' + viewport + '"]:not([data-direction])'));
   mockup.styles = [...document.querySelectorAll('style, link[rel~="stylesheet"]')]
     .filter(sheet => !sheet.hasAttribute('data-hx-chrome') && !sheet.closest('[data-mockup-frame]'));
   const stage = document.createElement('div');
@@ -5488,20 +5583,8 @@ function mountMockup() {
   if (first) first.parentNode.insertBefore(stage, first);
   else document.body.appendChild(stage);
   mockup.stage = stage;
-  mockup.slots = MOCKUP_VIEWPORTS.map(([viewport, name], index) => {
-    const slot = stage.appendChild(document.createElement('div'));
-    slot.className = 'hx-mockup-slot';
-    slot.dataset.viewport = viewport;
-    slot.setAttribute('role', 'group');
-    slot.setAttribute('aria-label', name);
-    const label = slot.appendChild(document.createElement('div'));
-    label.className = 'hx-mockup-label';
-    label.textContent = name;
-    const fit = slot.appendChild(document.createElement('div'));
-    fit.className = 'hx-mockup-fit';
-    if (frames[index]) fit.appendChild(frames[index]);
-    return { viewport, slot, fit, frame: frames[index] };
-  });
+  mockup.slots = MOCKUP_VIEWPORTS.map(([viewport, name], index) => mockupSlot(stage, viewport, name, frames[index]));
+  mountDirections();
   fitMockup();
   if (PROTOTYPE_ROUTE) mountPrototype();
   // The space changes with the window and as the panel opens or closes (a body class); pins follow a new zoom.
@@ -5511,13 +5594,34 @@ function mountMockup() {
   mountWalkthrough();
 }
 
+// One frame's slot in `into`: its label and the fit box it is zoomed in.
+function mockupSlot(into, viewport, name, frame) {
+  const slot = into.appendChild(document.createElement('div'));
+  slot.className = 'hx-mockup-slot';
+  slot.dataset.viewport = viewport;
+  slot.setAttribute('role', 'group');
+  slot.setAttribute('aria-label', name);
+  const label = slot.appendChild(document.createElement('div'));
+  label.className = 'hx-mockup-label';
+  label.textContent = name;
+  const fit = slot.appendChild(document.createElement('div'));
+  fit.className = 'hx-mockup-fit';
+  if (frame) fit.appendChild(frame);
+  return { viewport, slot, fit, frame };
+}
+
+// Every frame's slot the page shows: the mockup's own, then each other direction's (#directions-page).
+function allSlots() {
+  return [...mockup.slots, ...(mockup.dirs || []).flatMap(d => d.slots || [])];
+}
+
 // #review-fit: each frame zoomed to its slot's width, never above its own size. Side by side the slots share the row in
 // proportion to the frames' own widths (CSS), so both zoom alike; stacked, each takes the screen's width. True when a
 // zoom changed.
 function fitMockup() {
-  for (const s of mockup.slots) s.slot.style.setProperty('--hx-natural', s.fit.offsetWidth + 'px');
+  for (const s of allSlots()) s.slot.style.setProperty('--hx-natural', s.fit.offsetWidth + 'px');
   let changed = false;
-  for (const s of mockup.slots) {
+  for (const s of allSlots()) {
     const natural = s.fit.offsetWidth; // its own width: offsetWidth is not zoomed
     const zoom = String(natural ? Math.min(1, Math.floor(s.slot.clientWidth / natural * 1e4) / 1e4) : 1);
     if (s.fit.style.getPropertyValue('--hx-zoom') === zoom) continue;
@@ -5537,6 +5641,79 @@ function pageHandoffState(action) {
 // The mockup's spec, beside its set's folder, at the same compared range (#review-chrome).
 function mockupSpecAddress() {
   return new URL('../../' + encodeURIComponent(MOCKUP_SPEC) + '.spec.html' + OWN_ADDRESS.search, OWN_ADDRESS).href;
+}
+
+// #next-screen: Previous and Next around the screen's place in its spec's set, in the order the Screens index lists it,
+// at the start of the range bar's row, after the spec link, and on a phone at the end of the row under the range (CSS).
+// Shown only while the set told holds more than one screen and lists this page; Previous on the first and Next on the
+// last are disabled. Each opens its screen at once as that screen's Screens index row does (mockupHref, read on the
+// press, so at the base this page compares then), what was typed going as drafts as the page is left (#next-screen-press,
+// saveTyped), and its tooltip names the screen and its key, none on a phone (spec-page-design #keys-rule). Drawn again
+// only when what it shows changes (#next-screen-live).
+function renderPager(set) {
+  mockup.set = set;
+  const own = addressPath(OWN_ADDRESS.href);
+  const at = set.findIndex(m => addressPath(mockupHref(m.page, null)) === own);
+  const near = at < 0 || set.length < 2 ? null : [set[at - 1] || null, set[at + 1] || null];
+  const row = document.querySelector('#hx-range-bar .hx-range-row');
+  const drawn = near && row ? JSON.stringify([at, set.length, near.map(m => m && [m.page, m.screen]), NARROW.matches]) : '';
+  if (drawn === mockup.pager) return;
+  mockup.pager = drawn;
+  document.getElementById('hx-pager')?.remove();
+  if (!drawn) return;
+  const pager = document.createElement('span');
+  pager.className = 'hx-pager';
+  pager.id = 'hx-pager';
+  pager.setAttribute('role', 'group');
+  pager.setAttribute('aria-label', 'Screens');
+  const control = (id, word, key, icon, to) => {
+    const button = pager.appendChild(document.createElement('button'));
+    button.type = 'button';
+    button.id = id;
+    button.innerHTML = ICONS[icon];
+    button.disabled = !to;
+    button.setAttribute('aria-label', word + ' screen' + (to ? ', ' + to.screen : ''));
+    if (to && !NARROW.matches) button.title = word + ' screen: ' + to.screen + ' (' + key + ')';
+    if (to) button.addEventListener('click', () => followLink(mockupHref(to.page, null)));
+  };
+  control('hx-pager-previous', 'Previous', '←', 'chevron-left', near[0]);
+  pager.appendChild(Object.assign(document.createElement('span'), { className: 'hx-pager-place', textContent: (at + 1) + ' of ' + set.length }));
+  control('hx-pager-next', 'Next', '→', 'chevron-right', near[1]);
+  row.insertBefore(pager, row.firstChild);
+}
+
+// An address's path in words, so two spellings of one page compare equal.
+function addressPath(href) {
+  const path = new URL(href).pathname;
+  try { return decodeURIComponent(path); } catch (_) { return path; }
+}
+
+// #next-screen-keys: where the arrow keys already work they keep working: a text field, the comment box and the base
+// picker among them, a control the arrows move in, the step bar, a video, and anything that scrolls sideways around the
+// focus. A prototype's frame keeps every key it is given, so none of its keys reaches this page.
+function arrowsWork(target) {
+  if (!(target instanceof Element)) return false;
+  if (target.isContentEditable || target.closest('textarea,select,input:not([type=button],[type=submit],[type=reset],'
+    + '[type=checkbox],[type=image],[type=file],[type=color]),video,audio,[role=slider],[role=spinbutton],[role=listbox],'
+    + '[role=radiogroup],[role=tablist],[role=menu],[role=menubar],[role=tree],[role=treegrid],[role=grid],[role=textbox],'
+    + '[role=combobox],#hx-range-picker,#hx-steps')) return true;
+  for (let el = target; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+    if (el.scrollWidth > el.clientWidth && /^(auto|scroll)$/.test(getComputedStyle(el).overflowX)) return true;
+  }
+  return false;
+}
+
+// The Left and Right arrow keys, with no modifier key, press Previous and Next; the tooltips follow the screen's width.
+if (MOCKUP_SPEC) {
+  document.addEventListener('keydown', e => {
+    if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.defaultPrevented || e.isComposing
+      || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || arrowsWork(e.target)) return;
+    const control = document.getElementById(e.key === 'ArrowLeft' ? 'hx-pager-previous' : 'hx-pager-next');
+    if (!control || control.disabled) return;
+    e.preventDefault();
+    control.click();
+  });
+  NARROW.addEventListener('change', () => renderPager(mockup.set));
 }
 
 // The page as served, read once from the cache the page loaded from.
@@ -5620,14 +5797,14 @@ function showMockupBefore(before) {
   before = Boolean(before && mockup.base && mockup.differs);
   if (before !== mockup.before) {
     mockup.before = before;
-    if (shell.held) publishPage(); // Before shows no step to comment at (comment-layer #shell-msg-publish)
+    if (shell.held) publishPage(); // Before shows no step to comment at (shell #shell-msg-publish)
     if (before) {
       setCommentMode(false);
       if (state.composer) { state.composer = null; renderPanel(); }
     }
     if (PROTOTYPE_ROUTE) showRoundBefore(before);
     else for (const s of mockup.slots) {
-      const base = before && mockup.base.querySelector('[data-mockup-frame="' + s.viewport + '"]');
+      const base = before && mockup.base.querySelector('[data-mockup-frame="' + s.viewport + '"]:not([data-direction])');
       const frame = before ? base && document.importNode(base, true) : s.frame;
       if (before && frame) frame.querySelectorAll('script').forEach(el => el.remove());
       s.fit.replaceChildren(...(frame ? [frame] : []));
@@ -5642,6 +5819,7 @@ function showMockupBefore(before) {
       document.head.insertBefore(copy, chrome); // the mockup's sheets come before the chrome's, as served
     }
     document.body.classList.toggle('hx-mockup-before', before);
+    renderViewport(); // the pick's two frames alone, side by side (#directions-page)
     fitMockup();
     // #step-threads-before: the other version's walkthrough, at the step showing when it holds it, else its first.
     const showing = showingStep();
@@ -5651,6 +5829,158 @@ function showMockupBefore(before) {
     renderHighlight();
   }
   if (document.getElementById('hx-mockup-view')) renderMockupView();
+}
+
+/* ---------------- a first round's directions (mockups #directions) ----------------
+ * A mockup whose file names two or three directions in its directions list (#markup-directions) shows them side by side
+ * in its frames' place, each in one frame under its name and the line saying what it gives up, the agent's pick with its
+ * reason; one Desktop and Phone toggle above them switches every frame between the two viewports (#directions-page). The
+ * pick is the mockup itself, its two frames the page's own; every other direction is another route of the prototype, or
+ * its own frames naming it, shown as it loads (#directions-pick-only). Pick saves the reviewer's answer on the list as an
+ * answer button does, and the newest stands (#directions-pick).
+ */
+// #markup-directions: a version's directions in order: each one's key, short name, gives-up line, the agent's pick's
+// reason, and another direction's route, with its item in the list; none while the list names fewer than two. The pick
+// is the one carrying data-pick, else the first.
+function directionsOf(doc) {
+  const list = doc.querySelector('[data-mockup-directions]');
+  const items = list ? [...list.querySelectorAll('[data-direction]')] : [];
+  if (items.length < DIRECTIONS_SHOWN) return [];
+  const pick = items.find(item => item.hasAttribute('data-pick')) || items[0];
+  const holder = holderOf(list);
+  return items.map(item => ({
+    key: item.dataset.direction.trim(), name: sourceText(item), item, pick: item === pick,
+    givesUp: (item.dataset.givesUp || '').trim(), reason: item === pick ? (item.dataset.pick || '').trim() : '',
+    route: item === pick ? null : (item.dataset.route || '').trim() || null,
+    target: holder ? elementDescriptor(item, holder).key : null, // where its Pick's answer is saved
+  }));
+}
+
+// #directions-page: the toggle, then a row of the directions, each one's head (its name, Agent's pick on the agent's,
+// Your pick, Pick), the agent's reason, its gives-up line, and its frames: the pick's the page's own two, each other's
+// its own pair. Each column holds both viewports, the one the toggle does not show laid out unseen, so the pick's
+// walkthrough, threads, and fit run on both as with no directions.
+function mountDirections() {
+  const dirs = directionsOf(document);
+  if (!dirs.length) return;
+  mockup.dirs = dirs;
+  const el = (tag, className, text) => Object.assign(document.createElement(tag), { className }, text ? { textContent: text } : {});
+  const toggle = el('span', 'hx-dirs-toggle');
+  toggle.setAttribute('role', 'group');
+  toggle.setAttribute('aria-label', 'Viewport');
+  for (const [viewport, name] of MOCKUP_VIEWPORTS) {
+    const button = toggle.appendChild(el('button', 'hx-btn', name));
+    button.type = 'button';
+    button.dataset.viewport = viewport;
+    button.addEventListener('click', () => { mockup.view = viewport; renderViewport(); });
+  }
+  const row = el('div', 'hx-dir-row');
+  for (const d of dirs) {
+    const column = row.appendChild(el('section', d.pick ? 'hx-dir' : 'hx-dir hx-dir-other'));
+    column.setAttribute('aria-label', d.name);
+    const head = column.appendChild(el('div', 'hx-dir-head'));
+    head.appendChild(el('span', 'hx-dir-name', d.name));
+    if (d.pick) head.appendChild(el('span', 'hx-dir-tag hx-dir-agent', 'Agent\'s pick'));
+    d.yours = head.appendChild(el('span', 'hx-dir-tag hx-dir-yours', 'Your pick'));
+    d.button = head.appendChild(el('button', 'hx-btn hx-dir-pick', 'Pick'));
+    d.button.type = 'button';
+    d.button.setAttribute('aria-label', 'Pick ' + d.name);
+    d.button.addEventListener('click', () => pickDirection(d));
+    if (d.reason) column.appendChild(el('p', 'hx-dir-why', d.reason));
+    if (d.givesUp) {
+      const gives = column.appendChild(el('p', 'hx-dir-gives'));
+      gives.append(el('b', '', 'Gives up:'), ' ' + d.givesUp);
+    }
+    const frames = column.appendChild(el('div', 'hx-dir-frames'));
+    if (d.pick) mockup.slots.forEach(s => frames.appendChild(s.slot));
+    else d.slots = MOCKUP_VIEWPORTS.map(([viewport, name]) => Object.assign(mockupSlot(frames, viewport, name, directionFrame(d, viewport, name)), { other: true }));
+  }
+  mockup.stage.classList.add('hx-directions');
+  mockup.stage.append(toggle, row);
+  NARROW.addEventListener('change', renderViewport); // the toggle starts at the screen's width until the reviewer presses it
+  renderPicks();
+  renderViewport();
+}
+
+// Another direction's frame at a viewport: the frame its drawn mockup draws naming it, else its route on the running
+// prototype, framed as the pick's is (#directions-file). No spot of it takes a comment (#directions-pick-only), so
+// neither it nor any part of it names an anchor: none is a comment target, Tab stop, pin, place, or arrival.
+function directionFrame(d, viewport, name) {
+  const frame = PROTOTYPE_ROUTE ? prototypeFrame(viewport, d.name + ' · ' + name)
+    : [...document.querySelectorAll('[data-mockup-frame][data-direction]')]
+      .find(frame => frame.dataset.mockupFrame === viewport && frame.dataset.direction.trim() === d.key);
+  if (!frame) return null;
+  for (const el of [frame, ...frame.querySelectorAll('[data-anchor]')]) el.removeAttribute('data-anchor');
+  frame.dataset.direction = d.key;
+  return frame;
+}
+
+// The viewport the directions show: the one the reviewer toggled to, else Desktop on a desktop and Phone on a phone.
+function shownViewport() {
+  return mockup.view || (NARROW.matches ? 'phone' : 'desktop');
+}
+
+// A frame the toggle hides, laid out unseen.
+function offView(el) {
+  return Boolean(el && el.closest('.hx-mockup-slot[data-off]'));
+}
+
+// #directions-page: the toggle's viewport pressed and every column's frame at it; while Before shows, the pick's two frames
+// at the base, side by side as with no directions (CSS). Refitted, with the marks that follow.
+function renderViewport() {
+  if (!mockup.dirs) return;
+  const shown = shownViewport();
+  mockup.stage.querySelectorAll('.hx-dirs-toggle button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.viewport === shown)));
+  for (const s of allSlots()) s.slot.toggleAttribute('data-off', !mockup.before && s.viewport !== shown);
+  fitMockup();
+  renderPins();
+  renderThreadHighlight();
+}
+
+// #directions-page: every arrival at a spot (an address, the kept place, a thread, a question, a spot a shell shows) the
+// one way, at the viewport that shows it: a part of a frame the toggle hides, or that frame, switches the toggle to its
+// viewport. The spot, for its caller to bring into view.
+function inView(el) {
+  if (offView(el)) {
+    mockup.view = el.closest('.hx-mockup-slot').dataset.viewport;
+    renderViewport();
+  }
+  return el;
+}
+
+// #directions-pick: the reviewer's pick, the direction the newest answer on the directions list is on, as an answer
+// button's chosen mark derives (answerBlocks); on a held page, the one its shell's marks name. Null with none.
+function pickedDirection() {
+  const holder = holderOf(document.querySelector('[data-mockup-directions]'));
+  if (!holder) return null;
+  if (shell.held) return mockup.dirs.find(d => d.name === shell.answers.get(holder.dataset.anchor)) || null;
+  let picked = null;
+  for (const th of state.threads.values()) { // fold order: the last is the newest comment
+    const b = placedMark(th.ev);
+    if (b.anchorId === holder.dataset.anchor && b.target && b.target.type === 'element') picked = mockup.dirs.find(d => d.target === b.target.key) || picked;
+  }
+  return picked;
+}
+
+// #directions-pick: the reviewer's pick reads Your pick, and every direction but the standing pick, the reviewer's when
+// there is one, else the agent's, offers Pick.
+function renderPicks() {
+  if (!mockup.dirs) return;
+  const yours = pickedDirection();
+  const standing = yours || mockup.dirs.find(d => d.pick);
+  for (const d of mockup.dirs) {
+    d.yours.hidden = d !== yours;
+    d.button.hidden = d === standing;
+  }
+}
+
+// #directions-pick: one press saves the reviewer's answer on the directions list, its words the direction's name, on
+// the direction's item, as an answer button saves its own (saveAnswer). Until the review state loads the standing pick
+// is unknown, so the press waits for it, as an answer button's does.
+function pickDirection(d) {
+  const holder = holderOf(document.querySelector('[data-mockup-directions]'));
+  if (!holder || !d.target || !state.eventsRendered || d.button.hidden) return;
+  saveAnswer(holder, d.item, d.name);
 }
 
 /* ---------------- a mockup's walkthrough, threads at a step, and questions (mockups #walkthrough, #step-threads,
@@ -5664,7 +5994,7 @@ function showMockupBefore(before) {
  * shows, and Next TBD steps through them (#mockup-questions). Both lists show in the chrome, never as the page's own.
  */
 function mountWalkthrough() {
-  document.querySelectorAll('[data-mockup-steps],[data-mockup-questions],[data-mockup-regions]').forEach(el => el.classList.add('hx-mockup-markup'));
+  document.querySelectorAll('[data-mockup-steps],[data-mockup-questions],[data-mockup-regions],[data-mockup-directions]').forEach(el => el.classList.add('hx-mockup-markup'));
   mockup.steps = walkthroughOf(document);
   renderStepBar();
   // #walkthrough-address: the page opens at the step its address names, else at the first.
@@ -5769,7 +6099,7 @@ function showStep(index, { still = false, keepAddress = false, pressed = null } 
   updateStepBar();
   renderPins();
   renderThreadHighlight();
-  if (shell.held) publishPage(); // the showing step (comment-layer #shell-msg-publish)
+  if (shell.held) publishPage(); // the showing step (shell #shell-msg-publish)
 }
 
 // #walkthrough-bar: Play, then every step by number and name, built once per walkthrough so a redraw keeps its buttons.
@@ -5969,7 +6299,8 @@ function goToQuestion(q) {
   if (index >= 0 && index !== mockup.step) showStep(index);
   focusQuestion(q.anchor);
   if (PROTOTYPE_ROUTE) return void showInFrames(q.about[0]);
-  scrollToSpot(questionParts(q)[0]);
+  const parts = questionParts(q);
+  scrollToSpot(parts.find(part => !offView(part)) || parts[0]);
 }
 
 // The focused question: its bubble with its answer buttons and Reply, its chip, and its answers under it.
@@ -5986,7 +6317,7 @@ function renderFocusedQuestion(card, q) {
  * A prototype mockup's page frames its route on the lane's running prototype, which the review service serves under
  * the lane's slug (#prototype-route), once at each viewport (#frame-viewports), each frame as tall as the route's content.
  * The page holds each frame as a shell does, the service's own origin being a shell for the prototype routes under their
- * mockup pages (comment-layer #shell-setting-own): a frame draws no comment UI, points while comment mode is on, picks
+ * mockup pages (shell #shell-setting-own): a frame draws no comment UI, points while comment mode is on, picks
  * what the reviewer clicks, and draws the marks the page sends it in its own content. The page reaches a step by loading
  * the route and doing every action up to it (#prototype-steps), follows a reviewer pressing through, and shows each
  * round's videos under the frames (#round-video).
@@ -6029,6 +6360,11 @@ async function mountPrototype() {
     s.frame.addEventListener('load', () => frameLoaded(s));
     s.frame.src = route.href;
   }
+  // #directions-file: each other direction's route on the same prototype, framed as the pick's, as it loads
+  for (const d of mockup.dirs || []) for (const s of d.route ? d.slots : []) {
+    s.frame.addEventListener('load', () => frameLoaded(s));
+    s.frame.src = new URL(d.route.replace(/^\/+/, ''), proto.base).href;
+  }
 }
 
 function prototypeDown() {
@@ -6043,32 +6379,77 @@ function prototypeDown() {
 }
 
 // Each load of a frame: as tall as its content, followed as the reviewer presses through, and said hello to, so the
-// route is held (comment-layer #shell-msg-hello). A load the page asked for starts the route over.
+// route is held (shell #shell-msg-hello). A load the page asked for starts the route over. Another direction's frame is
+// sized and said hello to alike, so its route shows no review chrome of its own, and followed no further: the page holds
+// the pick's frames alone (frameMessage), so it shows its route as it loads (#directions-pick-only).
 function frameLoaded(s) {
   const doc = s.frame.contentDocument;
   s.held = false;
   s.leaving = false;
+  s.slot.style.minHeight = ''; // the slot's hold as the route left ends with any load, one of another origin among them
   if (doc) {
-    s.frame.style.height = screenHeight(s.viewport) + 'px';
+    s.answered = null;
     sizeFrame(s);
-    if (window.ResizeObserver) new ResizeObserver(() => sizeFrame(s)).observe(doc.documentElement);
-    for (const type of ['click', 'input']) doc.addEventListener(type, e => pressedThrough(s, e), true);
+    // #review-settle: a change of the content's size is followed in the next frame, never in the observation itself:
+    // growing the frame resizes what was observed, a root or body as tall as its viewport (height:100%, min-height:100vh)
+    // or one the frame's scrollbar narrowed, which the browser could not deliver in the same pass.
+    const sizes = new ResizeObserver(() => { cancelAnimationFrame(s.sizing); s.sizing = requestAnimationFrame(() => sizeFrame(s)); });
+    for (const el of [doc.documentElement, doc.body]) if (el) sizes.observe(el);
+    if (!s.other) for (const type of ['click', 'input']) doc.addEventListener(type, e => pressedThrough(s, e), true);
     doc.defaultView.addEventListener('beforeunload', () => { s.leaving = true; });
+    // #review-settle: as the route leaves, its sizes are followed no more, a page gone having none to deliver; and the
+    // next load lays the route out at its screen's height, as its script reads it loading, never at a height the frame
+    // grew to for this one, the slot keeping its height meanwhile (sizeFrame)
+    doc.defaultView.addEventListener('pagehide', () => {
+      sizes.disconnect();
+      cancelAnimationFrame(s.sizing);
+      s.slot.style.minHeight = s.slot.getBoundingClientRect().height + 'px';
+      s.frame.style.height = screenHeight(s.viewport) + 'px';
+    });
     s.frame.contentWindow.postMessage({ type: 'spec-chat-host', opens: ['comments'] }, OWN_ADDRESS.origin);
   }
   const waiting = s.waiting;
   s.waiting = null;
   if (waiting) waiting();
-  s.loaded();
+  if (s.loaded) s.loaded();
 }
 
+// #review-settle: the frame is the screen's height and what its content runs past the screen laid out at the screen's
+// height, a measure its own height never changes: content laid out against its viewport, as a root 100vh tall inside the
+// body's margin, is cut by its excess, never chased, and content growing or shrinking on its own grows or shrinks the
+// frame. What the route lays out anew for the frame's own height is no change of its content: its script sizing it from
+// its viewport, as from innerHeight or a --vh property, is told the height at once, as the browser tells it in the next
+// frame, and the content read as it answered stays as it is, so the frame never grows to an answer of its own growth.
+// A screen pixel more, as zoomed whole the viewport is the frame's height rounded to the screen's pixels, so that rounding
+// never cuts the content; its zoom follows widths alone.
 function sizeFrame(s) {
+  const past = overScreen(s);
+  if (past === null || past === s.answered) return;
+  const screen = screenHeight(s.viewport), shown = s.frame.style.height;
+  const pixel = 1 / ((parseFloat(s.fit.style.zoom) || 1) * window.devicePixelRatio);
+  s.frame.style.height = (past > 0 ? Math.ceil(screen + past + pixel) : screen) + 'px';
+  if (s.frame.style.height === shown) return void (s.answered = past);
+  const view = s.frame.contentWindow;
+  for (const target of [view, view.visualViewport]) if (target) target.dispatchEvent(new view.Event('resize'));
+  s.answered = overScreen(s);
+  renderPins();
+}
+
+// What the frame's content runs past the screen laid out at the screen's height, read with the frame a screen tall, the
+// slot keeping its height meanwhile so the page around it neither moves nor scrolls; null with no content. Read from what
+// scrolls the content: its root, or in quirks mode, a route with no doctype, its body, the root then only as tall as
+// the content.
+function overScreen(s) {
   const doc = s.frame && s.frame.contentDocument;
-  if (!doc || !doc.documentElement) return;
-  const height = Math.max(screenHeight(s.viewport), Math.ceil(doc.documentElement.scrollHeight));
-  if (parseFloat(s.frame.style.height) === height) return;
-  s.frame.style.height = height + 'px';
-  if (fitMockup()) renderPins();
+  const root = doc && (doc.scrollingElement || doc.documentElement);
+  if (!root) return null;
+  const shown = s.frame.style.height;
+  s.slot.style.minHeight = s.slot.getBoundingClientRect().height + 'px';
+  s.frame.style.height = screenHeight(s.viewport) + 'px';
+  const past = root.scrollHeight - root.clientHeight;
+  s.frame.style.height = shown;
+  s.slot.style.minHeight = '';
+  return past;
 }
 
 // #prototype-steps: both frames to the step at `index`, each from the step it shows by the next steps' actions, else
@@ -6174,14 +6555,14 @@ function advanceFrame(s, step) {
   showStep(s.at, { pressed: s });
 }
 
-// comment-layer #shell-msg-point: each held frame points while comment mode is on, and stops when it turns off.
+// shell #shell-msg-point: each held frame points while comment mode is on, and stops when it turns off.
 function pointFrames(on) {
   for (const s of mockup.slots) {
     if (s.held && s.frame) s.frame.contentWindow.postMessage(on ? { type: 'spec-chat-point' } : { type: 'spec-chat-point', off: true }, OWN_ADDRESS.origin);
   }
 }
 
-// A held frame's messages: its publish, once held, and its picks (comment-layer #shell-msg-publish, #shell-msg-pick).
+// A held frame's messages: its publish, once held, and its picks (shell #shell-msg-publish, #shell-msg-pick).
 function frameMessage(e) {
   const s = mockup.slots.find(slot => slot.frame && slot.frame.contentWindow === e.source);
   if (!s || e.origin !== OWN_ADDRESS.origin || !plainObject(e.data)) return;
@@ -6206,7 +6587,7 @@ function framePick(data) {
   if (state.composer) Object.assign(state.composer, pageStep());
 }
 
-// #prototype-marks, comment-layer #shell-msg-marks: each held frame draws the threads at the step showing, by number and
+// #prototype-marks, shell #shell-msg-marks: each held frame draws the threads at the step showing, by number and
 // review status, each at its region or its frame, and the open questions asked at that step on their regions; it rings
 // the active thread's spot and the focused question's regions, at the chrome's size on this page's screen at its frame's
 // zoom (zoom, size: a frame's own width is no screen's).
@@ -6235,15 +6616,17 @@ function prototypeMarks() {
   }
 }
 
-// A spot into view: its element in the first frame that shows it, once both frames reach the step showing.
+// A spot into view: its element in the first frame that shows it, the one the directions' toggle shows before the one it
+// hides (inView), once both frames reach the step showing.
 async function showInFrames(anchor, target) {
   await mockup.reaching;
-  for (const s of mockup.slots) {
+  for (const s of [...mockup.slots].sort((a, b) => offView(a.frame) - offView(b.frame))) {
     const doc = s.held && s.frame && s.frame.contentDocument;
     const holder = doc && (anchor === s.viewport ? doc.body : regionIn(doc, regionsOf(document), anchor));
     if (!holder) continue;
     const el = target && target.type === 'element' ? resolveElement(holder, target.key) || holder : holder;
     if (!el.getClientRects().length) continue;
+    inView(s.frame);
     return el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 }
@@ -6361,7 +6744,7 @@ function showRoundBefore(before) {
 
 /* ---------------- a prototype route its mockup page holds (mockups #prototype-route) ----------------
  * The comment layer the service adds to each prototype page (review-service #prototype-proxy) runs on the route. Under
- * its mockup page, at the service's own origin, it is held (comment-layer #shell-setting-own): every element in it is a
+ * its mockup page, at the service's own origin, it is held (shell #shell-setting-own): every element in it is a
  * comment target, its regions found by the selectors its mockup file lists, a pointed click a pick naming its region, or
  * its frame, and the target and quote in it; it draws the threads and questions its page's marks name in its own
  * content, so they move with it.
@@ -6500,7 +6883,7 @@ function placePrototypeMarks() {
   }
 }
 
-/* ---------------- pages a shell holds (comment-layer.spec.html#shell) ----------------
+/* ---------------- pages a shell holds (shell.spec.html#shell) ----------------
  * One script, two roles (#shell-roles): a spec page, a mockup page, or a host page loading the layer is alone, drawing
  * its own comment UI, until its parent says hello with comments from an origin the box names as a shell; held, it draws
  * no comment UI, publishes what it shows, draws the pins the shell's marks name in its own content, and turns a pointed
@@ -6555,20 +6938,31 @@ async function shellHello(origin) {
 function toShell(message) { if (hostBridge.comments) window.parent.postMessage(message, hostBridge.comments); }
 function pickSpot(spot) { toShell(Object.assign({ type: 'spec-chat-pick' }, spot)); }
 
-// #shell-roles-held, #shell-roles-late: text typed in its composer saved as a draft, then its comment UI removed.
-function becomeHeld() {
+// review-state #offline-leave: text typed and not yet saved, in the comment box, the focused thread's reply box, or its
+// Reply and reopen box, saved as drafts, each into the outbox in browser storage at once, so nothing waits on the network
+// and a page opened later sends it first (#offline-outbox, #offline-reopen); an Edit box left as it opened saves nothing.
+// The one save as the page is left, by any way out (pagehide: a link, Previous or Next, an arrow key, Back, closing the
+// tab), and as it is held (shell #shell-roles-held, #shell-roles-late). The boxes are emptied first, so a page
+// shown again from the browser's cache shows the drafts and no box holding their text. Each boot listens once its page
+// is mounted, a spec or mockup page after its kept place's own listener: a pagehide listener added before that one has
+// Chromium's own scroll on a reload overtake the kept place (reading-place #acceptance-place-restore).
+function saveTyped() {
   const c = state.composer;
   const th = state.focusThread && state.threads.get(state.focusThread);
-  const reply = th && focusView.text.trim();
-  shell.held = true; // before the saves: a held page reads no thread, so its outbox only sends them
-  if (c && (c.text || '').trim()) saveMessage(c, c.text.trim());
-  if (reply && th.status !== 'resolved') {
-    const root = th.ev.body;
-    saveMessage({ kind: 'reply', threadId: th.id, respondsTo: th.messages[th.messages.length - 1].body.id, anchorId: root.anchorId, target: root.target, quote: null }, reply);
-  }
+  const text = c && (c.text || '').trim();
+  const reply = th && replyVerb(th) && focusView.text.trim();
   state.composer = null;
-  state.focusThread = state.focusQuestion = state.activeThread = null;
   focusView.text = '';
+  if (reply) focusView.composer = '';
+  if (text && !(c.kind === 'edit' && text === c.opened.trim())) saveMessage(c, text);
+  if (reply) saveReply(th, reply);
+}
+
+// #shell-roles-held, #shell-roles-late: text typed in its composer saved as a draft, then its comment UI removed.
+function becomeHeld() {
+  shell.held = true; // before the saves: a held page reads no thread, so its outbox only sends them
+  saveTyped();
+  state.focusThread = state.focusQuestion = state.activeThread = null;
   state.threads = new Map();
   state.eventsRendered = false;
   if (LAYER_SERVICE) return void (layer.open = null, renderLayer(true));
@@ -6844,6 +7238,7 @@ async function bootCommentUI() {
   listenShellUI();
   setInterval(refresh, 2000);
   window.addEventListener('online', refresh);
+  window.addEventListener('pagehide', saveTyped); // review-state #offline-leave
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     if (state.composer) { state.composer = null; renderPanel(); } else if (state.focusThread || state.focusQuestion) closeFocus(false);
@@ -7085,7 +7480,7 @@ async function bootLayer() {
   if (document.readyState === 'loading') await new Promise(done => document.addEventListener('DOMContentLoaded', done, { once: true }));
   state.transport = layerTransport();
   state.reviewer = pageReviewer();
-  listenHost(SHELL_PAGE); // a shell may hold the host page (comment-layer #shell-roles)
+  listenHost(SHELL_PAGE); // a shell may hold the host page (shell #shell-roles)
   // #load-scan: the layer follows the elements the host adds, changes, or removes; only an added or removed element or
   // a changed anchor can change what it reads. #ui-place: any change the host makes in the page, such as hiding an
   // element above an item, may move an item without changing a size observed below, so the rows are placed in the
@@ -7107,6 +7502,7 @@ async function bootLayer() {
   document.addEventListener('scroll', scheduleLayerPlace, true);
   window.addEventListener('resize', scheduleLayerPlace);
   window.addEventListener('online', readLayer);
+  window.addEventListener('pagehide', saveTyped); // review-state #offline-leave
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && layer.open) closeLayerBox(); });
   readLayer();
 }
@@ -7185,7 +7581,7 @@ function layerItem(el) {
     starters: (d.commentStarters || '').split(',').map(word => word.trim()).filter(Boolean), lane: (d.commentLane || '').trim() || null };
 }
 
-// On the comment UI page, the items its held host page published (comment-layer #shell-msg-publish).
+// On the comment UI page, the items its held host page published (shell #shell-msg-publish).
 const layerItems = () => COMMENT_UI ? (ui.page && ui.page.items) || [] : [...document.querySelectorAll(LAYER_ANCHOR)].map(layerItem).filter(Boolean);
 const storeOf = item => layer.stores.get(item.scope)?.get(item.subject);
 // #scope-rule: a control only where the item's scope has a row; held, the page reads the rows and no thread, so the scope's
@@ -7250,7 +7646,7 @@ async function refreshLayer() {
   layer.subjects = subjects;
   await Promise.all(JSON.parse(subjects).map(async ([scope, list]) => {
     try {
-      // comment-layer #shell-ui-page-only: held, a page reads its scopes' rows, asking for no subject, so no thread (#scope).
+      // shell #shell-ui-page-only: held, a page reads its scopes' rows, asking for no subject, so no thread (comment-layer #scope).
       const lanes = shell.held ? [] : [...new Set(items.filter(item => item.scope === scope && item.lane).map(item => item.lane)
         .concat(threadLanes([...state.threads.values()].filter(th => th.ev.scope === scope))))];
       const answer = await readScope(scope, shell.held ? [] : list, lanes);
@@ -7371,7 +7767,7 @@ function openLayerComposer(item) {
   const quote = layer.held && layer.held.el === item.el ? layer.held.text : heldQuote(item.el);
   layer.held = null;
   const moment = itemMoment(item); // threads #video-target: the moment its paused video shows
-  // comment-layer #shell-roles-held: a held host page's control is a pick; the comment UI page holds the composer.
+  // shell #shell-roles-held: a held host page's control is a pick; the comment UI page holds the composer.
   if (shell.held) return pickSpot(Object.assign({ subject: item.subject, quote }, moment));
   // #subjects-fields: every comment written on a host page carries its kind, label, and from address, and its subject.
   const host = { subject: item.subject, kind: item.kind, label: item.label, from: item.from };
