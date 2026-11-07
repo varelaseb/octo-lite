@@ -118,13 +118,20 @@ if [[ -n "$reload" ]]; then
   quiet 10
   "$here/herdr-say" "$pane" "$last" >/dev/null
   quiet 0
+  # It ends the agent at once, so nothing reaches it between the last quiet
+  # read and its end, to be lost with it. Its transcript, read after, is final.
   session="$("$here/herdr-claude-session" "$pane")"
+  kill -TERM "$(jq -r .pid <<<"$session")"
   transcript="$(jq -r '.transcript // empty' <<<"$session")"
   name="$(jq -r .name <<<"$session")"
   role="$(latest agent-setting | jq -r '.agentSetting // empty')"
   # A goal Claude ended, met or failed, is none.
   goal="$(latest goal_status | jq -r 'select(.attachment.met == false and (.attachment.failed | not)) | .attachment.condition')"
-  pid="$(jq -r .pid <<<"$session")"
+  # Herdr holds an ended agent's name a while, refusing it to a start, so the
+  # spawn goes on, bounded, once Herdr finds no agent in the pane. Until the
+  # start, a send to the pane fails at its sender, and a failure prints at the
+  # shell prompt the agent left.
+  for _ in $(seq 1 60); do herdr agent get "$pane" >/dev/null 2>&1 || break; sleep 1; done
 fi
 
 # The box comes current before the agent starts, its contract included: when
@@ -211,16 +218,9 @@ if [[ -z "$reload" ]]; then
   [[ -n "$tab" && -n "$pane" ]] || { echo "herdr-spawn: tab create returned no tab or pane" >&2; exit 1; }
 fi
 
-# A failed spawn closes the tab it created; a reload created none, so its pane stays.
+# A failed spawn closes the tab it created; a reload created none, so its pane
+# stays, and its failures name no tab.
 close_orphan_tab() { [[ -z "$tab" ]] || herdr tab close "$tab" >/dev/null 2>&1 || true; }
-
-# A reload ends the old agent only now, the box current, so it is down for the
-# start alone. Herdr holds its name a while after it ends, refusing it to a
-# start, so the start waits, bounded, until Herdr finds no agent in the pane.
-if [[ -n "$reload" ]]; then
-  kill -TERM "$pid"
-  for _ in $(seq 1 60); do herdr agent get "$pane" >/dev/null 2>&1 || break; sleep 1; done
-fi
 
 # A new root pane may not have reached its shell prompt yet; herdr reports that
 # as the structured error agent_pane_busy. Only that code retries. Any other
@@ -237,12 +237,12 @@ while :; do
   [[ "$code" == agent_not_ready ]] && break
   if [[ "$code" != agent_pane_busy ]]; then
     [[ -n "$err" ]] && printf '%s\n' "$err" >&2
-    echo "herdr-spawn: agent start failed; closing tab $tab" >&2
+    echo "herdr-spawn: agent start failed${tab:+; closing tab $tab}" >&2
     close_orphan_tab; exit "$rc"
   fi
   if (( attempt >= retries )); then
     printf '%s\n' "$err" >&2
-    echo "herdr-spawn: pane still busy after $retries attempts; closing tab $tab" >&2
+    echo "herdr-spawn: pane still busy after $retries attempts${tab:+; closing tab $tab}" >&2
     close_orphan_tab; exit "$rc"
   fi
   sleep "$delay"; [[ "$delay" == 0.5 ]] && delay=1 || delay=2
@@ -288,7 +288,7 @@ selected_row() { pane_text | grep -E '^[[:space:]]*(❯|›)' | head -1; }
 
 send_key() {
   herdr pane send-keys "$pane" "$1" >/dev/null 2>&1 || {
-    echo "herdr-spawn: dialog keystroke failed; closing tab $tab" >&2
+    echo "herdr-spawn: dialog keystroke failed${tab:+; closing tab $tab}" >&2
     close_orphan_tab; exit 69; }
 }
 
