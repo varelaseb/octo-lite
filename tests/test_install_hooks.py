@@ -15,7 +15,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
+# skillfile and npm stubbed unreachable: installer runs never fetch.
 OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
+
+
+def problems(run):
+    """The problems a run names, but Stageshow's and the recorder's: offline,
+    neither is fetched."""
+    return [line for line in run.stderr.splitlines()
+            if "; fix: " in line
+            and not line.startswith(("Stageshow not installed", "prototype-video not installed"))]
 
 MOSHI = "'/opt/moshi/bin/moshi-hook' {}-hook"
 CLAUDE_SETTINGS = {
@@ -60,10 +69,11 @@ class InstallHooksTests(unittest.TestCase):
         self.hook = str(self.prefix / ".local/bin/octo-lite-command-time")
 
     def install(self, *extra: str, ok: bool = True) -> subprocess.CompletedProcess:
-        result = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), *extra], capture_output=True,
-                                text=True, stdin=subprocess.DEVNULL, env={**os.environ, "PATH": OFFLINE})
+        result = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), *extra],
+                                capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                                env={**os.environ, "PATH": OFFLINE})
         if ok:
-            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual([], problems(result), result.stderr)
         return result
 
     def without_ours(self, path: Path) -> dict:
@@ -100,20 +110,20 @@ class InstallHooksTests(unittest.TestCase):
 
     def test_check_fails_naming_settings_that_lack_the_hook(self) -> None:
         self.install()
-        self.assertEqual(0, self.install("--check").returncode)
+        self.assertEqual([], problems(self.install("--check")))
         self.claude.write_text(json.dumps(CLAUDE_SETTINGS, indent=2))
         result = self.install("--check", ok=False)
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn(str(self.claude), result.stderr.splitlines()[-1])
+        self.assertEqual([f"missing command-time hook (PostToolUse, PostToolUseFailure): {self.claude};"
+                          f" fix: run {INSTALLER} --prefix {self.prefix}"], problems(result))
 
-    def test_check_stops_at_the_first_failed_check(self) -> None:
+    def test_check_names_every_settings_file_that_lacks_the_hook(self) -> None:
         self.install()
         self.claude.write_text(json.dumps(CLAUDE_SETTINGS, indent=2))
         self.codex.write_text(json.dumps(CODEX_HOOKS, indent=2))
         result = self.install("--check", ok=False)
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn(str(self.claude), result.stderr.splitlines()[-1])
-        self.assertNotIn(str(self.codex), result.stderr)
+        self.assertEqual([[str(self.claude)], [str(self.codex)]],
+                         [[p for p in (str(self.claude), str(self.codex)) if p in line]
+                          for line in problems(result)])
 
     def test_undo_removes_only_octo_lites_hook(self) -> None:
         self.install()

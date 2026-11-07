@@ -38,15 +38,20 @@ own skills.
 tdd and Stageshow are third-party skills pinned in `Skillfile`. tdd is
 committed; Stageshow never is: the installer fetches it at its pin with
 `skillfile install` and its filming dependencies with `npm ci`. When the fetch
-fails it prints `Stageshow not installed`, links everything else, and exits 0.
+fails it links everything else, then exits non-zero, its last line
+`Stageshow not installed` naming why and the step that fixes it.
 
 The round video recorder, `prototype-video`, installs the same way: `npm ci`
 fetches the browser driver it pins, which then installs its browser. When that
-fails the installer prints `prototype-video not installed`, links everything
-else, and exits 0.
+fails the installer links everything else, then exits non-zero, printing
+`prototype-video not installed` naming why and the step that fixes it.
 
 Prerequisite: `skillfile` ([github.com/eljulians/skillfile](https://github.com/eljulians/skillfile))
-on `PATH`; without it Stageshow is not installed.
+on `PATH`; without it Stageshow is not installed. Install it with:
+
+```bash
+curl -fsSL https://github.com/eljulians/skillfile/releases/latest/download/install.sh | sh
+```
 
 Install or verify all links:
 
@@ -56,15 +61,21 @@ scripts/install-octo-lite --check
 scripts/install-octo-lite --after-pull
 ```
 
-`--check` also reports version floors for each tool octo-lite uses at runtime
+`--check` names every problem it finds, never stopping at the first: a link
+missing or wrong, a leftover link of an earlier install, a pinned skill not
+installed, or missing hook entries. Each is one stderr line, the problem then
+`; fix: ` and the step that fixes it, and the check exits non-zero when it finds
+any. It also reports version floors for each tool octo-lite uses at runtime
 (git, herdr, jq, gh, and at least one of claude or codex), printing ok,
 missing, or too old with the upgrade source.
 
 `--after-pull` installs as a plain run does, asking nothing, then verifies as
-`--check` does. It exits non-zero when the verification fails, the last line of
-stderr naming the first failed check. A host runs it after fast-forwarding this
-clone: every install publishes it as `after_pull` in the
-[onboarding file](#onboarding).
+`--check` does, and exits non-zero when the verification fails, naming each
+problem with its fix. A host runs it after fast-forwarding this clone: every
+install publishes it as `after_pull` in the [onboarding file](#onboarding).
+When no host did, `herdr-spawn`, which `octo-lite-start` also runs, runs it
+before it starts the next agent, once per move of the clone: a failing step is
+printed and the spawn goes on.
 
 Every install also registers octo-lite's command-time hook,
 `octo-lite-command-time` through its `~/.local/bin` link, in each agent CLI's
@@ -98,8 +109,8 @@ scripts/install-octo-lite --onboard
 octo-lite-start --cwd WORKTREE [--name LANE] [--runtime claude|codex|pi] [--operating-model FILE]
 ```
 
-`--onboard` installs the links, then asks whether agents may push, open pull
-requests, and file issues, each defaulting to no. Every install publishes
+`--onboard` first asks whether agents may push, open pull requests, and file
+issues, each defaulting to no, then installs the links. Every install publishes
 octo-lite's one onboarding file,
 `${XDG_STATE_HOME:-~/.local/state}/octo-lite/onboarding.toml`: `status`
 (`pending` until consent is kept, then `done`), `doc`, a link here, and the
@@ -109,7 +120,9 @@ again, and a plain install keeps them; delete the file to answer afresh.
 `after_pull` is the argument list a host runs, with no shell, after
 fast-forwarding this clone: `install-octo-lite --after-pull` from this clone
 with the `--prefix` and `--project` the last install ran with. Every install
-rewrites it, so the step a host runs next is the pulled clone's.
+rewrites it, so the step a host runs next is the pulled clone's, and records
+beside it as `commit` the clone's commit it ran at; `herdr-spawn` runs the step
+when the clone's commit differs.
 
 `octo-lite-start`, installed on `PATH`, creates a Herdr space labelled with the
 lane name and starts the lane's orchestrator alone in it at the worktree,

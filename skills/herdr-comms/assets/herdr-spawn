@@ -64,6 +64,27 @@ esac
 # Only Claude keeps the per-process session file parking resumes from.
 [[ -z "$resume" || "$kind" == claude ]] || { echo "herdr-spawn: --resume is Claude only" >&2; exit 64; }
 
+# The box comes current before the agent starts, its contract included: when
+# the octo-lite clone moved since the install last ran, run the after-pull step
+# the install published (install.spec.html#install-after-pull). The step records
+# the commit it ran at, so it runs once per move. Parallel spawns queue on the
+# onboarding file's lock, and those after the first find nothing to do. A
+# failing step is printed and the spawn goes on. No onboarding file, no step.
+onboarding="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/onboarding.toml"
+if [[ -f "$onboarding" ]]; then
+  exec 9<"$onboarding"
+  flock 9
+  mapfile -t record < <(python3 -c 'import sys, tomllib
+d = tomllib.load(open(sys.argv[1], "rb"))
+print(d.get("commit", ""), *d.get("after_pull", []), sep="\n")' "$onboarding")
+  step=("${record[@]:1}")
+  if ((${#step[@]})) && [[ "$(git -C "$(dirname "${step[0]}")" rev-parse HEAD 2>/dev/null)" != "${record[0]}" ]]; then
+    err="$("${step[@]}" 2>&1 >/dev/null </dev/null 9<&-)" ||
+      printf '%s\nherdr-spawn: after-pull step failed; spawning anyway\n' "$err" >&2
+  fi
+  exec 9<&-
+fi
+
 # The role contract. A Claude agent loads it itself through `--agent ROLE`,
 # derived from --role. Codex has no custom-agent file, so the contract goes
 # in at the developer layer as one TOML string argv. Delivered as a prompt

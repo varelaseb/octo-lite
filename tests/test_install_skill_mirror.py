@@ -14,8 +14,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
-# skillfile stubbed unreachable: installer runs never fetch.
+# skillfile and npm stubbed unreachable: installer runs never fetch.
 OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
+
+
+def problems(run):
+    """The problems a run names, but Stageshow's and the recorder's: offline,
+    neither is fetched."""
+    return [line for line in run.stderr.splitlines()
+            if "; fix: " in line
+            and not line.startswith(("Stageshow not installed", "prototype-video not installed"))]
 # Only genuinely third-party skills stay skillfile-managed. spec-chat is a
 # peer repository linked from a clone, so it is not part of this invariant.
 MANAGED_SKILLS = ("tdd",)
@@ -39,7 +47,7 @@ class InstallSkillMirrorTests(unittest.TestCase):
 
     def test_install_mirrors_managed_skill_into_both_platforms(self) -> None:
         result = self._install()
-        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], problems(result), result.stderr)
         for managed_skill in MANAGED_SKILLS:
             with self.subTest(managed_skill=managed_skill):
                 claude = self.prefix / ".claude" / "skills" / managed_skill
@@ -58,12 +66,12 @@ class InstallSkillMirrorTests(unittest.TestCase):
                 )
 
     def test_check_passes_after_clean_install(self) -> None:
-        self.assertEqual(0, self._install().returncode)
+        self.assertEqual([], problems(self._install()))
         check = self._install("--check")
-        self.assertEqual(0, check.returncode, check.stderr)
+        self.assertEqual([], problems(check), check.stderr)
 
     def test_run_through_path_symlink_resolves_root_to_clone(self) -> None:
-        self.assertEqual(0, self._install().returncode)
+        self.assertEqual([], problems(self._install()))
         link = self.prefix / ".local" / "bin" / "install-octo-lite"
         if not link.is_symlink():
             link.parent.mkdir(parents=True, exist_ok=True)
@@ -73,13 +81,52 @@ class InstallSkillMirrorTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(0, check.returncode, check.stdout + check.stderr)
+        self.assertEqual([], problems(check), check.stdout + check.stderr)
 
     def test_check_fails_when_managed_mirror_is_broken(self) -> None:
-        self.assertEqual(0, self._install().returncode)
-        (self.prefix / ".codex" / "skills" / MANAGED_SKILLS[0]).unlink()
+        """Both links resolve, into two clones of this repo: each is adoptable,
+        so only the mirror check names it."""
+        self.assertEqual([], problems(self._install()))
+        origin = subprocess.run(["git", "-C", str(ROOT), "remote", "get-url", "origin"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        clone = Path(self._tmp.name) / "other-clone"
+        subprocess.run(["git", "init", "-q", str(clone)], check=True)
+        subprocess.run(["git", "-C", str(clone), "remote", "add", "origin", origin], check=True)
+        (clone / "agents" / "skills" / MANAGED_SKILLS[0]).mkdir(parents=True)
+        claude = self.prefix / ".claude" / "skills" / MANAGED_SKILLS[0]
+        codex = self.prefix / ".codex" / "skills" / MANAGED_SKILLS[0]
+        claude.unlink()
+        claude.symlink_to(clone / "agents" / "skills" / MANAGED_SKILLS[0])
         check = self._install("--check")
-        self.assertNotEqual(0, check.returncode, "--check must flag a broken managed-skill mirror")
+        self.assertEqual([f"managed skill mirror broken: {MANAGED_SKILLS[0]}; fix: remove {claude}"
+                          f" and {codex}, then run {INSTALLER} --prefix {self.prefix}"],
+                         problems(check))
+
+    def test_check_names_a_missing_or_dangling_managed_link_once(self) -> None:
+        """Installing fixes a missing or dangling managed link, so the check
+        names it once, with no hand step."""
+        self.assertEqual([], problems(self._install()))
+        claude = self.prefix / ".claude" / "skills" / MANAGED_SKILLS[0]
+        for name, plant in (("missing", lambda: None),
+                            ("dangling", lambda: claude.symlink_to(ROOT / "agents" / "skills" / "gone"))):
+            with self.subTest(name):
+                claude.unlink(missing_ok=True)
+                plant()
+                check = self._install("--check")
+                self.assertEqual(1, len(problems(check)), check.stderr)
+                self.assertNotIn("mirror", check.stderr)
+                self.assertEqual([], problems(self._install()))
+                self.assertEqual([], problems(self._install("--check")))
+
+    def test_check_names_an_occupied_managed_path_once(self) -> None:
+        """Someone else's directory there is to move aside, never to remove."""
+        self.assertEqual([], problems(self._install()))
+        claude = self.prefix / ".claude" / "skills" / MANAGED_SKILLS[0]
+        claude.unlink()
+        claude.mkdir()
+        check = self._install("--check")
+        self.assertEqual([f"bad link: {claude} (occupied by directory); fix: move it aside,"
+                          f" then run {INSTALLER} --prefix {self.prefix}"], problems(check))
 
     def test_real_file_collision_skips_without_overwrite(self) -> None:
         target = self.prefix / ".claude" / "skills" / "commit"
@@ -88,13 +135,13 @@ class InstallSkillMirrorTests(unittest.TestCase):
 
         result = self._install()
 
-        self.assertEqual(0, result.returncode)
+        self.assertEqual([], problems(result))
         self.assertIn("skipped:", result.stdout)
         self.assertEqual("operator-owned\n", target.read_text(encoding="utf-8"))
 
     def test_role_contracts_are_symlinked_for_both_clis(self) -> None:
         result = self._install()
-        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], problems(result), result.stderr)
         for platform in (".claude", ".codex"):
             target = self.prefix / platform / "agents" / "implementer.md"
             self.assertTrue(target.is_symlink(), target)
