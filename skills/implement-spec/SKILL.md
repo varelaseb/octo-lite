@@ -172,7 +172,7 @@ worker's, check box load (`uptime` against `nproc`, `free -m`); when high, run
 one heavy job at a time, each under the box lock
 (`spec/domains/command-time.spec.html#time-lock`; box-wide, so not in the
 per-session `$(octo-lite-state)`), taken as the job starts and let go when it ends:
-`flock --verbose "${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/heavy.lock" CMD`.
+`flock --verbose --close "${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite/heavy.lock" CMD`.
 Take it around one bounded job only. A server or watcher (prototype server,
 review service, dev server) runs outside it, since it would hold the lock until
 it stopped and stall every heavy job behind it on the box.
