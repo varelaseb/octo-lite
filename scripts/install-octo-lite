@@ -343,7 +343,8 @@ done
 # ignores, then npm ci adds the filming dependencies its lockfile names, rerun
 # only when that lockfile is newer than npm's record of the last install, which
 # is also what --check takes as installed. A failed step leaves it out and
-# everything else still links; the install then fails naming it, last.
+# everything else still links; every mode then fails naming why, last. Only
+# --check skips the fetch, so only a fetch failure is install's alone.
 stageshow="$root/agents/skills/stageshow"
 deps_current() {
   [[ -e "$stageshow/node_modules/.package-lock.json" &&
@@ -352,15 +353,14 @@ deps_current() {
 if command -v skillfile >/dev/null; then why="" stageshow_fix="run $install_cmd"
 else why="skillfile not found" stageshow_fix="$skillfile_install, then run $install_cmd"
 fi
-if [[ "$check" == true ]]; then
-  deps_current || problem "Stageshow not installed${why:+: $why}" "$stageshow_fix"
-elif [[ -z "$why" ]]; then
+if [[ "$check" != true && -z "$why" ]]; then
   if ! (cd "$root" && skillfile install -q); then why="skillfile install failed"
   elif ! deps_current && ! (cd "$stageshow" && npm ci --no-audit --no-fund --loglevel=error); then
     why="npm ci failed"
   fi
   [[ -z "$why" ]] || stageshow_fix="resolve its error above, then $stageshow_fix"
 fi
+[[ -n "$why" ]] || deps_current || why="filming dependencies not installed"
 
 # Managed skills live in the skillfile install target agents/skills (ADR 0002).
 # They mirror into every platform skills dir. Locally authored skills/ skills
@@ -538,8 +538,8 @@ if [[ "$verify" == true ]]; then
   echo "version floors:"
   check_floors
 fi
-# Last, so it is the line an operator sees: a pinned skill this run could not
-# fetch fails the install (install.spec.html#install-peers). Any problem this
-# run named fails it.
-[[ "$check" == true || -z "$why" ]] || problem "Stageshow not installed: $why" "$stageshow_fix"
+# Last, so it is the line an operator sees: a pinned skill not installed fails
+# every mode alike (install.spec.html#install-peers). Any problem this run
+# named fails it.
+[[ -z "$why" ]] || problem "Stageshow not installed: $why" "$stageshow_fix"
 exit $((problems > 0))

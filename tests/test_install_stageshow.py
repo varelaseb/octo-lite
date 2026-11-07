@@ -148,6 +148,20 @@ class NoSkillfileTest(CloneCase):
                          f"Stageshow not installed: skillfile not found; fix: {self.skillfile_fix}")
         self.assert_linked_the_rest()
 
+    def test_every_mode_names_it_over_an_earlier_stageshow(self):
+        """An earlier install's Stageshow stays with its filming dependencies
+        current, but no pin change can arrive: check, install, and after-pull
+        give one verdict, named last."""
+        deps = self.clone / "agents/skills/stageshow/node_modules"
+        deps.mkdir(parents=True)
+        (deps / ".package-lock.json").write_text("{}")
+        named = f"Stageshow not installed: skillfile not found; fix: {self.skillfile_fix}"
+        for mode in ((), ("--check",), ("--after-pull",)):
+            with self.subTest(mode=mode):
+                r = self.run_installer(*mode)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(r.stderr.splitlines()[-1], named)
+
     def test_check_names_every_problem_with_its_fix(self):
         self.run_installer()
         leftover = self.prefix / ".claude/agents/qa-capture.md"
