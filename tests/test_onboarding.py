@@ -252,16 +252,33 @@ class OnboardingTest(unittest.TestCase):
                 self.assertEqual(link.resolve(), ROOT / "skills/commit")
 
     def test_check_names_a_dangling_legacy_link_once(self):
-        """A dangling legacy link of ours is the prune's to name; installing removes it."""
+        """A dangling legacy link of ours, in a linked directory or not, is
+        named once by the check and removed by installing."""
         self.run_installer()
-        link = self.prefix / ".codex/octo-lite/roles"
-        link.symlink_to(ROOT / "gone-roles")
+        for rel in (".codex/octo-lite/roles", ".codex/octo-lite-role-skills.json"):
+            with self.subTest(rel):
+                link = self.prefix / rel
+                link.symlink_to(ROOT / "gone-legacy")
+                r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
+                                   capture_output=True, text=True, env=self.env)
+                self.assertEqual(problems(r), [f"dangling legacy link: {link};"
+                                               f" fix: run {INSTALLER} --prefix {self.prefix}"])
+                self.run_installer()
+                self.assertFalse(link.is_symlink())
+
+    def test_dangling_legacy_link_not_ours_is_left_by_check_and_install(self):
+        """A legacy path dangling into a deleted clone of someone else's is
+        not ours in either mode: named so, never removed."""
+        self.run_installer()
+        link = self.prefix / ".claude/agents/octo-lite-implementer.md"
+        link.symlink_to(self.prefix.parent / "deleted-clone/agents/octo-lite-implementer.md")
         r = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), "--check"],
                            capture_output=True, text=True, env=self.env)
-        self.assertEqual(problems(r), [f"dangling legacy link: {link};"
-                                       f" fix: run {INSTALLER} --prefix {self.prefix}"])
-        self.run_installer()
-        self.assertFalse(link.is_symlink())
+        self.assertEqual(problems(r), [])
+        self.assertIn(f"dangling link (not ours): {link}", r.stderr)
+        r = self.run_installer()
+        self.assertTrue(link.is_symlink(), "install removed a link the check called not ours")
+        self.assertIn(f"dangling link (not ours): {link}", r.stderr)
 
     def test_check_output_says_checked(self):
         """--check says 'checked', plain install says 'installed' (F-D7)."""
@@ -410,6 +427,21 @@ class AfterPullTest(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertIn(named, r.stderr)
         self.assertIn("version floors", r.stdout)
+
+    def test_after_pull_names_each_problem_once(self):
+        """Install and verify are one pass: a problem both would name, a
+        declared skill gone or Stageshow neither fetched nor installed, and a
+        link not ours, is one line of the step's error output."""
+        named = self.with_a_declared_skill_gone()
+        (self.bin / "skillfile").write_text("#!/bin/sh\nexit 1\n")
+        shutil.rmtree(self.clone / "agents/skills/stageshow/node_modules")
+        (self.prefix / ".claude/skills/not-ours").symlink_to(self.prefix.parent / "gone")
+        r = self.after_pull()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        lines = r.stderr.splitlines()
+        for start in (named, "Stageshow not installed", "dangling link (not ours)"):
+            self.assertEqual(1, sum(line.startswith(start) for line in lines), r.stderr)
+        self.assertEqual(len(lines), len(set(lines)), r.stderr)
 
     def test_a_declared_skill_gone_is_printed_by_the_first_spawn_only(self):
         named = self.with_a_declared_skill_gone()
