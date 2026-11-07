@@ -118,6 +118,7 @@
 <section data-anchor="roles" id="roles">
 <h2>Roles</h2>
 <p data-anchor="roles-park" id="roles-park">Waiting agents hold no memory: the fleet operator parks a lane owner idle at a human gate, on another lane, or held back for load, and resumes it by sending it the wake message, or when load allows, one owner at a time as memory frees.
+It also parks a working owner at its next idle point when a merged change to a role contract or the operating model touches its remaining steps, and resumes it at once, since a resume starts it with them as they are then (octo-lite <a href="./octo-lite.spec.html#roles-contract-change">contract change</a>).
 A parked owner is resumed, never relaunched fresh; only an owner with no parked line and no live pane is relaunched.
 A lane owner parks a worker it would otherwise keep idle through a long wait, such as a human gate or another lane, and messages it to resume; a worker whose result is consumed is closed, not parked.
 A resumed owner first sets its lane record's <code>owner</code> to its new pane, then acts on the message that resumed it.
