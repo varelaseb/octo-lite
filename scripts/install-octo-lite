@@ -344,11 +344,16 @@ done
 # dependencies their lockfiles name by npm ci, rerun only when that lockfile is
 # newer than npm's record of the last install, which is also what --check takes
 # as installed; the recorder's pinned driver then installs its browser, a no-op
-# once there. A failed step leaves Stageshow out, leaves the recorder linked,
-# and everything else still links; every mode then fails naming why, last.
+# once there. The recorder's lockfile sits at this clone's root, where Node finds
+# its dependencies from the recorder's folder, so none lands in a skill folder,
+# which skillfile copies whole; each run but --check removes those an earlier
+# install left in the recorder's folder.
+# A failed step leaves Stageshow out, leaves the recorder linked, and
+# everything else still links; every mode then fails naming why, last.
 # Only --check skips the fetch, so only a fetch failure is install's alone.
 stageshow="$root/agents/skills/stageshow"
 recorder="$root/skills/implement-spec/assets/prototype-video"
+[[ "$check" == true ]] || rm -rf "$recorder/node_modules"
 deps_current() {
   [[ -e "$1/node_modules/.package-lock.json" &&
      ! "$1/package-lock.json" -nt "$1/node_modules/.package-lock.json" ]]
@@ -366,13 +371,13 @@ fi
 [[ -n "$why" ]] || deps_current "$stageshow" || why="filming dependencies not installed"
 recorder_why="" recorder_fix="run $install_cmd"
 if [[ "$check" != true ]]; then
-  if ! npm_deps "$recorder"; then recorder_why="npm ci failed"
-  elif ! (cd "$recorder" && npm exec -- playwright-core install chromium); then
+  if ! npm_deps "$root"; then recorder_why="npm ci failed"
+  elif ! (cd "$root" && npm exec -- playwright-core install chromium); then
     recorder_why="browser install failed"
   fi
   [[ -z "$recorder_why" ]] || recorder_fix="resolve its error above, then $recorder_fix"
 fi
-[[ -n "$recorder_why" ]] || deps_current "$recorder" || recorder_why="browser driver not installed"
+[[ -n "$recorder_why" ]] || deps_current "$root" || recorder_why="browser driver not installed"
 
 # Managed skills live in the skillfile install target agents/skills (ADR 0002).
 # They mirror into every platform skills dir. Locally authored skills/ skills

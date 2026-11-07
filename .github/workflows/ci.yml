@@ -13,5 +13,4 @@ jobs:
       # drive (tests/test_prototype_video.py): its pinned driver and browser, as
       # the installer adds them (spec/domains/install.spec.html #install-recorder).
       - run: npm ci --no-audit --no-fund && npx playwright-core install --with-deps chromium
-        working-directory: skills/implement-spec/assets/prototype-video
       - run: python3 -m unittest discover -s tests -v

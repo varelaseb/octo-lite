@@ -328,16 +328,13 @@ class AfterPullTest(unittest.TestCase):
         (self.upstream / "scripts").mkdir(parents=True)
         (self.upstream / "agents").mkdir()
         (self.upstream / "agents/role.md").write_text("role\n")
-        recorder = self.upstream / "skills/implement-spec/assets/prototype-video"
-        recorder.mkdir(parents=True)
-        (recorder / "package-lock.json").write_text("{}")
+        (self.upstream / "package-lock.json").write_text("{}")
         shutil.copy2(INSTALLER, self.upstream / "scripts/install-octo-lite")
         self.git(self.upstream, "init", "-q")
         self.commit("installer")
         self.clone = base / "clone"
         self.git(base, "clone", "-q", str(self.upstream), str(self.clone))
-        for deps in (self.clone / "agents/skills/stageshow/node_modules",
-                     self.clone / "skills/implement-spec/assets/prototype-video/node_modules"):
+        for deps in (self.clone / "agents/skills/stageshow/node_modules", self.clone / "node_modules"):
             deps.mkdir(parents=True)
             (deps / ".package-lock.json").write_text("{}")
         self.run_ok([str(self.clone / "scripts/install-octo-lite"), "--prefix", str(self.prefix)])

@@ -2,7 +2,7 @@
 records real use of a prototype. Spec: spec/domains/octo-lite.spec.html #delivery-round-video; criteria
 #acceptance-video-unknown-action and #acceptance-video-check. The recorder reads a mockup file in its browser, so these
 tests need its pinned driver and browser, as the installer adds them (install.spec.html #install-recorder): run
-`npm ci && npx playwright-core install chromium` in its folder once per clone. The check reads crops of frames the
+`npm ci && npx playwright-core install chromium` at the clone root once per clone. The check reads crops of frames the
 recorder recorded, kept as fixtures."""
 
 from __future__ import annotations
