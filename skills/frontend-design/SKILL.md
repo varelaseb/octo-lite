@@ -35,6 +35,9 @@ fills only what no mockup draws and never overrides one.
   explaining: grouping, order, alignment, and spacing show what each part is
   and how the parts relate. Add a caption, helper line, or subtitle only where
   the layout cannot show it.
+- For every user-facing string (label, hint, empty state, toast,
+  confirmation, button text), load `clean-copy`: cut what should not exist
+  before phrasing what stays.
 - Use target repo assets and UI libraries before inventing new ones.
 - Use icons for common tool actions when the project has an icon library.
 - Validate through the target repo's normal checks and browser/screenshot

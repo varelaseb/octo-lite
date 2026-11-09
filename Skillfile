@@ -20,6 +20,7 @@ github  skill  tdd  mattpocock/skills@ed37663cc5fbef691ddfecd080dff42f7e7e350d  
 github  skill  stageshow  benjitaylor/skills@299140fafd08df55a9c234e610c3f64af3f45531  stageshow
 
 # octo-lite's own skills, authored locally under skills/.
+local  skill  clean-copy              skills/clean-copy
 local  skill  commit                  skills/commit
 local  skill  frontend-design         skills/frontend-design
 local  skill  grill-with-docs         skills/grill-with-docs
