@@ -368,10 +368,6 @@ class HerdrWrapperTest(unittest.TestCase):
         stub.chmod(0o755)
         self.cwd = d / "worktree"
         self.cwd.mkdir()
-        self.log = d / "calls.log"
-        self.closed = d / "closed.log"
-        self.wrong = d / "wrong.log"
-        self.dialog = d / "dialog"
         self.env = {
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -379,8 +375,8 @@ class HerdrWrapperTest(unittest.TestCase):
             "HOME": str(d),
             "XDG_STATE_HOME": str(d / "state"),
         }
-        self.gone_file = d / "gone"
-        self.blocked_file = d / "blocked"
+        self.log, self.closed, self.wrong, self.dialog, self.gone_file, self.blocked_file = (
+            Path(self.env[f"FAKE_{name}"]) for name in ("LOG", "CLOSED", "WRONG", "DIALOG", "GONE", "BLOCKED"))
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
         # The suite runs in the default Herdr session, from no pane, unless a
         # test names one: a Herdr pane's caller env must not reach a wrapper.
