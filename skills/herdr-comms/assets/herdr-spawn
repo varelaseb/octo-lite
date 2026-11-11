@@ -329,20 +329,24 @@ fi
 
 # The dialogs clearing does not mean the agent can accept a prompt yet: it may
 # still be booting, and a prompt fired into that window is never reacted to -
-# Herdr reports `agent_prompt_stalled` and the message is lost. Wait until the
-# agent reports its own status before calling the spawn done.
-provider_session_id=""; agent_status=""
+# Herdr reports `agent_prompt_stalled` and the message sits typed, unsent. Wait
+# until the agent reports its own status before calling the spawn done. Herdr
+# reports a Claude agent idle a few seconds after its process starts, drawn or
+# not, so a Claude agent is ready once its session record (herdr-claude-session)
+# holds the status Claude writes there once its prompt takes input.
+provider_session_id=""; ready=""
 for _ in $(seq 1 "${HERDR_SPAWN_READY_RETRIES:-20}"); do
   info="$(herdr agent get "$name" 2>/dev/null || true)"
   provider_session_id="$(jq -r '.result.agent.agent_session.value // empty' <<<"$info" 2>/dev/null || true)"
   agent_status="$(jq -r '.result.agent.agent_status // empty' <<<"$info" 2>/dev/null || true)"
   # Readiness is the reported status, not the session id: Herdr resolves a
   # provider session on some hosts and not others, but a status means the agent
-  # is attached and can be prompted.
-  [[ -n "$agent_status" ]] && break
+  # is attached.
+  [[ -n "$agent_status" ]] && { [[ "$kind" != claude ]] ||
+    "$here/herdr-claude-session" "$pane" 2>/dev/null | jq -e .status >/dev/null; } && { ready=1; break; }
   sleep 1
 done
-if [[ -z "$agent_status" ]]; then
+if [[ -z "$ready" ]]; then
   echo "herdr-spawn: agent never reported a status; it is not ready for prompts" >&2
   close_orphan_tab; exit 69
 fi

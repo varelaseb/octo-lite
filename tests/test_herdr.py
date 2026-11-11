@@ -21,6 +21,8 @@ live Herdr 0.9.0:
     of an agent spawned again under the same name
   * a parked agent must hold no process, refuse when working or Codex, and
     resume once under its name when messaged
+  * Herdr reports a starting Claude idle before its prompt takes input, and
+    a message typed then sits in the prompt unsubmitted
   * a hand-off log may hold a line that is not JSON, or a parked line or
     session record naming no role, and none may break a park or a resume
   * a pane's Claude session record may be one an ended Claude left at a pid
@@ -84,6 +86,30 @@ freed() {
   held && { echo $(($(cat "$FAKE_HELD") - 1)) >"$FAKE_HELD"; return 1; }
   echo "free $1" >>"$FAKE_LOG"
 }
+# A Claude agent starting in pane $1, as Claude starts: its process in the pane
+# (FAKE_CLAUDES lists its pid, for the test to end), and its session record, of
+# the session it resumes, which gets its status once its prompt takes input.
+# FAKE_CLAUDE_BOOT holds that off until that many reads of the agent, though
+# Herdr reports it idle; FAKE_CLAUDES.booting holds the reads left.
+claude_in() {
+  local pane="$1" sid="s-new" pid rec; shift
+  while (($#)); do [[ "$1" == --resume ]] && sid="$2"; shift; done
+  HERDR_PANE_ID="$pane" "$FAKE_SLEEP" 600 </dev/null >/dev/null 2>&1 & pid=$!
+  echo "$pid" >>"$FAKE_CLAUDES"
+  mkdir -p "$HOME/.claude/sessions"; rec="$HOME/.claude/sessions/$pid.json"
+  jq -nc --argjson pid "$pid" --arg sid "$sid" --arg start "$(cut -d' ' -f22 "/proc/$pid/stat")" \
+    --arg boot "${FAKE_CLAUDE_BOOT:-}" \
+    '{pid: $pid, sessionId: $sid, procStart: $start} + if $boot == "" then {status: "idle"} else {} end' >"$rec"
+  [[ -z "${FAKE_CLAUDE_BOOT:-}" ]] || echo "$FAKE_CLAUDE_BOOT $rec" >"$FAKE_CLAUDES.booting"
+}
+# One read of a booting Claude: at its last, its record gets its status.
+booted() {
+  local n rec
+  [[ -f "$FAKE_CLAUDES.booting" ]] || return 0
+  read -r n rec <"$FAKE_CLAUDES.booting"
+  if ((n > 1)); then echo "$((n - 1)) $rec" >"$FAKE_CLAUDES.booting"; return; fi
+  jq -c '.status = "idle"' "$rec" >"$rec.new" && mv "$rec.new" "$rec" && rm "$FAKE_CLAUDES.booting"
+}
 
 case "$sub" in
   "workspace create")
@@ -115,12 +141,14 @@ case "$sub" in
     if [[ -n "${FAKE_START_BUSY_COUNT:-}" && "$n" -le "$FAKE_START_BUSY_COUNT" ]]; then
       echo '{"error":{"code":"agent_pane_busy","message":"not an available shell"},"id":"cli:agent:start"}' >&2; exit 1
     fi
-    if [[ -n "${FAKE_START_NOT_READY:-}" ]]; then
-      echo '{"error":{"code":"agent_not_ready","message":"blocked during startup"},"id":"cli:agent:start"}' >&2; exit 1
-    fi
     # FAKE_START_GATE holds the start until the test creates that file.
     while [[ -n "${FAKE_START_GATE:-}" && ! -e "$FAKE_START_GATE" ]]; do sleep 0.05; done
     if [[ -f "${FAKE_GONE:-}" ]]; then sed -i "/^$3\$/d" "$FAKE_GONE"; fi
+    [[ "$5" != claude ]] || claude_in "$7" "${@:8}"
+    # agent_not_ready: started, but on its trust dialog.
+    if [[ -n "${FAKE_START_NOT_READY:-}" ]]; then
+      echo '{"error":{"code":"agent_not_ready","message":"blocked during startup"},"id":"cli:agent:start"}' >&2; exit 1
+    fi
     echo '{"result":{}}' ;;
   "pane read")
     case "$(dialog_state)" in
@@ -169,6 +197,7 @@ case "$sub" in
   "agent get")
     # FAKE_NEVER_READY poses an agent that starts but never reports a session,
     # which is the window in which a prompt is silently lost.
+    booted
     if gone "$3" || freed "$3"; then
       not_found
     elif [[ -n "${FAKE_AGENT_GET_ERROR:-}" ]]; then
@@ -199,7 +228,8 @@ case "$sub" in
     if [[ -n "${FAKE_PROMPT_BLOCKED:-}" ]] || blocked "$3"; then
       echo '{"error":{"code":"agent_blocked","message":"requires interactive input"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
-    if [[ -n "${FAKE_PROMPT_STALLED:-}" ]]; then
+    # Typed into a Claude still booting, the message stays in its prompt unsubmitted.
+    if [[ -n "${FAKE_PROMPT_STALLED:-}" || -e "$FAKE_CLAUDES.booting" ]]; then
       echo '{"error":{"code":"agent_prompt_stalled","message":"no reaction"},"id":"cli:agent:prompt"}' >&2; exit 1
     fi
     if [[ -n "${FAKE_PROMPT_NOT_FOUND:-}" ]]; then
@@ -300,6 +330,26 @@ esac
 """
 
 
+def fake_herdr_env(test, d):
+    """The env FAKE_HERDR reads, its files in folder d. Every Claude its agent
+    start runs ends with test."""
+    env = {name: str(d / file) for name, file in (
+        ("FAKE_LOG", "calls.log"), ("FAKE_CLOSED", "closed.log"), ("FAKE_WRONG", "wrong.log"),
+        ("FAKE_DIALOG", "dialog"), ("FAKE_START_COUNT", "count"), ("FAKE_START_ARGV", "start.argv"),
+        ("FAKE_GONE", "gone"), ("FAKE_BLOCKED", "blocked"), ("FAKE_WORKED", "worked"),
+        ("FAKE_CLAUDES", "claudes"))}
+    test.addCleanup(end_claudes, d / "claudes")
+    return {**env, "FAKE_SLEEP": shutil.which("sleep")}
+
+
+def end_claudes(claudes):
+    for pid in claudes.read_text().split() if claudes.exists() else ():
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 class HerdrWrapperTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -318,27 +368,15 @@ class HerdrWrapperTest(unittest.TestCase):
         stub.chmod(0o755)
         self.cwd = d / "worktree"
         self.cwd.mkdir()
-        self.log = d / "calls.log"
-        self.closed = d / "closed.log"
-        self.wrong = d / "wrong.log"
-        self.dialog = d / "dialog"
         self.env = {
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
-            "FAKE_LOG": str(self.log),
-            "FAKE_CLOSED": str(self.closed),
-            "FAKE_WRONG": str(self.wrong),
-            "FAKE_DIALOG": str(self.dialog),
-            "FAKE_START_COUNT": str(d / "count"),
-            "FAKE_START_ARGV": str(d / "start.argv"),
+            **fake_herdr_env(self, d),
             "HOME": str(d),
             "XDG_STATE_HOME": str(d / "state"),
-            "FAKE_GONE": str(d / "gone"),
-            "FAKE_BLOCKED": str(d / "blocked"),
-            "FAKE_WORKED": str(d / "worked"),
         }
-        self.gone_file = d / "gone"
-        self.blocked_file = d / "blocked"
+        self.log, self.closed, self.wrong, self.dialog, self.gone_file, self.blocked_file = (
+            Path(self.env[f"FAKE_{name}"]) for name in ("LOG", "CLOSED", "WRONG", "DIALOG", "GONE", "BLOCKED"))
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
         # The suite runs in the default Herdr session, from no pane, unless a
         # test names one: a Herdr pane's caller env must not reach a wrapper.
@@ -771,8 +809,9 @@ class HerdrWrapperTest(unittest.TestCase):
         # A detached stand-in for an agent's Claude process in a pane, with
         # Claude's own session file for its pid unless sid is None, recording
         # the process start time, or another one when stale: an ended Claude's
-        # record at a pid a process of the pane reuses. replies are the
-        # timestamps of the replies in its transcript; none, no transcript yet.
+        # record at a pid a process of the pane reuses, with the status a Claude
+        # at its prompt records. replies are the timestamps of the replies in
+        # its transcript; none, no transcript yet.
         # sidechain is the timestamp of a subagent's assistant record after them.
         # agent is the role the record names; None, it names none. name is
         # the session name it records; cmd and stdin, what the stand-in runs.
@@ -785,7 +824,7 @@ class HerdrWrapperTest(unittest.TestCase):
             sessions.mkdir(parents=True, exist_ok=True)
             start = int(Path(f"/proc/{p.pid}/stat").read_text().split()[21]) + stale
             (sessions / f"{p.pid}.json").write_text(json.dumps({
-                "pid": p.pid, "sessionId": sid, "cwd": str(self.cwd), "procStart": str(start),
+                "pid": p.pid, "sessionId": sid, "cwd": str(self.cwd), "procStart": str(start), "status": "idle",
                 **({"agent": agent} if agent else {}), **({"name": name} if name else {})}))
             if replies:
                 project = home / ".claude/projects" / f"-p-{sid}"
@@ -1392,6 +1431,21 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(argv[2], "ann45")
         self.assertEqual(argv[-4:], ["--agent", "orchestrator", "--resume", "s-1"])
         self.assertIn("agent prompt w1:p1 what are you waiting on?", self.calls())
+
+    def test_say_sends_to_a_resumed_owner_once_its_claude_takes_input(self):
+        # spec/domains/herdr-transport.spec.html#acceptance-park-wake (ANN-1946):
+        # Herdr reports a resumed Claude idle while it still boots, and a
+        # message typed then stays in its prompt unsubmitted. The send waits
+        # until the Claude takes input, and the owner processes the message.
+        self.dialog.write_text("none\n")
+        self.parked_line("ann45", pane="w9:p2")
+        self.gone_file.write_text("w9:p2\nann45\n")
+        replies = Path(self.tmp.name) / "replies"
+        replies.write_text("ok\n")
+        r = self.say("w9:p2", "PR merged: close out", FAKE_CLAUDE_BOOT="2", FAKE_REPLIES=str(replies),
+                     FAKE_TRANSCRIPT=f"{self.env['HOME']}/.claude/projects/-p-s-1/s-1.jsonl")
+        self.assertEqual((r.returncode, r.stderr, r.stdout), (0, "", "pane=w1:p1\n"))
+        self.assertEqual(self.calls().count("delivered w1:p1 PR merged: close out"), 1)
 
     def test_a_second_message_to_a_resumed_owner_starts_no_second_copy(self):
         # spec/domains/herdr-transport.spec.html#acceptance-park-wake-once: the

@@ -10,6 +10,8 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from tests.test_herdr import FAKE_HERDR, fake_herdr_env
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/install-octo-lite"
 SPAWN = ROOT / "skills/herdr-comms/assets/herdr-spawn"
@@ -410,15 +412,6 @@ class OnboardingTest(unittest.TestCase):
         self.assertIn("checked", r.stdout)
 
 
-# Herdr as herdr-spawn sees it: a tab, an agent started with no dialog, a status.
-FAKE_HERDR = """#!/bin/sh
-case "$1 $2" in
-  "tab create") echo '{"result":{"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"}}}' ;;
-  "agent get") echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
-esac
-"""
-
-
 class AfterPullTest(unittest.TestCase):
     """A host fast-forwards an installed clone, then runs the published
     after_pull argv with no shell, or no host does and a lane owner spawns a
@@ -432,13 +425,17 @@ class AfterPullTest(unittest.TestCase):
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
         # Stageshow is installed: skillfile finds its pin deployed, and its
         # filming dependencies are current. So is the recorder: its driver is
-        # current, and npm finds its browser installed. Herdr is faked.
+        # current, and npm finds its browser installed. Herdr is faked, its
+        # Claude started as tests/test_herdr.py starts it; jq is the box's own,
+        # which herdr-spawn and the fake parse with.
         self.bin = base / "bin"
         self.bin.mkdir()
         for name, body in (("skillfile", "#!/bin/sh\n"), ("npm", "#!/bin/sh\n"), ("herdr", FAKE_HERDR)):
             (self.bin / name).write_text(body)
             (self.bin / name).chmod(0o755)
-        self.env = {**os.environ, "PATH": f"{self.bin}:{FLOORS}:{os.environ['PATH']}", "HOME": str(self.prefix),
+        (self.bin / "jq").symlink_to(shutil.which("jq"))
+        self.env = {**os.environ, **fake_herdr_env(self, base),
+                    "PATH": f"{self.bin}:{FLOORS}:{os.environ['PATH']}", "HOME": str(self.prefix),
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         self.env.pop("XDG_STATE_HOME", None)
