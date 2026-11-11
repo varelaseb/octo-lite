@@ -98,9 +98,9 @@ claude_in() {
   echo "$pid" >>"$FAKE_CLAUDES"
   mkdir -p "$HOME/.claude/sessions"; rec="$HOME/.claude/sessions/$pid.json"
   jq -nc --argjson pid "$pid" --arg sid "$sid" --arg start "$(cut -d' ' -f22 "/proc/$pid/stat")" \
-    '{pid: $pid, sessionId: $sid, procStart: $start}' >"$rec"
-  echo "${FAKE_CLAUDE_BOOT:-1} $rec" >"$FAKE_CLAUDES.booting"
-  [[ -n "${FAKE_CLAUDE_BOOT:-}" ]] || booted
+    --arg boot "${FAKE_CLAUDE_BOOT:-}" \
+    '{pid: $pid, sessionId: $sid, procStart: $start} + if $boot == "" then {status: "idle"} else {} end' >"$rec"
+  [[ -z "${FAKE_CLAUDE_BOOT:-}" ]] || echo "$FAKE_CLAUDE_BOOT $rec" >"$FAKE_CLAUDES.booting"
 }
 # One read of a booting Claude: at its last, its record gets its status.
 booted() {
@@ -330,6 +330,26 @@ esac
 """
 
 
+def fake_herdr_env(test, d):
+    """The env FAKE_HERDR reads, its files in folder d. Every Claude its agent
+    start runs ends with test."""
+    env = {name: str(d / file) for name, file in (
+        ("FAKE_LOG", "calls.log"), ("FAKE_CLOSED", "closed.log"), ("FAKE_WRONG", "wrong.log"),
+        ("FAKE_DIALOG", "dialog"), ("FAKE_START_COUNT", "count"), ("FAKE_START_ARGV", "start.argv"),
+        ("FAKE_GONE", "gone"), ("FAKE_BLOCKED", "blocked"), ("FAKE_WORKED", "worked"),
+        ("FAKE_CLAUDES", "claudes"))}
+    test.addCleanup(end_claudes, d / "claudes")
+    return {**env, "FAKE_SLEEP": shutil.which("sleep")}
+
+
+def end_claudes(claudes):
+    for pid in claudes.read_text().split() if claudes.exists() else ():
+        try:
+            os.kill(int(pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 class HerdrWrapperTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -355,21 +375,10 @@ class HerdrWrapperTest(unittest.TestCase):
         self.env = {
             **os.environ,
             "PATH": f"{bindir}:{os.environ['PATH']}",
-            "FAKE_LOG": str(self.log),
-            "FAKE_CLOSED": str(self.closed),
-            "FAKE_WRONG": str(self.wrong),
-            "FAKE_DIALOG": str(self.dialog),
-            "FAKE_START_COUNT": str(d / "count"),
-            "FAKE_START_ARGV": str(d / "start.argv"),
+            **fake_herdr_env(self, d),
             "HOME": str(d),
             "XDG_STATE_HOME": str(d / "state"),
-            "FAKE_GONE": str(d / "gone"),
-            "FAKE_BLOCKED": str(d / "blocked"),
-            "FAKE_WORKED": str(d / "worked"),
-            "FAKE_CLAUDES": str(d / "claudes"),
-            "FAKE_SLEEP": shutil.which("sleep"),
         }
-        self.addCleanup(self.end_claudes)
         self.gone_file = d / "gone"
         self.blocked_file = d / "blocked"
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
@@ -377,15 +386,6 @@ class HerdrWrapperTest(unittest.TestCase):
         # test names one: a Herdr pane's caller env must not reach a wrapper.
         for var in ("HERDR_SESSION", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"):
             self.env.pop(var, None)
-
-    def end_claudes(self):
-        # Every Claude the fake's agent start ran.
-        claudes = Path(self.env["FAKE_CLAUDES"])
-        for pid in claudes.read_text().split() if claudes.exists() else ():
-            try:
-                os.kill(int(pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
 
     def spawn(self, extra=(), **env):
         return subprocess.run(
