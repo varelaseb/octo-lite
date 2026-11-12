@@ -4,7 +4,10 @@
 octo-lite-lock [--cap RESOURCE=N] CMD [ARG...] runs CMD as a heavy job in one
 of the box's slots, counted from the box's CPUs and memory each run
 (#lock-slots), on that slot's share of the box's CPUs (#lock-share). It prints
-its wait as flock --verbose does, then ends as CMD ended (#lock-recipe).
+its wait as flock --verbose does, on stderr so CMD's output stays its own,
+then ends as CMD ended (#lock-recipe). Ctrl-C is left to CMD: this command
+ignores SIGINT while CMD runs, so CMD ends itself and this command ends as it
+did.
 
 Each slot, and each of a named resource's N jobs (#lock-cap), is a lock file
 beside heavy.lock in octo-lite's box state directory, taken whole and held by
@@ -16,6 +19,7 @@ default, waits for an empty box and holds all of it (#lock-old).
 import fcntl
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -78,7 +82,9 @@ def main(argv: list[str]) -> int:
     fcntl.flock(os.open(box / "heavy.lock", os.O_RDONLY | os.O_CREAT, 0o666), fcntl.LOCK_SH)
     share = every // count
     os.sched_setaffinity(0, range(slot * share, (slot + 1) * share))
-    print(f"flock: getting lock took {time.monotonic() - start:.6f} seconds", flush=True)
+    print(f"flock: getting lock took {time.monotonic() - start:.6f} seconds",
+          file=sys.stderr, flush=True)
+    signal.signal(signal.SIGINT, lambda *_: None)  # CMD gets the default back on exec
     code = subprocess.run(argv).returncode
     return code if code >= 0 else 128 - code  # killed by a signal: as flock ends
 
