@@ -90,9 +90,11 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     code = job.wait()
     if code < 0:  # killed by a signal: be killed by it too
-        if code != -signal.SIGKILL:  # the one death signal no one can catch
+        try:
             signal.signal(-code, signal.SIG_DFL)
-        signal.raise_signal(-code)
+        except OSError:
+            pass
+        os.kill(os.getpid(), -code)
     return code
 
 

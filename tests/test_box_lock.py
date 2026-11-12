@@ -246,11 +246,14 @@ class SlotsTest(BoxLockCase):
         self.assertNotIn("second-ran", (self.tmp / "job.out").read_text())
 
     def test_a_job_killed_by_sigkill_kills_the_command_by_it_too(self):
-        # #lock-recipe: ends as the job ended, by a signal no one can catch too
-        run = subprocess.run([str(LOCK), "sh", "-c", "kill -9 $$"],
-                             capture_output=True, text=True, env=self.env)
-        self.assertEqual(run.returncode, -signal.SIGKILL)
-        self.assertRegex(run.stderr, rf"\A{WAIT.pattern}\Z")
+        # #lock-recipe: ends as the job ended, by a signal whose disposition
+        # no one can set too: SIGKILL, and 32, which glibc keeps for itself
+        for sig in (signal.SIGKILL, 32):
+            with self.subTest(sig=sig):
+                run = subprocess.run([str(LOCK), "sh", "-c", f"kill -{int(sig)} $$"],
+                                     capture_output=True, text=True, env=self.env)
+                self.assertEqual(run.returncode, -sig)
+                self.assertRegex(run.stderr, rf"\A{WAIT.pattern}\Z")
 
     def test_a_background_job_still_ignores_ctrl_c(self):
         # #lock-recipe: a script's background job ignores Ctrl-C, as with no wrapper
