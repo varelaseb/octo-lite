@@ -87,8 +87,8 @@ hook settings: `~/.claude/settings.json` (`PostToolUse` and
 `PostToolUseFailure`) and `~/.codex/hooks.json` (`PreToolUse` and
 `PostToolUse`), matcher `Bash`, beside the other hooks there, which stay
 unchanged. After each shell command the agent is told how long it took, any
-box lock wait (`flock --verbose ~/.local/state/octo-lite/heavy.lock CMD`) told
-apart, and a warning when it reruns a slow command after an edit
+box lock wait (`octo-lite-lock CMD`) told apart, and a warning when it reruns a
+slow command after an edit
 ([Command time](spec/domains/command-time.spec.html)). The hook only informs:
 it never blocks or changes a command. A file it cannot read as settings, or
 write, is left untouched and reported. `--check` fails naming the settings file
@@ -143,6 +143,15 @@ directory: `${XDG_STATE_HOME:-~/.local/state}/octo-lite` in the default session,
 its `sessions/<name>` in a named one. Lane records, their hand-off logs, and
 `operator.toml` live there, so each session sees only its own lanes; the
 onboarding file stays box-wide.
+
+`octo-lite-lock CMD`, also on `PATH`, runs a heavy job, such as a full test
+suite, a QA capture, a build, or a recording, under the box-wide
+[box lock](spec/domains/box-lock.spec.html): it waits for one of the box's
+slots, counted from its CPUs and memory, prints its wait on a line of its own,
+runs the job on its slot's share of the CPUs, and ends as the job did. It holds
+the slot itself, so a server or browser the job leaves running holds none.
+`--cap RESOURCE=N` also caps how many jobs naming that resource run at once.
+A ticket's own tests, a server, or a watcher never take it.
 
 With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
 `wake` provider by writing
