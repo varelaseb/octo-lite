@@ -59,6 +59,12 @@ def load():
     return lock
 
 
+def ctrl_c_default() -> None:
+    """In a spawned child: Ctrl-C at its default, as at a terminal, even
+    when the test runner ignores it, as one started with & does."""
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
 def alive(pid: int) -> bool:
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
@@ -220,7 +226,7 @@ class SlotsTest(BoxLockCase):
     def test_ctrl_c_is_left_to_the_job(self):
         # #lock-recipe: ends as the job ended, a job cleaning up on Ctrl-C too
         proc = self.spawn("job", [str(LOCK), "sh", "-c", TRAP, str(self.tmp / "job")],
-                          start_new_session=True)
+                          start_new_session=True, preexec_fn=ctrl_c_default)
         self.wait_ran("job")
         os.killpg(proc.pid, signal.SIGINT)  # Ctrl-C, to the command's process group
         self.assertEqual(proc.wait(10), 5)
@@ -233,11 +239,18 @@ class SlotsTest(BoxLockCase):
         script = ('"$0" sh -c \'touch "$0.ran"; exec sleep 5\' "$1"; '
                   '"$0" true; echo second-ran')
         proc = self.spawn("job", ["bash", "-c", script, str(LOCK), str(self.tmp / "job")],
-                          start_new_session=True)
+                          start_new_session=True, preexec_fn=ctrl_c_default)
         self.wait_ran("job")
         os.killpg(proc.pid, signal.SIGINT)  # Ctrl-C, to the script's process group
         self.assertEqual(proc.wait(10), -signal.SIGINT)
         self.assertNotIn("second-ran", (self.tmp / "job.out").read_text())
+
+    def test_a_job_killed_by_sigkill_kills_the_command_by_it_too(self):
+        # #lock-recipe: ends as the job ended, by a signal no one can catch too
+        run = subprocess.run([str(LOCK), "sh", "-c", "kill -9 $$"],
+                             capture_output=True, text=True, env=self.env)
+        self.assertEqual(run.returncode, -signal.SIGKILL)
+        self.assertRegex(run.stderr, rf"\A{WAIT.pattern}\Z")
 
     def test_a_background_job_still_ignores_ctrl_c(self):
         # #lock-recipe: a script's background job ignores Ctrl-C, as with no wrapper
