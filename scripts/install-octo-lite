@@ -179,12 +179,16 @@ fi
 # (install.spec.html#install-after-pull). check is the argv a host runs, no
 # shell, to learn the setup problems of the box this run set up
 # (#install-setup-check); this clone's own script, so a pull changes it at once.
+# operating_model, herdr-spawn's record of the box's operating model, is kept
+# as found (#install-consent).
 # Written before any step that can stop the run, so a failing run is recorded
 # too and herdr-spawn runs it once per move. The file is rewritten in place:
 # herdr-spawn holds its lock while it runs the step.
 if [[ "$check" != true ]]; then
   onboarding="$state_home/octo-lite/onboarding.toml"
   consent="$(sed -n '/^\[consent\]$/,$p' "$onboarding" 2>/dev/null || true)"
+  model="$(grep -m1 '^operating_model = ' "$onboarding" 2>/dev/null || true)"
+  [[ -z "$model" ]] || model+=$'\n'
   if [[ "$onboard" == true && -z "$consent" ]]; then
     consent="[consent]"
     for pair in "push:push branches" "pull_request:open pull requests" "issues:file issues"; do
@@ -198,9 +202,9 @@ if [[ "$check" != true ]]; then
   argv() { local a; a="$(printf ', "%s"' "$root/scripts/install-octo-lite" "$1" "${scope[@]}")"; echo "[${a:2}]"; }
   mkdir -p "$(dirname "$onboarding")"
   commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
-  printf 'status = "%s"\ndoc = "%s"\nafter_pull = %s\ncheck = %s\ncommit = "%s"\n%s' "$status" \
+  printf 'status = "%s"\ndoc = "%s"\nafter_pull = %s\ncheck = %s\ncommit = "%s"\n%s%s' "$status" \
     "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" \
-    "$(argv --after-pull)" "$(argv --check)" "$commit" "$consent" >"$onboarding"
+    "$(argv --after-pull)" "$(argv --check)" "$commit" "$model" "$consent" >"$onboarding"
   echo "onboarding $status: $onboarding"
 fi
 

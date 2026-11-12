@@ -132,6 +132,9 @@ no shell, to learn octo-lite's setup problems: `install-octo-lite --check` from
 this clone with the same `--prefix` and `--project`. Every run but `--check`
 and `--undo` rewrites it beside `after_pull`, and those two leave the onboarding
 file as it is.
+`operating_model` is the box's operating model, the last one `herdr-spawn` was
+given; a spawn given none starts its agent with it, and every run keeps it as
+found.
 
 `octo-lite-start`, installed on `PATH`, creates a Herdr space labelled with the
 lane name and starts the lane's orchestrator alone in it at the worktree,
