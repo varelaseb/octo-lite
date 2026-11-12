@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""octo-lite's box lock (spec/domains/box-lock.spec.html).
+
+octo-lite-lock [--cap RESOURCE=N] CMD [ARG...] runs CMD as a heavy job in one
+of the box's slots, counted from the box's CPUs and memory each run
+(#lock-slots), on that slot's share of the box's CPUs (#lock-share). It prints
+its wait as flock --verbose does, then ends as CMD ended (#lock-recipe).
+
+Each slot, and each of a named resource's N jobs (#lock-cap), is a lock file
+beside heavy.lock in octo-lite's box state directory, taken whole and held by
+this command alone until it exits, never by CMD (#lock-close). Each job also
+holds heavy.lock shared, so a job that locks it whole, as flock does by
+default, waits for an empty box and holds all of it (#lock-old).
+"""
+
+import fcntl
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+CPUS = 4  # CPUs per slot (#lock-slots)
+MEMORY = 6 * 10**9  # bytes of memory per slot (#lock-slots)
+POLL = 1  # seconds between tries while every lock is held
+USAGE = "usage: octo-lite-lock [--cap RESOURCE=N] CMD [ARG...]"
+
+
+def cpus() -> int:
+    """The box's CPUs."""
+    return os.cpu_count()
+
+
+def memory() -> int:
+    """The box's memory in bytes."""
+    meminfo = Path("/proc/meminfo").read_text()
+    return int(re.search(r"^MemTotal:\s+(\d+) kB", meminfo, re.M)[1]) * 1024
+
+
+def slots(cpus: int, memory: int) -> int:
+    return max(1, min(cpus // CPUS, memory // MEMORY))
+
+
+def take(paths: list[Path]) -> int:
+    """Lock the first free file of paths, trying each about once a second
+    while all are held, and return its index. The lock holds until this
+    command exits; its descriptor is not inherited (PEP 446), so CMD never
+    holds it."""
+    while True:
+        for index, path in enumerate(paths):
+            fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return index
+            except BlockingIOError:
+                os.close(fd)
+        time.sleep(POLL)
+
+
+def main(argv: list[str]) -> int:
+    cap = None
+    if argv[:1] == ["--cap"]:
+        cap = re.fullmatch(r"([\w.-]+)=([1-9][0-9]*)", argv[1] if len(argv) > 1 else "")
+        argv = argv[2:] if cap else []
+    if not argv or argv[0].startswith("-"):
+        print(USAGE, file=sys.stderr)
+        return 64
+    box = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state", "octo-lite")
+    box.mkdir(parents=True, exist_ok=True)
+    start = time.monotonic()
+    if cap:
+        resource, count = cap.groups()
+        take([box / f"heavy-cap-{resource}-{i}.lock" for i in range(int(count))])
+    every = cpus()
+    count = slots(every, memory())
+    slot = take([box / f"heavy-slot-{i}.lock" for i in range(count)])
+    fcntl.flock(os.open(box / "heavy.lock", os.O_RDONLY | os.O_CREAT, 0o666), fcntl.LOCK_SH)
+    share = every // count
+    os.sched_setaffinity(0, range(slot * share, (slot + 1) * share))
+    print(f"flock: getting lock took {time.monotonic() - start:.6f} seconds", flush=True)
+    code = subprocess.run(argv).returncode
+    return code if code >= 0 else 128 - code  # killed by a signal: as flock ends
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
