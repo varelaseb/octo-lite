@@ -217,16 +217,6 @@ class SlotsTest(BoxLockCase):
         self.assertEqual(run.stdout, "out\n")
         self.assertRegex(run.stderr, rf"\A{WAIT.pattern}err\n\Z")
 
-    def test_the_jobs_stdout_holds_only_its_own_output(self):
-        # #lock-recipe: its output the job's own, the wait on stderr
-        out = self.tmp / "out"
-        with open(out, "w") as file:
-            run = subprocess.run([str(LOCK), "sh", "-c", "echo job"], stdout=file,
-                                 stderr=subprocess.PIPE, text=True, env=self.env)
-        self.assertEqual(run.returncode, 0)
-        self.assertEqual(out.read_text(), "job\n")
-        self.assertRegex(run.stderr, rf"\A{WAIT.pattern}\Z")
-
     def test_ctrl_c_is_left_to_the_job(self):
         # #lock-recipe: ends as the job ended, a job cleaning up on Ctrl-C too
         proc = self.spawn("job", [str(LOCK), "sh", "-c", TRAP, str(self.tmp / "job")],
@@ -236,6 +226,26 @@ class SlotsTest(BoxLockCase):
         self.assertEqual(proc.wait(10), 5)
         self.assertTrue((self.tmp / "job.cleaned").exists(), "the job finished its cleanup")
         self.assertNotIn("Traceback", (self.tmp / "job.out").read_text())
+
+    def test_a_script_stops_on_a_job_ended_by_ctrl_c(self):
+        # #lock-recipe: ends as the job ended, killed by Ctrl-C too, so bash
+        # stops its script as with no wrapper
+        script = ('"$0" sh -c \'touch "$0.ran"; exec sleep 5\' "$1"; '
+                  '"$0" true; echo second-ran')
+        proc = self.spawn("job", ["bash", "-c", script, str(LOCK), str(self.tmp / "job")],
+                          start_new_session=True)
+        self.wait_ran("job")
+        os.killpg(proc.pid, signal.SIGINT)  # Ctrl-C, to the script's process group
+        self.assertEqual(proc.wait(10), -signal.SIGINT)
+        self.assertNotIn("second-ran", (self.tmp / "job.out").read_text())
+
+    def test_a_background_job_still_ignores_ctrl_c(self):
+        # #lock-recipe: a script's background job ignores Ctrl-C, as with no wrapper
+        job = 'grep "^SigIgn" /proc/$$/status >"$0.ignored"'
+        self.spawn("job", ["sh", "-c", '"$0" sh -c "$1" "$2" & wait',
+                           str(LOCK), job, str(self.tmp / "job")]).wait(10)
+        ignored = int((self.tmp / "job.ignored").read_text().split()[1], 16)
+        self.assertTrue(ignored & 1 << signal.SIGINT - 1, "the job ignores SIGINT")
 
 
 class ShareTest(BoxLockCase):
