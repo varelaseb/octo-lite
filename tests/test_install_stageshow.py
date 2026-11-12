@@ -89,7 +89,8 @@ class CloneCase(unittest.TestCase):
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         upstream = base / "upstream"
-        for rel in ("scripts/install-octo-lite", ".gitignore", "Skillfile", "Skillfile.lock"):
+        scripts = [str(path.relative_to(ROOT)) for path in (ROOT / "scripts").iterdir() if path.is_file()]
+        for rel in (*scripts, ".gitignore", "Skillfile", "Skillfile.lock"):
             (upstream / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / rel, upstream / rel)
         (upstream / "agents").mkdir()
@@ -143,10 +144,17 @@ class PinnedInstallTest(CloneCase):
         self.assertEqual(status.stdout, "", "a skill folder must hold only its tracked files")
 
     def test_second_install_passes_as_the_first(self):
-        # spec/domains/install.spec.html#acceptance-install-again
+        # spec/domains/install.spec.html#acceptance-install-again, and
+        # box-lock.spec.html#acceptance-lock-installed: each helper linked
         self.install()
         self.install()
         self.assert_skills_hold_only_tracked_files()
+        helpers = sorted(path.name for path in (self.clone / "scripts").iterdir())
+        self.assertIn("octo-lite-lock", helpers)
+        for name in helpers:
+            with self.subTest(helper=name):
+                self.assertEqual(os.path.realpath(self.prefix / ".local/bin" / name),
+                                 str(self.clone / "scripts" / name))
 
     def test_after_pull_removes_recorder_deps_left_in_its_folder(self):
         # spec/domains/install.spec.html#acceptance-after-pull-recorder-deps

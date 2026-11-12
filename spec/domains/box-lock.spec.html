@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Box lock</title>
+<link rel="stylesheet" href="../.style/spec.css">
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1" data-spec-contract="shaped-sections-v1">
+<header data-anchor="header" id="header">
+<h1>Box lock</h1>
+<nav><a href="../index.spec.html">Specifications</a> / Box lock</nav>
+<p data-anchor="header-scope" id="header-scope">This spec states octo-lite's box lock: how many heavy jobs it runs at once on a box, the share of the machine each job gets, how a job takes it, and how a job that takes it the old way stays safe.</p>
+<p data-anchor="header-related" id="header-related">Which jobs a lane runs under it is in the <a href="./octo-lite.spec.html#roles-load">octo-lite</a> spec; what an agent is told of its wait is in the <a href="./command-time.spec.html#time-lock">Command time</a> spec; the installer links its command as it links every helper (<a href="./install.spec.html#install-symlink">octo-lite install</a>).</p>
+</header>
+
+<section data-spec-section="user-stories" data-anchor="user-stories" id="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-lock-fits" id="user-story-lock-fits" data-user-facing="true" data-guided-journey="no">As an operator, my box's lock runs as many heavy jobs at once as my machine fits, counted from its CPUs and memory with nothing for me to set, so a bigger box runs more of my lanes' heavy jobs at once and a small one never runs more than it fits.</p>
+<p data-user-story data-anchor="user-story-lock-share" id="user-story-lock-share" data-user-facing="true" data-guided-journey="no">As an agent running a heavy job under the box lock, such as a full test suite, my job gets its share of the machine as the CPUs it may use, so it sizes its own parallelism to its share with no change of its own.</p>
+<p data-user-story data-anchor="user-story-lock-cap" id="user-story-lock-cap" data-user-facing="true" data-guided-journey="no">As an agent running jobs that share a resource of their project's own, such as QA captures sharing a QA database's connections, I name that resource and how many jobs it fits as I take the box lock, so no more of those jobs run at once whatever the box's size.</p>
+<p data-user-story data-anchor="user-story-lock-old" id="user-story-lock-old" data-user-facing="true" data-guided-journey="no">As an operator updating octo-lite, my box gets the lock command with the update, and a job that still takes the box lock the old way keeps my box safe: it runs only while no other heavy job does, and every heavy job waits for it.</p>
+</section>
+
+<section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
+<h2>Acceptance criteria</h2>
+<p data-acceptance-criterion data-anchor="acceptance-lock-one-slot" id="acceptance-lock-one-slot" data-story="user-story-lock-fits"><span data-acceptance-scenario>Given an agent on a box whose CPUs and memory fit one heavy job, while another agent's heavy job holds the box lock, a fixture that must be added to provide it, When the agent runs a heavy job under the box lock,</span> <span data-acceptance-observable>Then the agent's job runs only once the other ends, and the agent is told its wait apart from its run: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-slots" id="acceptance-lock-slots" data-story="user-story-lock-fits"><span data-acceptance-scenario>Given an operator whose box's CPUs and memory fit several heavy jobs, a fixture that must be added to provide it, When as many agents as the box has <a href="#lock-slots">slots</a> each run a heavy job under the box lock,</span> <span data-acceptance-observable>Then all their jobs run at once, none waiting: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-full" id="acceptance-lock-full" data-story="user-story-lock-fits"><span data-acceptance-scenario>Given an operator whose box's every slot holds a heavy job, a fixture that must be added to provide it, When one more agent runs a heavy job under the box lock,</span> <span data-acceptance-observable>Then that job waits until one of the others ends, then runs: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-memory-bound" id="acceptance-lock-memory-bound" data-story="user-story-lock-fits"><span data-acceptance-scenario>Given an operator whose box has CPUs for more heavy jobs than its memory fits, a fixture that must be added to provide it, When as many agents as its CPUs fit each run a heavy job under the box lock,</span> <span data-acceptance-observable>Then only as many jobs run at once as its memory fits, and the rest wait: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-cpu-bound" id="acceptance-lock-cpu-bound" data-story="user-story-lock-fits"><span data-acceptance-scenario>Given an operator whose box has memory for more heavy jobs than its CPUs fit, a fixture that must be added to provide it, When as many agents as its memory fits each run a heavy job under the box lock,</span> <span data-acceptance-observable>Then only as many jobs run at once as its CPUs fit, and the rest wait: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-small-box" id="acceptance-lock-small-box" data-story="user-story-lock-fits user-story-lock-share"><span data-acceptance-scenario>Given an agent on a box with fewer CPUs and less memory than one slot holds, a fixture that must be added to provide it, When the agent runs a heavy job under the box lock,</span> <span data-acceptance-observable>Then the job runs, with every CPU of the box its share: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-background" id="acceptance-lock-background" data-story="user-story-lock-fits"><span data-acceptance-scenario>Given an agent on a box whose CPUs and memory fit one heavy job, a fixture that must be added to provide it, When the agent runs under the box lock a heavy job that leaves a server running as it ends, then another agent runs a heavy job under the box lock,</span> <span data-acceptance-observable>Then the second job runs at once while that server still runs: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-result" id="acceptance-lock-result" data-story="user-story-lock-fits"><span data-acceptance-scenario>Given an agent on a box where octo-lite is installed, When the agent runs under the box lock a heavy job that fails,</span> <span data-acceptance-observable>Then the agent's command fails as the job did, with the job's own output: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-share" id="acceptance-lock-share" data-story="user-story-lock-share"><span data-acceptance-scenario>Given an agent on a box of several slots, a fixture that must be added to provide it, When the agent runs under the box lock a heavy job that sizes its workers to the CPUs it may use,</span> <span data-acceptance-observable>Then the job runs as many workers as its slot's <a href="#lock-share">share</a> of the box's CPUs, not as many as the box has: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-cap" id="acceptance-lock-cap" data-story="user-story-lock-cap"><span data-acceptance-scenario>Given an operator whose box has more slots than a project's QA database fits captures, a fixture that must be added to provide it, When agents start more of that project's captures under the box lock than the database fits, each naming it and how many captures it fits,</span> <span data-acceptance-observable>Then only as many captures run at once as the database fits, and the rest wait: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-cap-slots" id="acceptance-lock-cap-slots" data-story="user-story-lock-cap"><span data-acceptance-scenario>Given an operator whose box runs as many of a project's captures as its QA database fits, each under the box lock naming it, with slots still free, a fixture that must be added to provide it, When an agent runs another heavy job under the box lock, naming no resource,</span> <span data-acceptance-observable>Then that job runs at once: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-installed" id="acceptance-lock-installed" data-story="user-story-lock-old"><span data-acceptance-scenario>Given an operator on a box where octo-lite is installed, When the operator runs the installer, then runs it again,</span> <span data-acceptance-observable>Then the second run links the lock command among every item and exits successfully, proven by a unit test: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-old-waits" id="acceptance-lock-old-waits" data-story="user-story-lock-old"><span data-acceptance-scenario>Given an operator whose box has several slots, one holding an agent's heavy job, a fixture that must be added to provide it, When a job takes the box lock the old way, locking the box lock's file whole,</span> <span data-acceptance-observable>Then that job waits until no heavy job runs, then runs: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-lock-old-holds" id="acceptance-lock-old-holds" data-story="user-story-lock-old"><span data-acceptance-scenario>Given an operator whose box has several slots, while a job holds the box lock the old way, locking its file whole, a fixture that must be added to provide it, When an agent runs a heavy job under the box lock,</span> <span data-acceptance-observable>Then the agent's job waits until the old job ends, then runs: no screen shows it.</span></p>
+</section>
+
+<section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
+<h2>Modular boundaries</h2>
+<p data-modular-boundary data-anchor="boundary-box-lock" id="boundary-box-lock">
+<span data-boundary-responsibility>The box lock owns admitting a box's heavy jobs into slots counted from the box, each job's share of the box's CPUs, the cap on jobs naming a resource of their own, and keeping a job that locks its file whole safe.</span>
+<span data-boundary-seam>The caller-facing seam is octo-lite's lock command, <code>octo-lite-lock</code>, with the wait line it prints on the job's output, and the box lock's file, <code>heavy.lock</code> in octo-lite's box state directory, which a job of the old way locks whole.</span>
+<span data-boundary-dependency>Direction is external-provider: the box lock depends on the operating system's file locks and CPU affinity; octo-lite's skills and roles, and a peer's jobs such as annotateanything's release watch, depend on it, and it depends on no role or skill.</span>
+<span data-boundary-scope>Observable scope: when each heavy job runs, the CPUs it may use, and its wait line.</span>
+</p>
+</section>
+
+<section data-anchor="lock-slots-section" id="lock-slots-section">
+<h2>Slots and shares</h2>
+<p data-anchor="lock-what" id="lock-what">The box lock admits a box's heavy jobs, jobs that end by themselves and load the box, such as a full test suite, a QA capture, a build, or a recording, into its slots: one job per slot, and a job waits while every slot is taken.
+It is box-wide, in octo-lite's state directory for the box, never a Herdr session's, so every lane and session on a box shares it.</p>
+<p data-anchor="lock-slots" id="lock-slots">A box has one slot per 4 CPUs and one per 6 GB of memory, whichever gives fewer, and never fewer than one.
+The lock counts the box's own CPUs and memory each time a job takes it, so no box has a number to set, and a box grown or shrunk counts anew.
+A slot holds what one heavy job needs, such as a full test suite's parallel browsers, with memory to spare for the agents around it.</p>
+<p data-anchor="lock-share" id="lock-share">A job's share is its slot's part of the box's CPUs, the box's CPUs split evenly among its slots, and the job runs on those CPUs only.
+So the CPUs a job may use, as <code>nproc</code> and a test runner sizing its workers read them, are its share, and a job sizes its parallelism to it with no change of its own.
+A box of one slot gives its one job every CPU.</p>
+<figure data-anchor="lock-sizing-figure">
+<h3 data-anchor="lock-sizing-heading">Slots and shares by box</h3>
+<div class="table-scroll" data-anchor="lock-sizing-wrap">
+<table data-anchor="lock-sizing-table">
+<thead><tr><th>The box</th><th>Slots</th><th>Each job's share</th></tr></thead>
+<tbody>
+<tr data-anchor="lock-sizing-row-2"><td>2 CPUs, 4 GB</td><td>1, never fewer</td><td>2 CPUs</td></tr>
+<tr data-anchor="lock-sizing-row-4"><td>4 CPUs, 8 GB</td><td>1</td><td>4 CPUs</td></tr>
+<tr data-anchor="lock-sizing-row-16"><td>16 CPUs, 62 GB</td><td>4, by CPUs</td><td>4 CPUs</td></tr>
+<tr data-anchor="lock-sizing-row-32-64"><td>32 CPUs, 64 GB</td><td>8, by CPUs</td><td>4 CPUs</td></tr>
+<tr data-anchor="lock-sizing-row-32-32"><td>32 CPUs, 32 GB</td><td>5, by memory</td><td>6 CPUs, 2 left to the box</td></tr>
+</tbody>
+</table>
+</div>
+<figcaption data-anchor="lock-sizing-caption">Slots are whichever of CPUs and memory fits fewer heavy jobs; the CPUs split evenly among the slots.</figcaption>
+</figure>
+<p data-anchor="lock-same-slots" id="lock-same-slots">Every slot is alike, so no job asks for a share of its own size and no caller carries a number for the box.
+Taking a slot never reads the box's load or free memory: the slots count what the box has, and the heavy jobs' own load would otherwise hold slots empty.</p>
+</section>
+
+<section data-anchor="lock-take-section" id="lock-take-section">
+<h2>Taking the lock</h2>
+<p data-anchor="lock-recipe" id="lock-recipe">A job takes the box lock by running under octo-lite's lock command, as <code>octo-lite-lock CMD</code>.
+The command waits for a free slot, prints its wait on a line of its own, the line <code>flock --verbose</code> prints, runs the job on its slot's share, lets the slot go when the job ends, and ends as the job ended, its output the job's own.</p>
+<p data-anchor="lock-close" id="lock-close">The command holds the slot itself and never hands it to the job, so a server or browser the job leaves running holds no slot once the job ends.</p>
+<p data-anchor="lock-cap" id="lock-cap">A job that shares a resource of its project's own with jobs like it, such as a QA capture sharing its QA database's connections, names that resource and how many such jobs it fits: <code>octo-lite-lock --cap RESOURCE=N CMD</code>.
+It waits until fewer than that many jobs naming that resource run, and still takes a slot, so jobs naming no resource take the slots it leaves.
+The project's <code>AGENTS.md</code> names the resource and its number beside the job's command.</p>
+<p data-anchor="lock-old" id="lock-old">A job of the old way locks the box lock's file whole, as <code>flock</code> does by default, and holds the whole box.
+The lock command keeps a shared hold on that file while each of its jobs runs, so a job of the old way waits until no heavy job runs, and every heavy job waits until it ends.
+Old and new callers are safe together in any order, so a box updates octo-lite, and a peer moves its jobs to the lock command, whenever each is ready.</p>
+</section>
+</article>
+</body>
+</html>

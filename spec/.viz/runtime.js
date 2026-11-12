@@ -1,5 +1,5 @@
 // spec-chat runtime v0.1 — hydrates semantic islands and mounts the annotation layer.
-// spec-chat-capabilities: address-browser answer-buttons box-picture changed-root-focus conversation custom-style-focus design-set diff-visibility-control error-overlay finish-review fit-settles git-focus keys-icons manual-resume-status mobile-handoff mobile-pre-wrap mobile-review mockup-chips mockup-directions mockup-questions mockup-review mockup-walkthrough next-screen next-tbd one-surface prototype-mockup reopen-thread reply-lane round-video screen-index semantic-islands served-storage shared-style-ownership shell-held spec-acceptance stage-tag tbd-later typed-kept video-moment wake-reason
+// spec-chat-capabilities: address-browser answer-buttons box-picture changed-root-focus conversation custom-style-focus design-set diff-visibility-control error-overlay finish-review fit-settles git-focus keys-icons manual-resume-status mobile-handoff mobile-pre-wrap mobile-review mockup-chips mockup-directions mockup-questions mockup-review mockup-walkthrough next-screen next-tbd one-surface prototype-frame-id prototype-mockup prototype-origin reopen-thread reply-lane round-video screen-index semantic-islands served-storage shared-style-ownership shell-held spec-acceptance stage-tag tbd-later typed-kept video-moment wake-reason
 // Transports: FSA (file://, primary) | HTTP review-serve (http(s)://, secondary).
 // Same spools, same event schema either way. See DESIGN.md.
 // Classic script, NOT a module: browsers CORS-block module scripts on file:// pages,
@@ -32,8 +32,8 @@ const SCRIPT_SERVICE = (() => {
 // review service it is served by.
 const COMMENT_UI = Boolean(SCRIPT_SERVICE && document.currentScript.hasAttribute('data-comment-ui'));
 const LAYER_SERVICE = COMMENT_UI ? null : SCRIPT_SERVICE;
-// mockups #prototype-route: on a prototype page the service's proxy serves, the layer's tag names the prototype's base
-// on the service, /<slug>/prototype/, so no <base> the page sets moves it; null on any other page.
+// mockups #prototype-route: on a prototype page the service's proxy serves, the layer's tag names the lane's prototype
+// origin it runs at, so no <base> the page sets moves it; null on any other page.
 const PROTOTYPE_BASE = (() => {
   const base = LAYER_SERVICE && document.currentScript.dataset.specChatPrototype;
   return base ? new URL(base, LAYER_SERVICE) : null;
@@ -68,7 +68,7 @@ function overlay(kind, msg) {
     const line = document.getElementById('hx-top-line');
     document.body.insertBefore(el, line ? line.nextSibling : document.body.firstChild);
     errorLines.clear();
-    new ResizeObserver(measureTop).observe(el); // its height alone changes too, as the screen's does while it is capped
+    new ResizeObserver(measureTopNext).observe(el); // its height alone changes too, as the screen's does while it is capped
   }
   const text = kind + ': ' + msg;
   let error = errorLines.get(text);
@@ -135,7 +135,7 @@ const DIRECTIONS_SHOWN = 2; // a mockup's directions list shows from two directi
 // page frames the route (#prototype-route). null on any other page.
 const PROTOTYPE_ROUTE = MOCKUP_SPEC ? ((document.querySelector('meta[name="mockup-prototype"]') || {}).content || '').trim() || null : null;
 const proto = {
-  base: null,            // the lane's prototype on this service, /<slug>/prototype/, as the page's answer names it
+  base: null,            // the lane's prototype origin, as the page's answer names it while its prototype answers
   commit: null,          // the lane branch commit the page loaded at (#prototype-updated)
   down: false,           // the prototype does not answer, or no address names it (#prototype-down)
   rounds: [],            // the round videos, newest first (#round-video-show)
@@ -143,9 +143,12 @@ const proto = {
   reach: 0,              // the latest step asked of the frames; an older replay stops
   earlier: false,        // Earlier rounds shows the older rounds' videos
 };
-// A prototype route its mockup page holds (shell #shell-setting-own): the frame it is, its regions, and the
-// marks its page last sent.
-const protoHeld = { on: false, frame: '', regions: [], pointing: false, marks: null };
+// A prototype route its mockup page holds (shell #shell-setting-own, #shell-msg-prototype): the id its page knows it by,
+// the frame it is, its regions, and the marks its page last sent; its viewport's height and the size it last read; the
+// actions it does, the act doing them, and the next step's, as a reviewer pressing through does them.
+const protoHeld = { on: false, id: '', frame: '', regions: [], pointing: false, marks: null, view: 0, past: null, sizes: null,
+  reading: 0, telling: false, acts: Promise.resolve(), acting: null, pressing: { next: [], done: 0 }, leaving: false,
+  staying: 0, stayed: () => {} };
 const mockup = {
   stage: null,           // the frames' row, or column on a phone (#review-fit)
   slots: [],             // [{viewport, slot, fit, frame}], desktop first
@@ -191,7 +194,7 @@ const ui = {
   lastTbd: null,         // the question Next TBD last showed
   picked: null,          // the thread a pin picked before its page's threads were read, focused once they are
 };
-const SHELL_PAGE = { hello: origin => shellHello(origin), message: data => shellMessage(data) };
+const SHELL_PAGE = { hello: (origin, data) => shellHello(origin, data), message: data => shellMessage(data) };
 
 /* ---------------- transports ---------------- */
 // review-state #offline-outbox: an events answer, the service's or the copy this page kept of it, is the list it holds
@@ -347,6 +350,7 @@ async function fetchJev(base, signal) {
       text: item.text == null ? null : String(item.text), // a rule's or candidate's criterion text, verbatim (project-rules #card)
       name: item.name == null ? null : String(item.name), // the name its mark gives (#card-parts)
       home: item.home == null ? null : String(item.home), // the rule's repo spec path and anchor, as Not for this spec names it
+      served: item.served !== false, // whether the page's own lane serves the rule's home spec (project-rules #card-source)
       rule: jevRuleOf(item.rule), // the marked rule a draft-check mark cites (#card-variants)
       escalated: item.escalated === true,
     })) : [],
@@ -354,11 +358,12 @@ async function fetchJev(base, signal) {
   };
 }
 
-// A rule as every card shows it: served target, verbatim criterion text, its mark's name, and home (project-rules #card).
+// A rule as every card shows it: served target, verbatim criterion text, its mark's name, home, and whether the page's
+// own lane serves that home (project-rules #card).
 function jevRuleOf(value) {
   if (!value || typeof value !== 'object' || !value.target || !value.text) return null;
   return { target: String(value.target), text: String(value.text), name: value.name == null ? null : String(value.name),
-    home: value.home == null ? null : String(value.home) };
+    home: value.home == null ? null : String(value.home), served: value.served !== false };
 }
 
 function jevItem(kind, id) {
@@ -1414,6 +1419,7 @@ function pressAnswer(e) {
 // that page saves (shell #shell-protocol).
 function answerWith(button) {
   if (COMMENT_UI) return answerPublished(button);
+  if (protoHeld.on) return; // a page held as a prototype is its product's: its answer buttons answer nothing
   const holder = holderOf(button);
   if (answerBlocks().get(holder.dataset.anchor).chosen === button) return;
   saveAnswer(holder, button, button.dataset.specChoice.trim(), pageStep());
@@ -1974,6 +1980,13 @@ function jevRuleSource(target) {
   return { href: link.href, link: link.text, file, text: (stem ? stem + ' · ' : '') + link.text.slice(Math.max(hash, 0)) };
 }
 
+// The rule as a draft names it, as the card's source does: the link's target when the page's lane serves the home
+// spec, else its home spec and anchor (#card-source, #acceptance-ask).
+function jevRuleCited(rule) {
+  const source = jevRuleSource(rule.target);
+  return rule.served === false && rule.home ? rule.home : source ? source.link : rule.target;
+}
+
 // The rule's plain-words name, as its mark gives it; home and anchor when a mark gives none (#card-parts).
 function jevRuleTitle(rule) {
   const source = jevRuleSource(rule.target);
@@ -2005,7 +2018,11 @@ function jevRuleCard(card, note = null) {
   box.appendChild(document.createElement('blockquote')).className = 'hx-rule-card-quote';
   box.lastElementChild.textContent = card.rule.text;
   const source = card.source === false ? null : jevRuleSource(card.rule.target);
-  if (source) {
+  if (source && card.rule.served === false) {
+    // #card-source: a home the page's lane does not serve, as for a rule only main holds, is the same words, no link.
+    box.appendChild(document.createElement('span')).className = 'hx-rule-card-source-plain';
+    box.lastElementChild.textContent = source.text;
+  } else if (source) {
     const link = box.appendChild(document.createElement('a'));
     link.className = 'hx-rule-card-source';
     link.href = source.href;
@@ -2038,7 +2055,7 @@ function jevCardNote(anchor, group, level, sentence, card) {
 // Jev unavailable note naming the rule (#q-fallback); anything else, a candidate elsewhere included, shows nothing.
 function jevRuleNote(item) {
   if (!item.id || !item.text || !item.target) return null;
-  const rule = { target: item.target, text: item.text, name: item.name, home: item.home };
+  const rule = { target: item.target, text: item.text, name: item.name, home: item.home, served: item.served };
   const candidate = item.kind === 'candidate';
   const title = candidate ? '#' + item.id : jevRuleTitle(rule);
   if (item.state === 'pending') {
@@ -2059,7 +2076,7 @@ function jevRuleNote(item) {
     return { anchor: item.id, group: 'neutral', state: 'unavailable', text: 'Jev unavailable', level: null,
       sentence: 'Jev could not check whether this spec needs the rule ' + title };
   }
-  const ask = { ...jevDraftAction('Ask to cover', 'Cover ' + source.link + ' with a criterion, or add one line saying why it does not apply.'), primary: true };
+  const ask = { ...jevDraftAction('Ask to cover', 'Cover ' + jevRuleCited(rule) + ' with a criterion, or add one line saying why it does not apply.'), primary: true };
   return jevCardNote(item.id, 'rule', item.level || null, 'This spec may need the rule ' + title + ' from ' + source.file,
     { label: 'Missing project rule', rule, actions: [jevNotForThisSpec(item), ask] });
 }
@@ -2112,11 +2129,10 @@ function jevSuggestionNotes() {
     if (flag.state !== 'label') { notes.push(jevNeutralNote(flag.anchor, 'corpus')); continue; }
     if (flag.rule) {
       // project-rules #card-variants: a mark whose other clause is a marked rule is that rule's card, in its place.
-      const source = jevRuleSource(flag.rule.target);
       const label = flag.label + ' project rule';
       notes.push(jevCardNote(flag.anchor, 'conflict', flag.level, label + ' ' + jevRuleTitle(flag.rule), { label, rule: flag.rule,
         actions: [jevNotForThisSpec(flag.item),
-          { ...jevDraftAction('Ask agent to reconcile', 'Reconcile this clause with ' + (source ? source.link : flag.rule.target) + '.'), primary: true }] }));
+          { ...jevDraftAction('Ask agent to reconcile', 'Reconcile this clause with ' + jevRuleCited(flag.rule) + '.'), primary: true }] }));
       continue;
     }
     const link = corpusTargetLink(flag.target);
@@ -2239,7 +2255,7 @@ function hostTabClick(event) {
 }
 
 // #bridge-hello-check: only the parent window at a real origin; "evidence" and "tab" each turn on only their own steps,
-// and "comments" only the shell messages: `shell`, a page that can be held, takes the hello (`shell.hello(origin)`),
+// and "comments" only the shell messages: `shell`, a page that can be held, takes the hello (`shell.hello(origin, data)`),
 // which checks the origin is a named shell before it sets hostBridge.comments, and every later message from that
 // parent at that origin (`shell.message(data)`) (shell #shell-protocol).
 function listenHost(shell) {
@@ -2251,7 +2267,7 @@ function listenHost(shell) {
     if (shell && event.origin === hostBridge.comments && data.type !== 'spec-chat-host') return shell.message(data);
     if (data.type !== 'spec-chat-host' || !Array.isArray(data.opens)) return;
     if (data.opens.includes('evidence')) hostBridge.evidence = event.origin;
-    if (shell && data.opens.includes('comments')) shell.hello(event.origin);
+    if (shell && data.opens.includes('comments')) shell.hello(event.origin, data);
     if (!data.opens.includes('tab')) return;
     hostBridge.tab = event.origin;
     event.source.postMessage({ type: 'spec-chat-title', title: String(document.title) }, event.origin);
@@ -3160,6 +3176,7 @@ nav.hx-screens{display:block;margin:var(--ui-space-5) 0 0;padding:0;background:v
 .hx-rule-card-quote{margin:var(--ui-space-1) 0 0;padding:0 0 0 var(--ui-space-3);border-left:3px solid var(--ui-border);border-radius:0;font:inherit;font-style:normal;color:var(--ui-ink);overflow-wrap:anywhere;white-space:normal}
 .hx-rule-card-source{justify-self:start;display:inline-flex;gap:var(--ui-space-1);align-items:center;font-size:var(--ui-text-xs);color:var(--ui-ack);text-decoration:none;overflow-wrap:anywhere}
 .hx-rule-card-source-text{text-decoration:underline;text-underline-offset:2px}
+.hx-rule-card-source-plain{justify-self:start;font-size:var(--ui-text-xs);color:var(--ui-muted);overflow-wrap:anywhere}
 .hx-rule-card-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--ui-space-2) var(--ui-space-4);margin-top:var(--ui-space-1);padding-top:var(--ui-space-3);border-top:1px solid var(--ui-border)}
 .hx-rule-card-actions button{white-space:nowrap}
 .hx-rule-card-actions .hx-btn.pri{margin:0 0 0 auto}
@@ -3347,10 +3364,17 @@ function mountTopLine() {
   mountRangeBar(line);
   // Measured as the line goes in, so the page is already under it when a place is restored. Any change the page makes in
   // the line (the picker opening or closing, the range, an error) is measured at once, before any other task reads or
-  // paints the page; the resize observer runs only at the next rendering, and keeps it current as the width changes.
+  // paints the page; the resize observer keeps it current as the width changes, in the frame after it reports.
   measureTop();
   new MutationObserver(measureTop).observe(line, { subtree: true, childList: true, attributes: true, characterData: true });
-  new ResizeObserver(measureTop).observe(line);
+  new ResizeObserver(measureTopNext).observe(line);
+}
+
+// A size its resize observer reports, measured in the next frame, never in the observation itself: the space it sets moves
+// the page's root and body, which a held prototype route observes too (followPrototype), so moving them inside an
+// observation leaves the browser a notification undelivered, an error the page would show.
+function measureTopNext() {
+  requestAnimationFrame(measureTop);
 }
 
 // The space the page starts under: the top line (--hx-line-space, 0 while none shows), then the error overlay under it
@@ -3550,6 +3574,7 @@ function setCommentTargets(on) {
 
 function setCommentMode(on) {
   if (on && mockup.before) return; // a mockup's Before takes no comment (mockups #before-changed)
+  if (on && protoHeld.on) return; // a page held as a prototype points for its mockup page alone (#shell-msg-prototype)
   if (on) stopPlay(); // mockups #walkthrough-step: comment mode stops the walkthrough playing
   state.commentMode = on;
   document.body.classList.toggle('hx-comment', on);
@@ -5859,7 +5884,8 @@ function directionsOf(doc) {
 // #directions-page: the toggle, then a row of the directions, each one's head (its name, Agent's pick on the agent's,
 // Your pick, Pick), the agent's reason, its gives-up line, and its frames: the pick's the page's own two, each other's
 // its own pair. Each column holds both viewports, the one the toggle does not show laid out unseen, so the pick's
-// walkthrough, threads, and fit run on both as with no directions.
+// walkthrough, threads, and fit run on both as with no directions, a prototype's frame reaching the step showing as the
+// toggle shows it (reachStep).
 function mountDirections() {
   const dirs = directionsOf(document);
   if (!dirs.length) return;
@@ -5935,6 +5961,7 @@ function renderViewport() {
   fitMockup();
   renderPins();
   renderThreadHighlight();
+  if (PROTOTYPE_ROUTE && mockup.step >= 0) mockup.reaching = reachStep(mockup.step); // the frame it shows, there (#prototype-steps)
 }
 
 // #directions-page: every arrival at a spot (an address, the kept place, a thread, a question, a spot a shell shows) the
@@ -6314,12 +6341,13 @@ function renderFocusedQuestion(card, q) {
 }
 
 /* ---------------- a prototype mockup (mockups #prototype, #round-video) ----------------
- * A prototype mockup's page frames its route on the lane's running prototype, which the review service serves under
- * the lane's slug (#prototype-route), once at each viewport (#frame-viewports), each frame as tall as the route's content.
- * The page holds each frame as a shell does, the service's own origin being a shell for the prototype routes under their
- * mockup pages (shell #shell-setting-own): a frame draws no comment UI, points while comment mode is on, picks
- * what the reviewer clicks, and draws the marks the page sends it in its own content. The page reaches a step by loading
- * the route and doing every action up to it (#prototype-steps), follows a reviewer pressing through, and shows each
+ * A prototype mockup's page frames its route on the lane's running prototype, which the review service serves at the
+ * lane's prototype origin (#prototype-route), once at each viewport (#frame-viewports), each frame as tall as the route's
+ * content. The page holds each frame as a shell does, the service's own origin being a shell for the prototype routes
+ * under their mockup pages (shell #shell-setting-own), and the two speak only by the shell messages across their origins
+ * (shell #shell-msg-prototype): a frame draws no comment UI, points while comment mode is on, picks what the reviewer
+ * clicks, draws the marks the page sends it in its own content, and says its size. The page reaches a step by loading the
+ * route and having it do every action up to it (#prototype-steps), follows a reviewer pressing through, and shows each
  * round's videos under the frames (#round-video).
  */
 // One frame of the route at its viewport's width, a screen tall until the route's content is taller.
@@ -6338,24 +6366,27 @@ function screenHeight(viewport) {
   return viewport === 'phone' ? 844 : 900;
 }
 
-// #prototype-route, #prototype-down: the route on the lane's prototype, as the page's answer names it, framed once it
-// answers; with no prototype, or none answering, the page reads Prototype not running with the route.
+// #prototype-route, #prototype-down: the route at the lane's prototype origin, as the page's answer names it; with no
+// prototype origin or address, or a route that does not say hello back once loaded, the page reads Prototype not running
+// with the route: a prototype that does not answer, or a front that does not answer the origin (review-service
+// #prototype-front), loads a page that runs no layer.
+const PROTOTYPE_HELLO_MS = 5000;
 async function mountPrototype() {
-  for (const s of mockup.slots) {
-    Object.assign(s, { at: -1, done: 0, held: false, sent: '', chain: Promise.resolve(), waiting: null, leaving: false });
+  // each frame's id, which its hello carries and the route sends back on each message (shell #shell-msg-prototype)
+  for (const [i, s] of allSlots().entries()) {
+    Object.assign(s, { id: 'frame-' + (i + 1), at: -1, held: false, ever: false, sent: '', chain: Promise.resolve(), act: null,
+      shown: null, waiters: [], loads: 0, hold: 0 });
     s.ready = new Promise(done => { s.loaded = done; });
   }
   window.addEventListener('message', frameMessage);
   NARROW.addEventListener('change', renderRounds);
   readRounds();
   const answer = await servedPage();
-  const named = answer && answer.headers.get('X-Spec-Chat-Prototype');
+  const named = (answer && answer.headers.get('X-Spec-Chat-Prototype')) || '';
   proto.commit = answer && answer.headers.get('X-Spec-Chat-Commit');
-  proto.base = named ? new URL(named, OWN_ADDRESS) : null;
-  const route = proto.base && new URL(PROTOTYPE_ROUTE.replace(/^\/+/, ''), proto.base);
-  let running = false;
-  try { running = Boolean(route) && (await fetch(route.href, { method: 'HEAD' })).status !== 502; } catch (_) { /* down */ }
-  if (!running) return prototypeDown();
+  try { proto.base = /^https?:\/\//.test(named) ? new URL(named) : null; } catch (_) { proto.base = null; }
+  if (!proto.base) return prototypeDown(); // none: no prototype origin, or no address names the prototype
+  const route = new URL(PROTOTYPE_ROUTE.replace(/^\/+/, ''), proto.base);
   for (const s of mockup.slots) {
     s.frame.addEventListener('load', () => frameLoaded(s));
     s.frame.src = route.href;
@@ -6368,7 +6399,13 @@ async function mountPrototype() {
 }
 
 function prototypeDown() {
+  if (proto.down) return;
   proto.down = true;
+  for (const s of mockup.slots) {
+    if (s.act) s.act.answer(-1);
+    if (s.shown) s.shown(false);
+    for (const waiter of (s.waiters || []).splice(0)) waiter(false);
+  }
   const note = document.createElement('div');
   note.className = 'hx-proto-down';
   note.setAttribute('role', 'status');
@@ -6378,86 +6415,65 @@ function prototypeDown() {
   for (const s of mockup.slots) { s.frame = null; s.loaded(); }
 }
 
-// Each load of a frame: as tall as its content, followed as the reviewer presses through, and said hello to, so the
-// route is held (shell #shell-msg-hello). A load the page asked for starts the route over. Another direction's frame is
-// sized and said hello to alike, so its route shows no review chrome of its own, and followed no further: the page holds
-// the pick's frames alone (frameMessage), so it shows its route as it loads (#directions-pick-only).
+// A message to a frame's route, only while it runs at the lane's prototype origin (shell #shell-msg-prototype).
+function toFrame(s, message) {
+  if (s.frame && proto.base) s.frame.contentWindow.postMessage(message, proto.base.origin);
+}
+
+// Each load of a frame: said hello to, with its id, the viewport it shows, and the mockup's regions, so the route is held
+// (shell #shell-msg-hello, #shell-msg-prototype); it publishes, then sizes the frame. A load of another origin says
+// nothing, the hello going nowhere. Another direction's frame is said hello to alike, so its route shows no review
+// chrome of its own, and followed no further: the page holds the pick's frames alone (frameMessage), so it shows its
+// route as it loads (#directions-pick-only).
 function frameLoaded(s) {
-  const doc = s.frame.contentDocument;
   s.held = false;
-  s.leaving = false;
-  s.slot.style.minHeight = ''; // the slot's hold as the route left ends with any load, one of another origin among them
-  if (doc) {
-    s.answered = null;
-    sizeFrame(s);
-    // #review-settle: a change of the content's size is followed in the next frame, never in the observation itself:
-    // growing the frame resizes what was observed, a root or body as tall as its viewport (height:100%, min-height:100vh)
-    // or one the frame's scrollbar narrowed, which the browser could not deliver in the same pass.
-    const sizes = new ResizeObserver(() => { cancelAnimationFrame(s.sizing); s.sizing = requestAnimationFrame(() => sizeFrame(s)); });
-    for (const el of [doc.documentElement, doc.body]) if (el) sizes.observe(el);
-    if (!s.other) for (const type of ['click', 'input']) doc.addEventListener(type, e => pressedThrough(s, e), true);
-    doc.defaultView.addEventListener('beforeunload', () => { s.leaving = true; });
-    // #review-settle: as the route leaves, its sizes are followed no more, a page gone having none to deliver; and the
-    // next load lays the route out at its screen's height, as its script reads it loading, never at a height the frame
-    // grew to for this one, the slot keeping its height meanwhile (sizeFrame)
-    doc.defaultView.addEventListener('pagehide', () => {
-      sizes.disconnect();
-      cancelAnimationFrame(s.sizing);
-      s.slot.style.minHeight = s.slot.getBoundingClientRect().height + 'px';
-      s.frame.style.height = screenHeight(s.viewport) + 'px';
-    });
-    s.frame.contentWindow.postMessage({ type: 'spec-chat-host', opens: ['comments'] }, OWN_ADDRESS.origin);
-  }
-  const waiting = s.waiting;
-  s.waiting = null;
-  if (waiting) waiting();
+  s.sent = '';
+  const load = ++s.loads;
+  // #review-settle: each load is a screen tall until its route says its size: a page of another origin, which says
+  // none, stays so, even after a route that left for it unsaid, its message lost with the page it left
+  s.frame.style.height = screenHeight(s.viewport) + 'px';
+  // #review-settle: the slot's hold, as the page loads the route again, ends once the route sizes its frame, or two
+  // frames after a load that says nothing
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (s.loads === load) releaseSlot(s); }));
+  toFrame(s, { type: 'spec-chat-host', opens: ['comments'], id: s.id, frame: s.viewport, regions: s.other ? [] : regionsOf(document) });
+  if (load === 1 && !s.other) setTimeout(() => { if (!s.ever) prototypeDown(); }, PROTOTYPE_HELLO_MS); // #prototype-down
   if (s.loaded) s.loaded();
 }
 
-// #review-settle: the frame is the screen's height and what its content runs past the screen laid out at the screen's
-// height, a measure its own height never changes: content laid out against its viewport, as a root 100vh tall inside the
-// body's margin, is cut by its excess, never chased, and content growing or shrinking on its own grows or shrinks the
-// frame. What the route lays out anew for the frame's own height is no change of its content: its script sizing it from
-// its viewport, as from innerHeight or a --vh property, is told the height at once, as the browser tells it in the next
-// frame, and the content read as it answered stays as it is, so the frame never grows to an answer of its own growth.
-// A screen pixel more, as zoomed whole the viewport is the frame's height rounded to the screen's pixels, so that rounding
-// never cuts the content; its zoom follows widths alone.
-function sizeFrame(s) {
-  const past = overScreen(s);
-  if (past === null || past === s.answered) return;
-  const screen = screenHeight(s.viewport), shown = s.frame.style.height;
+// #review-settle: the page keeps its place while the route loads again, the slot as tall as it was until the next load.
+function holdSlot(s) {
+  s.hold = s.loads + 1;
+  s.slot.style.minHeight = s.slot.getBoundingClientRect().height + 'px';
+}
+
+function releaseSlot(s) {
+  if (s.loads >= s.hold) s.slot.style.minHeight = '';
+}
+
+// #review-settle, shell #shell-msg-prototype: the frame is the screen's height and what the route's content runs past
+// that screen, as its size says, a screen pixel more, as zoomed whole the viewport is the frame's height rounded to the
+// screen's pixels, so that rounding never cuts the content; its zoom follows widths alone. The route says its size only
+// as its content changes, never as it lays out anew for the frame's own height, so the frame never grows to an answer of
+// its own growth.
+function sizeFrame(s, past) {
+  const screen = screenHeight(s.viewport);
   const pixel = 1 / ((parseFloat(s.fit.style.zoom) || 1) * window.devicePixelRatio);
-  s.frame.style.height = (past > 0 ? Math.ceil(screen + past + pixel) : screen) + 'px';
-  if (s.frame.style.height === shown) return void (s.answered = past);
-  const view = s.frame.contentWindow;
-  for (const target of [view, view.visualViewport]) if (target) target.dispatchEvent(new view.Event('resize'));
-  s.answered = overScreen(s);
+  const height = (past > 0 ? Math.ceil(screen + past + pixel) : screen) + 'px';
+  releaseSlot(s);
+  if (s.frame.style.height === height) return;
+  s.frame.style.height = height;
   renderPins();
 }
 
-// What the frame's content runs past the screen laid out at the screen's height, read with the frame a screen tall, the
-// slot keeping its height meanwhile so the page around it neither moves nor scrolls; null with no content. Read from what
-// scrolls the content: its root, or in quirks mode, a route with no doctype, its body, the root then only as tall as
-// the content.
-function overScreen(s) {
-  const doc = s.frame && s.frame.contentDocument;
-  const root = doc && (doc.scrollingElement || doc.documentElement);
-  if (!root) return null;
-  const shown = s.frame.style.height;
-  s.slot.style.minHeight = s.slot.getBoundingClientRect().height + 'px';
-  s.frame.style.height = screenHeight(s.viewport) + 'px';
-  const past = root.scrollHeight - root.clientHeight;
-  s.frame.style.height = shown;
-  s.slot.style.minHeight = '';
-  return past;
-}
-
-// #prototype-steps: both frames to the step at `index`, each from the step it shows by the next steps' actions, else
-// from the route loaded again; a frame the reviewer pressed through is there already. A later step asked stops this.
+// #prototype-steps: each frame the page shows to the step at `index`, from the step it shows by the next steps' actions,
+// else from the route loaded again; a frame the reviewer pressed through is there already. A later step asked stops
+// this. A frame the page does not show, the directions' toggle hiding it (#directions-page) or Before showing in its
+// place, is drawn by no browser at another origin, so it does nothing until shown, and reaches the step showing then
+// (renderViewport, showMockupBefore).
 function reachStep(index, pressed) {
   const run = ++proto.reach;
   return Promise.all(mockup.slots.map(s => {
-    if (s === pressed || !s.ready) return null;
+    if (s === pressed || !s.ready || mockup.stage.hidden || offView(s.slot)) return null;
     s.chain = s.chain.then(() => reachInFrame(s, index, run)).catch(() => {});
     return s.chain;
   }));
@@ -6466,113 +6482,117 @@ function reachStep(index, pressed) {
 async function reachInFrame(s, index, run) {
   await s.ready;
   if (run !== proto.reach || !s.frame) return;
-  if (!(Number.isInteger(s.at) && s.at <= index) || s.done) await reloadFrame(s);
+  if (!(Number.isInteger(s.at) && s.at <= index)) await reloadFrame(s);
   for (let i = s.at + 1; i <= index && s.frame; i++) {
-    for (const [n, action] of mockup.steps[i].actions.entries()) {
-      if (run !== proto.reach) { if (n) s.at = null; return; } // left between steps: the next asks the route again
-      await doAction(s, action);
-    }
+    if (run !== proto.reach) return; // left between steps: the next asks the route from the step it shows
+    if (!(await actInFrame(s, mockup.steps[i].actions, nextActions(i)))) return void (s.at = null);
     s.at = i;
   }
 }
 
-function reloadFrame(s) {
+// The actions that reach the step after the one at `index`, which a reviewer pressing through does (#prototype-steps).
+function nextActions(index) {
+  return mockup.steps[index + 1] ? mockup.steps[index + 1].actions : [];
+}
+
+// The route loaded again by the frame's own element, wherever the frame went, laid out at its screen's height as its
+// script reads it loading, never at a height the frame grew to for the last load (#prototype-steps, #review-settle).
+async function reloadFrame(s) {
+  s.at = -1;
+  holdSlot(s);
+  s.frame.style.height = screenHeight(s.viewport) + 'px';
+  s.held = false;
+  s.frame.src = s.frame.src;
+  await untilHeld(s);
+}
+
+// Once the frame's route is held, as it publishes after the hello; false when it does not within 15 s.
+function untilHeld(s) {
+  if (s.held) return Promise.resolve(true);
   return new Promise(done => {
-    s.at = -1;
-    s.done = 0;
-    const timer = setTimeout(done, 15000);
-    s.waiting = () => { clearTimeout(timer); done(); };
-    s.frame.src = s.frame.src; // its own element loads the route again, wherever the frame went (#prototype-steps)
+    const timer = setTimeout(() => { s.waiters = s.waiters.filter(w => w !== waiter); done(false); }, 15000);
+    const waiter = held => { clearTimeout(timer); done(held !== false); };
+    s.waiters.push(waiter);
   });
 }
 
-// One action, as a step's list names it (#markup-actions): press what a selector finds, or type text into it; then the
-// motion it starts ends, and a page it opens loads.
-async function doAction(s, action) {
-  const doc = s.frame.contentDocument;
-  if (!doc) return;
-  let el = null;
-  try { el = doc.querySelector(action.press || action.type); } catch (_) { /* no such selector */ }
-  if (el && action.press) el.click();
-  else if (el) typeInto(el, action.text);
-  await frameSettles(s, doc);
-}
-
-function typeInto(el, text) {
-  const win = el.ownerDocument.defaultView;
-  el.focus();
-  if (el.isContentEditable) el.textContent = text;
-  else {
-    // the element's own value setter, which a product's framework follows
-    const own = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
-    if (own && own.set) own.set.call(el, text); else el.value = text;
+// shell #shell-msg-prototype: the route does the actions in order, each after the motion before it ends, and answers the
+// number it did; `next` tells it what a reviewer pressing through does. An act goes to a held document, and again to
+// each document held next until one answers it (frameMessage): a document leaving, or loaded and not yet held, does
+// none, and a route that begins to leave as an action loads a page answers what it did, the rest going to the document
+// held next, or to it again should it stay. False when no route answers.
+async function actInFrame(s, actions, next) {
+  let left = actions;
+  for (;;) {
+    const done = await new Promise(answer => {
+      const timer = setTimeout(() => answer(-1), 30000);
+      s.act = { message: { type: 'spec-chat-act', actions: left, next }, answer: n => { clearTimeout(timer); answer(n); } };
+      if (s.held) toFrame(s, s.act.message);
+    });
+    s.act = null;
+    if (done < 0) return false;
+    if (done >= left.length) return true;
+    left = left.slice(done);
   }
-  el.dispatchEvent(new win.InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-  el.dispatchEvent(new win.Event('change', { bubbles: true }));
-}
-
-async function frameSettles(s, doc) {
-  await new Promise(done => setTimeout(done, 50));
-  if (s.leaving || (s.frame && s.frame.contentDocument !== doc)) {
-    await new Promise(done => { const timer = setTimeout(done, 15000); s.waiting = () => { clearTimeout(timer); done(); }; });
-  }
-  const now = s.frame && s.frame.contentDocument;
-  if (!now || !now.defaultView) return;
-  await new Promise(done => now.defaultView.requestAnimationFrame(() => now.defaultView.requestAnimationFrame(done)));
-  const moving = (now.getAnimations ? now.getAnimations() : [])
-    .filter(animation => animation.effect && Number.isFinite(animation.effect.getComputedTiming().endTime));
-  await Promise.race([Promise.all(moving.map(animation => animation.finished.catch(() => {}))), new Promise(done => setTimeout(done, 5000))]);
-  sizeFrame(s);
 }
 
 // #prototype-steps, #walkthrough-press: outside comment mode a reviewer presses through the prototype as through the
-// product: the actions the next step names, done in either frame, move the step bar to it and the other frame follows;
-// any other action leaves the step bar on no step until the reviewer picks one. A click on nothing that acts is none.
-const PROTOTYPE_ACTS = 'a[href],button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=switch],[contenteditable]';
-function pressedThrough(s, e) {
-  const t = e.target;
-  if (!e.isTrusted || state.commentMode || mockup.before || !t || t.nodeType !== 1) return;
-  const step = Number.isInteger(s.at) ? mockup.steps[s.at + 1] : null;
-  const action = step && step.actions[s.done];
-  const hits = selector => { try { return Boolean(selector && t.closest(selector)); } catch (_) { return false; } };
-  if (action && action.press && e.type === 'click' && hits(action.press)) return advanceFrame(s, step);
-  if (action && action.type && hits(action.type)) {
-    if (e.type === 'input' && (t.isContentEditable ? t.textContent : t.value) === action.text) advanceFrame(s, step);
-    return; // into the field it types in, on toward its text
+// product: the route says when a press or typing did the actions the next step names, in either frame, and the step bar
+// moves to it as the other frame follows; any other action leaves the step bar on no step until the reviewer picks one.
+function pressedThrough(s, reached) {
+  if (state.commentMode || mockup.before) return;
+  if (reached && Number.isInteger(s.at) && mockup.steps[s.at + 1]) {
+    const at = ++s.at;
+    s.chain = s.chain.then(() => actInFrame(s, [], nextActions(at))).catch(() => {}); // what reaches the step after
+    stopPlay();
+    return showStep(at, { pressed: s });
   }
-  if (e.type === 'click' && !hits(PROTOTYPE_ACTS)) return;
   s.at = null;
-  s.done = 0;
   stopPlay();
   if (mockup.step >= 0) showStep(-1);
 }
 
-function advanceFrame(s, step) {
-  if (++s.done < step.actions.length) return;
-  s.done = 0;
-  s.at += 1;
-  stopPlay();
-  showStep(s.at, { pressed: s });
-}
-
 // shell #shell-msg-point: each held frame points while comment mode is on, and stops when it turns off.
 function pointFrames(on) {
-  for (const s of mockup.slots) {
-    if (s.held && s.frame) s.frame.contentWindow.postMessage(on ? { type: 'spec-chat-point' } : { type: 'spec-chat-point', off: true }, OWN_ADDRESS.origin);
-  }
+  for (const s of mockup.slots) if (s.held) toFrame(s, on ? { type: 'spec-chat-point' } : { type: 'spec-chat-point', off: true });
 }
 
-// A held frame's messages: its publish, once held, and its picks (shell #shell-msg-publish, #shell-msg-pick).
+// A held frame's messages, only from the lane's prototype origin: its publish, once held, its size, its answer to an
+// act, a reviewer's press through it, and its picks (shell #shell-msg-publish, #shell-msg-prototype, #shell-msg-pick).
+// A message carrying an id is taken as from the frame that id names, never by its source window: one the route sends
+// as its document leaves, as a press whose link loads the next step's page, can reach the page with no source window
+// (#shell-msg-prototype). One with no id, as an older route's, is taken as from its source window
+// (#shell-fields-tolerant).
+// Another direction's frame is held and sized alike, and no more: no step, press, pick, or mark of it is followed
+// (#directions-pick-only).
 function frameMessage(e) {
-  const s = mockup.slots.find(slot => slot.frame && slot.frame.contentWindow === e.source);
-  if (!s || e.origin !== OWN_ADDRESS.origin || !plainObject(e.data)) return;
-  if (e.data.type === 'spec-chat-publish') {
-    s.held = true;
-    s.sent = '';
-    if (state.commentMode) pointFrames(true);
-    return prototypeMarks();
+  const data = e.data;
+  if (!proto.base || e.origin !== proto.base.origin || !plainObject(data)) return;
+  const byId = typeof data.id === 'string';
+  const s = allSlots().find(slot => slot.frame && (byId ? slot.id === data.id : slot.frame.contentWindow === e.source));
+  if (!s) return;
+  if (data.type === 'spec-chat-size') return void (Number.isFinite(data.past) && sizeFrame(s, data.past));
+  if (s.other) return void (data.type === 'spec-chat-publish' && (s.held = s.ever = true));
+  if (data.type === 'spec-chat-publish') return frameHeld(s);
+  if (data.type === 'spec-chat-acted') return void (s.act && s.act.answer(Number.isInteger(data.done) && data.done > 0 ? data.done : 0));
+  if (data.type === 'spec-chat-show') return void (s.shown && s.shown(data.shown === true));
+  if (data.type === 'spec-chat-pressed') return void pressedThrough(s, data.reached === true);
+  if (data.type === 'spec-chat-pick') framePick(data);
+}
+
+// A new document of the frame's route held, as it publishes after the hello: it is told the act no document answered
+// yet, else, at a step, the next step's actions, so a reviewer pressing through a page a step's action loaded is
+// followed (#prototype-steps); then pointing and the marks.
+function frameHeld(s) {
+  s.held = s.ever = true;
+  s.sent = '';
+  for (const waiter of s.waiters.splice(0)) waiter(true);
+  if (s.act) toFrame(s, s.act.message);
+  else if (Number.isInteger(s.at)) {
+    s.chain = s.chain.then(() => (s.act || !Number.isInteger(s.at) ? null : actInFrame(s, [], nextActions(s.at)))).catch(() => {});
   }
-  if (e.data.type === 'spec-chat-pick') framePick(e.data);
+  if (state.commentMode) pointFrames(true);
+  prototypeMarks();
 }
 
 // #shell-fields-pick: a pin focuses its thread, a question mark its question, and any other spot opens the composer on
@@ -6612,22 +6632,31 @@ function prototypeMarks() {
     const text = JSON.stringify(message);
     if (s.sent === text) continue;
     s.sent = text;
-    s.frame.contentWindow.postMessage(message, OWN_ADDRESS.origin);
+    toFrame(s, message);
   }
 }
 
-// A spot into view: its element in the first frame that shows it, the one the directions' toggle shows before the one it
-// hides (inView), once both frames reach the step showing.
+// A spot into view (shell #shell-msg-show), once the frames shown reach the step showing: each held frame in turn is
+// asked, the one the directions' toggle shows before the one it hides, until one shows it, bringing its element into
+// view, its own frame scrolling the page that holds it, and answering. A frame the toggle hides is shown first (inView),
+// then, at the step showing, asked again, so it scrolls the page to where its spot shows.
 async function showInFrames(anchor, target) {
   await mockup.reaching;
+  const ask = s => new Promise(answer => {
+    const timer = setTimeout(() => answer(false), 2000);
+    s.shown = yes => { clearTimeout(timer); s.shown = null; answer(yes); };
+    toFrame(s, { type: 'spec-chat-show', anchor, target: target || null });
+  });
   for (const s of [...mockup.slots].sort((a, b) => offView(a.frame) - offView(b.frame))) {
-    const doc = s.held && s.frame && s.frame.contentDocument;
-    const holder = doc && (anchor === s.viewport ? doc.body : regionIn(doc, regionsOf(document), anchor));
-    if (!holder) continue;
-    const el = target && target.type === 'element' ? resolveElement(holder, target.key) || holder : holder;
-    if (!el.getClientRects().length) continue;
-    inView(s.frame);
-    return el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (!s.held || !s.frame) continue;
+    const hidden = offView(s.frame);
+    if (!(await ask(s))) continue;
+    if (hidden) {
+      inView(s.frame);
+      await mockup.reaching; // shown, it reaches the step showing (renderViewport)
+      await ask(s);
+    }
+    return;
   }
 }
 
@@ -6743,32 +6772,264 @@ function showRoundBefore(before) {
 }
 
 /* ---------------- a prototype route its mockup page holds (mockups #prototype-route) ----------------
- * The comment layer the service adds to each prototype page (review-service #prototype-proxy) runs on the route. Under
- * its mockup page, at the service's own origin, it is held (shell #shell-setting-own): every element in it is a
- * comment target, its regions found by the selectors its mockup file lists, a pointed click a pick naming its region, or
- * its frame, and the target and quote in it; it draws the threads and questions its page's marks name in its own
- * content, so they move with it.
+ * A page at a lane's prototype origin runs this runtime as the comment layer the service adds to each prototype page, or
+ * as its own, Spec Chat's own pages run as a lane's prototype (review-service #prototype-proxy). Under its mockup page,
+ * at the review service's own origin, it is held (shell #shell-setting-own) once that page's hello names its frame and
+ * its regions, and speaks with it only by the shell messages (#shell-msg-prototype): every element in it is a comment
+ * target, its regions found by the selectors its mockup file lists, a pointed click a pick naming its region, or its
+ * frame, and the target and quote in it; it draws the threads and questions its page's marks name in its own content, so
+ * they move with it; it says what its content runs past its screen, does the actions its page asks, and says when a
+ * reviewer pressing through it does the next step's.
  */
-function ownPrototype(origin) {
-  if (!PROTOTYPE_BASE || origin !== PROTOTYPE_BASE.origin) return false;
-  try { // a frame element only under a parent at this page's origin, the hello's
-    const frame = window.frameElement;
-    return Boolean(frame && frame.dataset.mockupFrame && window.parent.document.querySelector('meta[name="mockup-prototype"]'));
-  } catch (_) { return false; }
+// The prototype origin the page runs at: the one the layer's tag names, whatever <base> the page sets, else its own
+// address's (served-pages #served-own-address).
+function prototypeOrigin() {
+  return (PROTOTYPE_BASE || OWN_ADDRESS).origin;
 }
 
-function holdPrototype() {
+// #shell-setting-own: a mockup page's hello, naming regions, from the review service whose lane's prototype origin this
+// page runs at: that origin is the service's own with <slug>-prototype. before its host name, at its scheme and port, and
+// for a service private on loopback, under localhost. Which slugs name a lane is the service's to say, as it serves
+// the origin only for one.
+function ownPrototype(origin, data) {
+  if (!Array.isArray(data.regions)) return false;
+  let at, parent;
+  try { at = new URL(prototypeOrigin()); parent = new URL(origin); } catch (_) { return false; }
+  const [label, ...rest] = at.hostname.split('.');
+  const host = rest.join('.');
+  if (!label.endsWith('-prototype') || !host || parent.protocol !== at.protocol || parent.port !== at.port) return false;
+  return parent.hostname === host || (host === 'localhost' && /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/.test(parent.hostname));
+}
+
+// The hello's id, its frame, the viewport it shows, and its regions, each {anchor, select} (#shell-fields-tolerant).
+function holdPrototype(data) {
   protoHeld.on = true;
-  protoHeld.frame = window.frameElement.dataset.anchor || window.frameElement.dataset.mockupFrame;
-  protoHeld.regions = regionsOf(window.parent.document);
+  protoHeld.id = str(data.id, 40);
+  protoHeld.frame = str(data.frame, 40) || 'desktop';
+  protoHeld.regions = data.regions.filter(r => plainObject(r) && str(r.anchor, 400) && str(r.select, 400))
+    .map(r => ({ anchor: r.anchor, select: r.select }));
 }
 
 function prototypeMessage(data) {
   if (data.type === 'spec-chat-point') return pointPrototype(data.off !== true);
   if (data.type === 'spec-chat-marks') {
     protoHeld.marks = data;
-    placePrototypeMarks();
+    return placePrototypeMarks();
   }
+  if (data.type === 'spec-chat-act') return actPrototype(data);
+  if (data.type === 'spec-chat-show') return showInPrototype(data);
+}
+
+// #review-settle, shell #shell-msg-prototype: on hello, and whenever its content's height changes, what its content runs
+// past the screen its frame shows, so its page sizes the frame to it. Laid out anew for the frame's own height, as by a
+// root as tall as its viewport, or its script sizing it from its viewport, the content is read as it answered and stays
+// as it is, so the frame never grows to an answer of its own growth (readPrototype).
+function followPrototype() {
+  protoHeld.view = innerHeight;
+  protoHeld.past = null;
+  sayPrototypeSize();
+  if (protoHeld.sizes) return;
+  protoHeld.sizes = new ResizeObserver(laidOut);
+  for (const el of [document.documentElement, document.body]) if (el) protoHeld.sizes.observe(el);
+  // Content that changes inside a root or body as tall as its viewport changes no size observed above: any change the
+  // route makes in its page is read too, its own marks aside.
+  new MutationObserver(records => { if (records.some(r => !layerOwns(r.target))) laidOut(); })
+    .observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+  window.addEventListener('resize', laidOut);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', laidOut);
+  if (!LAYER_SERVICE) document.addEventListener('scroll', placePrototypeMarks, true); // the layer places its marks itself
+  window.addEventListener('beforeunload', leavingPrototype);
+  window.addEventListener('pagehide', leavePrototype);
+  window.addEventListener('pageshow', e => { if (e.persisted) stayPrototype(); }); // shown again from the browser's cache
+}
+
+function layerOwns(node) {
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  return Boolean(el && el.closest('[data-spec-chat]'));
+}
+
+// A size read in the next frame, never in the observation itself: growing the frame resizes what was observed.
+function laidOut() {
+  if (protoHeld.telling) return;
+  cancelAnimationFrame(protoHeld.reading);
+  protoHeld.reading = requestAnimationFrame(readPrototype);
+}
+
+// The frame's own height is no change of its content: its script sizing it from its viewport, as from innerHeight or a
+// --vh property, is told the height at once, as the browser tells it in a later frame, and the content read as it answered
+// stays as it is. Any other change of its content's height is said.
+function readPrototype() {
+  if (innerHeight === protoHeld.view) sayPrototypeSize();
+  else {
+    protoHeld.view = innerHeight;
+    protoHeld.telling = true;
+    for (const target of [window, window.visualViewport]) if (target) target.dispatchEvent(new Event('resize'));
+    protoHeld.telling = false;
+    protoHeld.past = prototypePast();
+  }
+  if (!LAYER_SERVICE) placePrototypeMarks();
+}
+
+function sayPrototypeSize() {
+  const past = prototypePast();
+  if (past === protoHeld.past) return;
+  protoHeld.past = past;
+  toShell({ type: 'spec-chat-size', past });
+}
+
+// What the content runs past the screen its frame shows, a scrollbar across the frame counted: read from what scrolls the
+// content, its root, or in quirks mode, a route with no doctype, its body; with nothing past its viewport, from the root's
+// own height, the root and body read as tall as their content, never stretched to a frame grown for it, by a height
+// of 100% or in quirks mode, so content shorter than that frame shrinks it, as far as the screen (mockups
+// #frame-viewports); a minimum height they set stays, as content laid out against its viewport is cut by its excess,
+// never chased (readPrototype). The read sees them so for that moment alone: nothing is drawn so, and no size the route
+// observes changes.
+const OWN_SHEETS = typeof CSSStyleSheet === 'function' && 'adoptedStyleSheets' in Document.prototype; // constructed sheets
+const NATURAL = OWN_SHEETS ? new CSSStyleSheet() : null;
+if (NATURAL) NATURAL.replaceSync('html,body{height:fit-content!important}');
+function prototypePast() {
+  const root = document.scrollingElement || document.documentElement;
+  if (NATURAL && !document.adoptedStyleSheets.includes(NATURAL)) document.adoptedStyleSheets = [...document.adoptedStyleSheets, NATURAL];
+  if (NATURAL) NATURAL.disabled = false;
+  let content = root.scrollHeight;
+  if (content <= root.clientHeight) content = Math.min(content, Math.ceil(document.documentElement.getBoundingClientRect().height));
+  const bar = innerHeight - root.clientHeight;
+  if (NATURAL) NATURAL.disabled = true;
+  return content + bar - screenHeight(protoHeld.frame);
+}
+
+// #prototype-steps: a load starts as the route begins to leave, and the route does no act while it does: an act it is
+// doing answers what it did, the action that loads the page counted, while the page that holds it still knows it as its
+// frame's, and the next document does the rest. A load that ends with no new page, as a download, leaves it here, so
+// after longer than the service waits on a prototype's answer it does acts again.
+function leavingPrototype() {
+  protoHeld.leaving = true;
+  answerLeaving();
+  clearTimeout(protoHeld.staying);
+  protoHeld.staying = setTimeout(stayPrototype, 15000);
+}
+
+function stayPrototype() {
+  clearTimeout(protoHeld.staying);
+  protoHeld.leaving = false;
+  protoHeld.stayed();
+}
+
+function stillHere() {
+  return protoHeld.leaving ? new Promise(done => { protoHeld.stayed = done; }) : Promise.resolve();
+}
+
+function answerLeaving() {
+  if (protoHeld.acting) toShell({ type: 'spec-chat-acted', done: protoHeld.acting.done });
+  protoHeld.acting = null;
+}
+
+// As the route leaves, an act it was doing answers what it did, and its content goes with it, so the page frames the next
+// load at the screen's height.
+function leavePrototype() {
+  protoHeld.leaving = true;
+  answerLeaving();
+  toShell({ type: 'spec-chat-size', past: 0 });
+}
+
+// #prototype-steps, shell #shell-msg-prototype: each action in order, after the motion before it ends, then the number
+// done; what a reviewer pressing through did of them already, as the next step's actions it was told, is done.
+function actPrototype(data) {
+  const actions = (Array.isArray(data.actions) ? data.actions : []).map(stepAction);
+  const next = (Array.isArray(data.next) ? data.next : []).map(stepAction).filter(Boolean);
+  protoHeld.acts = protoHeld.acts.then(() => doActions(actions, next)).catch(() => {});
+}
+
+function stepAction(action) {
+  if (!plainObject(action)) return null;
+  if (str(action.press, 400)) return { press: action.press };
+  return str(action.type, 400) ? { type: action.type, text: typeof action.text === 'string' ? action.text : '' } : null;
+}
+
+async function doActions(actions, next) {
+  await stillHere(); // a document leaving does no act: the document held next is asked it again
+  const pressed = protoHeld.pressing;
+  let done = 0;
+  while (done < pressed.done && done < actions.length && JSON.stringify(actions[done]) === JSON.stringify(pressed.next[done])) done++;
+  const acting = protoHeld.acting = { done };
+  for (let i = done; i < actions.length; i++) {
+    acting.done = i + 1; // an action that loads a page is done as the route leaves, which answers it
+    doAction(actions[i]);
+    await motionSettles();
+    if (protoHeld.acting !== acting) return; // answered as it began to leave
+  }
+  protoHeld.acting = null;
+  protoHeld.pressing = { next, done: 0 };
+  toShell({ type: 'spec-chat-acted', done: actions.length });
+}
+
+// One action, as a step's list names it (#markup-actions): press what a selector finds, or type text into it.
+function doAction(action) {
+  let el = null;
+  try { el = action && document.querySelector(action.press || action.type); } catch (_) { /* no such selector */ }
+  if (el && action.press) el.click();
+  else if (el) typeInto(el, action.text);
+}
+
+function typeInto(el, text) {
+  el.focus();
+  if (el.isContentEditable) el.textContent = text;
+  else {
+    // the element's own value setter, which a product's framework follows
+    const own = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+    if (own && own.set) own.set.call(el, text); else el.value = text;
+  }
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+// The motion an action starts, once it ends: each transition and animation that ends, at most 5 s; a page it loads, once
+// it does, the route leaving answering then, or once the route stays.
+async function motionSettles() {
+  await new Promise(done => setTimeout(done, 50));
+  await stillHere();
+  await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
+  const moving = (document.getAnimations ? document.getAnimations() : [])
+    .filter(animation => animation.effect && Number.isFinite(animation.effect.getComputedTiming().endTime));
+  await Promise.race([Promise.all(moving.map(animation => animation.finished.catch(() => {}))), new Promise(done => setTimeout(done, 5000))]);
+}
+
+// #prototype-steps, #walkthrough-press: with pointing off, a reviewer's press or typing that does the next step's
+// actions says it reached that step; any other action says it did not. A click on nothing that acts is none; typing into
+// the field the next action types in goes on toward its text.
+const PROTOTYPE_ACTS = 'a[href],button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=switch],[contenteditable]';
+for (const type of ['click', 'input']) document.addEventListener(type, e => {
+  const t = e.target;
+  if (!protoHeld.on || protoHeld.pointing || !e.isTrusted || !(t instanceof Element) || t.closest('[data-spec-chat]')) return;
+  const pressing = protoHeld.pressing;
+  const action = pressing.next[pressing.done];
+  const hits = selector => { try { return Boolean(selector && t.closest(selector)); } catch (_) { return false; } };
+  if (action && action.press && type === 'click' && hits(action.press)) return pressedOn();
+  if (action && action.type && hits(action.type)) {
+    if (type === 'input' && (t.isContentEditable ? t.textContent : t.value) === action.text) pressedOn();
+    return;
+  }
+  if (type === 'click' && !hits(PROTOTYPE_ACTS)) return;
+  protoHeld.pressing = { next: [], done: 0 };
+  toShell({ type: 'spec-chat-pressed', reached: false });
+}, true);
+
+function pressedOn() {
+  const pressing = protoHeld.pressing;
+  if (++pressing.done < pressing.next.length) return;
+  protoHeld.pressing = { next: [], done: 0 };
+  toShell({ type: 'spec-chat-pressed', reached: true });
+}
+
+// shell #shell-msg-show: a spot into view, its element, else its region, where the route shows it, answering whether it
+// did, so its page asks the next frame when it does not.
+function showInPrototype(data) {
+  const holder = prototypeHolder(str(data.anchor, 400));
+  const target = holder && targetOf(data.target);
+  const el = target && target.type === 'element' ? resolveElement(holder, target.key) || holder : holder;
+  const shown = Boolean(el && el.getClientRects().length);
+  if (shown) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  toShell({ type: 'spec-chat-show', shown });
 }
 
 function pointPrototype(on) {
@@ -6922,20 +7183,26 @@ function namedShells() {
   return asked;
 }
 
-// #shell-setting-obey: only the parent at a named origin holds the page; under any other it stays alone.
-async function shellHello(origin) {
-  const own = ownPrototype(origin);
+// #shell-setting-obey: only the parent at a named origin holds the page; under any other it stays alone. A prototype
+// route its mockup page holds publishes its address, then its size (#shell-msg-prototype).
+async function shellHello(origin, data) {
+  const own = ownPrototype(origin, data);
   if (!own && !(await namedShells()).includes(origin)) return;
-  if (own) holdPrototype();
+  if (own) holdPrototype(data);
   hostBridge.comments = origin;
   if (!shell.held) becomeHeld();
   shell.published = shell.answered = ''; // every hello is a new load of the shell's: publish again
+  if (own) return void (publishPage(), followPrototype());
   if (LAYER_SERVICE) return publishLayer();
   await state.versionAsked;
   publishPage();
 }
 
-function toShell(message) { if (hostBridge.comments) window.parent.postMessage(message, hostBridge.comments); }
+// A held prototype route sends back on each message the id its hello carried, so its page knows the frame even with no
+// source window (#shell-msg-prototype); a hello with none, as an older page's, gets none (#shell-fields-tolerant).
+function toShell(message) {
+  if (hostBridge.comments) window.parent.postMessage(protoHeld.id ? { ...message, id: protoHeld.id } : message, hostBridge.comments);
+}
 function pickSpot(spot) { toShell(Object.assign({ type: 'spec-chat-pick' }, spot)); }
 
 // review-state #offline-leave: text typed and not yet saved, in the comment box, the focused thread's reply box, or its
@@ -6987,6 +7254,7 @@ function publish(message) {
 // #shell-fields-publish: a spec or mockup page's own address, the version it shows, and its open TBD questions, each
 // with its answer buttons' words and the parts it is about; a mockup page's steps and the one showing.
 function publishPage() {
+  if (protoHeld.on) return publish({ type: 'spec-chat-publish', page: OWN_ADDRESS.href }); // its page reads no more
   const questions = pageQuestions().map(q => ({ anchor: q.anchor, text: q.text,
     answers: q.buttons.map(button => button.dataset.specChoice.trim()), about: q.about, step: q.step }));
   const message = { type: 'spec-chat-publish', page: OWN_ADDRESS.href, version: state.version, questions };
@@ -6999,6 +7267,7 @@ function publishPage() {
 
 // A host page's: each anchored item as its anchor attributes give it (#anchor-table).
 function publishLayer() {
+  if (protoHeld.on) return publishPage();
   const items = layerItems().map(item => ({ subject: item.subject, scope: item.scope, kind: item.kind, label: item.label,
     from: item.from, starters: item.starters, lane: item.lane }));
   publish({ type: 'spec-chat-publish', page: OWN_ADDRESS.href, items });
@@ -7800,11 +8069,18 @@ function layerOverlay() {
   host.setAttribute('data-spec-chat', 'comment-layer');
   host.style.cssText = 'all:initial;position:fixed;top:0;left:0;width:0;height:0;z-index:2147483000';
   const shadow = host.attachShadow({ mode: 'open' });
-  const style = document.createElement('style');
-  style.textContent = CSS.replace(/:root(\s*)\{/g, ':host$1{'); // the chrome's tokens and rules, on the overlay alone
+  const css = CSS.replace(/:root(\s*)\{/g, ':host$1{'); // the chrome's tokens and rules, on the overlay alone
   layer.root = document.createElement('div');
   layer.root.className = 'hx-layer';
-  shadow.append(style, layer.root);
+  // A sheet of its own where the browser has one, which a host page's style-src does not hold back as it holds an inline
+  // style back, so the layer looks as it does on a prototype page whose policy allows no inline style
+  // (review-service #prototype-proxy).
+  if (OWN_SHEETS) {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(css);
+    shadow.adoptedStyleSheets = [sheet];
+    shadow.append(layer.root);
+  } else shadow.append(Object.assign(document.createElement('style'), { textContent: css }), layer.root);
   layer.host = host;
   document.body.appendChild(host);
   return layer.root;
