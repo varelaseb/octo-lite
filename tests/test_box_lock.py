@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,9 @@ sys.exit(lock.main(sys.argv[3:]))
 JOB = 'nproc >"$0.cpus"; touch "$0.ran"; echo ran; until [ -e "$0.end" ]; do sleep 0.02; done'
 # A heavy job that leaves a server running as it ends, until the test ends it.
 SERVER = '(until [ -e "$0.end" ]; do sleep 0.02; done) & echo $! >"$0.server"; touch "$0.ran"'
+# A heavy job that cleans up on Ctrl-C, taking a while, then exits 5.
+TRAP = ('trap \'sleep 1; touch "$0.cleaned"; exit 5\' INT; touch "$0.ran"; '
+        'until [ -e "$0.end" ]; do sleep 0.02; done')
 
 
 def load():
@@ -58,7 +62,7 @@ def load():
 def alive(pid: int) -> bool:
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+    except OSError:  # gone, or exiting as it is read
         return False
 
 
@@ -74,9 +78,10 @@ class BoxLockCase(unittest.TestCase):
         self.servers: list[int] = []
         self.addCleanup(self.stop)
 
-    def spawn(self, name: str, argv: list[str]) -> subprocess.Popen:
+    def spawn(self, name: str, argv: list[str], **popen) -> subprocess.Popen:
+        """Start argv, its stdout and stderr both to name's .out."""
         with open(self.tmp / f"{name}.out", "w") as out:
-            self.jobs[name] = subprocess.Popen(argv, stdout=out, env=self.env)
+            self.jobs[name] = subprocess.Popen(argv, stdout=out, stderr=out, env=self.env, **popen)
         return self.jobs[name]
 
     def start(self, name: str, *lock: str, cpus=16, gb=62, job=JOB, **box) -> subprocess.Popen:
@@ -209,8 +214,28 @@ class SlotsTest(BoxLockCase):
         run = subprocess.run([str(LOCK), "sh", "-c", "echo out; echo err >&2; exit 3"],
                              capture_output=True, text=True, env=self.env)
         self.assertEqual(run.returncode, 3)
-        self.assertRegex(run.stdout, rf"\A{WAIT.pattern}out\n\Z")
-        self.assertEqual(run.stderr, "err\n")
+        self.assertEqual(run.stdout, "out\n")
+        self.assertRegex(run.stderr, rf"\A{WAIT.pattern}err\n\Z")
+
+    def test_the_jobs_stdout_holds_only_its_own_output(self):
+        # #lock-recipe: its output the job's own, the wait on stderr
+        out = self.tmp / "out"
+        with open(out, "w") as file:
+            run = subprocess.run([str(LOCK), "sh", "-c", "echo job"], stdout=file,
+                                 stderr=subprocess.PIPE, text=True, env=self.env)
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(out.read_text(), "job\n")
+        self.assertRegex(run.stderr, rf"\A{WAIT.pattern}\Z")
+
+    def test_ctrl_c_is_left_to_the_job(self):
+        # #lock-recipe: ends as the job ended, a job cleaning up on Ctrl-C too
+        proc = self.spawn("job", [str(LOCK), "sh", "-c", TRAP, str(self.tmp / "job")],
+                          start_new_session=True)
+        self.wait_ran("job")
+        os.killpg(proc.pid, signal.SIGINT)  # Ctrl-C, to the command's process group
+        self.assertEqual(proc.wait(10), 5)
+        self.assertTrue((self.tmp / "job.cleaned").exists(), "the job finished its cleanup")
+        self.assertNotIn("Traceback", (self.tmp / "job.out").read_text())
 
 
 class ShareTest(BoxLockCase):
