@@ -23,8 +23,8 @@ import time
 from pathlib import Path
 
 SLOW = 60  # seconds of a command's own run (#loop-slow)
-LOCK = "heavy.lock"  # the box lock, in octo-lite's state directory (#time-lock)
-WAIT = re.compile(r"flock: getting lock took ([0-9.]+) seconds")
+# A box lock wait, reported on a line of its own (#time-lock).
+WAIT = re.compile(r"^flock: getting lock took ([0-9.]+) seconds$", re.M)
 AGE = 7 * 86400  # seconds a record is kept
 # Codex 0.166's exec output while the command runs past its yield.
 RUNNING = re.compile(r"^Process running with session ID \d+$", re.M)
@@ -86,6 +86,14 @@ def change_mark(cwd: str) -> str | None:
     return hashlib.sha256("\0".join(mark).encode()).hexdigest()
 
 
+def output(event: dict) -> str:
+    """The command's own output: Claude's stdout and stderr, Codex's text,
+    a failure's error, each starting a line."""
+    response = event.get("tool_response")
+    parts = [*(response.values() if isinstance(response, dict) else [response]), event.get("error")]
+    return "\n".join(part for part in parts if isinstance(part, str))
+
+
 def post(event: dict, command: str, store: Path) -> str | None:
     stamp = store / f"{name(event.get('tool_use_id', ''))}.start"
     if event.get("duration_ms") is not None:
@@ -96,16 +104,11 @@ def post(event: dict, command: str, store: Path) -> str | None:
         return None
     stamp.unlink(missing_ok=True)
 
-    output = json.dumps([event.get("tool_response"), event.get("error")])
-    waits = WAIT.findall(output)
+    waits = WAIT.findall(output(event))
     if waits:
         waited = sum(map(float, waits))
         run = max(took - waited, 0.0)
         line = f"waited {span(waited)} for the box lock, then ran {span(run)}."
-    elif LOCK in command:
-        run = took
-        line = (f"took {span(took)}, including its wait for the box lock; "
-                f"take the lock with flock --verbose to tell the wait apart.")
     else:
         run = took
         line = f"took {span(took)}."

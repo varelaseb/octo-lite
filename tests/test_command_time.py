@@ -140,7 +140,8 @@ class CommandTimeTests(HookCase):
 
 
 class BoxLockTests(HookCase):
-    """A real flock holder fixture: another job holds heavy.lock a while."""
+    """A real flock holder fixture, another job holding heavy.lock a while,
+    and real searches naming the box lock or quoting its wait line."""
 
     def hold_lock(self) -> Path:
         lock = self.state / "octo-lite" / "heavy.lock"
@@ -166,14 +167,22 @@ class BoxLockTests(HookCase):
         self.assertGreaterEqual(waited, 0.5)
         self.assertLess(ran, waited)
 
-    def test_unreported_wait_is_named_with_the_way_to_report_it(self) -> None:
-        command = f"flock {self.hold_lock()} sleep 0.1"
-        ms, output = self.run_command(command)
-        line = self.told(self.claude(command, ms, output=output))
-        told = re.fullmatch(r"octo-lite: this command took (\S+), including its wait for the box lock; "
-                            r"take the lock with flock --verbose to tell the wait apart\.", line)
-        self.assertTrue(told, line)
-        self.assertGreaterEqual(seconds(told.group(1)), 0.5)
+    def test_command_naming_the_box_lock_is_told_nothing_of_it(self) -> None:
+        command = f"grep -rn heavy.lock {self.repo}"
+        _, output = self.run_command(command)
+        self.assertEqual("octo-lite: this command took 1.2s.",
+                         self.told(self.claude(command, 1234, output=output)))
+
+    def test_wait_line_quoted_inside_a_longer_line_reports_no_wait(self) -> None:
+        (self.repo / "notes.py").write_text('WAIT = "flock: getting lock took 65.000000 seconds"\n')
+        command = f"grep -rn 'getting lock took' {self.repo}"
+        _, output = self.run_command(command)
+        self.assertIn("flock: getting lock took 65.000000 seconds", output)
+        self.assertEqual("octo-lite: this command took 1m 10s.",
+                         self.told(self.claude(command, 70000, output=output)))
+        self.codex("PreToolUse", command, "call_q")
+        line = self.told(self.codex("PostToolUse", command, "call_q", f"Output:\n{output}"))
+        self.assertRegex(line, r"^octo-lite: this command took \S+\.$")
 
 
 class SlowLoopTests(HookCase):
