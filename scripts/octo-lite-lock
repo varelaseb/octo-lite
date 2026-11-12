@@ -7,7 +7,8 @@ of the box's slots, counted from the box's CPUs and memory each run
 its wait as flock --verbose does, on stderr so CMD's output stays its own,
 then ends as CMD ended, with its exit code or killed by its signal
 (#lock-recipe). CMD starts with the signal dispositions this command was
-given; only once it runs does this command ignore SIGINT, so a Ctrl-C is
+given, save SIGPIPE and SIGXFSZ, which Python's subprocess resets to their
+defaults; only once it runs does this command ignore SIGINT, so a Ctrl-C is
 CMD's to end on and this command still holds the slot until CMD ends.
 
 Each slot, and each of a named resource's N jobs (#lock-cap), is a lock file
@@ -89,8 +90,9 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     code = job.wait()
     if code < 0:  # killed by a signal: be killed by it too
-        signal.signal(-code, signal.SIG_DFL)
-        os.kill(os.getpid(), -code)
+        if code != -signal.SIGKILL:  # the one death signal no one can catch
+            signal.signal(-code, signal.SIG_DFL)
+        signal.raise_signal(-code)
     return code
 
 
