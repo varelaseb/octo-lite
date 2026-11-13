@@ -551,6 +551,76 @@ class HerdrWrapperTest(unittest.TestCase):
                          str(model.resolve()))
         self.assertIn(exported, self.log.read_text())
 
+    def box_with_onboarding(self):
+        state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
+        state.mkdir(parents=True)
+        onboarding = state / "onboarding.toml"
+        onboarding.write_text('status = "done"\ncommit = ""\n\n[consent]\npush = true\n')
+        return onboarding
+
+    def test_a_spawn_given_no_model_starts_with_the_boxs(self):
+        # spec/domains/herdr-transport.spec.html#acceptance-operating-model-box:
+        # a lane was once started with a model; an owner whose session started
+        # without one spawns a worker.
+        self.dialog.write_text("none\n")
+        onboarding = self.box_with_onboarding()
+        model = self.cwd / "AGENTS.md"
+        model.write_text("# Model\n")
+        r = self.spawn(extra=["--operating-model", str(model)])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.log.unlink()
+        r = self.spawn()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = self.start_argv()
+        self.assertEqual(argv[argv.index("--append-system-prompt-file") + 1], str(model.resolve()))
+        # Not exported: each descendant reads the box at its own spawn.
+        self.assertNotIn("OCTO_LITE_OPERATING_MODEL", self.log.read_text())
+        self.assertEqual(tomllib.loads(onboarding.read_text())["consent"], {"push": True})
+
+    def test_a_box_model_since_deleted_counts_as_none(self):
+        # A lane worktree's model, kept as the box's, is deleted at teardown:
+        # every later spawn given none starts without one, and none fails.
+        self.dialog.write_text("none\n")
+        self.box_with_onboarding()
+        model = self.cwd / "AGENTS.md"
+        model.write_text("# Model\n")
+        self.assertEqual(self.spawn(extra=["--operating-model", str(model)]).returncode, 0)
+        model.unlink()
+        for spawn in (self.spawn, self.spawn_codex):
+            self.log.unlink()
+            r = spawn()
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(str(model.resolve()), r.stderr)
+            self.assertNotIn("--append-system-prompt-file", self.start_argv())
+            self.assertNotIn("# Model", "".join(self.start_argv()))
+            self.assertNotIn("OCTO_LITE_OPERATING_MODEL", self.log.read_text())
+        self.assertEqual(self.spawn(extra=["--operating-model", str(model)]).returncode, 66,
+                         "a given model that is missing still stops the spawn")
+
+    def test_a_given_model_wins_over_the_boxs_and_becomes_it(self):
+        # spec/domains/herdr-transport.spec.html#roles-operating-model
+        self.dialog.write_text("none\n")
+        self.box_with_onboarding()
+        old, new = self.cwd / "old.md", self.cwd / "new.md"
+        old.write_text("# Old\n")
+        new.write_text("# New\n")
+        self.assertEqual(self.spawn().returncode, 0)
+        self.assertNotIn("--append-system-prompt-file", self.start_argv(), "a box never given one")
+        for given, model in ((old, old), (new, new), (None, new)):
+            r = self.spawn(OCTO_LITE_OPERATING_MODEL=str(given)) if given else self.spawn()
+            self.assertEqual(r.returncode, 0, r.stderr)
+            argv = self.start_argv()
+            self.assertEqual(argv[argv.index("--append-system-prompt-file") + 1], str(model.resolve()))
+
+    def test_a_box_without_an_onboarding_file_keeps_no_model(self):
+        self.dialog.write_text("none\n")
+        model = self.cwd / "AGENTS.md"
+        model.write_text("# Model\n")
+        self.assertEqual(self.spawn(extra=["--operating-model", str(model)]).returncode, 0)
+        self.assertEqual(self.spawn().returncode, 0)
+        self.assertNotIn("--append-system-prompt-file", self.start_argv())
+        self.assertFalse((Path(self.env["XDG_STATE_HOME"]) / "octo-lite").exists())
+
     def test_pi_appends_the_operating_model_then_its_contract(self):
         # pi has no --agent: both files go in as appended system prompt, model first.
         self.dialog.write_text("none\n")
