@@ -63,7 +63,9 @@ without passing the flag. The spawn keeps the last one given as the box's, as
 `operating_model` in octo-lite's onboarding file, and a spawn given neither
 starts its agent with the box's, unexported, so an agent whose session started
 without one still hands on the box's current one. A given one wins. A box never
-given one, or whose one is gone, changes nothing.
+given one changes nothing. A box's one whose file is gone, such as a torn-down
+worktree's, counts as none: the spawn starts its agent without one and names
+the gone path on its error output.
 
 A new tab gets the Herdr server's environment, so the spawn always exports the
 caller's `HOME` into it. The agent and every child it spawns keep the caller's
