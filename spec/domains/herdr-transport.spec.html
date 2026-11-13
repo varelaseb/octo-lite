@@ -143,7 +143,8 @@ The <code>herdr-comms</code> skill states these rules once, as its wait recipe, 
 <p data-anchor="roles-operating-model" id="roles-operating-model">An optional operating model given to <code>herdr-spawn</code>, by <code>--operating-model</code> or <code>OCTO_LITE_OPERATING_MODEL</code>, reaches the agent at start and passes to every agent it spawns, and each spawn forwards the caller's <code>HOME</code>.
 <code>herdr-spawn</code> keeps the last operating model it was given as the box's, in octo-lite's <a href="./install.spec.html#install-consent">onboarding file</a>, and a spawn given none starts its agent with the box's.
 So an agent whose own session started before the box had one, such as an owner spawning workers or one <code>herdr-say</code> resumes, still starts every agent with it, and nothing on the box is set by hand for it.
-A given one always wins over the box's, and a box never given one starts agents without one.</p>
+A given one always wins over the box's, and a box never given one starts agents without one.
+A box's one whose file is gone counts as none, and the spawn names it on its error output.</p>
 </section>
 
 <section data-anchor="session" id="session">
