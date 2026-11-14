@@ -27,6 +27,7 @@
 <section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
 <h2>Acceptance criteria</h2>
 <p data-acceptance-criterion data-anchor="acceptance-disk-scratch-own" id="acceptance-disk-scratch-own" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given a lane owner, When it spawns a worker, then the worker runs a test suite that makes temporary folders,</span> <span data-acceptance-observable>Then each of those folders is inside the worker's own scratch folder, which no other agent shares: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-scratch-private" id="acceptance-disk-scratch-private" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given an operator on a box shared with another user, a fixture that must be added to provide it, When a lane owner spawns a worker,</span> <span data-acceptance-observable>Then the other user cannot read, write, or replace the worker's scratch folder, and a browser the worker starts runs: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-disk-scratch-close" id="acceptance-disk-scratch-close" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given a lane owner whose worker has made temporary files, When the owner closes the worker,</span> <span data-acceptance-observable>Then the worker's scratch folder is gone, and the owner's own scratch folder is still there: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-disk-scratch-park" id="acceptance-disk-scratch-park" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given a lane owner whose idle worker has made temporary files, When the owner parks the worker,</span> <span data-acceptance-observable>Then the worker's scratch folder is gone: no screen shows it.</span></p>
 <p data-acceptance-criterion data-anchor="acceptance-disk-scratch-resume" id="acceptance-disk-scratch-resume" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given a lane owner that parked its worker after the worker made temporary files, When the owner sends the worker a message, then the resumed worker makes a temporary file,</span> <span data-acceptance-observable>Then that file is in a scratch folder of the worker's own that holds nothing from before its park: no screen shows it.</span></p>
@@ -56,7 +57,7 @@
 <span data-boundary-responsibility><code>herdr-spawn</code> owns giving each agent its scratch folder, and <code>herdr-close</code> owns removing it at a close or park and removing a parked agent's packages.</span>
 <span data-boundary-seam>The caller-facing seam is the <code>TMPDIR</code> each agent's tab carries, which every program the agent runs reads for where its temporary files go.</span>
 <span data-boundary-dependency>Direction is self-contained: the wrappers extend their own spawn, close, and park, and agents' programs depend on <code>TMPDIR</code> as they do on any box; no role or skill names the folder's path.</span>
-<span data-boundary-scope>Observable scope: the folders under <code>/tmp</code> and in a parked agent's worktree.</span>
+<span data-boundary-scope>Observable scope: the scratch folders in the user's cache folder and the packages in a parked agent's worktree.</span>
 </p>
 <p data-modular-boundary data-anchor="boundary-disk-warning" id="boundary-disk-warning">
 <span data-boundary-responsibility>octo-lite's command-time hook owns checking the disk after each shell command and sending the warning.</span>
@@ -68,7 +69,9 @@
 
 <section data-anchor="scratch" id="scratch">
 <h2>Scratch</h2>
-<p data-anchor="scratch-folder" id="scratch-folder"><code>herdr-spawn</code> gives each agent it starts a scratch folder of its own, under the box's <code>/tmp</code> and named after its Herdr session and its agent name, created empty, and exports it as <code>TMPDIR</code> into the agent's tab, as it exports the caller's <code>HOME</code>.
+<p data-anchor="scratch-folder" id="scratch-folder"><code>herdr-spawn</code> gives each agent it starts a scratch folder of its own, on disk in the user's own cache folder, created empty, and exports it as <code>TMPDIR</code> into the agent's tab, as it exports the caller's <code>HOME</code>.
+Only that user can write there, so no other user of the box can make, read, swap, or redirect an agent's folder.
+The folder's name is drawn from the agent's Herdr session and agent name and kept short, since a browser puts its socket under <code>TMPDIR</code> and fails to start once that path is too long.
 Every program that puts its temporary files where <code>TMPDIR</code> says, as <code>mktemp</code>, Python's <code>tempfile</code>, and Node's <code>os.tmpdir</code> do, puts them there, so the test suites, browsers, and recordings an agent runs leave their temporary files in its folder.</p>
 <p data-anchor="scratch-end" id="scratch-end"><code>herdr-close</code> removes the scratch folder of each agent in the tab or space it closes, a park included, once it has stopped the processes started there.
 Agent names repeat across Herdr sessions, so a close removes only its own session's folders.
