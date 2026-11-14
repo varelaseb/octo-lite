@@ -65,10 +65,9 @@ A new tab gets the Herdr server's environment, so the spawn always exports the
 caller's `HOME` into it. The agent and every child it spawns keep the caller's
 home: git identity, consent, and sessions.
 
-Each agent gets a scratch folder of its own, created empty,
-`/tmp/octo-lite-<uid>/<session>/<name>` (`octo-lite-state --scratch` prints
-its session's root), exported into its tab as `TMPDIR`, so every program it
-runs puts its temporary files there. `herdr-close` removes it with the agent
+Each agent gets an empty scratch folder of its own, exported into its tab as
+`TMPDIR`, so every program it runs puts its temporary files there.
+`herdr-close` removes it when it closes or parks the agent
 (`spec/domains/disk.spec.html#scratch-folder`).
 
 Codex runs with `--no-daemon`, so its thread and commands live in the tab's own

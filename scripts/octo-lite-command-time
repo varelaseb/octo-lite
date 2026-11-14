@@ -10,7 +10,8 @@ command, and on any failure it prints nothing and exits 0.
 Claude's PostToolUse and PostToolUseFailure inputs carry duration_ms. Codex's
 PostToolUse input has none, so its PreToolUse stamps the start by tool_use_id.
 Records live in octo-lite's state directory, one file per agent session;
-a new session drops every record older than a week.
+a new session drops every record older than a week but a disk level's mark,
+which lasts until the disk is under 80% full.
 
 After each command it also reads how full the box's disk is, and warns the
 session's operator, or with none the agent, as the levels fill
@@ -34,8 +35,8 @@ AGE = 7 * 86400  # seconds a record is kept
 RUNNING = re.compile(r"^Process running with session ID \d+$", re.M)
 HERE = Path(__file__).resolve().parent
 # Disk levels, each told once per session until the disk is under REARM
-# (disk.spec.html#warning-levels); a level's mark is a file in the session's
-# state directory, made by one atomic create so one agent tells it.
+# (disk.spec.html#warning-levels); a level's mark is a file in the record
+# store, one per Herdr session, made by one atomic create so one agent tells it.
 LEVELS, REARM = (85, 90), 80
 TAIL = "Nothing was removed; each lane frees only what it made."
 
@@ -130,7 +131,7 @@ def post(event: dict, command: str, store: Path) -> str | None:
     else:
         seen = {}
         for record in store.iterdir():
-            if record.stat().st_mtime < time.time() - AGE:
+            if record.suffix != ".told" and record.stat().st_mtime < time.time() - AGE:
                 record.unlink()
     key = command.strip()
     last = seen.get(key, {"runs": 0, "total": 0.0, "mark": None})
@@ -166,27 +167,26 @@ def first(mark: Path) -> bool:
         return False
 
 
-def disk() -> str | None:
+def disk(store: Path) -> str | None:
     """The root filesystem's fullness as df's Use% shows it, rounded up, told
     the first time it reaches a level: to the operator by a detached sender,
-    else returned for the agent's line."""
+    else returned for the agent's line. Only a new mark starts a process."""
     st = os.statvfs("/")
     used, free = (st.f_blocks - st.f_bfree) * st.f_frsize, st.f_bavail * st.f_frsize
     full = -(-used * 100 // (used + free))
     if REARM <= full < LEVELS[0]:
         return None
-    state = Path(subprocess.run([HERE / "octo-lite-state"], capture_output=True, text=True,
-                                check=True).stdout.strip())
-    marks = [state / f"disk-{level}.told" for level in LEVELS]
+    session = name(os.environ.get("HERDR_SESSION") or "default")
+    marks = [store / f"disk-{level}.{session}.told" for level in LEVELS]
     if full < REARM:
         for mark in marks:
             mark.unlink(missing_ok=True)
         return None
-    state.mkdir(parents=True, exist_ok=True)
     if not [mark for level, mark in zip(LEVELS, marks) if full >= level and first(mark)]:
         return None
     warning = f"octo-lite disk warning: the box's disk is {full}% full, {size(free / 1024)} free."
-    operator = state / "operator.toml"
+    state = subprocess.run([HERE / "octo-lite-state"], capture_output=True, text=True, check=True).stdout
+    operator = Path(state.strip()) / "operator.toml"
     if not operator.exists():
         return f"{warning} {TAIL}"
     import tomllib  # only here: its import costs every command ~15ms
@@ -230,7 +230,7 @@ def main() -> None:
         return
     line = post(event, command, store)
     try:
-        warning = disk()
+        warning = disk(store)
     except Exception:
         warning = None  # inform only: a failed check adds nothing (disk.spec.html#warning-inform)
     line = " ".join(filter(None, (line, warning)))

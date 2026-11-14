@@ -30,11 +30,12 @@
 # agent waiting at its prompt as done), or one with no Claude session file
 # (Codex, pi), is refused with nothing closed.
 #
-# Once its processes are stopped, a close or park removes the scratch folder of
-# each agent it closed, the caller's session's alone, since names repeat across
-# sessions; an agent started before herdr-spawn gave one has none, so its close
-# removes nothing. A park also removes the node_modules folders Git ignores in
-# the parked agent's own lane worktree (disk.spec.html#scratch-end, #park).
+# Once the processes it ended have exited, or at 5s, a close or park removes the
+# scratch folder of each agent it closed, the caller's session's alone, since
+# names repeat across sessions; an agent started before herdr-spawn gave one has
+# none, so its close removes nothing. A park also removes the node_modules
+# folders Git ignores in the parked agent's own lane worktree
+# (disk.spec.html#scratch-end, #park).
 set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 
@@ -80,12 +81,12 @@ awaits() {
 }
 
 # End each process $1 picks; given -, all of its process group.
-killed=0
+ended=()
 sweep() {
   local env pid
   for env in /proc/[0-9]*/environ; do
     pid="${env#/proc/}"; pid="${pid%/environ}"
-    "$1" "$pid" && kill -TERM -- "${2:-}$pid" 2>/dev/null && killed=$((killed + 1))
+    "$1" "$pid" && kill -TERM -- "${2:-}$pid" 2>/dev/null && ended+=("$pid")
   done
 }
 tagged() { ours "/proc/$1/environ" "$tag=$id"; }
@@ -95,14 +96,17 @@ sweep awaits -
 rc=0
 herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
 sweep tagged
+# Files go once what it ended has exited, since a dying browser still writes to
+# its scratch, or at 5s; a zombie has exited.
+for _ in {1..50}; do
+  ps -o stat= -p "${ended[*]}" 2>/dev/null | grep -qv '^Z' || break
+  sleep 0.1
+done
 
 # Each closed agent's scratch folder, by its name in the caller's session.
-if scratch="$("$here/../../../scripts/octo-lite-state" --scratch)"; then
-  while read -r n; do
-    # A name that is a path step would reach past its own folder.
-    [[ -z "$n" || "$n" == @(.|..|*/*) ]] || rm -rf -- "$scratch/$n"
-  done < <(jq -r '.[].name // empty' <<<"$listed" 2>/dev/null)
-fi
+while read -r n; do
+  scratch="$("$here/../../../scripts/octo-lite-state" --scratch "$n" 2>/dev/null)" && rm -rf -- "$scratch"
+done < <(jq -r '.[].name // empty' <<<"$listed" 2>/dev/null)
 
 # The parked agent's packages: in the worktree it works in, only when that is
 # its own lane's, a Git linked worktree off its repository's main branch (the
@@ -126,7 +130,7 @@ packages() {
 [[ -z "$line" ]] || packages "$(jq -r .cwd <<<"$line")" 2>/dev/null
 
 closed="$(jq -nc --arg at "$(date -u +%FT%TZ)" --arg kind "$kind" --arg id "$id" --argjson rc "$rc" \
-  --argjson killed "$killed" '{at: $at, kind: "closed", ($kind): $id, close_rc: $rc, killed: $killed}')"
+  --argjson killed "${#ended[@]}" '{at: $at, kind: "closed", ($kind): $id, close_rc: $rc, killed: $killed}')"
 if [[ -z "$line" ]]; then echo "$closed"
 else echo "$closed" >&2; echo "$line"; fi
 exit "$rc"

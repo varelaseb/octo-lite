@@ -5,9 +5,11 @@ On PYTHONPATH, Python imports it at start, so the hook reads the root
 filesystem as a 100 GiB disk, 5% kept for root as ext4 keeps it, whose df
 Use% is the number FAKE_DISK holds; anything else there fails the read.
 Every other path, and every run without FAKE_DISK, reads the real one.
+With FAKE_SPAWNS set, each process it starts is logged there, one argv a line.
 """
 
 import os
+import sys
 from types import SimpleNamespace
 
 _statvfs = os.statvfs
@@ -27,3 +29,12 @@ def statvfs(path):
 
 
 os.statvfs = statvfs
+
+
+def spawned(event, args):
+    if event == "subprocess.Popen" and os.environ.get("FAKE_SPAWNS"):
+        with open(os.environ["FAKE_SPAWNS"], "a") as f:
+            f.write(" ".join(map(str, args[1])) + "\n")
+
+
+sys.addaudithook(spawned)
