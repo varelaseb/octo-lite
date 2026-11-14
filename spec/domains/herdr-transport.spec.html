@@ -13,7 +13,7 @@
 <h1>Herdr transport</h1>
 <nav><a href="../index.spec.html">Specifications</a> / Herdr transport</nav>
 <p data-anchor="header-scope" id="header-scope">This spec states how octo-lite places, messages, awaits, parks, and resumes lane agents over Herdr, one Herdr session at a time.</p>
-<p data-anchor="header-related" id="header-related">Lane records, hand-off logs, delivery, and human gates are in the <a href="./octo-lite.spec.html">octo-lite</a> spec.</p>
+<p data-anchor="header-related" id="header-related">Lane records, hand-off logs, delivery, and human gates are in the <a href="./octo-lite.spec.html">octo-lite</a> spec; what disk an agent keeps, and what its close or park removes, is in the <a href="./disk.spec.html">Disk</a> spec.</p>
 </header>
 
 <section data-spec-section="user-stories" data-anchor="user-stories" id="user-stories">
@@ -187,6 +187,7 @@ A send that outlives that bound, resuming a parked owner or waiting out a rate l
 When such a send then ends deferred or failed, Spec Chat no longer waits on it, so <code>herdr-wake</code> sends its one-line reason, naming the owner, once to the operator's pane, read from the <code>operator.toml</code> of the owner's session.</p>
 <p data-anchor="transport-spawn-bare" id="transport-spawn-bare"><code>herdr-spawn</code> starts the agent bare, and its brief follows by <code>herdr-say</code>.</p>
 <p data-anchor="transport-spawn-current" id="transport-spawn-current">Before it starts the agent, <code>herdr-spawn</code> runs the install's after-pull step when its clone moved since the install last ran, printing a failing step and going on, as <a href="./install.spec.html#install-after-pull">after-pull</a> states.</p>
+<p data-anchor="transport-spawn-scratch" id="transport-spawn-scratch"><code>herdr-spawn</code> gives each agent its own <a href="./disk.spec.html#scratch-folder">scratch folder</a> as <code>TMPDIR</code>, and <code>herdr-close</code> removes it when it closes or parks that agent; a park also removes the installed packages of the agent's own worktree (<a href="./disk.spec.html#park-modules">parking</a>).</p>
 <p data-anchor="transport-spawn-fail" id="transport-spawn-fail">A failed spawn closes the tab it created, and a failed <code>octo-lite-start</code> closes the lane space it created, so no orphan is left.
 <code>herdr-spawn</code> answers the agent's startup trust dialog at the pane, confirming only once the affirmative row is selected and never a refusal; a dialog that does not clear fails the spawn closed.</p>
 <p data-anchor="transport-no-ack" id="transport-no-ack">There is no acknowledgement step, inbox, or drain.</p>
