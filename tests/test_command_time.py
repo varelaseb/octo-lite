@@ -34,8 +34,8 @@ FAKE_DU = """#!/usr/bin/env bash
 echo "$(nice) $*" >>"$FAKE_DU_LOG"
 sleep "${FAKE_DU_SLEEP:-0}"
 printf '%s\\t%s\\n' 31457280 /home/admin/worktrees/lane-a 31457300 /home/admin/worktrees \\
-  41943040 /home/admin 41943100 /home 4 /srv/small 10485760 /tmp/octo-lite-1000/default \\
-  10485800 /tmp/octo-lite-1000 10485900 /tmp 94371840 /
+  10485760 /home/admin/.cache/octo-lite 10485800 /home/admin/.cache \\
+  41943200 /home/admin 41943300 /home 4 /srv/small 94371840 /
 """
 SECONDS = re.compile(r"(?:(\d+)m )?([0-9.]+)s")
 
@@ -304,7 +304,7 @@ class DiskWarningTests(HookCase):
     lane agent's command; the operator's pane gets herdr-say's prompt."""
 
     FOLDERS = ("Folders holding the most: /home/admin/worktrees/lane-a 30.0 GiB,"
-               " /tmp/octo-lite-1000/default 10.0 GiB, /srv/small 4.0 KiB.")
+               " /home/admin/.cache/octo-lite 10.0 GiB, /srv/small 4.0 KiB.")
     TAIL = "Nothing was removed; each lane frees only what it made."
 
     def setUp(self) -> None:
