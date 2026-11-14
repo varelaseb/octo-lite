@@ -381,6 +381,30 @@ class DiskWarningTests(HookCase):
         self.assertEqual([self.warning(91, "8.6 GiB"), self.warning(86, "13.3 GiB")],
                          [text for _, text in self.messages(2)])
 
+    def test_the_check_starts_no_process_until_a_level_is_newly_reached(self) -> None:
+        # warning-check: the read is cheap. Under 85%, rearming included, and
+        # past a level already told, the hook starts no process: one would cost
+        # every command of every agent.
+        spawns = self.tmp / "spawns.log"
+        self.run_at(86)
+        self.messages(1)
+        for full in (87, 50, 82, 79):
+            self.run_at(full, FAKE_SPAWNS=str(spawns))
+        self.assertFalse(spawns.exists(), spawns.read_text() if spawns.exists() else "")
+        self.run_at(86)
+        self.assertEqual(2, len(self.messages(2)), "not told again after the disk was under 80%")
+
+    def test_a_told_level_outlasts_the_weekly_record_sweep(self) -> None:
+        # warning-levels: told once until the disk is under 80%, however long
+        # it stays full; a new session's sweep of week-old records keeps it.
+        self.run_at(86)
+        self.messages(1)
+        old = time.time() - 8 * 86400
+        for record in (self.state / "octo-lite/command-time").iterdir():
+            os.utime(record, (old, old))
+        self.told(self.claude("ls", 10, session="s-new"))
+        self.assertEqual(1, len(self.messages(2, within=1.5)), "told again once its record was a week old")
+
     def test_concurrent_agents_tell_a_level_once(self) -> None:
         # warning-levels: once per session, however many agents cross it at once.
         self.disk.write_text("86")

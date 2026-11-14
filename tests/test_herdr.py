@@ -41,11 +41,14 @@ live Herdr 0.9.0:
     with the caller's tab
 """
 
+import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -374,11 +377,10 @@ class HerdrWrapperTest(unittest.TestCase):
             **fake_herdr_env(self, d),
             "HOME": str(d),
             "XDG_STATE_HOME": str(d / "state"),
-            # Scratch folders go under the test's own folder, never the box's
-            # /tmp/octo-lite-<uid>, where a live agent may share a test's name.
-            "OCTO_LITE_SCRATCH": str(d / "scratch"),
         }
-        self.scratch = d / "scratch"
+        # Scratch folders go in the test home's cache folder, never the box's.
+        self.env.pop("XDG_CACHE_HOME", None)
+        self.scratch = d / ".cache/octo-lite/scratch"
         self.log, self.closed, self.wrong, self.dialog, self.gone_file, self.blocked_file = (
             Path(self.env[f"FAKE_{name}"]) for name in ("LOG", "CLOSED", "WRONG", "DIALOG", "GONE", "BLOCKED"))
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
@@ -2043,26 +2045,64 @@ class HerdrWrapperTest(unittest.TestCase):
         return {str(p.relative_to(root)): p.read_text() if p.is_file() else None
                 for p in sorted(root.rglob("*")) if ".git" not in p.relative_to(root).parts}
 
+    def folder(self, name, key="default"):
+        # The scratch folder of agent name in Herdr session key: 12 hex
+        # characters of sha256 of <key>/<name>, in the user's cache folder.
+        return self.scratch / hashlib.sha256(f"{key}/{name}".encode()).hexdigest()[:12]
+
     def test_spawn_gives_each_agent_an_empty_scratch_folder_of_its_own_as_tmpdir(self):
-        # acceptance-disk-scratch-own, scratch-folder: under the scratch root,
-        # named after its session and agent name, exported as HOME is, on every
-        # runtime; what the agent's programs make lands in it.
+        # acceptance-disk-scratch-own, scratch-folder: in the user's cache
+        # folder, named after its session and agent name, exported as HOME is,
+        # on every runtime; what the agent's programs make lands in it.
         self.dialog.write_text("none\n")
         for runtime in ("claude", "codex", "pi"):
             r = self.spawn_as(runtime)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(self.tab_env("TMPDIR"), str(self.scratch / "default/a1"))
+            self.assertEqual(self.tab_env("TMPDIR"), str(self.folder("a1")))
         r = subprocess.run([str(SPAWN), "--workspace", "w1", "--name", "implementer-ann-2", "--label", "L",
                             "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
                            capture_output=True, text=True, env={**self.env, "HERDR_SESSION": "s2"})
         self.assertEqual(r.returncode, 0, r.stderr)
         worker = Path(self.tab_env("TMPDIR"))
-        self.assertEqual(worker, self.scratch / "s2/implementer-ann-2")
+        self.assertEqual(worker, self.folder("implementer-ann-2", "s2"))
         self.assertEqual(list(worker.iterdir()), [], "a new scratch folder is empty")
         made = subprocess.run(["sh", "-c", "mktemp -d; python3 -c 'import tempfile; print(tempfile.mkdtemp())'"],
                               capture_output=True, text=True, check=True, env={**self.env, "TMPDIR": str(worker)})
         for folder in made.stdout.split():
             self.assertEqual(Path(folder).parent, worker, "a temporary folder outside the agent's scratch")
+
+    def test_the_scratch_folder_is_private_in_the_users_cache_folder(self):
+        # acceptance-disk-scratch-private, scratch-folder: on disk in the
+        # user's own cache folder, which only the user can enter, whatever the
+        # umask; XDG_CACHE_HOME moves it as it moves the user's cache.
+        self.dialog.write_text("none\n")
+        for cache in (None, Path(self.tmp.name) / "xdg-cache"):
+            env = {"XDG_CACHE_HOME": str(cache)} if cache else {}
+            root = (cache or Path(self.tmp.name) / ".cache") / "octo-lite/scratch"
+            r = subprocess.run(["sh", "-c", 'umask 000; exec "$@"', "sh", str(SPAWN), "--workspace", "w1",
+                                "--name", "a1", "--label", "L", "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
+                               capture_output=True, text=True, env={**self.env, **env})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            folder = Path(self.tab_env("TMPDIR"))
+            self.assertEqual(folder.parent, root)
+            for made in (root, folder):
+                self.assertEqual(stat.S_IMODE(made.stat().st_mode), 0o700, made)
+
+    def test_the_longest_agent_name_keeps_tmpdir_short_enough_for_a_browser(self):
+        # acceptance-disk-scratch-private, scratch-folder: Chromium puts its
+        # socket under TMPDIR and fails to start past 62 characters. Herdr's
+        # longest name, 32 characters, in a named session, in this user's home.
+        self.dialog.write_text("none\n")
+        name = "implementer-ann-1992-fix-round-1"
+        self.assertEqual(len(name), 32)
+        r = subprocess.run([str(SPAWN), "--workspace", "w1", "--name", name, "--label", "L",
+                            "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
+                           capture_output=True, text=True, env={**self.env, "HERDR_SESSION": "s" * 32})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tmpdir = self.tab_env("TMPDIR")
+        self.assertTrue(tmpdir.startswith(self.tmp.name + "/"), tmpdir)
+        home = pwd.getpwuid(os.getuid()).pw_dir
+        self.assertLessEqual(len(home + tmpdir[len(self.tmp.name):]), 62, tmpdir)
 
     def test_resume_and_lane_start_give_the_agent_its_scratch_folder(self):
         # scratch-folder: a resumed agent and a lane owner started by
@@ -2070,11 +2110,11 @@ class HerdrWrapperTest(unittest.TestCase):
         self.dialog.write_text("none\n")
         r = self.spawn(extra=["--resume", "s-1"])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.tab_env("TMPDIR"), str(self.scratch / "default/a1"))
+        self.assertEqual(self.tab_env("TMPDIR"), str(self.folder("a1")))
         r = self.start("--name", "ann45")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.tab_env("TMPDIR"), str(self.scratch / "default/ann45"))
-        self.assertTrue((self.scratch / "default/ann45").is_dir())
+        self.assertEqual(self.tab_env("TMPDIR"), str(self.folder("ann45")))
+        self.assertTrue(self.folder("ann45").is_dir())
 
     def listing(self, *agents):
         # Herdr's agent list: (name, tab, space) each.
@@ -2087,8 +2127,8 @@ class HerdrWrapperTest(unittest.TestCase):
         space = f"w-{uuid.uuid4()}"
         tab = f"{space}:t2"
         worker = self.tagged(tab, space)
-        mine = self.made(self.scratch / "default/implementer-ann-1")
-        owner = self.made(self.scratch / "default/ann45")
+        mine = self.made(self.folder("implementer-ann-1"))
+        owner = self.made(self.folder("ann45"))
         r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True, env={
             **self.env, "FAKE_AGENT_LIST": self.listing(("ann45", f"{space}:t1", space),
                                                          ("implementer-ann-1", tab, space))})
@@ -2098,22 +2138,39 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.tree(owner), {"tmp.x1": None, "tmp.x1/run.log": "made"})
         self.assertEqual(self.closed_line(r.stdout), {"kind": "closed", "tab": tab, "close_rc": 0, "killed": 1})
 
+    def test_close_removes_the_scratch_folder_once_its_processes_have_exited(self):
+        # scratch-end: once it has stopped the processes; one that writes to
+        # its scratch as it shuts down, as a dying browser does, leaves nothing.
+        tab = f"w1:t-{uuid.uuid4()}"
+        folder = self.made(self.folder("implementer-ann-1"))
+        dying = subprocess.Popen(
+            ["bash", "-c", 'trap \'sleep 0.5; mkdir -p "$0/late"; echo x >"$0/late/f"; exit\' TERM; '
+                           'while :; do sleep 0.1; done', str(folder)],
+            start_new_session=True, env={**self.env, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": "w1"})
+        self.addCleanup(lambda: (dying.kill(), dying.wait()))
+        time.sleep(0.2)  # its trap is set
+        r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True,
+                           env={**self.env, "FAKE_AGENT_LIST": self.listing(("implementer-ann-1", tab, "w1"))})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(dying.wait(timeout=5), 0)
+        self.assertFalse(folder.exists(), "removed before its process had exited")
+
     def test_closing_a_lane_space_removes_every_scratch_folder_of_its_agents_only(self):
         # acceptance-disk-lane-space, lane-close: another lane's agents keep theirs.
         space, other = f"w-{uuid.uuid4()}", f"w-{uuid.uuid4()}"
         for name in ("ann45", "implementer-ann-1", "ann46", "implementer-ann-9"):
-            self.made(self.scratch / "default" / name)
+            self.made(self.folder(name))
         r = subprocess.run([str(CLOSE), space], capture_output=True, text=True, env={
             **self.env, "FAKE_AGENT_LIST": self.listing(
                 ("ann45", f"{space}:t1", space), ("implementer-ann-1", f"{space}:t2", space),
                 ("ann46", f"{other}:t1", other), ("implementer-ann-9", f"{other}:t2", other))})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(sorted(p.name for p in (self.scratch / "default").iterdir()), ["ann46", "implementer-ann-9"])
+        self.assertEqual(sorted(self.scratch.iterdir()), sorted(map(self.folder, ("ann46", "implementer-ann-9"))))
 
     def test_close_removes_only_its_own_sessions_scratch_folder(self):
         # acceptance-disk-scratch-session: agent names repeat across sessions.
         other = f"s-{uuid.uuid4()}"
-        here, there = (self.made(self.scratch / key / "implementer-ann-1") for key in ("default", other))
+        here, there = (self.made(self.folder("implementer-ann-1", key)) for key in ("default", other))
         listed = self.listing(("implementer-ann-1", "w1:t2", "w1"))
         r = subprocess.run([str(CLOSE), "w1:t2"], capture_output=True, text=True,
                            env={**self.env, "FAKE_AGENT_LIST": listed})
@@ -2130,7 +2187,7 @@ class HerdrWrapperTest(unittest.TestCase):
         # and the close ends it and its processes as before.
         tab = f"w1:t-{uuid.uuid4()}"
         old = self.tagged(tab)
-        self.made(self.scratch / "default/ann45")
+        self.made(self.folder("ann45"))
         before = self.tree(self.scratch)
         r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True,
                            env={**self.env, "FAKE_AGENT_LIST": self.listing(("implementer-ann-1", tab, "w1"))})
@@ -2141,8 +2198,8 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def test_park_removes_the_scratch_folder_and_a_resumed_agent_gets_an_empty_one(self):
         # acceptance-disk-scratch-park, acceptance-disk-scratch-resume.
-        folder = self.made(self.scratch / "default/implementer-ann-1")
-        owner = self.made(self.scratch / "default/ann45")
+        folder = self.made(self.folder("implementer-ann-1"))
+        owner = self.made(self.folder("ann45"))
         p, r, *_ = self.park()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(folder.exists(), "the parked agent's scratch folder is left")
@@ -2257,7 +2314,7 @@ class HerdrWrapperTest(unittest.TestCase):
         busy = subprocess.Popen(["sleep", "600"], cwd=theirs, start_new_session=True,
                                 env={**self.env, "HERDR_TAB_ID": "w-other:t2", "HERDR_WORKSPACE_ID": "w-other"})
         self.addCleanup(lambda: (busy.kill(), busy.wait()))
-        scratch = self.made(self.scratch / "default/implementer-ann-9")
+        scratch = self.made(self.folder("implementer-ann-9"))
         others = self.tree(theirs), self.tree(scratch)
         self.parked_in(self.lane(self.checkout()))
         r = subprocess.run([str(CLOSE), "w1"], capture_output=True, text=True,
@@ -2282,6 +2339,13 @@ class HerdrWrapperTest(unittest.TestCase):
                 r"notes \(disk spec `#scratch-write`\)\.", role)
         for path in [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/*/SKILL.md")]:
             self.assertNotRegex(path.read_text(encoding="utf-8"), r"/tmp. scratch", path)
+
+    def test_no_role_or_skill_names_the_scratch_folders_path(self):
+        # boundary-disk-agent: agents know their scratch only as TMPDIR; its
+        # path and the command that derives it stay inside the wrappers.
+        for path in [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/*.md")]:
+            self.assertNotRegex(path.read_text(encoding="utf-8"),
+                                r"/tmp/octo-lite|octo-lite/scratch|\.cache/octo-lite|--scratch", path)
 
     def test_a_resumed_agent_reinstalls_packages_its_park_removed(self):
         # acceptance-disk-park-resume, park-resume.

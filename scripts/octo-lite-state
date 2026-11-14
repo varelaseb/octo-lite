@@ -5,14 +5,15 @@
 # session and to none of the default one. The default session's directory is
 # octo-lite's top one, beside the box's onboarding file; a named session's is
 # sessions/<key> under it, as Herdr keeps its own.
-# --scratch prints the session's scratch root instead, which holds each of its
-# agents' scratch folders by agent name (disk.spec.html#scratch-folder):
-# /tmp/octo-lite-<uid>/<key>, short since programs put unix sockets there.
-# OCTO_LITE_SCRATCH stands in for /tmp/octo-lite-<uid>, for tests.
+# --scratch NAME prints the scratch folder of the session's agent NAME instead
+# (disk.spec.html#scratch-folder): in the user's own cache folder, which only
+# the user can write, named by 12 hex characters of the sha256 of <key>/NAME,
+# so its path stays short: a browser puts its socket under TMPDIR.
 set -euo pipefail
 key="${HERDR_SESSION:-default}"
 if [[ "${1:-}" == --scratch ]]; then
-  printf '%s\n' "${OCTO_LITE_SCRATCH:-/tmp/octo-lite-$(id -u)}/$key"
+  hash="$(printf '%s/%s' "$key" "${2:?usage: octo-lite-state [--scratch NAME]}" | sha256sum)"
+  printf '%s/%.12s\n' "${XDG_CACHE_HOME:-$HOME/.cache}/octo-lite/scratch" "$hash"
   exit
 fi
 dir="${XDG_STATE_HOME:-$HOME/.local/state}/octo-lite"
