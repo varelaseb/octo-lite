@@ -21,6 +21,22 @@ INSTALLER = ROOT / "scripts" / "install-octo-lite"
 # skillfile and npm stubbed unreachable: installer runs never fetch.
 OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}:{os.environ['PATH']}"
 LOOP = "Slow iteration loop"
+# On PYTHONPATH, a disk of the fullness FAKE_DISK holds (fixtures/disk).
+FAKE_DISK = ROOT / "tests" / "fixtures" / "disk"
+# Herdr, as herdr-say reaches it: each prompt's target and text, one JSON line.
+FAKE_HERDR = """#!/usr/bin/env bash
+[[ "$1 $2" != "agent prompt" ]] || jq -nc --arg pane "$3" --arg text "$4" '[$pane, $text]' >>"$FAKE_SENT"
+echo '{"result":{}}'
+"""
+# du over a box: sizes in KiB, children first, as du prints them, after
+# FAKE_DU_SLEEP seconds; it logs its niceness and arguments.
+FAKE_DU = """#!/usr/bin/env bash
+echo "$(nice) $*" >>"$FAKE_DU_LOG"
+sleep "${FAKE_DU_SLEEP:-0}"
+printf '%s\\t%s\\n' 31457280 /home/admin/worktrees/lane-a 31457300 /home/admin/worktrees \\
+  41943040 /home/admin 41943100 /home 4 /srv/small 10485760 /tmp/octo-lite-1000/default \\
+  10485800 /tmp/octo-lite-1000 10485900 /tmp 94371840 /
+"""
 SECONDS = re.compile(r"(?:(\d+)m )?([0-9.]+)s")
 
 
@@ -43,7 +59,18 @@ class HookCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name).resolve()
         self.state = self.tmp / "state"
-        self.env = {**os.environ, "XDG_STATE_HOME": str(self.state), "HOME": str(self.tmp)}
+        bindir = self.tmp / "bin"
+        bindir.mkdir()
+        for name, text in (("herdr", FAKE_HERDR), ("du", FAKE_DU)):
+            (bindir / name).write_text(text)
+            (bindir / name).chmod(0o755)
+        self.disk, self.sent, self.du = self.tmp / "disk", self.tmp / "sent.jsonl", self.tmp / "du.log"
+        self.disk.write_text("50")
+        self.env = {**os.environ, "XDG_STATE_HOME": str(self.state), "HOME": str(self.tmp),
+                    "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_DISK": str(self.disk),
+                    "PYTHONPATH": os.pathsep.join(filter(None, (str(FAKE_DISK), os.environ.get("PYTHONPATH")))),
+                    "FAKE_SENT": str(self.sent), "FAKE_DU_LOG": str(self.du)}
+        self.env.pop("HERDR_SESSION", None)
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
         for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
@@ -269,6 +296,133 @@ class InformOnlyTests(HookCase):
         for result in (self.claude("ls", 1234), self.codex("PreToolUse", "ls", "c1"),
                        self.codex("PostToolUse", "ls", "c1"), self.hook("not json")):
             self.assertEqual((0, "", ""), (result.returncode, result.stdout, result.stderr))
+
+
+class DiskWarningTests(HookCase):
+    """spec/domains/disk.spec.html#warning, every acceptance-disk-warn-*
+    criterion: the fixture disk (fixtures/disk) filled past each level by a
+    lane agent's command; the operator's pane gets herdr-say's prompt."""
+
+    FOLDERS = ("Folders holding the most: /home/admin/worktrees/lane-a 30.0 GiB,"
+               " /tmp/octo-lite-1000/default 10.0 GiB, /srv/small 4.0 KiB.")
+    TAIL = "Nothing was removed; each lane frees only what it made."
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.operator()
+
+    def operator(self, session: str | None = None, pane: str = "w9:p1") -> None:
+        state = self.state / "octo-lite" / ("sessions/" + session if session else "")
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "operator.toml").write_text(f'pane = "{pane}"\n')
+
+    def run_at(self, full: int, **env: str) -> str:
+        """A lane agent's command, run with the disk at full%: the line it is told."""
+        self.disk.write_text(str(full))
+        saved, self.env = self.env, {**self.env, **env}
+        try:
+            return self.told(self.claude("npm ci", 1234))
+        finally:
+            self.env = saved
+
+    def messages(self, count: int, within: float = 10.0) -> list:
+        """The operator's messages, once there are count of them, else at the bound."""
+        end = time.monotonic() + within
+        while time.monotonic() < end:
+            sent = [json.loads(line) for line in self.sent.read_text().splitlines()] if self.sent.exists() else []
+            if len(sent) >= count:
+                break
+            time.sleep(0.05)
+        time.sleep(0.3)  # and no more after it
+        return [json.loads(line) for line in self.sent.read_text().splitlines()] if self.sent.exists() else []
+
+    def warning(self, full: int, free: str) -> str:
+        return f"octo-lite disk warning: the box's disk is {full}% full, {free} free. {self.FOLDERS} {self.TAIL}"
+
+    def test_operator_is_told_once_the_disk_passes_85(self) -> None:
+        # acceptance-disk-warn-first: df's Use%, 5% kept for root.
+        self.assertEqual("octo-lite: this command took 1.2s.", self.run_at(84))
+        self.assertEqual([], self.messages(1, within=1))
+        self.assertEqual("octo-lite: this command took 1.2s.", self.run_at(86))
+        self.assertEqual([["w9:p1", self.warning(86, "13.3 GiB")]], self.messages(1))
+        self.assertRegex(self.du.read_text(), r"^[1-9]\d* -x\S* .*/$", "a niced du of the root filesystem")
+
+    def test_operator_is_told_no_more_while_the_disk_stays_under_90(self) -> None:
+        # acceptance-disk-warn-once.
+        self.run_at(86)
+        for full in (86, 87, 89, 85):
+            self.run_at(full)
+        self.assertEqual(1, len(self.messages(2, within=1.5)))
+
+    def test_operator_is_told_once_more_past_90(self) -> None:
+        # acceptance-disk-warn-second.
+        self.run_at(86)
+        self.messages(1)
+        self.run_at(91)
+        self.run_at(93)
+        self.assertEqual([["w9:p1", self.warning(86, "13.3 GiB")], ["w9:p1", self.warning(91, "8.6 GiB")]],
+                         self.messages(3, within=2))
+
+    def test_a_jump_past_both_levels_is_one_message(self) -> None:
+        # warning-levels: one message, both levels told.
+        self.run_at(92)
+        self.run_at(86)
+        self.assertEqual([["w9:p1", self.warning(92, "7.6 GiB")]], self.messages(2, within=1.5))
+
+    def test_each_level_is_told_again_once_the_disk_was_back_under_80(self) -> None:
+        # acceptance-disk-warn-again.
+        self.run_at(91)
+        self.messages(1)
+        self.run_at(80)
+        self.run_at(86)
+        self.assertEqual(1, len(self.messages(2, within=1.5)), "re-armed before the disk was under 80%")
+        self.run_at(79)
+        self.run_at(86)
+        self.assertEqual([self.warning(91, "8.6 GiB"), self.warning(86, "13.3 GiB")],
+                         [text for _, text in self.messages(2)])
+
+    def test_concurrent_agents_tell_a_level_once(self) -> None:
+        # warning-levels: once per session, however many agents cross it at once.
+        self.disk.write_text("86")
+        payload = {"session_id": "s", "cwd": str(self.repo), "hook_event_name": "PostToolUse",
+                   "tool_name": "Bash", "tool_input": {"command": "ls"}, "tool_response": {"stdout": ""},
+                   "duration_ms": 10}
+        hooks = [subprocess.Popen([str(HOOK)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                                  env=self.env) for _ in range(6)]
+        for n, hook in enumerate(hooks):
+            hook.communicate(json.dumps({**payload, "session_id": f"s{n}", "tool_use_id": f"u{n}"}))
+        self.assertEqual(1, len(self.messages(2, within=2)))
+
+    def test_each_session_has_its_operator_and_levels(self) -> None:
+        # warning-levels: per session, the operator in its operator.toml.
+        self.operator("s2", pane="w4:p7")
+        self.run_at(86)
+        self.run_at(86, HERDR_SESSION="s2")
+        self.assertEqual(["w4:p7", "w9:p1"], sorted(pane for pane, _ in self.messages(2)))
+
+    def test_with_no_operator_the_agent_is_told_beside_its_result(self) -> None:
+        # acceptance-disk-warn-no-operator, warning-no-operator.
+        (self.state / "octo-lite/operator.toml").unlink()
+        told = (f"octo-lite: this command took 1.2s. octo-lite disk warning: the box's disk is 86% full,"
+                f" 13.3 GiB free. {self.TAIL}")
+        self.assertEqual(told, self.run_at(86))
+        self.assertEqual("octo-lite: this command took 1.2s.", self.run_at(87))
+        self.assertEqual([], self.messages(1, within=1))
+
+    def test_the_warning_only_informs(self) -> None:
+        # acceptance-disk-warn-inform, warning-inform: the command's result
+        # reaches the agent at once, as without the warning, while the warning
+        # names folders; it removes nothing; a failed read adds nothing.
+        keep = self.tmp / "scratch" / "tmp.x1"
+        keep.mkdir(parents=True)
+        (keep / "run.log").write_text("kept")
+        started = time.monotonic()
+        self.assertEqual("octo-lite: this command took 1.2s.", self.run_at(95, FAKE_DU_SLEEP="3"))
+        self.assertLess(time.monotonic() - started, 2.5, "the hook waited on the warning")
+        self.assertEqual(1, len(self.messages(1)))
+        self.assertEqual("kept", (keep / "run.log").read_text())
+        self.disk.write_text("not a number")
+        self.assertEqual("octo-lite: this command took 1.2s.", self.told(self.claude("ls", 1234)))
 
 
 class HooksInformRuleTests(HookCase):

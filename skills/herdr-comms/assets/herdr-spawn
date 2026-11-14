@@ -206,11 +206,16 @@ fi
 
 # A tab starts with the Herdr server's environment, not the caller's. HOME is
 # forwarded so the agent and every descendant keep the caller's git identity,
-# consent, and sessions; the model path likewise.
+# consent, and sessions; the model path likewise. TMPDIR is the agent's own
+# scratch folder, named after its session and name, where every program it
+# runs puts its temporary files, and herdr-close removes it with the agent
+# (disk.spec.html#scratch-folder).
 # A reloaded pane has them already.
 tab=""
 if [[ -z "$reload" ]]; then
-  tab_env=(--env "HOME=$HOME")
+  scratch="$("$here/../../../scripts/octo-lite-state" --scratch)/$name"
+  mkdir -p "$scratch"
+  tab_env=(--env "HOME=$HOME" --env "TMPDIR=$scratch")
   [[ -z "$model" ]] || tab_env+=(--env "OCTO_LITE_OPERATING_MODEL=$model")
   out="$(herdr tab create --workspace "$workspace" --label "$label" --cwd "$cwd" "${tab_env[@]}" --no-focus)"
   tab="$(jq -r '.result.tab.tab_id // empty' <<<"$out")"
