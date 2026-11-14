@@ -29,6 +29,12 @@
 # An agent Herdr does not report idle or done (Herdr 0.9.0 reports a Claude
 # agent waiting at its prompt as done), or one with no Claude session file
 # (Codex, pi), is refused with nothing closed.
+#
+# Once its processes are stopped, a close or park removes the scratch folder of
+# each agent it closed, the caller's session's alone, since names repeat across
+# sessions; an agent started before herdr-spawn gave one has none, so its close
+# removes nothing. A park also removes the node_modules folders Git ignores in
+# the parked agent's own lane worktree (disk.spec.html#scratch-end, #park).
 set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 
@@ -57,9 +63,10 @@ id="${1:-}"
 if [[ "$id" == *:* ]]; then kind=tab; tag=HERDR_TAB_ID; field=tab_id; cmd=(tab close)
 else kind=space; tag=HERDR_WORKSPACE_ID; field=workspace_id; cmd=(workspace close); fi
 
-# The names and pane ids of the agents in it, one per line.
-agents="$(herdr agent list 2>/dev/null | jq -r --arg f "$field" --arg id "$id" \
-  '.result.agents[]? | select(.[$f] == $id) | (.name // empty), .pane_id' 2>/dev/null)"
+# The agents in it, then their names and pane ids, one per line.
+listed="$(herdr agent list 2>/dev/null | jq -c --arg f "$field" --arg id "$id" \
+  '[.result.agents[]? | select(.[$f] == $id)]' 2>/dev/null)"
+agents="$(jq -r '.[] | (.name // empty), .pane_id' <<<"$listed" 2>/dev/null)"
 # True when process $1 is a herdr-await of the caller's pane on one of them:
 # it leads its process group and carries HERDR_AWAIT_ON=<that name or pane id>.
 awaits() {
@@ -88,6 +95,35 @@ sweep awaits -
 rc=0
 herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
 sweep tagged
+
+# Each closed agent's scratch folder, by its name in the caller's session.
+if scratch="$("$here/../../../scripts/octo-lite-state" --scratch)"; then
+  while read -r n; do
+    # A name that is a path step would reach past its own folder.
+    [[ -z "$n" || "$n" == @(.|..|*/*) ]] || rm -rf -- "$scratch/$n"
+  done < <(jq -r '.[].name // empty' <<<"$listed" 2>/dev/null)
+fi
+
+# The parked agent's packages: in the worktree it works in, only when that is
+# its own lane's, a Git linked worktree off its repository's main branch (the
+# one origin/HEAD names, else main) that no process outside what was closed
+# works in, as another live agent may. Its install command restores them.
+packages() {
+  local top main dir pid
+  top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  [[ "$(git -C "$top" rev-parse --path-format=absolute --git-dir)" != \
+     "$(git -C "$top" rev-parse --path-format=absolute --git-common-dir)" ]] || return 0
+  main="$(git -C "$top" symbolic-ref -q --short refs/remotes/origin/HEAD)" || main=origin/main
+  [[ "$(git -C "$top" symbolic-ref -q --short HEAD)" != "${main#origin/}" ]] || return 0
+  while IFS=$'\t' read -r dir pid; do
+    [[ "$dir" != "$top" && "$dir" != "$top"/* ]] || tagged "${pid#/proc/}" || return 0
+  done < <(find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%l\t%h\n' 2>/dev/null)
+  git -C "$top" ls-files -z --others --ignored --exclude-standard --directory |
+    while IFS= read -r -d '' dir; do
+      [[ "$dir" != @(node_modules|*/node_modules)/ ]] || rm -rf -- "$top/$dir"
+    done
+}
+[[ -z "$line" ]] || packages "$(jq -r .cwd <<<"$line")" 2>/dev/null
 
 closed="$(jq -nc --arg at "$(date -u +%FT%TZ)" --arg kind "$kind" --arg id "$id" --argjson rc "$rc" \
   --argjson killed "$killed" '{at: $at, kind: "closed", ($kind): $id, close_rc: $rc, killed: $killed}')"
