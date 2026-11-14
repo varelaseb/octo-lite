@@ -41,11 +41,14 @@ live Herdr 0.9.0:
     with the caller's tab
 """
 
+import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -375,6 +378,9 @@ class HerdrWrapperTest(unittest.TestCase):
             "HOME": str(d),
             "XDG_STATE_HOME": str(d / "state"),
         }
+        # Scratch folders go in the test home's cache folder, never the box's.
+        self.env.pop("XDG_CACHE_HOME", None)
+        self.scratch = d / ".cache/octo-lite/scratch"
         self.log, self.closed, self.wrong, self.dialog, self.gone_file, self.blocked_file = (
             Path(self.env[f"FAKE_{name}"]) for name in ("LOG", "CLOSED", "WRONG", "DIALOG", "GONE", "BLOCKED"))
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
@@ -815,7 +821,7 @@ class HerdrWrapperTest(unittest.TestCase):
         # sidechain is the timestamp of a subagent's assistant record after them.
         # agent is the role the record names; None, it names none. name is
         # the session name it records; cmd and stdin, what the stand-in runs.
-        p = subprocess.Popen(list(cmd), start_new_session=True, stdin=stdin, env={
+        p = subprocess.Popen(list(cmd), start_new_session=True, stdin=stdin, cwd=self.cwd, env={
             **self.env, "HERDR_PANE_ID": pane, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": space, **env})
         self.addCleanup(lambda: (p.kill(), p.wait()))
         if sid:
@@ -2019,6 +2025,361 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("contract=appended-system-prompt", r.stdout)
         self.assertEqual(self.start_argv()[-2:], ["--append-system-prompt", str(contract)])
+
+
+    # --- disk (spec/domains/disk.spec.html) -------------------------------
+
+    def tab_env(self, var):
+        # The value of var the last tab create exported into its tab.
+        return re.findall(rf"tab create .*--env {var}=(\S+)", self.log.read_text())[-1]
+
+    def made(self, folder, *names):
+        # A scratch folder holding temporary files its agent made.
+        for name in names or ("tmp.x1/run.log",):
+            (folder / name).parent.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_text("made")
+        return folder
+
+    def tree(self, root):
+        # Every path under root, with each file's content.
+        return {str(p.relative_to(root)): p.read_text() if p.is_file() else None
+                for p in sorted(root.rglob("*")) if ".git" not in p.relative_to(root).parts}
+
+    def folder(self, name, key="default"):
+        # The scratch folder of agent name in Herdr session key: 12 hex
+        # characters of sha256 of <key>/<name>, in the user's cache folder.
+        return self.scratch / hashlib.sha256(f"{key}/{name}".encode()).hexdigest()[:12]
+
+    def test_spawn_gives_each_agent_an_empty_scratch_folder_of_its_own_as_tmpdir(self):
+        # acceptance-disk-scratch-own, scratch-folder: in the user's cache
+        # folder, named after its session and agent name, exported as HOME is,
+        # on every runtime; what the agent's programs make lands in it.
+        self.dialog.write_text("none\n")
+        for runtime in ("claude", "codex", "pi"):
+            r = self.spawn_as(runtime)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.tab_env("TMPDIR"), str(self.folder("a1")))
+        r = subprocess.run([str(SPAWN), "--workspace", "w1", "--name", "implementer-ann-2", "--label", "L",
+                            "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
+                           capture_output=True, text=True, env={**self.env, "HERDR_SESSION": "s2"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        worker = Path(self.tab_env("TMPDIR"))
+        self.assertEqual(worker, self.folder("implementer-ann-2", "s2"))
+        self.assertEqual(list(worker.iterdir()), [], "a new scratch folder is empty")
+        made = subprocess.run(["sh", "-c", "mktemp -d; python3 -c 'import tempfile; print(tempfile.mkdtemp())'"],
+                              capture_output=True, text=True, check=True, env={**self.env, "TMPDIR": str(worker)})
+        for folder in made.stdout.split():
+            self.assertEqual(Path(folder).parent, worker, "a temporary folder outside the agent's scratch")
+
+    def test_the_scratch_folder_is_private_in_the_users_cache_folder(self):
+        # acceptance-disk-scratch-private, scratch-folder: on disk in the
+        # user's own cache folder, which only the user can enter, whatever the
+        # umask; XDG_CACHE_HOME moves it as it moves the user's cache.
+        self.dialog.write_text("none\n")
+        for cache in (None, Path(self.tmp.name) / "xdg-cache"):
+            env = {"XDG_CACHE_HOME": str(cache)} if cache else {}
+            root = (cache or Path(self.tmp.name) / ".cache") / "octo-lite/scratch"
+            r = subprocess.run(["sh", "-c", 'umask 000; exec "$@"', "sh", str(SPAWN), "--workspace", "w1",
+                                "--name", "a1", "--label", "L", "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
+                               capture_output=True, text=True, env={**self.env, **env})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            folder = Path(self.tab_env("TMPDIR"))
+            self.assertEqual(folder.parent, root)
+            for made in (root, folder):
+                self.assertEqual(stat.S_IMODE(made.stat().st_mode), 0o700, made)
+
+    def test_the_longest_agent_name_keeps_tmpdir_short_enough_for_a_browser(self):
+        # acceptance-disk-scratch-private, scratch-folder: Chromium puts its
+        # socket under TMPDIR and fails to start past 62 characters. Herdr's
+        # longest name, 32 characters, in a named session, in this user's home.
+        self.dialog.write_text("none\n")
+        name = "implementer-ann-1992-fix-round-1"
+        self.assertEqual(len(name), 32)
+        r = subprocess.run([str(SPAWN), "--workspace", "w1", "--name", name, "--label", "L",
+                            "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
+                           capture_output=True, text=True, env={**self.env, "HERDR_SESSION": "s" * 32})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        tmpdir = self.tab_env("TMPDIR")
+        self.assertTrue(tmpdir.startswith(self.tmp.name + "/"), tmpdir)
+        home = pwd.getpwuid(os.getuid()).pw_dir
+        self.assertLessEqual(len(home + tmpdir[len(self.tmp.name):]), 62, tmpdir)
+
+    def test_resume_and_lane_start_give_the_agent_its_scratch_folder(self):
+        # scratch-folder: a resumed agent and a lane owner started by
+        # octo-lite-start each get theirs.
+        self.dialog.write_text("none\n")
+        r = self.spawn(extra=["--resume", "s-1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.tab_env("TMPDIR"), str(self.folder("a1")))
+        r = self.start("--name", "ann45")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.tab_env("TMPDIR"), str(self.folder("ann45")))
+        self.assertTrue(self.folder("ann45").is_dir())
+
+    def listing(self, *agents):
+        # Herdr's agent list: (name, tab, space) each.
+        return json.dumps({"result": {"agents": [
+            {"name": n, "pane_id": f"{t}-p", "tab_id": t, "workspace_id": w} for n, t, w in agents]}})
+
+    def test_close_removes_the_scratch_folder_of_the_agent_it_closes(self):
+        # acceptance-disk-scratch-close, scratch-end: once its processes are
+        # stopped; the owner's own stays.
+        space = f"w-{uuid.uuid4()}"
+        tab = f"{space}:t2"
+        worker = self.tagged(tab, space)
+        mine = self.made(self.folder("implementer-ann-1"))
+        owner = self.made(self.folder("ann45"))
+        r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True, env={
+            **self.env, "FAKE_AGENT_LIST": self.listing(("ann45", f"{space}:t1", space),
+                                                         ("implementer-ann-1", tab, space))})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.gone(worker))
+        self.assertFalse(mine.exists(), "the closed worker's scratch folder is left")
+        self.assertEqual(self.tree(owner), {"tmp.x1": None, "tmp.x1/run.log": "made"})
+        self.assertEqual(self.closed_line(r.stdout), {"kind": "closed", "tab": tab, "close_rc": 0, "killed": 1})
+
+    def test_close_removes_the_scratch_folder_once_its_processes_have_exited(self):
+        # scratch-end: once it has stopped the processes; one that writes to
+        # its scratch as it shuts down, as a dying browser does, leaves nothing.
+        tab = f"w1:t-{uuid.uuid4()}"
+        folder = self.made(self.folder("implementer-ann-1"))
+        dying = subprocess.Popen(
+            ["bash", "-c", 'trap \'sleep 0.5; mkdir -p "$0/late"; echo x >"$0/late/f"; exit\' TERM; '
+                           'while :; do sleep 0.1; done', str(folder)],
+            start_new_session=True, env={**self.env, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": "w1"})
+        self.addCleanup(lambda: (dying.kill(), dying.wait()))
+        time.sleep(0.2)  # its trap is set
+        r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True,
+                           env={**self.env, "FAKE_AGENT_LIST": self.listing(("implementer-ann-1", tab, "w1"))})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(dying.wait(timeout=5), 0)
+        self.assertFalse(folder.exists(), "removed before its process had exited")
+
+    def test_closing_a_lane_space_removes_every_scratch_folder_of_its_agents_only(self):
+        # acceptance-disk-lane-space, lane-close: another lane's agents keep theirs.
+        space, other = f"w-{uuid.uuid4()}", f"w-{uuid.uuid4()}"
+        for name in ("ann45", "implementer-ann-1", "ann46", "implementer-ann-9"):
+            self.made(self.folder(name))
+        r = subprocess.run([str(CLOSE), space], capture_output=True, text=True, env={
+            **self.env, "FAKE_AGENT_LIST": self.listing(
+                ("ann45", f"{space}:t1", space), ("implementer-ann-1", f"{space}:t2", space),
+                ("ann46", f"{other}:t1", other), ("implementer-ann-9", f"{other}:t2", other))})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sorted(self.scratch.iterdir()), sorted(map(self.folder, ("ann46", "implementer-ann-9"))))
+
+    def test_close_removes_only_its_own_sessions_scratch_folder(self):
+        # acceptance-disk-scratch-session: agent names repeat across sessions.
+        other = f"s-{uuid.uuid4()}"
+        here, there = (self.made(self.folder("implementer-ann-1", key)) for key in ("default", other))
+        listed = self.listing(("implementer-ann-1", "w1:t2", "w1"))
+        r = subprocess.run([str(CLOSE), "w1:t2"], capture_output=True, text=True,
+                           env={**self.env, "FAKE_AGENT_LIST": listed})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(here.exists())
+        self.assertTrue((there / "tmp.x1/run.log").exists(), "closed another session's scratch")
+        r = subprocess.run([str(CLOSE), "w1:t2"], capture_output=True, text=True,
+                           env={**self.env, "FAKE_AGENT_LIST": listed, "HERDR_SESSION": other})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(there.exists())
+
+    def test_closing_an_agent_started_before_the_update_removes_no_file(self):
+        # acceptance-disk-scratch-old, scratch-old: it has no scratch folder,
+        # and the close ends it and its processes as before.
+        tab = f"w1:t-{uuid.uuid4()}"
+        old = self.tagged(tab)
+        self.made(self.folder("ann45"))
+        before = self.tree(self.scratch)
+        r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True,
+                           env={**self.env, "FAKE_AGENT_LIST": self.listing(("implementer-ann-1", tab, "w1"))})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.gone(old))
+        self.assertEqual(self.closed_line(r.stdout), {"kind": "closed", "tab": tab, "close_rc": 0, "killed": 1})
+        self.assertEqual(self.tree(self.scratch), before)
+
+    def test_park_removes_the_scratch_folder_and_a_resumed_agent_gets_an_empty_one(self):
+        # acceptance-disk-scratch-park, acceptance-disk-scratch-resume.
+        folder = self.made(self.folder("implementer-ann-1"))
+        owner = self.made(self.folder("ann45"))
+        p, r, *_ = self.park()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(folder.exists(), "the parked agent's scratch folder is left")
+        self.assertTrue(owner.exists())
+        self.dialog.write_text("none\n")
+        r = subprocess.run([str(SPAWN), "--workspace", "w1", "--name", "implementer-ann-1", "--label", "L",
+                            "--cwd", str(self.cwd), "--role", "implementer", "--resume", "s-1", "--", "claude"],
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.tab_env("TMPDIR"), str(folder))
+        self.assertEqual(list(folder.iterdir()), [], "the resumed agent's scratch holds files from before its park")
+
+    def git(self, cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              check=True, capture_output=True, text=True, env=self.env).stdout
+
+    def install(self, tree):
+        # Installed packages, at the top and in a package, beside a build's
+        # output Git ignores too, and work of the lane's, tracked or not.
+        for path in ("node_modules/a/index.js", "web/node_modules/b/index.js", "build/out.js", "notes.txt"):
+            (tree / path).parent.mkdir(parents=True, exist_ok=True)
+            (tree / path).write_text(path)
+        return tree
+
+    def checkout(self, main="main"):
+        # A repository's checkout on its main branch, packages ignored.
+        repo = Path(self.tmp.name) / f"repo-{uuid.uuid4().hex[:6]}"
+        self.git(self.tmp.name, "init", "-q", "-b", main, str(repo))
+        (repo / ".gitignore").write_text("node_modules/\nbuild/\n")
+        (repo / "web").mkdir()
+        (repo / "web/app.js").write_text("app")
+        self.git(repo, "add", "-A")
+        self.git(repo, "commit", "-qm", "seed")
+        return repo
+
+    def lane(self, repo, branch="ann1"):
+        tree = Path(self.tmp.name) / f"lane-{uuid.uuid4().hex[:6]}"
+        self.git(repo, "worktree", "add", "-q", "-b", branch, str(tree))
+        return self.install(tree)
+
+    def parked_in(self, tree):
+        # The idle worker working in tree is parked; its packages' fate.
+        self.cwd = tree
+        before = self.tree(tree)
+        p, r, *_ = self.park()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["kind"], "parked")
+        self.assertTrue(self.gone(p))
+        return before, self.tree(tree)
+
+    def test_park_removes_only_the_ignored_node_modules_of_its_own_lane_worktree(self):
+        # acceptance-disk-park-modules, park-modules: every other file, tracked
+        # or not, ignored or not, stays.
+        before, after = self.parked_in(self.lane(self.checkout()))
+        gone = {path for path in before if path.split("/")[0] == "node_modules" or "web/node_modules" in path}
+        self.assertTrue(gone)
+        self.assertEqual(after, {k: v for k, v in before.items() if k not in gone})
+
+    def test_park_keeps_the_packages_of_a_main_checkout(self):
+        # acceptance-disk-park-main, park-own.
+        before, after = self.parked_in(self.install(self.checkout()))
+        self.assertEqual(after, before)
+
+    def test_park_keeps_the_packages_of_a_worktree_on_the_branch_origin_head_names(self):
+        # park-own: a linked worktree on its repository's main branch, the one
+        # origin/HEAD names, keeps them; one on a branch only called main does not.
+        origin = self.checkout(main="trunk")
+        clone = Path(self.tmp.name) / "clone"
+        self.git(self.tmp.name, "clone", "-q", str(origin), str(clone))
+        self.git(clone, "checkout", "-q", "-b", "side")
+        on_trunk = Path(self.tmp.name) / "on-trunk"
+        self.git(clone, "worktree", "add", "-q", str(on_trunk), "trunk")
+        before, after = self.parked_in(self.install(on_trunk))
+        self.assertEqual(after, before)
+        before, after = self.parked_in(self.lane(clone, branch="main"))
+        self.assertNotIn("node_modules", after)
+
+    def test_park_keeps_the_packages_of_a_live_install_clone(self):
+        # acceptance-disk-park-clone: a clone is no linked worktree, whatever
+        # branch it is on.
+        clone = Path(self.tmp.name) / "octo-lite"
+        self.git(self.tmp.name, "clone", "-q", str(self.checkout()), str(clone))
+        self.git(clone, "checkout", "-q", "-b", "ann7")
+        before, after = self.parked_in(self.install(clone))
+        self.assertEqual(after, before)
+
+    def test_park_keeps_the_packages_of_a_worktree_another_live_agent_works_in(self):
+        # acceptance-disk-park-in-use, park-own: a process outside the parked
+        # tab works in it; the parked agent's own processes there do not count.
+        tree = self.lane(self.checkout())
+        other = subprocess.Popen(["sleep", "600"], cwd=tree / "web", start_new_session=True,
+                                 env={**self.env, "HERDR_TAB_ID": "w-other:t1", "HERDR_WORKSPACE_ID": "w-other"})
+        self.addCleanup(lambda: (other.kill(), other.wait()))
+        before, after = self.parked_in(tree)
+        self.assertEqual(after, before)
+        self.assertIsNone(other.poll())
+
+    def test_close_removes_no_packages(self):
+        # park-close: a closed worker's worktree goes whole once integrated.
+        tree = self.lane(self.checkout())
+        before = self.tree(tree)
+        r = subprocess.run([str(CLOSE), "w1:t2"], capture_output=True, text=True, cwd=tree, env={
+            **self.env, "FAKE_AGENT_LIST": self.listing(("implementer-ann-1", "w1:t2", "w1"))})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.tree(tree), before)
+
+    def test_a_cleanup_removes_only_what_its_own_lane_or_agent_made(self):
+        # Project rule acceptance-disk-own-only-rule: another lane's agent has
+        # its scratch files and its worktree's packages in use; parking and
+        # closing this lane's agents keeps all of it.
+        theirs = self.lane(self.checkout())
+        busy = subprocess.Popen(["sleep", "600"], cwd=theirs, start_new_session=True,
+                                env={**self.env, "HERDR_TAB_ID": "w-other:t2", "HERDR_WORKSPACE_ID": "w-other"})
+        self.addCleanup(lambda: (busy.kill(), busy.wait()))
+        scratch = self.made(self.folder("implementer-ann-9"))
+        others = self.tree(theirs), self.tree(scratch)
+        self.parked_in(self.lane(self.checkout()))
+        r = subprocess.run([str(CLOSE), "w1"], capture_output=True, text=True,
+                           env={**self.env, "FAKE_AGENT_LIST": self.listing(("ann45", "w1:t1", "w1"))})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.tree(theirs), self.tree(scratch)), others)
+        self.assertIsNone(busy.poll())
+
+    # --- contracts: disk ---------------------------------------------------
+
+    def contract(self, role):
+        return (ROOT / f"agents/{role}.md").read_text(encoding="utf-8")
+
+    def test_writers_keep_temporary_files_and_media_in_their_scratch_never_notes(self):
+        # acceptance-disk-notes-media, scratch-write: every role that writes is
+        # told so where it writes; none removes a /tmp scratch by hand.
+        for role in ("orchestrator", "implementer", "integrator", "code-reviewer"):
+            self.assertRegex(
+                self.contract(role),
+                r"Write temporary files under `\$TMPDIR`, never at a `/tmp` path of your own, and keep there what "
+                r"you can make again, such as frames, covers, or recordings made only to read them, never in lane "
+                r"notes \(disk spec `#scratch-write`\)\.", role)
+        for path in [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/*/SKILL.md")]:
+            self.assertNotRegex(path.read_text(encoding="utf-8"), r"/tmp. scratch", path)
+
+    def test_no_role_or_skill_names_the_scratch_folders_path(self):
+        # boundary-disk-agent: agents know their scratch only as TMPDIR; its
+        # path and the command that derives it stay inside the wrappers.
+        for path in [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/*.md")]:
+            self.assertNotRegex(path.read_text(encoding="utf-8"),
+                                r"/tmp/octo-lite|octo-lite/scratch|\.cache/octo-lite|--scratch", path)
+
+    def test_a_resumed_agent_reinstalls_packages_its_park_removed(self):
+        # acceptance-disk-park-resume, park-resume.
+        for role in ("orchestrator", "implementer"):
+            self.assertRegex(
+                self.contract(role),
+                r"Resumed from a park with your worktree's `node_modules` gone, install them again with the "
+                r"install command the target `AGENTS.md` names before you run anything that needs them, such as "
+                r"tests or the prototype \(disk spec `#park-resume`\)\.", role)
+
+    def test_operator_removes_the_lane_worktree_keeping_one_with_work(self):
+        # acceptance-disk-lane-worktree, acceptance-disk-lane-worktree-kept,
+        # lane-close: the operator's command, run as written, removes a merged
+        # lane's clean worktree and leaves the main checkout; it keeps one
+        # holding uncommitted work, which the close report names.
+        text = self.contract("meta-operator")
+        command = re.search(r"`(git [^`]*worktree remove[^`]*)`", text)
+        self.assertIsNotNone(command, "the lane worktree removal is missing")
+        self.assertNotIn("--force", command.group(1))
+        self.assertRegex(text, r"name a worktree it kept in your report of the lane's close")
+        repo = self.checkout()
+        main = self.tree(repo)
+        for work in (False, True):
+            tree = self.lane(repo, branch=f"ann-{work}")
+            (tree / "notes.txt").unlink()  # its packages and build output stay: Git ignores them
+            if work:
+                (tree / "web/app.js").write_text("uncommitted")
+            run = subprocess.run(["sh", "-c", command.group(1).replace("<lane worktree>", str(tree))],
+                                 capture_output=True, text=True, env=self.env)
+            self.assertEqual(run.returncode != 0, work, run.stderr)
+            self.assertEqual(tree.exists(), work)
+            if work:
+                self.assertEqual((tree / "web/app.js").read_text(), "uncommitted")
+            self.assertEqual(self.tree(repo), main)
 
 
 if __name__ == "__main__":

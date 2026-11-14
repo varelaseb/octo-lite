@@ -65,6 +65,11 @@ A new tab gets the Herdr server's environment, so the spawn always exports the
 caller's `HOME` into it. The agent and every child it spawns keep the caller's
 home: git identity, consent, and sessions.
 
+Each agent gets an empty scratch folder of its own, exported into its tab as
+`TMPDIR`, so every program it runs puts its temporary files there.
+`herdr-close` removes it when it closes or parks the agent
+(`spec/domains/disk.spec.html#scratch-folder`).
+
 Codex runs with `--no-daemon`, so its thread and commands live in the tab's own
 process tree, not the shared app-server that outlives the tab.
 
@@ -104,6 +109,9 @@ read from `herdr agent list` before the close, sending no message (a `--notice`
 wait prints `closed by its caller`): you closed it, so no stop reads as news of
 an agent spawned again under the same name
 (`spec/domains/herdr-transport.spec.html#transport-close-waits`).
+Then it removes the scratch folder of each agent it closed, by name in the
+caller's session; an agent spawned before scratch folders has none, so its
+close removes nothing (`spec/domains/disk.spec.html#scratch-end`).
 Another caller's wait on it ends as gone at its bound. Parking (below) closes
 the same way. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
@@ -129,6 +137,15 @@ stderr. The role is the session record's, else the one a worker's spawn name
 owner, the owner for a worker. An agent Herdr does not report idle is refused
 with exit 75, a Codex or pi agent (no Claude session file) with 65; nothing is
 closed.
+
+A park also frees the installed packages of the agent's own lane worktree:
+the `node_modules` folders Git ignores in the worktree it works in, only when
+that is a Git linked worktree, off its repository's main branch (the one
+`origin/HEAD` names, else `main`), that no process outside the parked tab or
+space works in. A main checkout, an install clone, and a worktree another
+agent works in keep theirs, and every other file stays. The resumed agent
+installs them again with its repository's install command
+(`spec/domains/disk.spec.html#park`).
 
 ## Reload an agent
 
