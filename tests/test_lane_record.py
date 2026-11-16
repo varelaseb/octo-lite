@@ -365,11 +365,25 @@ class LaneRecordTests(unittest.TestCase):
         # at a lane's close the operator reads its archived log's complaint lines
         # and tells each as one plain line naming the agent and its sentence.
         text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
-        self.assertIn("When a lane closes, read the `complaint` lines of its archived log, "
-                      "`$(octo-lite-state)/lanes/archive/<lane name>.handoffs.jsonl`, and in your message telling of "
-                      "that close give each one plain line naming its agent (its `name`, else the lane's owner) and "
-                      "its sentence", text)
+        self.assertIn("When a lane closes, read the `complaint` lines of its log, `<lane name>.handoffs.jsonl` in "
+                      "`$(octo-lite-state)/lanes/archive/`, or in `$(octo-lite-state)/lanes/` when you closed it in "
+                      "its owner's place, and in your message telling of that close give each one plain line naming "
+                      "its agent (its `name`, else the lane's owner) and its sentence", text)
+        # The operator's close in the owner's place touches no record, so that log stays unarchived.
+        self.assertIn("when you close it in its owner's place", text)
+        self.assertIn("Touch no record: its owner archived it.", text)
         self.assertIn("one naming a problem of the box goes as that problem, once with the step that fixes it", text)
+
+    def test_health_pass_message_carries_its_complaint(self) -> None:
+        # spec #roles-complaint, #health-pass: the pass agent runs under the
+        # code-reviewer contract, so the repo-health Pass message it sends keeps
+        # any Annoyed: line beside the ticket keys, and the operator relays it.
+        reviewer = " ".join((ROOT / "agents/code-reviewer.md").read_text(encoding="utf-8").split())
+        self.assertIn("the `repo-health` Pass message (ticket keys only, and any `Annoyed:` line)", reviewer)
+        skill = " ".join((ROOT / "skills/repo-health/SKILL.md").read_text(encoding="utf-8").split("## Pass", 1)[1].split())
+        self.assertIn("each ticket key filed, commented on, or closed, and any `Annoyed:` line. Then stop.", skill)
+        self.assertIn("Relay the ticket keys its one message names, nothing else but its complaint (Write surface)",
+                      " ".join(OPERATOR.read_text(encoding="utf-8").split()))
 
     def test_a_complaint_sends_no_message_and_files_nothing(self) -> None:
         # spec #roles-complaint, #acceptance-complaint-quiet: a complaint is no
