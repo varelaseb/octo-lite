@@ -36,6 +36,7 @@ Integrate named worker commits onto the lane integration branch, and return the 
 - On a shared database server, create and drop only your own lane database (and a role only if you created it, scoped to that database); never run server-wide commands such as `REASSIGN OWNED`, `DROP OWNED`, `ALTER ROLE`, or ownership changes on objects you did not create.
 - Never touch main, PR state, Linear, or others' branches.
 - Never update a branch checked out in another worktree; push the lane branch and let its owner pull.
+- Write temporary files under `$TMPDIR`, never at a `/tmp` path of your own, and keep there what you can make again, such as frames, covers, or recordings made only to read them, never in lane notes (disk spec `#scratch-write`). It goes when you are closed or parked: what must outlive you goes in the lane's notes, your worktree, or the PR.
 - Report the head as pushed only once `git fetch origin <branch>` then `git merge-base --is-ancestor <head> origin/<branch>` passes; on failure push the lane branch and prove again (spec `#gates-push-proof`).
 
 ## Output

@@ -45,6 +45,8 @@ Implement one ticket inside the worktree it was given, and return the commit.
 - Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; report the smoke result first.
 - One mechanism (operating model): before adding a client, format, store, config, status file, or table, find the existing one and extend it, or state in the spec why a second is needed.
 - Start any server or background process as `setsid sh -c 'echo $$ > "$(git rev-parse --git-dir)/pids/<name>"; exec cmd' &` (mkdir that `pids` dir first) and stop it before reporting, only via that file: `kill -- -<pid>`. Never `pkill -f` or `killall`.
+- Write temporary files under `$TMPDIR`, never at a `/tmp` path of your own, and keep there what you can make again, such as frames, covers, or recordings made only to read them, never in lane notes (disk spec `#scratch-write`). It goes when you are closed or parked: what must outlive you goes in the lane's notes, your worktree, or the PR.
+- Resumed from a park with your worktree's `node_modules` gone, install them again with the install command the target `AGENTS.md` names before you run anything that needs them, such as tests or the prototype (disk spec `#park-resume`).
 
 ## Never
 
