@@ -90,7 +90,8 @@ Every line of its error output is such a problem: what it reports that is not a 
 <p data-anchor="install-floors" id="install-floors"><code>--check</code> also checks version floors: for each tool octo-lite uses at runtime (git, herdr, jq, gh, node, python3, and at least one of claude or codex), it prints the version found to its standard output when the tool meets its floor, and otherwise names the tool as a problem, missing or too old (found version vs minimum), whose fix is to get it from its upgrade source.
 The installer never upgrades anything without the user's explicit consent.</p>
 <p data-anchor="install-consent" id="install-consent">With <code>--onboard</code>, the installer asks once whether agents may push, open pull requests, and file issues, and keeps the answers in octo-lite's one onboarding file, <code>$XDG_STATE_HOME/octo-lite/onboarding.toml</code>, beside its published onboarding status, done once answers are kept.
-Kept answers are not asked again; deleting that file asks afresh.</p>
+Kept answers are not asked again; deleting that file asks afresh.
+The same file keeps the box's operating model, the last one <a href="./herdr-transport.spec.html#roles-operating-model"><code>herdr-spawn</code></a> was given, and every run keeps it as found.</p>
 <p data-anchor="install-after-pull" id="install-after-pull">The installer publishes its after-pull step in the same onboarding file: <code>after_pull</code>, a list of arguments a host runs with no shell, after fast-forwarding this clone, to bring the box onto the pulled code.
 It runs <code>install-octo-lite --after-pull</code> from this clone with the prefix and project the installer last ran with.
 <code>--after-pull</code> installs as a plain run does, asking nothing, then verifies as <code>--check</code> does, and exits non-zero when the verification fails, its error output naming each failed check with the step that fixes it.
