@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Disk</title>
+<link rel="stylesheet" href="../.style/spec.css">
+<script defer src="../.viz/runtime.js"></script>
+</head>
+<body>
+<article class="spec" data-spec-version="1" data-spec-contract="shaped-sections-v1">
+<header data-anchor="header" id="header">
+<h1>Disk</h1>
+<nav><a href="../index.spec.html">Specifications</a> / Disk</nav>
+<p data-anchor="header-scope" id="header-scope">This spec states how octo-lite keeps the disk its lanes use: each agent's scratch folder, what parking an agent and closing a lane remove, and the warning the operator gets before the box's disk fills.</p>
+<p data-anchor="header-related" id="header-related">Spawning, closing, and parking agents are in the <a href="./herdr-transport.spec.html">Herdr transport</a> spec; the hook that checks the disk is in the <a href="./command-time.spec.html">Command time</a> spec; lane teardown and lane notes are in the <a href="./octo-lite.spec.html#roles-teardown">octo-lite</a> spec.</p>
+</header>
+
+<section data-spec-section="user-stories" data-anchor="user-stories" id="user-stories">
+<h2>User stories</h2>
+<p data-user-story data-anchor="user-story-disk-scratch" id="user-story-disk-scratch" data-user-facing="true" data-guided-journey="no">As an operator, every temporary file an agent's commands make lands in that agent's own scratch folder, which goes when the agent is closed or parked, so nothing an agent made is left in <code>/tmp</code> with no owner.</p>
+<p data-user-story data-anchor="user-story-disk-park" id="user-story-disk-park" data-user-facing="true" data-guided-journey="no">As an operator, parking an agent frees the installed packages in its own worktree, which it installs again when it next needs them, while my box's main checkouts, its install clones, and any tree another agent works in keep theirs.</p>
+<p data-user-story data-anchor="user-story-disk-lane-close" id="user-story-disk-lane-close" data-user-facing="true" data-guided-journey="no">As an operator, a finished lane leaves no disk behind but its archived record, hand-off log, and notes, and its notes hold only what cannot be made again.</p>
+<p data-user-story data-anchor="user-story-disk-warning" id="user-story-disk-warning" data-user-facing="true" data-guided-journey="no">As an operator, I am told when my box's disk reaches 85% full and again at 90%, with the folders holding the most of it, so I hear before a full disk crashes a service, and the warning only tells me: it never removes, blocks, or stops anything.</p>
+</section>
+
+<section data-spec-section="acceptance" data-anchor="acceptance" id="acceptance">
+<h2>Acceptance criteria</h2>
+<p data-acceptance-criterion data-anchor="acceptance-disk-scratch-own" id="acceptance-disk-scratch-own" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given a lane owner, When it spawns a worker, then the worker runs a test suite that makes temporary folders,</span> <span data-acceptance-observable>Then each of those folders is inside the worker's own scratch folder, which no other agent shares: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-scratch-private" id="acceptance-disk-scratch-private" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given an operator on a box shared with another user, a fixture that must be added to provide it, When a lane owner spawns a worker,</span> <span data-acceptance-observable>Then the other user cannot read, write, or replace the worker's scratch folder, and a browser the worker starts runs: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-scratch-close" id="acceptance-disk-scratch-close" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given a lane owner whose worker has made temporary files, When the owner closes the worker,</span> <span data-acceptance-observable>Then the worker's scratch folder is gone, and the owner's own scratch folder is still there: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-scratch-park" id="acceptance-disk-scratch-park" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given a lane owner whose idle worker has made temporary files, When the owner parks the worker,</span> <span data-acceptance-observable>Then the worker's scratch folder is gone: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-scratch-resume" id="acceptance-disk-scratch-resume" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given a lane owner that parked its worker after the worker made temporary files, When the owner sends the worker a message, then the resumed worker makes a temporary file,</span> <span data-acceptance-observable>Then that file is in a scratch folder of the worker's own that holds nothing from before its park: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-scratch-session" id="acceptance-disk-scratch-session" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given the operators of two Herdr sessions, each with a lane agent under the same name that has made temporary files, When the operator of one session closes its agent,</span> <span data-acceptance-observable>Then the other session's agent keeps its scratch folder: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-scratch-old" id="acceptance-disk-scratch-old" data-story="user-story-disk-scratch"><span data-acceptance-scenario>Given an operator who updates octo-lite while a lane agent started before the update still runs, When the agent's owner closes it,</span> <span data-acceptance-observable>Then the close ends the agent and its processes as before and removes no file: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-park-modules" id="acceptance-disk-park-modules" data-story="user-story-disk-park"><span data-acceptance-scenario>Given a lane owner whose idle worker's worktree has its packages installed, When the owner parks the worker,</span> <span data-acceptance-observable>Then the <code>node_modules</code> folders Git ignores in that worktree are gone, and every other file in it is unchanged: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-park-main" id="acceptance-disk-park-main" data-story="user-story-disk-park"><span data-acceptance-scenario>Given an operator whose idle agent works in the box's main checkout of a repository, on its main branch, When the operator parks that agent,</span> <span data-acceptance-observable>Then the main checkout keeps its <code>node_modules</code> folders: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-park-clone" id="acceptance-disk-park-clone" data-story="user-story-disk-park"><span data-acceptance-scenario>Given an operator whose idle agent works in a live install clone, such as octo-lite's own, When the operator parks that agent,</span> <span data-acceptance-observable>Then the install clone keeps its <code>node_modules</code> folders: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-park-in-use" id="acceptance-disk-park-in-use" data-story="user-story-disk-park"><span data-acceptance-scenario>Given a lane owner whose idle worker's worktree is also the working folder of another live agent, When the owner parks the worker,</span> <span data-acceptance-observable>Then the worktree keeps its <code>node_modules</code> folders: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-park-resume" id="acceptance-disk-park-resume" data-story="user-story-disk-park"><span data-acceptance-scenario>Given a lane owner parked at a human gate, whose park removed its worktree's <code>node_modules</code> folders, When a review hand-off resumes it, then it restarts its prototype,</span> <span data-acceptance-observable>Then it installs the packages again with its repository's install command before the restart, and the prototype runs: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-lane-space" id="acceptance-disk-lane-space" data-story="user-story-disk-lane-close"><span data-acceptance-scenario>Given an operator with a finished lane whose owner and worker have each made temporary files, and another lane running, When the operator closes the finished lane's space,</span> <span data-acceptance-observable>Then no scratch folder of the finished lane's agents is left, and the other lane's agents keep theirs: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-lane-worktree" id="acceptance-disk-lane-worktree" data-story="user-story-disk-lane-close"><span data-acceptance-scenario>Given an operator with a finished lane whose PR merged and whose worktree holds no uncommitted work, When the operator tears down the lane,</span> <span data-acceptance-observable>Then the lane's worktree is gone, and its repository's main checkout is unchanged: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-lane-worktree-kept" id="acceptance-disk-lane-worktree-kept" data-story="user-story-disk-lane-close"><span data-acceptance-scenario>Given an operator with a finished lane whose worktree holds uncommitted work, When the operator tears down the lane,</span> <span data-acceptance-observable>Then the worktree is kept with that work, and the operator's report of the lane's close names it: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-notes-media" id="acceptance-disk-notes-media" data-story="user-story-disk-lane-close"><span data-acceptance-scenario>Given a lane worker that draws frames from a recording to read it and writes a report of what it read, When the lane closes,</span> <span data-acceptance-observable>Then the lane's archived notes hold the worker's report and none of those frames: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-own-only-rule" id="acceptance-disk-own-only-rule" data-story="user-story-disk-scratch user-story-disk-park user-story-disk-lane-close" data-project-rule="A cleanup removes only what its own lane or agent made"><span data-acceptance-scenario>Given an octo-lite contributor's change to any feature that removes files or folders on the box, and another lane whose agent has files of its own in use, a fixture that must be added to provide it, When an agent, wrapper, or hook runs that removal,</span> <span data-acceptance-observable>Then the removal takes only what its own lane or agent made, and the other lane's files and anything a live process uses are kept: no octo-lite feature removes another lane's or agent's files, or anything in use (<a href="#not-built-list">why</a>): no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-warn-first" id="acceptance-disk-warn-first" data-story="user-story-disk-warning"><span data-acceptance-scenario>Given an operator on a box whose disk is just under 85% full, a fixture that must be added to provide it, When a lane agent runs a command that fills it past 85%,</span> <span data-acceptance-observable>Then the operator gets one message saying how full the disk is and how much is free, and naming the folders holding the most of it, each with its size: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-warn-once" id="acceptance-disk-warn-once" data-story="user-story-disk-warning"><span data-acceptance-scenario>Given an operator told that its box's disk is past 85% full, When lane agents run more commands while the disk stays under 90% full,</span> <span data-acceptance-observable>Then that one message is the only disk message the operator has: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-warn-second" id="acceptance-disk-warn-second" data-story="user-story-disk-warning"><span data-acceptance-scenario>Given an operator told that its box's disk is past 85% full, When a lane agent runs a command that fills it past 90%,</span> <span data-acceptance-observable>Then the operator gets one more message saying how full the disk is and how much is free, and naming the folders holding the most of it, each with its size: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-warn-again" id="acceptance-disk-warn-again" data-story="user-story-disk-warning"><span data-acceptance-scenario>Given an operator told that its box's disk is past 90% full, When the disk is freed to under 80% full, then a lane agent runs a command that fills it past 85% again,</span> <span data-acceptance-observable>Then the operator gets a new message saying how full the disk is: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-warn-no-operator" id="acceptance-disk-warn-no-operator" data-story="user-story-disk-warning"><span data-acceptance-scenario>Given an agent in a Herdr session with no operator, on a box whose disk is just under 85% full, a fixture that must be added to provide it, When the agent runs a command that fills it past 85%,</span> <span data-acceptance-observable>Then the agent is told, beside that command's result, how full the disk is and how much is free: no screen shows it.</span></p>
+<p data-acceptance-criterion data-anchor="acceptance-disk-warn-inform" id="acceptance-disk-warn-inform" data-story="user-story-disk-warning"><span data-acceptance-scenario>Given a lane agent on a box whose disk is past 90% full, a fixture that must be added to provide it, When the agent runs a command,</span> <span data-acceptance-observable>Then the command runs and its result reaches the agent as it would without the warning, and the warning removes nothing: no screen shows it.</span></p>
+</section>
+
+<section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
+<h2>Modular boundaries</h2>
+<p data-modular-boundary data-anchor="boundary-disk-agent" id="boundary-disk-agent">
+<span data-boundary-responsibility><code>herdr-spawn</code> owns giving each agent its scratch folder, and <code>herdr-close</code> owns removing it at a close or park and removing a parked agent's packages.</span>
+<span data-boundary-seam>The caller-facing seam is the <code>TMPDIR</code> each agent's tab carries, which every program the agent runs reads for where its temporary files go.</span>
+<span data-boundary-dependency>Direction is self-contained: the wrappers extend their own spawn, close, and park, and agents' programs depend on <code>TMPDIR</code> as they do on any box; no role or skill names the folder's path.</span>
+<span data-boundary-scope>Observable scope: the scratch folders in the user's cache folder and the packages in a parked agent's worktree.</span>
+</p>
+<p data-modular-boundary data-anchor="boundary-disk-warning" id="boundary-disk-warning">
+<span data-boundary-responsibility>octo-lite's command-time hook owns checking the disk after each shell command and sending the warning.</span>
+<span data-boundary-seam>The caller-facing seam is the message the operator's pane receives, or, with no operator, the line beside the agent's command.</span>
+<span data-boundary-dependency>Direction is external-provider: the hook depends on <code>herdr-say</code> and the session's <code>operator.toml</code>; nothing depends on the warning.</span>
+<span data-boundary-scope>Observable scope: the operator's messages and the agent's command line.</span>
+</p>
+</section>
+
+<section data-anchor="scratch" id="scratch">
+<h2>Scratch</h2>
+<p data-anchor="scratch-folder" id="scratch-folder"><code>herdr-spawn</code> gives each agent it starts a scratch folder of its own, on disk in the user's own cache folder, created empty, and exports it as <code>TMPDIR</code> into the agent's tab, as it exports the caller's <code>HOME</code>.
+Only that user can write there, so no other user of the box can make, read, swap, or redirect an agent's folder.
+The folder's name is drawn from the agent's Herdr session and agent name and kept short, since a browser puts its socket under <code>TMPDIR</code> and fails to start once that path is too long.
+Every program that puts its temporary files where <code>TMPDIR</code> says, as <code>mktemp</code>, Python's <code>tempfile</code>, and Node's <code>os.tmpdir</code> do, puts them there, so the test suites, browsers, and recordings an agent runs leave their temporary files in its folder.</p>
+<p data-anchor="scratch-end" id="scratch-end"><code>herdr-close</code> removes the scratch folder of each agent in the tab or space it closes, a park included, once it has stopped the processes started there.
+Agent names repeat across Herdr sessions, so a close removes only its own session's folders.
+A resumed agent gets an empty scratch folder again under its old name.</p>
+<p data-anchor="scratch-write" id="scratch-write">An agent writes its temporary files under <code>$TMPDIR</code>, never at a path of its own in <code>/tmp</code>, and keeps there anything it can make again, such as frames drawn from a recording to read it.
+What must outlive the agent goes where it is kept: a report in the lane's <a href="./octo-lite.spec.html#delivery-notes">notes</a>, work in its worktree and the PR.
+The role contracts say so where agents write.</p>
+<p data-anchor="scratch-old" id="scratch-old">An agent started before its box had this has no scratch folder, and its close removes nothing more than it did, so a box updates octo-lite whenever it is ready, with nothing to migrate.
+Nothing sweeps <code>/tmp</code>: a folder left there before the update stays until the box owner removes it.</p>
+</section>
+
+<section data-anchor="park" id="park">
+<h2>Parking</h2>
+<p data-anchor="park-modules" id="park-modules">Parking an agent also removes the <code>node_modules</code> folders Git ignores in its worktree, the folder it works in, since its repository's install command restores them and they are most of an idle lane's disk.
+Only installed packages go: every other file, tracked or not, stays.</p>
+<p data-anchor="park-own" id="park-own">Only a worktree of the agent's own lane counts: a Git linked worktree not checked out on its repository's main branch.
+A box's main checkouts and its live install clones stay on main and serve every lane and the box's installed tools, so they keep their packages.
+A worktree that a process outside the parked agent's tab still has as its working folder, such as another live agent's, keeps its packages too, since that process may be using them.</p>
+<p data-anchor="park-resume" id="park-resume">A resumed agent that finds its packages gone installs them again with its repository's install command, as the target <code>AGENTS.md</code> names it, before it runs anything that needs them, such as its tests or the prototype.
+The orchestrator and implementer contracts say so where they resume.</p>
+<p data-anchor="park-close" id="park-close">Closing an agent removes no packages: a closed worker's worktree goes whole once its commits are integrated, and the lane's own worktree goes at <a href="#lane-close">lane close</a>.</p>
+</section>
+
+<section data-anchor="lane-close-section" id="lane-close-section">
+<h2>Lane close</h2>
+<p data-anchor="lane-close" id="lane-close">At teardown the owner removes its workers' worktrees (<a href="./octo-lite.spec.html#roles-teardown">teardown</a>), and the operator, once it has closed the lane's space or owner tab, removes the lane's own worktree, the one it added at lane start.
+It removes it with Git's worktree remove, which keeps a worktree holding uncommitted work, and its report of the lane's close names a worktree so kept.
+Closing the lane's space or owner tab removes the scratch folder of every agent it closes, so a finished lane leaves only its archived record, hand-off log, and notes.</p>
+</section>
+
+<section data-anchor="warning" id="warning">
+<h2>Disk warning</h2>
+<p data-anchor="warning-check" id="warning-check">After each shell command any agent runs, octo-lite's <a href="./command-time.spec.html#time-line">command-time hook</a> also reads how full the box's disk is, as <code>df</code> shows it for the root filesystem.
+The read is cheap and needs no timer or service: the commands that fill the disk are what check it.</p>
+<p data-anchor="warning-levels" id="warning-levels">When the disk is 85% full or more, the session's operator, the pane in its <code>operator.toml</code>, gets one message by <code>herdr-say</code>, and at 90% one more.
+Each says how full the disk is and how much is free, names the folders holding the most of it, each with its size, and says that nothing was removed and that each lane frees only what it made.
+Each level is told once per session until the disk is back under 80% full; then each is told again the next time the disk passes it.</p>
+<p data-anchor="warning-no-operator" id="warning-no-operator">In a session with no operator, the agent whose command found the disk past a level is told instead, in that command's line.</p>
+<p data-anchor="warning-inform" id="warning-inform">The warning only informs, as every hook octo-lite registers does (<a href="./command-time.spec.html#acceptance-hooks-inform-rule">rule</a>): it never removes, blocks, or stops anything, and the operator decides what to free and asks the lanes holding it.
+A failed check or send adds nothing, and the command and its result are as they would be without it.</p>
+</section>
+
+<section data-anchor="not-built" id="not-built">
+<h2>Not built</h2>
+<p data-anchor="not-built-list" id="not-built-list">octo-lite keeps no per-lane disk budget and has no disk command: scratch folders and packages end with the agent that made them, and the warning names what holds the disk.
+It sweeps nothing: no <code>/tmp</code> sweep, no cache cleaning, and no other lane's files, so every removal here is of what its own lane or agent made, as every octo-lite cleanup's is (<a href="#acceptance-disk-own-only-rule">rule</a>), since a sweep by guesswork can delete a live lane's tree mid-test.
+It removes no build output, since only installed packages have one restore every repository names.</p>
+<p data-anchor="not-built-install" id="not-built-install">Install: the installer links and registers nothing new for this, since the wrappers and the hook it already installs carry it, so every install run still passes as the first (<a href="./install.spec.html#acceptance-install-again">rule</a>).</p>
+</section>
+</article>
+</body>
+</html>

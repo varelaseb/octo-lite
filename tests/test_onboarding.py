@@ -438,7 +438,9 @@ class AfterPullTest(unittest.TestCase):
                     "PATH": f"{self.bin}:{FLOORS}:{os.environ['PATH']}", "HOME": str(self.prefix),
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        # State and spawned scratch folders go in the test home, never the box's.
         self.env.pop("XDG_STATE_HOME", None)
+        self.env.pop("XDG_CACHE_HOME", None)
         self.upstream = base / "upstream"
         (self.upstream / "scripts").mkdir(parents=True)
         (self.upstream / "agents").mkdir()
