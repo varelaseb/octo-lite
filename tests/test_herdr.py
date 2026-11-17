@@ -2160,24 +2160,26 @@ class HerdrWrapperTest(unittest.TestCase):
         for made in (folder.parent, folder):
             self.assertEqual(stat.S_IMODE(made.stat().st_mode), 0o700, made)
 
-    def test_a_short_home_leaves_a_suite_30_characters_to_nest_its_browser_in(self):
-        # acceptance-disk-scratch-browser, acceptance-disk-scratch-private,
-        # scratch-folder: Chromium puts its socket under TMPDIR and fails to
-        # start past 62 characters. Herdr's longest name, 32 characters, in a
-        # named session, in a home of 15 characters, leaves a suite 30 to nest
-        # its own temporary folders in.
-        self.dialog.write_text("none\n")
-        name = "implementer-ann-1992-fix-round-1"
-        self.assertEqual(len(name), 32)
-        r = subprocess.run([str(SPAWN), "--workspace", "w1", "--name", name, "--label", "L",
-                            "--cwd", str(self.cwd), "--role", "r", "--", "claude"],
-                           capture_output=True, text=True, env={**self.env, "HERDR_SESSION": "s" * 32})
-        self.assertEqual(r.returncode, 0, r.stderr)
-        tmpdir = self.tab_env("TMPDIR")
-        self.assertTrue(tmpdir.startswith(self.tmp.name + "/"), tmpdir)
-        home = "/home/" + "h" * 9
+    def test_a_suite_nesting_30_characters_under_a_short_homes_scratch_starts_chromium(self):
+        # acceptance-disk-scratch-browser, scratch-folder: in a home of 15
+        # characters, Chromium starts in a folder 30 characters under the
+        # scratch folder. Full Chromium in a persistent context makes the
+        # socket under TMPDIR that a long path breaks; Playwright's headless
+        # shell makes none. /tmp is the one folder short enough to hold the home.
+        home = tempfile.mkdtemp(prefix="ol", dir="/tmp")
+        self.addCleanup(shutil.rmtree, home)
         self.assertEqual(len(home), 15)
-        self.assertLessEqual(len(home + tmpdir[len(self.tmp.name):]) + 30, 62, tmpdir)
+        scratch = subprocess.run([str(STATE), "--scratch", "implementer-ann-1"], capture_output=True, text=True,
+                                 check=True, env={**self.env, "HOME": home}).stdout.strip()
+        deepest = Path(scratch, "n" * 9, "n" * 9, "n" * 9)
+        self.assertEqual(len(str(deepest)) - len(scratch), 30)
+        deepest.mkdir(parents=True)
+        r = subprocess.run(["node", "-e", "require('playwright-core').chromium.launchPersistentContext("
+                            "process.argv[1], { channel: 'chromium' }).then(c => c.close())",
+                            str(Path(self.tmp.name) / "profile")],
+                           cwd=ROOT, capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "TMPDIR": str(deepest)})
+        self.assertEqual(r.returncode, 0, f"Chromium did not start in {deepest}:\n{r.stderr}")
 
     def test_resume_and_lane_start_give_the_agent_its_scratch_folder(self):
         # scratch-folder: a resumed agent and a lane owner started by
