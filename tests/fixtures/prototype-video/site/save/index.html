@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reel</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4; user-select: none }
+  .save { width: 120px; height: 48px; touch-action: none }
+  .menu { display: none; position: fixed; left: 20px; top: 120px; width: 240px; margin: 0; padding: 0; list-style: none;
+          background: #fff; border: 1px solid #ccc; border-radius: 8px }
+  .menu.open { display: block }
+  .menu li { padding: 16px }
+  .saved { display: none; position: fixed; left: 20px; top: 420px; width: 350px; height: 60px; background: #999 }
+  .saved[data-picked] { display: block }
+  .saved[data-picked=trips] { background: #16a34a }
+</style>
+<!-- Save, which a tap saves and a hold opens a menu of collections for, picking the one let go on. -->
+<button class="save" type="button">Save</button>
+<ul class="menu"><li data-collection="ideas">Ideas</li><li data-collection="trips">Trips</li><li data-collection="work">Work</li></ul>
+<div class="saved"></div>
+<script>
+  const save = document.querySelector('.save')
+  const menu = document.querySelector('.menu')
+  const saved = document.querySelector('.saved')
+  let opening
+  save.addEventListener('touchstart', e => {
+    e.preventDefault()
+    opening = setTimeout(() => menu.classList.add('open'), 500)
+  }, { passive: false })
+  save.addEventListener('touchmove', e => e.preventDefault(), { passive: false })
+  save.addEventListener('touchend', e => {
+    clearTimeout(opening)
+    const { clientX, clientY } = e.changedTouches[0]
+    const item = menu.classList.contains('open') && document.elementFromPoint(clientX, clientY)?.closest('[data-collection]')
+    saved.dataset.picked = item ? item.dataset.collection : 'saved'
+    menu.classList.remove('open')
+  })
+</script>

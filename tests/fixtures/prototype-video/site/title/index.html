@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reels</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4; user-select: none;
+         -webkit-touch-callout: none }
+  .title { width: 200px; padding: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: #fff;
+           border: 1px solid #ccc; border-radius: 8px }
+  .full { display: none; position: fixed; left: 20px; top: 200px; width: 350px; box-sizing: border-box; padding: 16px;
+          background: #f59e0b }
+  .title.held + .full { display: block }
+</style>
+<!-- A title cut short, whose full text shows only while it is pressed and held. -->
+<div class="title">A very long title that the card cuts short at its edge</div>
+<div class="full">A very long title that the card cuts short at its edge</div>
+<script>
+  const title = document.querySelector('.title')
+  title.addEventListener('touchstart', () => title.classList.add('held'), { passive: true })
+  addEventListener('touchend', () => title.classList.remove('held'))
+  addEventListener('contextmenu', e => e.preventDefault())
+</script>

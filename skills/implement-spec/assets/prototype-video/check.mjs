@@ -1,6 +1,6 @@
-// The recorder's check of each video it records (octo-lite #delivery-round-video): every press shows the cursor, on a
-// phone the touch, and the press mark, in a frame the video shows while the mark is full; a step that does not fails,
-// naming the step and its viewport. It reads the frames for the shapes overlay.mjs draws.
+// The recorder's check of each video it records (octo-lite #delivery-round-video): every action shows the cursor, on a
+// phone the touch, on the part it acts on, with its press mark wherever it pressed, in a frame the video shows; a step
+// that does not fails, naming the step and its viewport. It reads the frames for the shapes overlay.mjs draws.
 
 import { ARROW, EDGE, MARK, TOUCH } from './overlay.mjs'
 
@@ -77,13 +77,18 @@ export function drawn({ size, luma }, probes) {
   return read.length >= SHOWN * probes.length
 }
 
-// One step's presses, each with its crops of the frames the video shows while its mark is full.
-export function verify(viewport, step, presses) {
-  const { cursor, mark } = SHAPES[viewport]
-  for (const press of presses) {
-    if (!press.crops.some(frame => drawn(frame, cursor) && drawn(frame, mark))) {
-      throw new Error(`the ${viewport} video does not show the ${viewport === 'phone' ? 'touch' : 'cursor'} and its press `
-        + `mark at step "${step}" (${press.action}); fix the prototype and record again`)
+// Whether a crop shows the cursor, on a phone the touch, at its point, and with `mark` its press mark there.
+export function shows(viewport, frame, mark = true) {
+  const shapes = SHAPES[viewport]
+  return drawn(frame, shapes.cursor) && (!mark || drawn(frame, shapes.mark))
+}
+
+// One step's actions, each with its crops of the frames the video shows at it, and whether it pressed (`mark`).
+export function verify(viewport, step, actions) {
+  for (const { action, crops, mark = true } of actions) {
+    if (!crops.some(frame => shows(viewport, frame, mark))) {
+      throw new Error(`the ${viewport} video does not show the ${viewport === 'phone' ? 'touch' : 'cursor'}`
+        + `${mark ? ' and its press mark' : ''} at step "${step}" (${action}); fix the prototype and record again`)
     }
   }
 }
