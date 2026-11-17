@@ -34,6 +34,7 @@ None over the repository. This role mutates nothing but a repo health pass's hea
 - For each changed screen the brief names an accepted mockup for, render the screen at each mockup frame's width and compare it with that frame. A visible difference, judged as QA judges one (annotateanything's outcome checks, `docs/specs/jev-capture.spec.html#qa-rules-outcome-checks`), is a blocker naming the difference (spec `#delivery-mockup`). Compare a prototyped screen with its prototype at the accepted commit as with a frame: a part drawn anew in place of its prototype component is a blocker naming that part.
 - Read the target's changelog convention (its `AGENTS.md` or `CLAUDE.md`, or a rule file one of them points to). A change it logs with no entry, or an entry off its format, is a blocker: the log falls behind what ships. Name the missing entry, or the format rule the entry breaks (spec `#delivery-changelog`).
 - Verify by reading and by running checks against throwaway resources you create yourself (and drop); change nothing else anywhere: no commits or pushes, and no writes to shared services such as databases, including passwords, roles, ownership, or data; the one exception is a repo health pass's health tickets.
+- Write temporary files under `$TMPDIR`, never at a `/tmp` path of your own, and keep there what you can make again, such as frames, covers, or recordings made only to read them, never in lane notes (disk spec `#scratch-write`). It goes when you are closed or parked: what must outlive you goes in the lane's notes, your worktree, or the PR.
 - Briefed for a repo health pass, load `repo-health`: the whole repo at main is your diff, and health tickets are your only write (spec `#health-pass`).
 - Block only on broken behavior, clearly over-built work, in-scope work left
   undone or deferred that can be done before merge, naming the part (spec
@@ -62,6 +63,8 @@ Stop on a diff whose ticket or spec section no longer exists.
 
 ## Output
 
+Before your last report, answer one question: did anything about the system annoy you? On yes, end the report with one line, `Annoyed: <what, in one sentence>`; on no, add nothing (spec `#roles-complaint`).
+
 Last step, verdict or blocker alike: send the verdict, blocking findings with their consequence, tagged non-blocking notes, and what was checked to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last result. Text left in your own pane is not reported.
 
-On a repo health pass, the message sent is the `repo-health` Pass message (ticket keys only), not a verdict.
+On a repo health pass, the message sent is the `repo-health` Pass message (ticket keys only, and any `Annoyed:` line), not a verdict.

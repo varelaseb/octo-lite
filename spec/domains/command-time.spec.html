@@ -13,7 +13,7 @@
 <h1>Command time</h1>
 <nav><a href="../index.spec.html">Specifications</a> / Command time</nav>
 <p data-anchor="header-scope" id="header-scope">This spec states what every agent octo-lite installs, Claude Code or Codex, is told after each shell command it runs: how long the command took, and a warning when it is repeating a slow command after an edit.</p>
-<p data-anchor="header-related" id="header-related">How the installer registers the hook with each agent CLI is in the <a href="./install.spec.html#install-hooks">octo-lite install</a> spec.</p>
+<p data-anchor="header-related" id="header-related">How the installer registers the hook with each agent CLI is in the <a href="./install.spec.html#install-hooks">octo-lite install</a> spec; the same hook checks the box's disk after each command and warns the operator, as the <a href="./disk.spec.html#warning">Disk</a> spec states.</p>
 </header>
 
 <section data-spec-section="user-stories" data-anchor="user-stories" id="user-stories">
@@ -42,7 +42,7 @@
 <section data-spec-section="modular-boundaries" data-anchor="modular-boundaries" id="modular-boundaries">
 <h2>Modular boundaries</h2>
 <p data-modular-boundary data-anchor="boundary-command-time" id="boundary-command-time">
-<span data-boundary-responsibility>The command-time hook owns timing each shell command an agent runs, telling a wait for the box lock apart from the run, and judging a slow iteration loop.</span>
+<span data-boundary-responsibility>The command-time hook owns timing each shell command an agent runs, telling a wait for the box lock apart from the run, and judging a slow iteration loop; it also carries the <a href="./disk.spec.html#warning">disk warning</a>.</span>
 <span data-boundary-seam>The caller-facing seam is each agent CLI's tool hook: the CLI passes the hook each shell command it ran, and the hook returns the line the agent reads.</span>
 <span data-boundary-dependency>Direction is external-provider: the hook depends on Claude Code's and Codex's hook contracts; neither CLI, nor any octo-lite role or skill, depends on the hook.</span>
 <span data-boundary-scope>Observable scope: the line added to an agent's context after each shell command.</span>
@@ -66,6 +66,7 @@ That line inside a longer line, such as a search result quoting it, reports no w
 <tr data-anchor="time-row-plain"><td>Reports no wait for the box lock</td><td>How long it took.</td></tr>
 <tr data-anchor="time-row-lock-reported"><td>Takes the box lock and reports its wait</td><td>How long it waited for the box lock and how long it ran, each apart.</td></tr>
 <tr data-anchor="time-row-loop"><td>Is a run in a slow iteration loop</td><td>The above, then the <a href="#loop-warning">slow-loop warning</a>.</td></tr>
+<tr data-anchor="time-row-disk"><td>Finds the box's disk past a warning level, in a session with no operator</td><td>The above, then the <a href="./disk.spec.html#warning-no-operator">disk warning</a>.</td></tr>
 <tr data-anchor="time-row-background"><td>Is still running when its tool call returns, such as one started in the background</td><td>Nothing: no line.</td></tr>
 </tbody>
 </table>

@@ -33,11 +33,15 @@ Integrate named worker commits onto the lane integration branch, and return the 
 - Integrate the named commits onto the lane branch.
 - Stop and report if the branch moved or a conflict changes behavior (mechanical conflicts ok).
 - Run the repo's checks; report failures, don't fix.
+- Resumed from a park with your worktree's `node_modules` gone, install them again with the install command the target `AGENTS.md` names before you run anything that needs them, such as the repo's checks (disk spec `#park-resume`).
 - On a shared database server, create and drop only your own lane database (and a role only if you created it, scoped to that database); never run server-wide commands such as `REASSIGN OWNED`, `DROP OWNED`, `ALTER ROLE`, or ownership changes on objects you did not create.
 - Never touch main, PR state, Linear, or others' branches.
 - Never update a branch checked out in another worktree; push the lane branch and let its owner pull.
+- Write temporary files under `$TMPDIR`, never at a `/tmp` path of your own, and keep there what you can make again, such as frames, covers, or recordings made only to read them, never in lane notes (disk spec `#scratch-write`). It goes when you are closed or parked: what must outlive you goes in the lane's notes, your worktree, or the PR.
 - Report the head as pushed only once `git fetch origin <branch>` then `git merge-base --is-ancestor <head> origin/<branch>` passes; on failure push the lane branch and prove again (spec `#gates-push-proof`).
 
 ## Output
+
+Before your last report, answer one question: did anything about the system annoy you? On yes, end the report with one line, `Annoyed: <what, in one sentence>`; on no, add nothing (spec `#roles-complaint`).
 
 Last step, result or blocker alike: send the head commit, commits integrated, checks run and their result, and blockers to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last result. Text left in your own pane is not reported.

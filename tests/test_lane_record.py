@@ -19,6 +19,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "spec/domains/octo-lite.spec.html"
 OPERATOR = ROOT / "agents/meta-operator.md"
 UTC = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+# The confirm and resend rule every Claude role's report recipe states
+# (spec/domains/herdr-transport.spec.html#transport-native).
+REPORT_CONFIRM = (
+    "Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; "
+    "one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; "
+    "on exit 69, which `herdr-say` already re-sent for hours, send it no more; "
+    "on any other exit, send it again, 3 sends in all."
+)
 
 
 class LaneRecordTests(unittest.TestCase):
@@ -75,7 +83,7 @@ class LaneRecordTests(unittest.TestCase):
         self.assertRegex(
             owner,
             r"tear down in order: review rows, the prototype you run, worktrees, workers\. Last, after your last "
-            r"hand-off line \(the final worker close\) and "
+            r"hand-off line \(the final worker close, then your own complaint line, if any\) and "
             r"before your close report, move `<name>\.toml`, "
             r"`<name>\.handoffs\.jsonl`, and `<name>-notes/` when present, "
             r"unchanged into `archive/` in the lanes directory",
@@ -91,7 +99,7 @@ class LaneRecordTests(unittest.TestCase):
         table = re.search(r'id="handoff-operator".*?<tbody>(.*?)</tbody>', html, flags=re.DOTALL)
         self.assertIsNotNone(table, "operator log table is missing")
         kinds = re.findall(r"<tr[^>]*><td><code>(\w+)</code>", table.group(1))
-        self.assertEqual(kinds, ["note", "prod", "start", "filed"])
+        self.assertEqual(kinds, ["note", "prod", "start", "filed", "complaint"])
         self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"gate relay|merge executed")
 
     def test_operator_logs_start_and_filed_lines(self) -> None:
@@ -289,7 +297,8 @@ class LaneRecordTests(unittest.TestCase):
         # #roles-box-problem, #acceptance-box-problem-human.
         text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
         self.assertIn("You are the filter (spec `#roles-operator-writes`): relay to the human only gates, decisions, "
-                      "real blockers, lane closes, and each problem of the box an owner reports (spec "
+                      "real blockers, lane closes with their complaints (spec `#roles-complaint`), and each problem "
+                      "of the box an owner reports (spec "
                       "`#roles-box-problem`) once with the step that fixes it, however many lanes report it, plus the "
                       "one addendum receipt line; progress gets one line or nothing.", text)
         self.assertIn("go together as one question asking whether to take your recommendations, one plain line "
@@ -297,6 +306,100 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIn("A question that weighs real trade-offs goes alone, never in that bundle.", text)
         self.assertNotIn("status only when they ask", text)
         self.assertNotIn("you consume without a message", text)
+
+    def complaint_fields(self, anchor: str) -> set[str]:
+        # The fields a complaint row of the spec's hand-off tables declares.
+        row = re.search(rf'<tr data-anchor="{anchor}"[^>]*>(.*?)</tr>', SPEC.read_text(encoding="utf-8"))
+        self.assertIsNotNone(row, f"{anchor} row is missing")
+        return set(re.findall(r"<code>(\w+)</code>", row.group(1).split("</td>", 2)[2]))
+
+    def test_worker_last_report_answers_the_annoyance_question(self) -> None:
+        # spec #roles-complaint, #acceptance-complaint-worker, #acceptance-complaint-none:
+        # each worker asks itself the one question in its last step and, on yes
+        # only, ends its last report with one Annoyed: line; the owner turns that
+        # line into one complaint line naming the worker, its session, its sentence.
+        for role in ("implementer", "integrator", "code-reviewer"):
+            output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
+            self.assertIn(
+                "Before your last report, answer one question: did anything about the system annoy you? "
+                "On yes, end the report with one line, `Annoyed: <what, in one sentence>`; on no, add nothing "
+                "(spec `#roles-complaint`).",
+                output,
+                role,
+            )
+            self.assertLess(output.index("Annoyed:"), output.index("Last step"), role)
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("a worker's last report may end with one line `Annoyed: <sentence>`. Consuming it, append one "
+                      "complaint line to that file", owner)
+        self.assertIn("a report with no such line gets none", owner)
+        line = json.loads(re.search(r'`(\{"at": [^`]*"kind": "complaint"[^`]*\})`', owner).group(1))
+        self.assertRegex(line["at"], UTC)
+        self.assertEqual(set(line) - {"at", "kind"}, {"name", "session", "text"})
+        self.assertLessEqual(set(line) - {"at", "kind"}, self.complaint_fields("handoff-kind-complaint"))
+        self.assertRegex(line["name"], r"^implementer-")
+        # Its session is read as the parked line reads one: Claude's sessionId.
+        self.assertIn("`session` read with `herdr-claude-session <its pane> | jq -r .sessionId` before you close it",
+                      owner)
+        self.assertIn("session: .sessionId", (ROOT / "skills/herdr-comms/assets/herdr-close").read_text(encoding="utf-8"))
+
+    def test_owner_records_its_own_complaint_as_the_lane_closes(self) -> None:
+        # spec #roles-complaint, #acceptance-complaint-owner: at close the owner
+        # answers the question itself, its line naming no agent and carrying its
+        # session, after its final worker close and before the archive move, so the
+        # archived log ends with it.
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("At lane close you answer the same question, `Did anything about the system annoy you?`: on "
+                      "yes, append your own line, no `name`, `session` yours "
+                      "(`herdr-claude-session \"$HERDR_PANE_ID\" | jq -r .sessionId`).", owner)
+        self.assertRegex(owner, r"workers\. Last, after your last hand-off line \(the final worker close, then your "
+                                r"own complaint line, if any\) and before your close report, move `<name>\.toml`")
+
+    def test_operator_records_its_complaint_before_each_reload(self) -> None:
+        # spec #roles-complaint, #handoff-operator-complaint,
+        # #acceptance-complaint-operator: the reload's last message asks the
+        # question, and the operator's own line names no agent and carries its session.
+        text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
+        self.assertIn("`Reload for <change>: write $(octo-lite-state)/operator.brief.md, your brief, and answer the "
+                      "annoyance question (Write surface), then end your turn.`", text)
+        self.assertIn("Its `complaint` lines (spec `#handoff-operator-complaint`): before each reload, as it writes "
+                      "its brief, it answers `Did anything about the system annoy you?` (spec `#roles-complaint`), on "
+                      "yes appending one with no `name`, `session` its own "
+                      "(`herdr-claude-session \"$HERDR_PANE_ID\" | jq -r .sessionId`), on no nothing", text)
+        self.assertLessEqual({"name", "session", "issue", "repository"},
+                             self.complaint_fields("handoff-operator-complaint"))
+
+    def test_operator_relays_a_closed_lanes_complaints_in_its_close_message(self) -> None:
+        # spec #roles-complaint, #roles-operator-writes, #acceptance-complaint-relay:
+        # at a lane's close the operator reads its archived log's complaint lines
+        # and tells each as one plain line naming the agent and its sentence.
+        text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
+        self.assertIn("When a lane closes, read the `complaint` lines of its log, `<lane name>.handoffs.jsonl` in "
+                      "`$(octo-lite-state)/lanes/archive/`, or in `$(octo-lite-state)/lanes/` when you closed it in "
+                      "its owner's place, and in your message telling of that close give each one plain line naming "
+                      "its agent (its `name`, else the lane's owner) and its sentence", text)
+        # The operator's close in the owner's place touches no record, so that log stays unarchived.
+        self.assertIn("when you close it in its owner's place", text)
+        self.assertIn("Touch no record: its owner archived it.", text)
+        self.assertIn("one naming a problem of the box goes as that problem, once with the step that fixes it", text)
+
+    def test_health_pass_message_carries_its_complaint(self) -> None:
+        # spec #roles-complaint, #health-pass: the pass agent runs under the
+        # code-reviewer contract, so the repo-health Pass message it sends keeps
+        # any Annoyed: line beside the ticket keys, and the operator relays it.
+        reviewer = " ".join((ROOT / "agents/code-reviewer.md").read_text(encoding="utf-8").split())
+        self.assertIn("the `repo-health` Pass message (ticket keys only, and any `Annoyed:` line)", reviewer)
+        skill = " ".join((ROOT / "skills/repo-health/SKILL.md").read_text(encoding="utf-8").split("## Pass", 1)[1].split())
+        self.assertIn("each ticket key filed, commented on, or closed, and any `Annoyed:` line. Then stop.", skill)
+        self.assertIn("Relay the ticket keys its one message names, nothing else but its complaint (Write surface)",
+                      " ".join(OPERATOR.read_text(encoding="utf-8").split()))
+
+    def test_a_complaint_sends_no_message_and_files_nothing(self) -> None:
+        # spec #roles-complaint, #acceptance-complaint-quiet: a complaint is no
+        # report, note, or ticket.
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("A complaint is no report, note, or ticket: send no one a message for it and file nothing", owner)
+        self.assertIn("A complaint never becomes a message to an agent or an issue.",
+                      " ".join(OPERATOR.read_text(encoding="utf-8").split()))
 
     def test_operator_reloads_itself_from_its_brief(self) -> None:
         # spec #roles-contract-change, #roles-operator-brief, #roles-standing-rule,
@@ -541,10 +644,7 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIn(
                 "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
                 "natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. "
-                "Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; "
-                "one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; "
-                "on exit 69, which `herdr-say` already re-sent for hours, send it no more; "
-                "on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, "
+                + REPORT_CONFIRM + " If none is confirmed, send it once, "
                 "naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). "
                 "Then stop, whatever the last result.",
                 output,
@@ -557,6 +657,23 @@ class LaneRecordTests(unittest.TestCase):
             r"only when no live or parked owner has that name, relaunch fresh.*"
             r"`#roles-park`\), then forward\.",
         )
+
+    def test_owner_and_operator_report_natively_first(self) -> None:
+        # spec/domains/herdr-transport.spec.html#transport-native,
+        # #acceptance-native-owner-report: the lane owner and the fleet operator
+        # report as workers do, natively first, herdr-say only as its fallback
+        # under the same confirm and resend rule, never as a choice of the two.
+        output = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split("\n## Output\n", 1)[1]
+        self.assertIn(
+            "sent to its recipient as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on "
+            "Claude and the recipient's pane has a live Claude session, else with `herdr-say`. " + REPORT_CONFIRM,
+            output)
+        self.assertIn(
+            "Send an owner your own reports the same way, natively when you run on Claude and that owner's pane has a "
+            "live Claude session, else with `herdr-say`: " + REPORT_CONFIRM[0].lower() + REPORT_CONFIRM[1:],
+            OPERATOR.read_text(encoding="utf-8"))
+        for path in ROOT.glob("agents/*.md"):
+            self.assertNotIn("natively or by", path.read_text(encoding="utf-8"), path.name)
 
     def test_claude_roles_report_natively_to_the_pane_session(self) -> None:
         # spec/domains/herdr-transport.spec.html#transport-native: every Claude role
@@ -590,7 +707,7 @@ class LaneRecordTests(unittest.TestCase):
         recipe = (ROOT / "skills/herdr-comms/SKILL.md").read_text(encoding="utf-8")
         recipe = recipe.split("\n## Wait on an agent\n", 1)[1].split("\n## ", 1)[0]
         for token in ("`herdr agent read <name>`", "`herdr-await <name> continue`", "`stop=send-failed`", "--since <seq>",
-                      "on Claude with `--notice` in the background"):
+                      "on Claude in the background"):
             self.assertIn(token, recipe)
         callers = {
             "orchestrator": (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"),
@@ -599,14 +716,17 @@ class LaneRecordTests(unittest.TestCase):
         }
         for path, text in callers.items():
             self.assertIn("herdr-comms/SKILL.md#wait-on-an-agent)", text, path)
-            self.assertRegex(text, r"`herdr-await (--notice )?<", path)
+            self.assertIn("`herdr-await <", text, path)
             self.assertNotIn("herdr agent get", text, path)
             self.assertNotRegex(text, r"check-in,? reads?", path)
             self.assertNotRegex(text, r"herdr agent wait <", path)
         self.assertIn("never a standing wait on every owner", callers["meta-operator"])
-        # #acceptance-await-notice: an owner on Claude waits by its own task.
+        # #acceptance-await-notice, #acceptance-await-human-typing: an owner on
+        # Claude waits by its own task, asking for nothing: its pane decides.
         for path in ("orchestrator", "implement-spec"):
-            self.assertIn("on Claude as `herdr-await --notice` run in the background", " ".join(callers[path].split()), path)
+            self.assertIn("on Claude run in the background", " ".join(callers[path].split()), path)
+        for path, text in {**callers, "herdr-comms": recipe}.items():
+            self.assertNotIn("--notice", text, path)
 
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")

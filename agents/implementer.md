@@ -45,6 +45,8 @@ Implement one ticket inside the worktree it was given, and return the commit.
 - Any long or costly run (evaluations, backtests, full QA batches, big migrations) starts with a small smoke sample that proves the pipeline produces real results before the full run; report the smoke result first.
 - One mechanism (operating model): before adding a client, format, store, config, status file, or table, find the existing one and extend it, or state in the spec why a second is needed.
 - Start any server or background process as `setsid sh -c 'echo $$ > "$(git rev-parse --git-dir)/pids/<name>"; exec cmd' &` (mkdir that `pids` dir first) and stop it before reporting, only via that file: `kill -- -<pid>`. Never `pkill -f` or `killall`.
+- Write temporary files under `$TMPDIR`, never at a `/tmp` path of your own, and keep there what you can make again, such as frames, covers, or recordings made only to read them, never in lane notes (disk spec `#scratch-write`). It goes when you are closed or parked: what must outlive you goes in the lane's notes, your worktree, or the PR.
+- Resumed from a park with your worktree's `node_modules` gone, install them again with the install command the target `AGENTS.md` names before you run anything that needs them, such as tests or the prototype (disk spec `#park-resume`).
 
 ## Never
 
@@ -57,5 +59,7 @@ Implement one ticket inside the worktree it was given, and return the commit.
 Stop on a ticket that contradicts the spec, a changed screen that must differ from its accepted mockup, or, in a repo whose specs are Spec Chat's, that its spec's mockup set does not draw (a spec change, spec `#delivery-mockup`), a missing environment, or work that cannot be done without leaving the worktree.
 
 ## Output
+
+Before your last report, answer one question: did anything about the system annoy you? On yes, end the report with one line, `Annoyed: <what, in one sentence>`; on no, add nothing (spec `#roles-complaint`).
 
 Last step, result or blocker alike: send the commit id, what changed, for a ticket that changes a screen, each screen and state it changes, in plain words (spec `#delivery-see-it`), declared repo skills loaded, validation run and its result, and blockers to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last result. Text left in your own pane is not reported.

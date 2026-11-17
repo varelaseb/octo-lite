@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat</title>
+<style>
+  body { margin: 0; padding: 40px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  .send { display: block; width: 600px; height: 80px; margin: 1600px 0 1200px; font: inherit; background: #fff }
+  .send.sent { background: #16a34a }
+</style>
+<!-- A button far below the first screenful, which turns green once pressed, and nothing moves after. -->
+<p>The chat</p>
+<button class="send" type="button">Send</button>
+<script>
+  const send = document.querySelector('.send')
+  send.addEventListener('click', () => send.classList.add('sent'))
+</script>

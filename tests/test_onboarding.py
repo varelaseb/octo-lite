@@ -438,6 +438,7 @@ class AfterPullTest(unittest.TestCase):
                     "PATH": f"{self.bin}:{FLOORS}:{os.environ['PATH']}", "HOME": str(self.prefix),
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        # State and spawned scratch folders go in the test home, never the box's.
         self.env.pop("XDG_STATE_HOME", None)
         self.upstream = base / "upstream"
         (self.upstream / "scripts").mkdir(parents=True)
@@ -506,10 +507,10 @@ class AfterPullTest(unittest.TestCase):
         r = self.check()
         self.assertEqual((r.returncode, r.stderr), (0, ""))
 
-    def spawn(self, name):
+    def spawn(self, name, *extra):
         return subprocess.Popen(
             [str(SPAWN), "--workspace", "w1", "--name", name, "--label", name,
-             "--cwd", str(self.clone), "--role", "implementer", "--", "claude"],
+             "--cwd", str(self.clone), "--role", "implementer", *extra, "--", "claude"],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=self.env)
 
@@ -543,6 +544,21 @@ class AfterPullTest(unittest.TestCase):
         head = subprocess.run(["git", "-C", str(self.clone), "rev-parse", "HEAD"],
                               capture_output=True, text=True, check=True).stdout.strip()
         self.assertEqual(tomllib.loads(self.onboarding.read_text())["commit"], head)
+
+    def test_every_install_run_keeps_the_boxs_operating_model(self):
+        # spec/domains/install.spec.html#install-consent: the model a spawn was
+        # given stays the box's through the spawn's own after-pull step and a
+        # later onboarding run, beside the kept answers.
+        installer = [str(self.clone / "scripts/install-octo-lite"), "--prefix", str(self.prefix)]
+        model = self.prefix / "AGENTS.md"
+        model.write_text("# Model\n")
+        self.started(self.spawn("w1", "--operating-model", str(model)))
+        r = subprocess.run([*installer, "--onboard"], input="y\nn\ny\n",
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        state = tomllib.loads(self.onboarding.read_text())
+        self.assertEqual((state["operating_model"], state["consent"]),
+                         (str(model.resolve()), {"push": True, "pull_request": False, "issues": True}))
 
     def test_a_failing_step_is_printed_by_the_first_spawn_only(self):
         # spec/domains/install.spec.html#acceptance-after-pull-spawn-fail

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week plan</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  .card { width: 280px; height: 64px; box-sizing: border-box; padding: 20px; border-radius: 8px; background: #2563eb;
+          color: #fff; cursor: grab; touch-action: none }
+  .week { display: flex; gap: 12px; margin: 1600px 0 400px }
+  .day { position: relative; width: 100px; height: 140px; box-sizing: border-box; padding: 8px; background: #fff;
+         border: 1px solid #ccc; border-radius: 8px }
+  .day .card { position: absolute; inset: 8px; width: auto; height: auto }
+</style>
+<!-- A card at the top that the browser drags natively onto a day of the week, 1600 px below. -->
+<div class="tray"><div class="card" draggable="true">Pitch deck</div></div>
+<div class="week"><div class="day" data-day="mon">Mon</div><div class="day" data-day="tue">Tue</div><div class="day" data-day="wed">Wed</div></div>
+<script>
+  const card = document.querySelector('.card')
+  card.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', 'card'))
+  for (const day of document.querySelectorAll('.day')) {
+    day.addEventListener('dragover', e => e.preventDefault())
+    day.addEventListener('drop', e => {
+      e.preventDefault()
+      day.append(card)
+    })
+  }
+</script>

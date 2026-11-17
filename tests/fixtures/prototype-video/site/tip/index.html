@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toolbar</title>
+<style>
+  body { margin: 0; padding: 40px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  .export { width: 160px; height: 48px }
+  .tip { display: none; position: fixed; left: 40px; top: 300px; width: 300px; height: 60px; background: #7c3aed }
+  .export:hover + .tip { display: block }
+</style>
+<!-- A button whose tip shows while the pointer rests on it. -->
+<button class="export" type="button">Export</button><div class="tip">Export as CSV</div>
