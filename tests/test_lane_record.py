@@ -75,7 +75,7 @@ class LaneRecordTests(unittest.TestCase):
         self.assertRegex(
             owner,
             r"tear down in order: review rows, the prototype you run, worktrees, workers\. Last, after your last "
-            r"hand-off line \(the final worker close\) and "
+            r"hand-off line \(the final worker close, then your own complaint line, if any\) and "
             r"before your close report, move `<name>\.toml`, "
             r"`<name>\.handoffs\.jsonl`, and `<name>-notes/` when present, "
             r"unchanged into `archive/` in the lanes directory",
@@ -91,7 +91,7 @@ class LaneRecordTests(unittest.TestCase):
         table = re.search(r'id="handoff-operator".*?<tbody>(.*?)</tbody>', html, flags=re.DOTALL)
         self.assertIsNotNone(table, "operator log table is missing")
         kinds = re.findall(r"<tr[^>]*><td><code>(\w+)</code>", table.group(1))
-        self.assertEqual(kinds, ["note", "prod", "start", "filed"])
+        self.assertEqual(kinds, ["note", "prod", "start", "filed", "complaint"])
         self.assertNotRegex(OPERATOR.read_text(encoding="utf-8"), r"gate relay|merge executed")
 
     def test_operator_logs_start_and_filed_lines(self) -> None:
@@ -289,7 +289,8 @@ class LaneRecordTests(unittest.TestCase):
         # #roles-box-problem, #acceptance-box-problem-human.
         text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
         self.assertIn("You are the filter (spec `#roles-operator-writes`): relay to the human only gates, decisions, "
-                      "real blockers, lane closes, and each problem of the box an owner reports (spec "
+                      "real blockers, lane closes with their complaints (spec `#roles-complaint`), and each problem "
+                      "of the box an owner reports (spec "
                       "`#roles-box-problem`) once with the step that fixes it, however many lanes report it, plus the "
                       "one addendum receipt line; progress gets one line or nothing.", text)
         self.assertIn("go together as one question asking whether to take your recommendations, one plain line "
@@ -297,6 +298,100 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIn("A question that weighs real trade-offs goes alone, never in that bundle.", text)
         self.assertNotIn("status only when they ask", text)
         self.assertNotIn("you consume without a message", text)
+
+    def complaint_fields(self, anchor: str) -> set[str]:
+        # The fields a complaint row of the spec's hand-off tables declares.
+        row = re.search(rf'<tr data-anchor="{anchor}"[^>]*>(.*?)</tr>', SPEC.read_text(encoding="utf-8"))
+        self.assertIsNotNone(row, f"{anchor} row is missing")
+        return set(re.findall(r"<code>(\w+)</code>", row.group(1).split("</td>", 2)[2]))
+
+    def test_worker_last_report_answers_the_annoyance_question(self) -> None:
+        # spec #roles-complaint, #acceptance-complaint-worker, #acceptance-complaint-none:
+        # each worker asks itself the one question in its last step and, on yes
+        # only, ends its last report with one Annoyed: line; the owner turns that
+        # line into one complaint line naming the worker, its session, its sentence.
+        for role in ("implementer", "integrator", "code-reviewer"):
+            output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
+            self.assertIn(
+                "Before your last report, answer one question: did anything about the system annoy you? "
+                "On yes, end the report with one line, `Annoyed: <what, in one sentence>`; on no, add nothing "
+                "(spec `#roles-complaint`).",
+                output,
+                role,
+            )
+            self.assertLess(output.index("Annoyed:"), output.index("Last step"), role)
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("a worker's last report may end with one line `Annoyed: <sentence>`. Consuming it, append one "
+                      "complaint line to that file", owner)
+        self.assertIn("a report with no such line gets none", owner)
+        line = json.loads(re.search(r'`(\{"at": [^`]*"kind": "complaint"[^`]*\})`', owner).group(1))
+        self.assertRegex(line["at"], UTC)
+        self.assertEqual(set(line) - {"at", "kind"}, {"name", "session", "text"})
+        self.assertLessEqual(set(line) - {"at", "kind"}, self.complaint_fields("handoff-kind-complaint"))
+        self.assertRegex(line["name"], r"^implementer-")
+        # Its session is read as the parked line reads one: Claude's sessionId.
+        self.assertIn("`session` read with `herdr-claude-session <its pane> | jq -r .sessionId` before you close it",
+                      owner)
+        self.assertIn("session: .sessionId", (ROOT / "skills/herdr-comms/assets/herdr-close").read_text(encoding="utf-8"))
+
+    def test_owner_records_its_own_complaint_as_the_lane_closes(self) -> None:
+        # spec #roles-complaint, #acceptance-complaint-owner: at close the owner
+        # answers the question itself, its line naming no agent and carrying its
+        # session, after its final worker close and before the archive move, so the
+        # archived log ends with it.
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("At lane close you answer the same question, `Did anything about the system annoy you?`: on "
+                      "yes, append your own line, no `name`, `session` yours "
+                      "(`herdr-claude-session \"$HERDR_PANE_ID\" | jq -r .sessionId`).", owner)
+        self.assertRegex(owner, r"workers\. Last, after your last hand-off line \(the final worker close, then your "
+                                r"own complaint line, if any\) and before your close report, move `<name>\.toml`")
+
+    def test_operator_records_its_complaint_before_each_reload(self) -> None:
+        # spec #roles-complaint, #handoff-operator-complaint,
+        # #acceptance-complaint-operator: the reload's last message asks the
+        # question, and the operator's own line names no agent and carries its session.
+        text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
+        self.assertIn("`Reload for <change>: write $(octo-lite-state)/operator.brief.md, your brief, and answer the "
+                      "annoyance question (Write surface), then end your turn.`", text)
+        self.assertIn("Its `complaint` lines (spec `#handoff-operator-complaint`): before each reload, as it writes "
+                      "its brief, it answers `Did anything about the system annoy you?` (spec `#roles-complaint`), on "
+                      "yes appending one with no `name`, `session` its own "
+                      "(`herdr-claude-session \"$HERDR_PANE_ID\" | jq -r .sessionId`), on no nothing", text)
+        self.assertLessEqual({"name", "session", "issue", "repository"},
+                             self.complaint_fields("handoff-operator-complaint"))
+
+    def test_operator_relays_a_closed_lanes_complaints_in_its_close_message(self) -> None:
+        # spec #roles-complaint, #roles-operator-writes, #acceptance-complaint-relay:
+        # at a lane's close the operator reads its archived log's complaint lines
+        # and tells each as one plain line naming the agent and its sentence.
+        text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
+        self.assertIn("When a lane closes, read the `complaint` lines of its log, `<lane name>.handoffs.jsonl` in "
+                      "`$(octo-lite-state)/lanes/archive/`, or in `$(octo-lite-state)/lanes/` when you closed it in "
+                      "its owner's place, and in your message telling of that close give each one plain line naming "
+                      "its agent (its `name`, else the lane's owner) and its sentence", text)
+        # The operator's close in the owner's place touches no record, so that log stays unarchived.
+        self.assertIn("when you close it in its owner's place", text)
+        self.assertIn("Touch no record: its owner archived it.", text)
+        self.assertIn("one naming a problem of the box goes as that problem, once with the step that fixes it", text)
+
+    def test_health_pass_message_carries_its_complaint(self) -> None:
+        # spec #roles-complaint, #health-pass: the pass agent runs under the
+        # code-reviewer contract, so the repo-health Pass message it sends keeps
+        # any Annoyed: line beside the ticket keys, and the operator relays it.
+        reviewer = " ".join((ROOT / "agents/code-reviewer.md").read_text(encoding="utf-8").split())
+        self.assertIn("the `repo-health` Pass message (ticket keys only, and any `Annoyed:` line)", reviewer)
+        skill = " ".join((ROOT / "skills/repo-health/SKILL.md").read_text(encoding="utf-8").split("## Pass", 1)[1].split())
+        self.assertIn("each ticket key filed, commented on, or closed, and any `Annoyed:` line. Then stop.", skill)
+        self.assertIn("Relay the ticket keys its one message names, nothing else but its complaint (Write surface)",
+                      " ".join(OPERATOR.read_text(encoding="utf-8").split()))
+
+    def test_a_complaint_sends_no_message_and_files_nothing(self) -> None:
+        # spec #roles-complaint, #acceptance-complaint-quiet: a complaint is no
+        # report, note, or ticket.
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("A complaint is no report, note, or ticket: send no one a message for it and file nothing", owner)
+        self.assertIn("A complaint never becomes a message to an agent or an issue.",
+                      " ".join(OPERATOR.read_text(encoding="utf-8").split()))
 
     def test_operator_reloads_itself_from_its_brief(self) -> None:
         # spec #roles-contract-change, #roles-operator-brief, #roles-standing-rule,

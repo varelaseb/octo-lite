@@ -82,4 +82,4 @@ checks, and files, and its one message. This skill holds only how:
 - File findings by the Filing rule, source `health pass at <main sha>`.
 - Send the fleet operator the one message as a
   [report](../herdr-comms/SKILL.md#send-a-report): each ticket key
-  filed, commented on, or closed. Then stop.
+  filed, commented on, or closed, and any `Annoyed:` line. Then stop.
