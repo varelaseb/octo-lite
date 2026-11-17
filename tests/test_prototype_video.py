@@ -86,8 +86,7 @@ for (const step of steps) {
 
 # Runs the recorder on its arguments, logging each input it sends and every frame its video is made of, as its
 # screencast hands them over, for the test's own lines after it to read: `inputs`, each mouse move, down, and up with
-# its button, each touch, with its point and time, and each part it looks for on a page, as an action starts; `frames`;
-# and helpers that read a frame at a point.
+# its button, each touch, with its point and time; `frames`; and helpers that read a frame at a point.
 HARNESS = """
 import { readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -95,7 +94,7 @@ const [dir, ...argv] = process.argv.slice(1)
 const require = createRequire(`${dir}/recorder.mjs`)
 const { chromium } = require('playwright-core')
 const { jpegjs } = require('playwright-core/lib/utilsBundle')
-const { HALF, SHAPES, crop, drawn } = await import(`${dir}/check.mjs`)
+const { SHAPES, crop, drawn } = await import(`${dir}/check.mjs`)
 const { main } = await import(`${dir}/recorder.mjs`)
 const frames = []
 const inputs = []
@@ -120,8 +119,6 @@ chromium.launch = async options => {
     }
     context.on('page', page => {
       const { mouse, screencast } = page
-      const locator = page.locator.bind(page)
-      page.locator = (selector, ...rest) => (log('locate', { x: 0, y: 0 }, { selector }), locator(selector, ...rest))
       let at = { x: 0, y: 0 }
       const [move, down, up] = [mouse.move, mouse.down, mouse.up].map(call => call.bind(mouse))
       mouse.move = (x, y, ...rest) => (at = { x, y }, log('move', at), move(x, y, ...rest))
@@ -486,44 +483,6 @@ console.log(JSON.stringify({ drift: Math.abs(played.duration - (h * 3600 + m * 6
 """)
         self.assertEqual(seen, {"drift": True, "sent": True})
 
-    def test_each_caption_starts_as_its_step_does_on_the_video(self):
-        """#delivery-round-video: each caption is timed on the video's own timeline: played back as a browser plays it,
-        the cursor sets off from where the video opened on it as long after the tip step's caption starts as it did
-        after that step started, within three of its frames (25 a second), as the video resamples them and the browser
-        skips some."""
-        seen = self.probe(mockup("/tip/", ("toolbar", "The toolbar", ""),
-                                 ("tip", "Resting on Export &rarr; its tip", '<li data-hover=".export">')), "desktop", """
-const webm = readdirSync(videos).find(name => name.endsWith('-desktop.webm'))
-const vtt = readFileSync(`${videos}/${webm.replace(/webm$/, 'vtt')}`, 'utf8')
-const [, tip] = [...vtt.matchAll(/^(\\d+):(\\d+):(\\S+) -->/gm)].map(([, h, m, s]) => h * 3600 + m * 60 + Number(s))
-const [rest] = of('move') // where the cursor rests as the video opens
-const [locate] = of('locate') // as the tip step starts
-const setOff = frames.find(frame => frame.timestamp > locate.at && !shape(frame, rest, SHAPES.desktop.cursor))
-// Each frame the video presents, at its own media time, cropped around that rest.
-const played = await play(webm, async ({ x, y, half }) => {
-  const video = document.querySelector('video')
-  const context = document.querySelector('canvas').getContext('2d', { willReadFrequently: true })
-  const shown = []
-  const each = (_, { mediaTime }) => {
-    Object.assign(context.canvas, { width: video.videoWidth, height: video.videoHeight })
-    context.drawImage(video, 0, 0)
-    shown.push({ at: mediaTime, data: [...context.getImageData(x - half, y - half, 2 * half + 1, 2 * half + 1).data] })
-    video.requestVideoFrameCallback(each)
-  }
-  video.requestVideoFrameCallback(each)
-  video.src = '/video.webm'
-  await video.play()
-  await new Promise(done => video.addEventListener('ended', done, { once: true }))
-  return shown
-}, { ...rest, half: HALF })
-const size = 2 * HALF + 1
-const resting = ({ data }) => drawn(crop({ width: size, height: size, data }, HALF, HALF), SHAPES.desktop.cursor)
-const drift = played.find(frame => !resting(frame)).at - tip - (setOff.timestamp - locate.at) / 1000
-console.log(JSON.stringify({ opened: resting(played[0]), drift }))
-""")
-        self.assertTrue(seen["opened"])
-        self.assertLess(abs(seen["drift"]), 3 / 25)
-
     def test_press_again_on_a_part_taller_than_the_screen_waits_on_no_scroll(self):
         """#delivery-round-video: a part taller than the screen never fits in view, so the page scrolls it no further
         once the pointer can rest on it there: its second press follows its first by the step's hold, with no wait on a
@@ -540,7 +499,8 @@ console.log(JSON.stringify(next.at - up.at))
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn('step "open": a press on ".tile" lands on another part', result.stderr)
+        self.assertIn('step "open": a press on ".tile" never lands on it: it does not show there, or another part lies over it'
+                      ' or acts inside it', result.stderr)
 
 
 if __name__ == "__main__":

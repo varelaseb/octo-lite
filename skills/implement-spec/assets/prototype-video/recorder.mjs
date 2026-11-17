@@ -201,7 +201,8 @@ async function record(browser, url, steps, viewport, file) {
         await sleep(PACE.rest)
         if (await lands(target, point)) return target
       }
-      throw new Error(`step "${step.name}": ${doing} on "${selector}" lands on another part, over it or acting inside it`)
+      throw new Error(`step "${step.name}": ${doing} on "${selector}" never lands on it: it does not show there, `
+        + 'or another part lies over it or acts inside it')
     }
 
     // The press goes down where the pointer is, its mark drawn first, so the video shows both before the page answers
