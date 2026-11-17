@@ -168,15 +168,16 @@ including DB isolation, shard/file concurrency, schema and dependencies.
 Do not run parallel destructive suites on one shared DB when CI isolates them.
 Every heavy job (full suite, QA capture, build, recording), yours or a
 worker's, runs under the box lock whatever the box's load
-(`spec/domains/box-lock.spec.html`): `octo-lite-lock CMD`, which waits for a
-slot, prints its wait, runs the job on its slot's share of the CPUs, and ends as
-the job did. Where the target `AGENTS.md` names a resource and its number
-beside the job's command, run `octo-lite-lock --cap RESOURCE=N CMD`.
+(`spec/domains/box-lock.spec.html`): `octo-lite-lock [--cores N] CMD`, which
+waits for N CPUs (4 by default), prints its wait, runs the job on them, and ends
+as the job did. Where the target `AGENTS.md` names, beside the job's command,
+a resource, its number, and the CPUs the job asks for, run
+`octo-lite-lock --cores C --cap RESOURCE=N CMD`.
 A head before the merge ask's head gets only the tests for what it touched;
 those are no heavy job and never take the lock. The lane runs the full suite
 once, on the merge ask's head, and the PR body's validation names that run.
 A server or watcher (prototype server, review service, dev server) runs outside
-the lock, since it would hold its slot until it stopped and stall the heavy jobs
+the lock, since it would hold its CPUs until it stopped and stall the heavy jobs
 behind it on the box.
 Every worker brief carries that recipe line, naming the jobs that take the lock
 and that the ticket's own tests run outside it (spec `#roles-load`).

@@ -53,7 +53,7 @@
 <h2>Command time</h2>
 <p data-anchor="time-line" id="time-line">After each shell command an agent runs, octo-lite's command-time hook adds one line to the agent's context, beside the command's result, telling how long the command took.
 A command still running when its tool call returns, such as one the agent starts in the background or one moved to the background as it runs, has not finished, so it gets no line.</p>
-<p data-anchor="time-lock" id="time-lock">The <a href="./box-lock.spec.html">box lock</a> admits a box's heavy jobs into slots counted from the box.
+<p data-anchor="time-lock" id="time-lock">The <a href="./box-lock.spec.html">box lock</a> admits a box's heavy jobs by the CPUs each asks for.
 A command that takes the box lock may wait for another job before it runs, and that wait is not the command's own run.
 A command reports its wait by printing it on a line of its own, as <code>octo-lite-lock</code> and <code>flock --verbose</code> do.
 That line inside a longer line, such as a search result quoting it, reports no wait, and a command naming the box lock does not take it.</p>

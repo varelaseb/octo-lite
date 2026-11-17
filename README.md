@@ -147,14 +147,16 @@ its `sessions/<name>` in a named one. Lane records, their hand-off logs, and
 `operator.toml` live there, so each session sees only its own lanes; the
 onboarding file stays box-wide.
 
-`octo-lite-lock CMD`, also on `PATH`, runs a heavy job, such as a full test
-suite, a QA capture, a build, or a recording, under the box-wide
-[box lock](spec/domains/box-lock.spec.html): it waits for one of the box's
-slots, counted from its CPUs and memory, prints its wait on a line of its own,
-runs the job on its slot's share of the CPUs, and ends as the job did. It holds
-the slot itself, so a server or browser the job leaves running holds none.
-`--cap RESOURCE=N` also caps how many jobs naming that resource run at once.
-A ticket's own tests, a server, or a watcher never take it.
+`octo-lite-lock [--cores N] CMD`, also on `PATH` as `box-heavy`, runs a heavy
+job, such as a full test suite, a QA capture, a build, or a recording, under
+the box-wide [box lock](spec/domains/box-lock.spec.html): it waits in line for
+N of the box's CPUs (4 by default, every CPU on a smaller box), and for 6 GB
+free while another heavy job runs, prints its wait on a line of its own, runs
+the job on those CPUs only, telling it their count in `BOX_HEAVY_CORES`, and
+ends as the job did. It holds the CPUs itself, so a server or browser the job
+leaves running holds none. A heavy job inside a heavy job runs at once on the
+outer job's CPUs. `--cap RESOURCE=N` also caps how many jobs naming that
+resource run at once. A ticket's own tests, a server, or a watcher never take it.
 
 With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
 `wake` provider by writing
