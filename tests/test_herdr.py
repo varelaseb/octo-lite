@@ -825,7 +825,8 @@ class HerdrWrapperTest(unittest.TestCase):
         # holds a wait on an agent whose tab closes: its tab once its Herdr
         # wait runs.
         r = self.awaits(target, HERDR_PANE_ID=pane, FAKE_WAIT_GATE=str(Path(self.tmp.name) / "never"), **env)
-        self.assertTrue(self.until(lambda: self.tagged_pids(r.tab, "agent wait")), "the wait never ran")
+        # Wide bound: until returns at the first true value, so only a loaded box pays it.
+        self.assertTrue(self.until(lambda: self.tagged_pids(r.tab, "agent wait"), within=30), "the wait never ran")
         return r.tab
 
     def until(self, check, within=5.0):
@@ -1781,7 +1782,7 @@ class HerdrWrapperTest(unittest.TestCase):
                              env={**self.env, "HERDR_PANE_ID": "w5:p2", "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": "w5",
                                   "FAKE_WAIT_GATE": str(Path(self.tmp.name) / "never")})
         self.addCleanup(lambda: (p.kill(), p.wait(), p.stdout.close()))
-        self.assertTrue(self.until(lambda: self.tagged_pids(tab, "agent wait")), "the wait never ran")
+        self.assertTrue(self.until(lambda: self.tagged_pids(tab, "agent wait"), within=30), "the wait never ran")
         return p, tab
 
     def test_await_notice_ends_its_callers_own_task_naming_the_stop(self):

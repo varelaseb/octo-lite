@@ -191,8 +191,8 @@ exit 0 ends the reload, the agent kept as it was.
 herdr-claude-session PANE
 ```
 
-The one lookup `herdr-close --park`, `herdr-spawn --reload`, `herdr-say`, and a
-[native report](#send-a-report) share
+The one lookup `herdr-close --park`, `herdr-spawn --reload`, `herdr-say`,
+`herdr-await` (its caller's form), and a [native report](#send-a-report) share
 (`spec/domains/herdr-transport.spec.html#transport-claude-session`).
 Prints one JSON line: Claude's own record
 `~/.claude/sessions/<pid>.json` plus `transcript`, the path of
