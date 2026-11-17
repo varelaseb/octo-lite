@@ -111,9 +111,9 @@ a space. Closes it, then sends TERM to every process of the caller's session
 whose environ carries `HERDR_TAB_ID=TAB` or `HERDR_WORKSPACE_ID=SPACE`, which
 catches detached children that close alone leaves running, and ends whole each
 `herdr-await` of the caller's own pane on an agent in it, by name or pane id,
-read from `herdr agent list` before the close, sending no message (a `--notice`
-wait prints `closed by its caller`): you closed it, so no stop reads as news of
-an agent spawned again under the same name
+read from `herdr agent list` before the close, sending no message (a Claude
+caller's wait prints `closed by its caller`): you closed it, so no stop reads
+as news of an agent spawned again under the same name
 (`spec/domains/herdr-transport.spec.html#transport-close-waits`).
 Then it removes the scratch folder of each agent it closed, by name in the
 caller's session; an agent spawned before scratch folders has none, so its
@@ -191,8 +191,8 @@ exit 0 ends the reload, the agent kept as it was.
 herdr-claude-session PANE
 ```
 
-The one lookup `herdr-close --park`, `herdr-spawn --reload`, `herdr-say`, and a
-[native report](#send-a-report) share
+The one lookup `herdr-close --park`, `herdr-spawn --reload`, `herdr-say`,
+`herdr-await` (its caller's form), and a [native report](#send-a-report) share
 (`spec/domains/herdr-transport.spec.html#transport-claude-session`).
 Prints one JSON line: Claude's own record
 `~/.claude/sessions/<pid>.json` plus `transcript`, the path of
@@ -306,7 +306,7 @@ that dies on a rate limit), a lost result is read from the sender's pane when th
 ## Wait on an agent
 
 ```
-herdr-await [--notice] [--since SEQ] NAME [MESSAGE]
+herdr-await [--since SEQ] NAME [MESSAGE]
 ```
 
 The one wait on a lane agent (`spec/domains/herdr-transport.spec.html#transport-await`):
@@ -322,19 +322,21 @@ herdr-await: NAME stop=gone (REASON)                   Herdr's error code, or th
 herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   the send did not exit 0; no wait ran
 ```
 
-A Claude caller passes `--notice` and runs it with its Bash tool in the
-background (`run_in_background`), its description naming NAME: the wait holds
-that task, prints the stop line as its output, and exits 0, so the task's end
-is your wake, never text your conversation records as the operator's. Any
-other caller, Codex or pi, omits `--notice`: it returns at once, waits apart
-from its caller, and sends the caller's pane (`$HERDR_PANE_ID`) the stop line
-as a message. Either way a send that waits out a rate limit holds no caller in
-the foreground. Given `--since SEQ`, the `seq` of the stop the caller last
-read, the wait ends only once NAME has changed state since that
-stop and stopped again, or is gone: a re-wait on an agent still at its task
-never wakes its caller before it moves, and one that works and stops before the
-wait starts still ends it at once. Wait by agent name: a parked worker
-`herdr-say` resumes gets a new pane, never a new name. Each Herdr wait it runs
+A Claude caller runs it with its Bash tool in the background
+(`run_in_background`), its description naming NAME, and asks for nothing
+else: its pane (`$HERDR_PANE_ID`) holds a live Claude session
+(`herdr-claude-session`), so the wait holds that task, prints the stop line as
+its output, and exits 0. The task's end is your wake, never text typed into
+your prompt, where a human may be typing and your conversation would record it
+as the operator's. Any other caller, Codex or pi, returns at once: the wait
+runs apart from it and sends its pane the stop line as a message. Either way
+a send that waits out a rate limit holds no caller in the foreground. Given
+`--since SEQ`, the `seq` of the stop the caller last read, the wait ends only
+once NAME has changed state since that stop and stopped again, or is gone: a
+re-wait on an agent still at its task never wakes its caller before it moves,
+and one that works and stops before the wait starts still ends it at once.
+Wait by agent name: a parked worker `herdr-say` resumes gets a new pane, never
+a new name. Each Herdr wait it runs
 is bounded, and at the bound it waits again, given `--since` reading the stop
 first, so it ends within the bound once the agent is gone, its tab closed
 however it closed (Herdr leaves its own wait running), or has worked and
@@ -342,14 +344,14 @@ stopped between two waits. The wait keeps the caller's environ, so
 `herdr-close` of the caller's tab, parking included, ends it with the caller's
 other processes, waking no one; a wait whose caller is gone otherwise ends at
 its bound, waking no one. `herdr-close` of the agent by the caller, parking
-included, ends the caller's waits on it, sending no message; a `--notice` wait
-so ended prints `herdr-await: NAME closed by its caller`, never a stop: you
+included, ends the caller's waits on it, sending no message; a Claude caller's
+wait so ended prints `herdr-await: NAME closed by its caller`, never a stop: you
 closed it, so nothing to do.
 
 The wait recipe (`spec/domains/herdr-transport.spec.html#roles-goal`), for an
 owner on each worker it sets to
 work and the operator on an owner it awaits a reply from. Run every
-`herdr-await` here as above, on Claude with `--notice` in the background. The
+`herdr-await` here as above, on Claude in the background. The
 wait's end is your only wake: no timer or poll. When relaunched from a park,
 run `herdr-await <name>`, sending nothing, on each agent you still await: your
 earlier waits ended with your process. When a wait ends on a stop for an agent

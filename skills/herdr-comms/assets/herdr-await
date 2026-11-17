@@ -2,7 +2,7 @@
 # The one wait on a lane agent (spec/domains/herdr-transport.spec.html#transport-await):
 # roles never run `herdr agent wait` themselves.
 #
-#   herdr-await [--notice] [--since SEQ] NAME [MESSAGE]
+#   herdr-await [--since SEQ] NAME [MESSAGE]
 #
 # It sends MESSAGE to NAME by herdr-say when given, then waits (`herdr agent
 # wait NAME`) until NAME is idle, done, or blocked on interactive input, or
@@ -11,12 +11,13 @@
 #   herdr-await: NAME stop=STATE seq=N      stopped in STATE, Herdr's state_change_seq N
 #   herdr-await: NAME stop=gone (REASON)    Herdr's error code, or the wait's exit
 #   herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   no wait ran
-# Given --notice, for a Claude caller running it as its own background task, it
-# waits in that task's foreground, prints the line on stdout, and exits 0, so
-# the task's end is the caller's wake, never text typed as the operator's.
-# Else it returns at once, waits apart from its caller, and sends the caller's
-# pane ($HERDR_PANE_ID) the line as a message, which wakes a Claude, Codex, or
-# pi caller the same way; a wake the caller refuses while blocked on
+# A caller whose pane ($HERDR_PANE_ID) holds a live Claude session
+# (herdr-claude-session), which runs it as its own background task, gets it
+# as the call's end: it waits in that task's foreground, prints the line on
+# stdout, and exits 0, so the task's end is the caller's wake, never text typed
+# into a prompt a human may be typing in. Any other caller, Codex or pi: it
+# returns at once, waits apart from its caller, and sends the caller's pane the
+# line as a message; a wake the caller refuses while blocked on
 # interactive input (herdr-say exit 75) is sent again once it frees, until it
 # lands. Either way a send that waits out a rate limit holds no caller in the
 # foreground.
@@ -32,17 +33,17 @@
 # the caller's tab, parking included, ends it with the caller's other
 # processes. It leads its own process group and carries HERDR_AWAIT_ON=NAME, so
 # herdr-close of NAME's tab or space by the same caller ends all of it, sending
-# no message; a notice wait so ended prints, instead of a stop:
+# no message; a Claude caller's wait so ended prints, instead of a stop:
 #   herdr-await: NAME closed by its caller
 set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 bound=60000 # ms, each Herdr wait's
 
-usage() { echo "usage: herdr-await [--notice] [--since SEQ] NAME [MESSAGE]" >&2; exit 64; }
-argv=("$@") since= notice=
+usage() { echo "usage: herdr-await [--since SEQ] NAME [MESSAGE]" >&2; exit 64; }
+argv=("$@") since=
 while [[ "${1:-}" == -* ]]; do
   case "$1" in
-    --notice) notice=1; shift ;;
+    --notice) shift ;; # ignored, the pane decides: an owner started passing it still works
     --since) [[ "${2:-}" =~ ^[0-9]+$ ]] || usage; since="$2"; shift 2 ;;
     *) usage ;;
   esac
@@ -51,14 +52,18 @@ done
 caller="${HERDR_PANE_ID:-}"
 [[ -n "$caller" ]] || { echo "herdr-await: no caller pane (HERDR_PANE_ID) to wake" >&2; exit 64; }
 
-# A notice wait's setsid forks and stays when its caller leads its own group,
-# so it carries no HERDR_AWAIT_ON, or herdr-close would end the caller's group.
+# The caller's pane decides the form once, here, and the re-exec carries it as
+# HERDR_AWAIT_NOTICE. The foreground form's setsid forks and stays when its
+# caller leads its own group, so it carries no HERDR_AWAIT_ON, or herdr-close
+# would end the caller's group.
 if [[ -z "${HERDR_AWAIT_ON:-}" ]]; then
-  [[ -z "$notice" ]] || exec setsid -w env HERDR_AWAIT_ON="$1" "$here/herdr-await" "${argv[@]}"
+  "$here/herdr-claude-session" "$caller" >/dev/null 2>&1 &&
+    exec setsid -w env HERDR_AWAIT_ON="$1" HERDR_AWAIT_NOTICE=1 "$here/herdr-await" "${argv[@]}"
   HERDR_AWAIT_ON="$1" setsid -f "$here/herdr-await" "${argv[@]}" </dev/null >/dev/null 2>&1
   exit
 fi
-unset HERDR_AWAIT_ON
+notice="${HERDR_AWAIT_NOTICE:-}"
+unset HERDR_AWAIT_ON HERDR_AWAIT_NOTICE
 
 name="$1"
 # herdr-close's TERM; detached, stdout is /dev/null.
@@ -74,7 +79,7 @@ bounded() {
   [[ "$code" != timeout || "$(code "$(herdr agent get "$caller" 2>&1)")" != agent_not_found ]] || exit
   return 1
 }
-# One wake per stop, its line on stdout given --notice, else sent: a caller
+# One wake per stop, its line on stdout for a Claude caller, else sent: a caller
 # blocked on interactive input (herdr-say exit 75) gets it once it frees.
 stop() {
   [[ -z "$notice" ]] || { echo "herdr-await: $name stop=$1"; exit; }

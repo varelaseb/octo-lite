@@ -3,7 +3,8 @@
 # record ~/.claude/sessions/<pid>.json plus transcript, the path of its
 # ~/.claude/projects/*/<sessionId>.jsonl, null before its first message.
 # Exit 1 when no record counts. herdr-close --park, herdr-spawn (its readiness
-# and --reload), herdr-say, and a native report share it.
+# and --reload), herdr-say, herdr-await (its caller's form), and a native report
+# share it.
 #
 # A record counts when its live process carries HERDR_PANE_ID=PANE and the
 # caller's HERDR_SESSION (unset in both for the default session), foreground

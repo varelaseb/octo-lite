@@ -829,8 +829,10 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertTrue(self.until(lambda: self.tagged_pids(r.tab, "agent wait")), "the wait never ran")
         return r.tab
 
-    def until(self, check, within=5.0):
-        # check's first true value within the time given, else its last.
+    def until(self, check, within=30.0):
+        # check's first true value within the time given, else its last. Wide
+        # default: it returns at the first true value, so only a loaded box pays
+        # it; a check expecting a false value gives its own short bound.
         end = time.monotonic() + within
         while not (v := check()) and time.monotonic() < end:
             time.sleep(0.05)
@@ -1135,8 +1137,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(rc.read_text(), "0\n")
         self.assertNotIn("agent prompt", self.calls(), "it sent before the agent went quiet")
         gate.touch()
-        self.assertTrue(self.until(lambda: not self.tagged_pids(tab, "--reload"), within=20),
-                        "the reload never ended")
+        self.assertTrue(self.until(lambda: not self.tagged_pids(tab, "--reload")), "the reload never ended")
         os.set_blocking(master, False)
         shown = b""
         while True:
@@ -1552,7 +1553,8 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def awaits(self, *args, **env):
         # herdr-await run by the owner in pane w5:p2 of its own tab, which a
-        # cleanup reaps with whatever the wait left running.
+        # cleanup reaps with whatever the wait left running. The pane holds no
+        # Claude session unless the test starts one (claude_caller).
         tab = f"w5:t-{uuid.uuid4()}"
         self.addCleanup(self.reap, tab)
         start = time.monotonic()
@@ -1582,7 +1584,12 @@ class HerdrWrapperTest(unittest.TestCase):
                 pids.append(int(env.parent.name))
         return pids
 
-    def woken(self, within=5.0, pane="w5:p2"):
+    def claude_caller(self):
+        # A live Claude session in the caller's pane w5:p2, its process in a
+        # tab of its own, so a wait's processes are told apart from it.
+        self.claude("w5:p2", "w5:t-claude", "w5", "s-op", agent=None)
+
+    def woken(self, within=30.0, pane="w5:p2"):
         # The message herdr-await delivered to its caller's pane, or None; a
         # wake the caller refused is no wake.
         m = self.until(lambda: re.search(rf"^delivered {pane} (herdr-await: .*)$", self.calls(), re.M), within)
@@ -1764,13 +1771,14 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("agent wait", self.calls())
 
     def noticing(self, target):
-        # herdr-await --notice on target run as a background task of its Claude
-        # caller in pane w5:p2 of its own tab, the task leading its own process
-        # group, its stdout the task's output; held on as Herdr holds a wait on
-        # an agent whose tab closes.
+        # herdr-await on target run as a background task of its Claude caller
+        # in pane w5:p2 of its own tab, the task leading its own process group,
+        # its stdout the task's output; held on as Herdr holds a wait on an
+        # agent whose tab closes.
+        self.claude_caller()
         tab = f"w5:t-{uuid.uuid4()}"
         self.addCleanup(self.reap, tab)
-        p = subprocess.Popen([str(AWAIT), "--notice", target], stdout=subprocess.PIPE, text=True,
+        p = subprocess.Popen([str(AWAIT), target], stdout=subprocess.PIPE, text=True,
                              start_new_session=True,
                              env={**self.env, "HERDR_PANE_ID": "w5:p2", "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": "w5",
                                   "FAKE_WAIT_GATE": str(Path(self.tmp.name) / "never")})
@@ -1780,23 +1788,38 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def test_await_notice_ends_its_callers_own_task_naming_the_stop(self):
         # spec/domains/herdr-transport.spec.html#transport-await,
-        # acceptance-await-notice: a Claude caller's wait runs in its own
-        # background task, which ends on the stop with the stop line as its
-        # output, and no message is typed to the caller's pane.
-        r = self.awaits("--notice", "implementer-ann-1", "brief ANN-1", FAKE_WAIT_STATUS="blocked")
+        # acceptance-await-notice, acceptance-await-human-typing: a caller whose
+        # pane holds a live Claude session, asking for nothing, waits in its
+        # own background task, which ends on the stop with the stop line as its
+        # output, and nothing is typed into its prompt.
+        self.claude_caller()
+        r = self.awaits("implementer-ann-1", "brief ANN-1", FAKE_WAIT_STATUS="blocked")
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "herdr-await: implementer-ann-1 stop=blocked seq=42\n", ""))
         calls = self.calls()
         self.assertLess(calls.index("agent prompt implementer-ann-1 brief ANN-1"), calls.index("agent wait implementer-ann-1"))
         self.assertNotIn("agent prompt w5:p2", calls)
         self.assertEqual(self.tagged_pids(r.tab), [], "the wait outlived its task")
+        # An owner started when a Claude caller passed --notice still gets it so.
+        r = self.awaits("--notice", "implementer-ann-1")
+        self.assertEqual((r.returncode, r.stdout), (0, "herdr-await: implementer-ann-1 stop=idle seq=42\n"))
+        self.assertNotIn("agent prompt w5:p2", self.calls())
+
+    def test_await_by_a_caller_with_no_claude_session_wakes_it_by_herdr_say(self):
+        # spec/domains/herdr-transport.spec.html#transport-await: a Codex or pi
+        # caller, its pane holding no Claude session, gets its stop as a
+        # message to its pane, --notice or not: the pane decides.
+        r = self.awaits("--notice", "implementer-ann-1", "brief ANN-1", FAKE_WAIT_STATUS="blocked")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.woken(), "herdr-await: implementer-ann-1 stop=blocked seq=42")
 
     def test_await_notice_keeps_since_and_a_failed_send(self):
         # spec/domains/herdr-transport.spec.html#transport-await: --since and a
-        # failed send end a notice wait as they end a detached one.
-        r = self.awaits("--notice", "--since", "42", "implementer-ann-1", FAKE_WORKS_AFTER_WAIT="1")
+        # failed send end a Claude caller's wait as they end a detached one.
+        self.claude_caller()
+        r = self.awaits("--since", "42", "implementer-ann-1", FAKE_WORKS_AFTER_WAIT="1")
         self.assertEqual(r.stdout, "herdr-await: implementer-ann-1 stop=idle seq=44\n")
         self.gone_file.write_text("implementer-ann-1\n")
-        r = self.awaits("--notice", "implementer-ann-1", "brief ANN-1")
+        r = self.awaits("implementer-ann-1", "brief ANN-1")
         self.assertRegex(r.stdout, r"^herdr-await: implementer-ann-1 stop=send-failed \(herdr-say exit 1: .*agent_not_found.*\)\n$")
         self.assertNotIn("agent prompt w5:p2", self.calls())
 
@@ -2443,13 +2466,15 @@ class HerdrWrapperTest(unittest.TestCase):
                                 r"/tmp/octo-lite|octo-lite/scratch|\.cache/octo-lite|/\.ol\b|--scratch", path)
 
     def test_a_resumed_agent_reinstalls_packages_its_park_removed(self):
-        # acceptance-disk-park-resume, park-resume.
-        for role in ("orchestrator", "implementer"):
+        # acceptance-disk-park-resume, acceptance-disk-park-resume-integrator,
+        # park-resume: each role whose worktree its park may free.
+        for role, needs in (("orchestrator", "tests or the prototype"), ("implementer", "tests or the prototype"),
+                            ("integrator", "the repo's checks")):
             self.assertRegex(
                 self.contract(role),
                 r"Resumed from a park with your worktree's `node_modules` gone, install them again with the "
                 r"install command the target `AGENTS.md` names before you run anything that needs them, such as "
-                r"tests or the prototype \(disk spec `#park-resume`\)\.", role)
+                + re.escape(needs) + r" \(disk spec `#park-resume`\)\.", role)
 
     def test_operator_removes_the_lane_worktree_keeping_one_with_work(self):
         # acceptance-disk-lane-worktree, acceptance-disk-lane-worktree-kept,
