@@ -95,7 +95,7 @@ const [dir, ...argv] = process.argv.slice(1)
 const require = createRequire(`${dir}/recorder.mjs`)
 const { chromium } = require('playwright-core')
 const { jpegjs } = require('playwright-core/lib/utilsBundle')
-const { SHAPES, crop, drawn } = await import(`${dir}/check.mjs`)
+const { HALF, SHAPES, crop, drawn } = await import(`${dir}/check.mjs`)
 const { main } = await import(`${dir}/recorder.mjs`)
 const frames = []
 const inputs = []
@@ -148,6 +148,20 @@ const color = (frame, { x, y }) => {
   return [...data.subarray(k, k + 3)]
 }
 const like = (rgb, hex) => rgb.every((value, n) => Math.abs(value - parseInt(hex.slice(1 + 2 * n, 3 + 2 * n), 16)) < 48)
+// What `read`, run with `arg` on a page holding a video and a canvas, reads of the spool's video `webm` at /video.webm.
+const play = async (webm, read, arg) => {
+  const browser = await launch()
+  try {
+    const page = await browser.newPage()
+    await page.route('http://video.test/**', route => route.request().url().endsWith('.webm')
+      ? route.fulfill({ path: `${videos}/${webm}`, contentType: 'video/webm' })
+      : route.fulfill({ contentType: 'text/html', body: '<video muted></video><canvas></canvas>' }))
+    await page.goto('http://video.test/')
+    return await page.evaluate(read, arg)
+  } finally {
+    await browser.close()
+  }
+}
 """
 
 # Whether any frame before the first hover shows the touch at the page's corner, where the page's own first hover at
@@ -346,11 +360,20 @@ console.log(JSON.stringify({
 
     def test_phone_carry_to_a_day_far_below_scrolls_it_into_view(self):
         """#delivery-round-video on a phone: the touch holds the card, the page first scrolls Tuesday, 1600 px below,
-        into view, and the touch slides there still down, rests, and lifts on it."""
-        result = self.record(mockup("/far/", ("week", "The week with its pitch deck", ""),
-                                    ("planned", "The deck carried to Tuesday, far below",
-                                     '<li data-hold=".tray .card" data-to=".day[data-day=tue]">')), "phone")
-        self.assertEqual(result.returncode, 0, result.stderr)
+        into view, and the touch slides there still down and rests on it before it lifts: the recording passes only
+        once that rest lands on Tuesday."""
+        seen = self.probe(mockup("/far/", ("week", "The week with its pitch deck", ""),
+                                 ("planned", "The deck carried to Tuesday, far below",
+                                  '<li data-hold=".tray .card" data-to=".day[data-day=tue]">')), "phone", """
+const starts = of('touchStart')
+const [end] = of('touchEnd')
+const slides = of('touchMove')
+console.log(JSON.stringify({
+  stillDown: starts.length === 1 && slides.length > 0 && slides.every(slide => slide.at < end.at),
+  rested: end.at - slides.at(-1).at >= 400,
+}))
+""")
+        self.assertEqual(seen, {"stillDown": True, "rested": True})
 
     def test_hold_shows_the_touch_down_while_the_full_text_shows_then_lifts(self):
         """#acceptance-video-hold: the touch holds the title, its mark full, through the step whose full text shows
@@ -372,11 +395,13 @@ console.log(JSON.stringify({
         self.assertEqual(seen, {"held": True, "after": False, "down": True})
 
     def test_hold_slides_still_down_to_the_item_its_menu_opened_and_picks_it(self):
-        """#acceptance-video-hold-slide: the touch holds Save until its menu, laid out while hidden, shows, slides still
-        down to Trips, and lifts there, which saves to Trips."""
-        seen = self.probe(mockup("/save/", ("reel", "The reel with Save", ""),
-                                 ("saved", "Held &rarr; its collections; slid to Trips &rarr; saved there",
-                                  '<li data-hold=".save" data-to=".menu [data-collection=trips]">')), "phone", """
+        """#acceptance-video-hold-slide: the touch holds Save until its menu shows, however the page hides it until
+        then, slides still down to Trips, and lifts there, which saves to Trips."""
+        for hide in ("opacity", "visibility", "display"):
+            with self.subTest(hide=hide):
+                seen = self.probe(mockup(f"/save/?hide={hide}", ("reel", "The reel with Save", ""),
+                                         ("saved", "Held &rarr; its collections; slid to Trips &rarr; saved there",
+                                          '<li data-hold=".save" data-to=".menu [data-collection=trips]">')), "phone", """
 const starts = of('touchStart')
 const [end] = of('touchEnd')
 const slides = of('touchMove')
@@ -386,7 +411,7 @@ console.log(JSON.stringify({
   picked: like(color(frames.at(-1), { x: 180, y: 450 }), '#16a34a'),
 }))
 """)
-        self.assertEqual(seen, {"heldUntilOpen": True, "stillDown": True, "picked": True})
+                self.assertEqual(seen, {"heldUntilOpen": True, "stillDown": True, "picked": True})
 
     def test_menu_right_clicks_the_card_which_opens_its_menu(self):
         """#acceptance-video-menu: on a desktop the card's menu opens by a right-click, its mark checked by the
@@ -444,13 +469,7 @@ const webm = readdirSync(videos).find(name => name.endsWith('-desktop.webm'))
 const vtt = readFileSync(`${videos}/${webm.replace(/webm$/, 'vtt')}`, 'utf8')
 const [h, m, sec] = vtt.match(/--> (\\S+)\\n[^\\n]*\\n?$/)[1].split(':').map(Number)
 const press = of('down').at(-1)
-const browser = await launch()
-const page = await browser.newPage()
-await page.route('http://video.test/**', route => route.request().url().endsWith('.webm')
-  ? route.fulfill({ path: `${videos}/${webm}`, contentType: 'video/webm' })
-  : route.fulfill({ contentType: 'text/html', body: '<video muted></video><canvas></canvas>' }))
-await page.goto('http://video.test/')
-const played = await page.evaluate(async ({ x, y }) => {
+const played = await play(webm, async ({ x, y }) => {
   const video = document.querySelector('video')
   video.src = '/video.webm'
   await new Promise(done => video.addEventListener('loadedmetadata', done, { once: true }))
@@ -463,24 +482,47 @@ const played = await page.evaluate(async ({ x, y }) => {
   context.drawImage(video, 0, 0)
   return { duration: video.duration, rgb: [...context.getImageData(x, y, 1, 1).data.slice(0, 3)] }
 }, { x: press.x - 200, y: press.y })
-await browser.close()
 console.log(JSON.stringify({ drift: Math.abs(played.duration - (h * 3600 + m * 60 + sec)) < 0.05, sent: like(played.rgb, '#16a34a') }))
 """)
         self.assertEqual(seen, {"drift": True, "sent": True})
 
     def test_each_caption_starts_as_its_step_does_on_the_video(self):
-        """#delivery-round-video: the video's time starts at its first frame, so each caption, timed to the video's own
-        frames, starts as its step's first action does, when the recorder looks for its part."""
+        """#delivery-round-video: each caption is timed on the video's own timeline: played back as a browser plays it,
+        the cursor sets off from where the video opened on it as long after the tip step's caption starts as it did
+        after that step started, within three of its frames (25 a second), as the video resamples them and the browser
+        skips some."""
         seen = self.probe(mockup("/tip/", ("toolbar", "The toolbar", ""),
                                  ("tip", "Resting on Export &rarr; its tip", '<li data-hover=".export">')), "desktop", """
 const webm = readdirSync(videos).find(name => name.endsWith('-desktop.webm'))
 const vtt = readFileSync(`${videos}/${webm.replace(/webm$/, 'vtt')}`, 'utf8')
-const [, tip] = [...vtt.matchAll(/^(\\d+):(\\d+):(\\S+) -->/gm)]
-  .map(([, h, m, s]) => 1000 * (h * 3600 + m * 60 + Number(s)))
-const locate = of('locate').find(locate => locate.at > frames[0].timestamp)
-console.log(JSON.stringify(tip - (locate.at - frames[0].timestamp)))
+const [, tip] = [...vtt.matchAll(/^(\\d+):(\\d+):(\\S+) -->/gm)].map(([, h, m, s]) => h * 3600 + m * 60 + Number(s))
+const [rest] = of('move') // where the cursor rests as the video opens
+const [locate] = of('locate') // as the tip step starts
+const setOff = frames.find(frame => frame.timestamp > locate.at && !shape(frame, rest, SHAPES.desktop.cursor))
+// Each frame the video presents, at its own media time, cropped around that rest.
+const played = await play(webm, async ({ x, y, half }) => {
+  const video = document.querySelector('video')
+  const context = document.querySelector('canvas').getContext('2d', { willReadFrequently: true })
+  const shown = []
+  const each = (_, { mediaTime }) => {
+    Object.assign(context.canvas, { width: video.videoWidth, height: video.videoHeight })
+    context.drawImage(video, 0, 0)
+    shown.push({ at: mediaTime, data: [...context.getImageData(x - half, y - half, 2 * half + 1, 2 * half + 1).data] })
+    video.requestVideoFrameCallback(each)
+  }
+  video.requestVideoFrameCallback(each)
+  video.src = '/video.webm'
+  await video.play()
+  await new Promise(done => video.addEventListener('ended', done, { once: true }))
+  return shown
+}, { ...rest, half: HALF })
+const size = 2 * HALF + 1
+const resting = ({ data }) => drawn(crop({ width: size, height: size, data }, HALF, HALF), SHAPES.desktop.cursor)
+const drift = played.find(frame => !resting(frame)).at - tip - (setOff.timestamp - locate.at) / 1000
+console.log(JSON.stringify({ opened: resting(played[0]), drift }))
 """)
-        self.assertLess(abs(seen), 10)
+        self.assertTrue(seen["opened"])
+        self.assertLess(abs(seen["drift"]), 3 / 25)
 
     def test_press_again_on_a_part_taller_than_the_screen_waits_on_no_scroll(self):
         """#delivery-round-video: a part taller than the screen never fits in view, so the page scrolls it no further

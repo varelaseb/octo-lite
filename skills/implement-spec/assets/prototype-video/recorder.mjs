@@ -153,14 +153,17 @@ async function record(browser, url, steps, viewport, file) {
 
     // The pointer goes to the part `selector` names once it shows, the page first scrolling it into view when a point to
     // rest on lies off the screen, and rests on it: inside it but off its words (Stageshow motion.md, The cursor), else
-    // its middle, at the first point where a press would act on what Spec Chat acts on, judged once it rests there, as
-    // its hover may show a part over that point; else it goes on to the next. A press still down travels there by
-    // `move`, setting off toward the part before the page scrolls, as a drag starts, so what it lifts goes along. A
-    // phone's tap hovers the point before it presses there, so the mouse hovers it, the finger resting there as the
-    // cause of that hover.
+    // its middle. The part shows once a press at such a point lands on it, as Spec Chat's click on it does, however the
+    // page hid it until then; the pointer rests at the first such point, judged again once it rests there, as its hover
+    // may show a part over that point, else at the next. A press still down travels there by `move`, setting off toward
+    // the part before the page scrolls, as a drag starts, so what it lifts goes along. A phone's tap hovers the point
+    // before it presses there, so the mouse hovers it, the finger resting there as the cause of that hover.
     const reach = async (step, selector, doing, move = !touch && mouse) => {
       const target = page.locator(selector).first()
-      let box = await shown(step, target, selector)
+      const layout = () => target.boundingBox({ timeout: WAIT.part }).catch(() => null)
+      let box = null
+      await until(async () => (box = await layout()), WAIT.part)
+      if (!box) throw new Error(`step "${step.name}": nothing on the route matches "${selector}"`)
       const { width, height } = page.viewportSize()
       if (points(box).some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)) {
         if (pointer.down !== null) {
@@ -173,10 +176,16 @@ async function record(browser, url, steps, viewport, file) {
           setTimeout(done, 3000) // a page that cannot scroll it ends no scroll
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
         }))
-        box = await shown(step, target, selector)
       }
-      for (const point of points(box)) {
-        if (!await lands(target, point)) continue
+      for (let from = 0; from < 2; from++) { // the two points to rest on
+        let point = null
+        await until(async () => {
+          const laid = await layout()
+          const rests = laid ? points(laid) : []
+          for (let n = from; n < rests.length && !point; n++) if (await lands(target, rests[n])) [from, point] = [n, rests[n]]
+          return point
+        }, WAIT.part)
+        if (!point) break
         if (move) {
           await travel(pointer, point, move)
         } else {
@@ -303,16 +312,6 @@ function pressesPart(part, { x, y, acts }) {
   const hit = document.elementFromPoint(x, y)
   const own = hit?.closest(acts)
   return Boolean(hit && part.contains(hit) && (!own || own === part || !part.contains(own)))
-}
-
-// The part's box once it shows: laid out and visible, as a page may lay out a part it hides; it has none while the page
-// is drawing it anew.
-async function shown(step, target, selector) {
-  let box = null
-  await until(async () => await target.isVisible()
-    && (box = await target.boundingBox({ timeout: WAIT.part }).catch(() => null)), WAIT.part)
-  if (!box) throw new Error(`step "${step.name}": nothing visible on the route matches "${selector}"`)
-  return box
 }
 
 async function until(done, ms) {

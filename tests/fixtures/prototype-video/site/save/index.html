@@ -6,20 +6,24 @@
 <style>
   body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4; user-select: none }
   .save { width: 120px; height: 48px; touch-action: none }
-  .menu { visibility: hidden; opacity: 0; transition: opacity 0.2s; position: fixed; left: 20px; top: 120px; width: 240px;
+  .menu { transition: opacity 0.2s; position: fixed; left: 20px; top: 120px; width: 240px;
           margin: 0; padding: 0; list-style: none; background: #fff; border: 1px solid #ccc; border-radius: 8px }
-  .menu.open { visibility: visible; opacity: 1 }
+  [data-hide=opacity] .menu:not(.open) { opacity: 0; pointer-events: none }
+  [data-hide=visibility] .menu:not(.open) { visibility: hidden }
+  [data-hide=display] .menu:not(.open) { display: none }
   .menu li { padding: 16px }
   .saved { display: none; position: fixed; left: 20px; top: 420px; width: 350px; height: 60px; background: #999 }
   .saved[data-picked] { display: block }
   .saved[data-picked=trips] { background: #16a34a }
 </style>
-<!-- Save, which a tap saves and a hold opens a menu of collections for, picking the one let go on. The menu is laid out
-     while hidden, so it has a box before it shows. -->
+<!-- Save, which a tap saves and a hold opens a menu of collections for, picking the one let go on. The menu hides as
+     ?hide= names: by opacity and pointer-events, fading in (the default), or by visibility, laid out while hidden either
+     way, so it has a box before it shows; or by display, with none. -->
 <button class="save" type="button">Save</button>
 <ul class="menu"><li data-collection="ideas">Ideas</li><li data-collection="trips">Trips</li><li data-collection="work">Work</li></ul>
 <div class="saved"></div>
 <script>
+  document.documentElement.dataset.hide = new URLSearchParams(location.search).get('hide') || 'opacity'
   const save = document.querySelector('.save')
   const menu = document.querySelector('.menu')
   const saved = document.querySelector('.saved')
