@@ -825,12 +825,13 @@ class HerdrWrapperTest(unittest.TestCase):
         # holds a wait on an agent whose tab closes: its tab once its Herdr
         # wait runs.
         r = self.awaits(target, HERDR_PANE_ID=pane, FAKE_WAIT_GATE=str(Path(self.tmp.name) / "never"), **env)
-        # Wide bound: until returns at the first true value, so only a loaded box pays it.
-        self.assertTrue(self.until(lambda: self.tagged_pids(r.tab, "agent wait"), within=30), "the wait never ran")
+        self.assertTrue(self.until(lambda: self.tagged_pids(r.tab, "agent wait")), "the wait never ran")
         return r.tab
 
-    def until(self, check, within=5.0):
-        # check's first true value within the time given, else its last.
+    def until(self, check, within=30.0):
+        # check's first true value within the time given, else its last. Wide
+        # default: it returns at the first true value, so only a loaded box pays
+        # it; a check expecting a false value gives its own short bound.
         end = time.monotonic() + within
         while not (v := check()) and time.monotonic() < end:
             time.sleep(0.05)
@@ -1135,8 +1136,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(rc.read_text(), "0\n")
         self.assertNotIn("agent prompt", self.calls(), "it sent before the agent went quiet")
         gate.touch()
-        self.assertTrue(self.until(lambda: not self.tagged_pids(tab, "--reload"), within=20),
-                        "the reload never ended")
+        self.assertTrue(self.until(lambda: not self.tagged_pids(tab, "--reload")), "the reload never ended")
         os.set_blocking(master, False)
         shown = b""
         while True:
@@ -1588,7 +1588,7 @@ class HerdrWrapperTest(unittest.TestCase):
         # tab of its own, so a wait's processes are told apart from it.
         self.claude("w5:p2", "w5:t-claude", "w5", "s-op", agent=None)
 
-    def woken(self, within=5.0, pane="w5:p2"):
+    def woken(self, within=30.0, pane="w5:p2"):
         # The message herdr-await delivered to its caller's pane, or None; a
         # wake the caller refused is no wake.
         m = self.until(lambda: re.search(rf"^delivered {pane} (herdr-await: .*)$", self.calls(), re.M), within)
@@ -1782,7 +1782,7 @@ class HerdrWrapperTest(unittest.TestCase):
                              env={**self.env, "HERDR_PANE_ID": "w5:p2", "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": "w5",
                                   "FAKE_WAIT_GATE": str(Path(self.tmp.name) / "never")})
         self.addCleanup(lambda: (p.kill(), p.wait(), p.stdout.close()))
-        self.assertTrue(self.until(lambda: self.tagged_pids(tab, "agent wait"), within=30), "the wait never ran")
+        self.assertTrue(self.until(lambda: self.tagged_pids(tab, "agent wait")), "the wait never ran")
         return p, tab
 
     def test_await_notice_ends_its_callers_own_task_naming_the_stop(self):
