@@ -25,6 +25,8 @@ const VIEWPORTS = { desktop: { width: 1440, height: 900 }, phone: { width: 390, 
 // Stageshow motion.md, Pace and easing: travel's curve, and a person's timing in ms.
 const TRAVEL = [0.45, 0, 0.1, 1]
 const PACE = { open: 1200, reach: 500, rest: 400, press: 90, key: 90, hold: 1400, last: 2200 }
+// How far, in px, a press still down sets off as a drag starts, past the browser's own threshold.
+const LIFT = 12
 // How long, in ms, a part may take to show, and the video to show an action, however loaded the box.
 const WAIT = { part: 5000, video: 10000 }
 // What acts of its own when pressed, as Spec Chat tells a press through a prototype from a click on nothing that acts
@@ -128,7 +130,9 @@ async function record(browser, url, steps, viewport, file) {
     const cdp = touch && await context.newCDPSession(page)
     const finger = (type, { x, y } = pointer) =>
       cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] })
+    const mouse = (x, y) => page.mouse.move(x, y)
     let frames = []
+    let first = null // the first frame's time, where the video's own timeline starts
     let latest = 0
     let held = null // the hold still down, let go before the next action
 
@@ -147,26 +151,35 @@ async function record(browser, url, steps, viewport, file) {
       verify(viewport, step.name, [{ action, crops, mark }])
     }
 
-    // The pointer goes to the part, the page first scrolling it into view, and rests on it: inside it but off its words
-    // (Stageshow motion.md, The cursor), else its middle, at the first point where a press would act on what Spec Chat
-    // acts on, judged once it rests there, as its hover may show a part over that point; else it goes on to the next.
-    // A phone's tap hovers the point before it presses there, so the mouse hovers it, the finger resting there as the
+    // The pointer goes to the part `selector` names once it shows, the page first scrolling it into view when a point to
+    // rest on lies off the screen, and rests on it: inside it but off its words (Stageshow motion.md, The cursor), else
+    // its middle, at the first point where a press would act on what Spec Chat acts on, judged once it rests there, as
+    // its hover may show a part over that point; else it goes on to the next. A press still down travels there by
+    // `move`, setting off toward the part before the page scrolls, as a drag starts, so what it lifts goes along. A
+    // phone's tap hovers the point before it presses there, so the mouse hovers it, the finger resting there as the
     // cause of that hover.
-    const reach = async (step, action) => {
-      const target = page.locator(action.selector).first()
-      let box = await shown(step, target, action.selector)
+    const reach = async (step, selector, doing, move = !touch && mouse) => {
+      const target = page.locator(selector).first()
+      let box = await shown(step, target, selector)
       const { width, height } = page.viewportSize()
-      if (box.x < 0 || box.y < 0 || box.x + box.width > width || box.y + box.height > height) {
+      if (points(box).some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)) {
+        if (pointer.down !== null) {
+          const [dx, dy] = [box.x + box.width / 2 - pointer.x, box.y + box.height / 2 - pointer.y]
+          const off = LIFT / Math.hypot(dx, dy)
+          await travel(pointer, { x: Math.round(pointer.x + dx * off), y: Math.round(pointer.y + dy * off) }, move)
+        }
         await target.evaluate(el => new Promise(done => {
           addEventListener('scrollend', done, { capture: true, once: true })
           setTimeout(done, 3000) // a page that cannot scroll it ends no scroll
           el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
         }))
-        box = await shown(step, target, action.selector)
+        box = await shown(step, target, selector)
       }
       for (const point of points(box)) {
         if (!await lands(target, point)) continue
-        if (touch) {
+        if (move) {
+          await travel(pointer, point, move)
+        } else {
           if (pointer.finger) {
             pointer.finger = false // the finger leaves the part it rested on
             await show()
@@ -174,15 +187,12 @@ async function record(browser, url, steps, viewport, file) {
           await sleep(PACE.reach)
           Object.assign(pointer, point, { finger: true })
           await show()
-          await page.mouse.move(point.x, point.y)
-        } else {
-          await travel(pointer, point, (x, y) => page.mouse.move(x, y))
+          await mouse(point.x, point.y)
         }
         await sleep(PACE.rest)
         if (await lands(target, point)) return target
       }
-      throw new Error(`step "${step.name}": ${action.kind === 'hover' ? 'the pointer' : 'a press'} on "${action.selector}" `
-        + 'lands on another part, over it or acting inside it')
+      throw new Error(`step "${step.name}": ${doing} on "${selector}" lands on another part, over it or acting inside it`)
     }
 
     // The press goes down where the pointer is, its mark drawn first, so the video shows both before the page answers
@@ -216,7 +226,7 @@ async function record(browser, url, steps, viewport, file) {
     // (mockups #prototype-steps).
     const act = async (step, action) => {
       await letGo()
-      const target = await reach(step, action)
+      const target = await reach(step, action.selector, action.kind === 'hover' ? 'the pointer' : 'a press')
       const label = {
         press: `press ${action.selector}`, type: `type into ${action.selector}`, menu: `open the menu of ${action.selector}`,
         hover: `hover ${action.selector}`, hold: `hold ${action.selector}${action.to ? ` to ${action.to}` : ''}`,
@@ -233,12 +243,7 @@ async function record(browser, url, steps, viewport, file) {
           return settle(page)
         }
         // Held until the part `data-to` names shows, then carried there still down and let go on it.
-        const to = page.locator(action.to).first()
-        const box = await shown(step, to, action.to)
-        let point
-        for (const at of points(box)) if (!point && await lands(to, at)) point = at
-        if (!point) throw new Error(`step "${step.name}": letting go on "${action.to}" lands on another part, over it or acting inside it`)
-        await travel(pointer, point, touch ? (x, y) => finger('touchMove', { x, y }) : (x, y) => page.mouse.move(x, y))
+        await reach(step, action.to, 'letting go', touch ? (x, y) => finger('touchMove', { x, y }) : mouse)
         await show()
         await seen(step, label, true)
       } else {
@@ -259,6 +264,7 @@ async function record(browser, url, steps, viewport, file) {
     const cues = []
     await page.screencast.start({ path: file, size, onFrame: frame => {
       frames.push(frame)
+      first ??= frame.timestamp
       latest = frame.timestamp
     } })
     for (const [n, step] of steps.entries()) {
@@ -275,7 +281,7 @@ async function record(browser, url, steps, viewport, file) {
     const end = Date.now()
     await until(() => latest >= end, WAIT.video)
     await page.screencast.stop()
-    return captions(cues, timeline(file))
+    return captions(cues, first, duration(file))
   } finally {
     await context.close()
   }
@@ -299,10 +305,12 @@ function pressesPart(part, { x, y, acts }) {
   return Boolean(hit && part.contains(hit) && (!own || own === part || !part.contains(own)))
 }
 
-// The part's box once it shows; it has none while the page has it hidden or is drawing it anew.
+// The part's box once it shows: laid out and visible, as a page may lay out a part it hides; it has none while the page
+// is drawing it anew.
 async function shown(step, target, selector) {
   let box = null
-  await until(async () => (box = await target.boundingBox({ timeout: WAIT.part }).catch(() => null)), WAIT.part)
+  await until(async () => await target.isVisible()
+    && (box = await target.boundingBox({ timeout: WAIT.part }).catch(() => null)), WAIT.part)
   if (!box) throw new Error(`step "${step.name}": nothing visible on the route matches "${selector}"`)
   return box
 }
@@ -358,9 +366,9 @@ async function settle(page) {
   }
 }
 
-// The video's own timeline, as Playwright's encoder writes it in the Segment Info of its Matroska file: the wall time
-// its first frame stands for (DateUTC, the encoder's start, from which it times each frame), and its length (Duration).
-function timeline(file) {
+// The video's length in ms, as Playwright's encoder writes it in the Segment Info of its Matroska file (Duration), its
+// time starting at its first frame.
+function duration(file) {
   const data = readFileSync(file)
   const vint = at => {
     let n = 1
@@ -370,7 +378,7 @@ function timeline(file) {
     return { n, value }
   }
   const info = { scale: 1e6 }
-  for (let at = 0; at < data.length && (info.date === undefined || info.length === undefined);) {
+  for (let at = 0; at < data.length && info.length === undefined;) {
     const id = vint(at)
     const size = vint(at + id.n)
     const body = at + id.n + size.n
@@ -381,15 +389,14 @@ function timeline(file) {
     }
     if (element === 0x2ad7b1) info.scale = data.readUIntBE(body, size.value)
     if (element === 0x4489) info.length = size.value === 4 ? data.readFloatBE(body) : data.readDoubleBE(body)
-    if (element === 0x4461) info.date = Number(data.readBigInt64BE(body) / 1000000n) + Date.UTC(2001, 0, 1)
     at = body + size.value
   }
-  return { origin: info.date, length: info.length * info.scale / 1e6 }
+  return info.length * info.scale / 1e6
 }
 
-// mockups #round-video-store: the step captions, each timed on the video's own timeline from its step's start to the
-// next's, the last to the video's end.
-function captions(cues, { origin, length }) {
+// mockups #round-video-store: the step captions, each timed on the video's own timeline, which starts at its first
+// frame (`origin`), from its step's start to the next's, the last to the video's end.
+function captions(cues, origin, length) {
   const time = ms => new Date(ms).toISOString().slice(11, 23)
   const text = caption => caption.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   return ['WEBVTT', ...cues.map(({ step, at }, n) =>

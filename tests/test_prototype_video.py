@@ -86,7 +86,8 @@ for (const step of steps) {
 
 # Runs the recorder on its arguments, logging each input it sends and every frame its video is made of, as its
 # screencast hands them over, for the test's own lines after it to read: `inputs`, each mouse move, down, and up with
-# its button, and each touch, with its point and time; `frames`; and helpers that read a frame at a point.
+# its button, each touch, with its point and time, and each part it looks for on a page, as an action starts; `frames`;
+# and helpers that read a frame at a point.
 HARNESS = """
 import { readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -117,7 +118,10 @@ chromium.launch = async options => {
       }
       return session
     }
-    context.on('page', ({ mouse, screencast }) => {
+    context.on('page', page => {
+      const { mouse, screencast } = page
+      const locator = page.locator.bind(page)
+      page.locator = (selector, ...rest) => (log('locate', { x: 0, y: 0 }, { selector }), locator(selector, ...rest))
       let at = { x: 0, y: 0 }
       const [move, down, up] = [mouse.move, mouse.down, mouse.up].map(call => call.bind(mouse))
       mouse.move = (x, y, ...rest) => (at = { x, y }, log('move', at), move(x, y, ...rest))
@@ -325,6 +329,29 @@ console.log(JSON.stringify({
 """)
         self.assertEqual(seen, {"lifted": True, "dropped": True})
 
+    def test_drag_to_a_day_far_below_scrolls_it_into_view_and_rests_there(self):
+        """#delivery-round-video: the card held, the page first scrolls Tuesday, 1600 px below, into view, and the
+        cursor rests on it before it lets go there, which drops the card on Tuesday."""
+        seen = self.probe(mockup("/far/", ("week", "The week with its pitch deck", ""),
+                                 ("planned", "The deck sits on Tuesday, far below",
+                                  '<li data-hold=".tray .card" data-to=".day[data-day=tue]">')), "desktop", """
+const [up] = of('up')
+const last = of('move').findLast(move => move.at < up.at)
+console.log(JSON.stringify({
+  rested: up.at - last.at >= 400,
+  dropped: like(color(frames.at(-1), { x: up.x - 30, y: up.y + 20 }), '#2563eb'),
+}))
+""")
+        self.assertEqual(seen, {"rested": True, "dropped": True})
+
+    def test_phone_carry_to_a_day_far_below_scrolls_it_into_view(self):
+        """#delivery-round-video on a phone: the touch holds the card, the page first scrolls Tuesday, 1600 px below,
+        into view, and the touch slides there still down, rests, and lifts on it."""
+        result = self.record(mockup("/far/", ("week", "The week with its pitch deck", ""),
+                                    ("planned", "The deck carried to Tuesday, far below",
+                                     '<li data-hold=".tray .card" data-to=".day[data-day=tue]">')), "phone")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_hold_shows_the_touch_down_while_the_full_text_shows_then_lifts(self):
         """#acceptance-video-hold: the touch holds the title, its mark full, through the step whose full text shows
         only while it is down, and lifts as the next step starts, which shows the full text gone and no touch."""
@@ -345,8 +372,8 @@ console.log(JSON.stringify({
         self.assertEqual(seen, {"held": True, "after": False, "down": True})
 
     def test_hold_slides_still_down_to_the_item_its_menu_opened_and_picks_it(self):
-        """#acceptance-video-hold-slide: the touch holds Save until its menu opens, slides still down to Trips, and
-        lifts there, which saves to Trips."""
+        """#acceptance-video-hold-slide: the touch holds Save until its menu, laid out while hidden, shows, slides still
+        down to Trips, and lifts there, which saves to Trips."""
         seen = self.probe(mockup("/save/", ("reel", "The reel with Save", ""),
                                  ("saved", "Held &rarr; its collections; slid to Trips &rarr; saved there",
                                   '<li data-hold=".save" data-to=".menu [data-collection=trips]">')), "phone", """
@@ -440,6 +467,33 @@ await browser.close()
 console.log(JSON.stringify({ drift: Math.abs(played.duration - (h * 3600 + m * 60 + sec)) < 0.05, sent: like(played.rgb, '#16a34a') }))
 """)
         self.assertEqual(seen, {"drift": True, "sent": True})
+
+    def test_each_caption_starts_as_its_step_does_on_the_video(self):
+        """#delivery-round-video: the video's time starts at its first frame, so each caption, timed to the video's own
+        frames, starts as its step's first action does, when the recorder looks for its part."""
+        seen = self.probe(mockup("/tip/", ("toolbar", "The toolbar", ""),
+                                 ("tip", "Resting on Export &rarr; its tip", '<li data-hover=".export">')), "desktop", """
+const webm = readdirSync(videos).find(name => name.endsWith('-desktop.webm'))
+const vtt = readFileSync(`${videos}/${webm.replace(/webm$/, 'vtt')}`, 'utf8')
+const [, tip] = [...vtt.matchAll(/^(\\d+):(\\d+):(\\S+) -->/gm)]
+  .map(([, h, m, s]) => 1000 * (h * 3600 + m * 60 + Number(s)))
+const locate = of('locate').find(locate => locate.at > frames[0].timestamp)
+console.log(JSON.stringify(tip - (locate.at - frames[0].timestamp)))
+""")
+        self.assertLess(abs(seen), 10)
+
+    def test_press_again_on_a_part_taller_than_the_screen_waits_on_no_scroll(self):
+        """#delivery-round-video: a part taller than the screen never fits in view, so the page scrolls it no further
+        once the pointer can rest on it there: its second press follows its first by the step's hold, with no wait on a
+        scroll that cannot start."""
+        seen = self.probe(mockup("/tall/", ("poster", "The poster", ""),
+                                 ("once", "Pressed once", '<li data-press=".poster">'),
+                                 ("twice", "Pressed twice", '<li data-press=".poster">')), "desktop", """
+const [up] = of('up')
+const next = of('move').find(move => move.at > up.at)
+console.log(JSON.stringify(next.at - up.at))
+""")
+        self.assertLess(seen, 1400 + 2000)
 
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
