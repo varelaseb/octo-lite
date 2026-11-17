@@ -163,7 +163,7 @@ async function record(browser, url, steps, viewport, file) {
       const layout = () => target.boundingBox({ timeout: WAIT.part }).catch(() => null)
       let box = null
       await until(async () => (box = await layout()), WAIT.part)
-      if (!box) throw new Error(`step "${step.name}": nothing on the route shows as "${selector}"`)
+      if (!box) throw new Error(`step "${step.name}": nothing on the route matches "${selector}", or the first part it matches never shows`)
       const { width, height } = page.viewportSize()
       if (points(box).some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)) {
         if (pointer.down !== null) {
