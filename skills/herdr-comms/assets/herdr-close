@@ -32,10 +32,11 @@
 #
 # Once the processes it ended have exited, or at 5s, a close or park removes the
 # scratch folder of each agent it closed, the caller's session's alone, since
-# names repeat across sessions; an agent started before herdr-spawn gave one has
-# none, so its close removes nothing. A park also removes the node_modules
-# folders Git ignores in the parked agent's own lane worktree
-# (disk.spec.html#scratch-end, #park).
+# names repeat across sessions, and the one an earlier octo-lite gave it under
+# the same name in the user's cache folder; an agent started before herdr-spawn
+# gave one has none, so its close removes nothing. A park also removes the
+# node_modules folders Git ignores in the parked agent's own lane worktree
+# (disk.spec.html#scratch-end, #scratch-old, #park).
 set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 
@@ -103,9 +104,11 @@ for _ in {1..50}; do
   sleep 0.1
 done
 
-# Each closed agent's scratch folder, by its name in the caller's session.
+# Each closed agent's scratch folder, by its name in the caller's session, and
+# its earlier one in the user's cache folder.
 while read -r n; do
-  scratch="$("$here/../../../scripts/octo-lite-state" --scratch "$n" 2>/dev/null)" && rm -rf -- "$scratch"
+  scratch="$("$here/../../../scripts/octo-lite-state" --scratch "$n" 2>/dev/null)" &&
+    rm -rf -- "$scratch" "${XDG_CACHE_HOME:-$HOME/.cache}/octo-lite/scratch/${scratch##*/}"
 done < <(jq -r '.[].name // empty' <<<"$listed" 2>/dev/null)
 
 # The parked agent's packages: in the worktree it works in, only when that is
