@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
-"""octo-lite's box lock (spec/domains/box-lock.spec.html).
+"""octo-lite's box lock (spec/domains/box-lock.spec.html), also box-heavy
+(#lock-alias).
 
-octo-lite-lock [--cap RESOURCE=N] CMD [ARG...] runs CMD as a heavy job in one
-of the box's slots, counted from the box's CPUs and memory each run
-(#lock-slots), on that slot's share of the box's CPUs (#lock-share). It prints
-its wait as flock --verbose does, on stderr so CMD's output stays its own,
-then ends as CMD ended, with its exit code or killed by its signal
+octo-lite-lock [--cores N] [--cap RESOURCE=N] CMD [ARG...] runs CMD as a heavy
+job on N of the box's CPUs, 4 when it names no number and every CPU on a box
+of fewer, the box's CPUs counted each run (#lock-cores). CMD runs on those CPUs
+only and is told their count in BOX_HEAVY_CORES (#lock-share). Jobs waiting
+line up: the first in line takes CPUs as they come free and keeps them until
+it holds all it asks for (#lock-in-turn), and also waits while under 6 GB is
+free, unless no other heavy job runs; the box's load is never read
+(#lock-memory). A job run under the lock by a job already under it, told by
+BOX_HEAVY_CORES, runs at once on the outer job's CPUs (#lock-nested).
+
+It prints its wait as flock --verbose does, on stderr so CMD's output stays its
+own, then ends as CMD ended, with its exit code or killed by its signal
 (#lock-recipe). CMD starts with the signal dispositions this command was
 given, save SIGPIPE and SIGXFSZ, which Python's subprocess resets to their
 defaults; only once it runs does this command ignore SIGINT, so a Ctrl-C is
-CMD's to end on and this command still holds the slot until CMD ends.
+CMD's to end on and this command still holds its CPUs until CMD ends.
 
-Each slot, and each of a named resource's N jobs (#lock-cap), is a lock file
-beside heavy.lock in octo-lite's box state directory, taken whole and held by
-this command alone until it exits, never by CMD (#lock-close). Each job also
+Each CPU, the line, and each of a named resource's N jobs (#lock-cap) is a lock
+file beside heavy.lock in octo-lite's box state directory, taken whole and held
+by this command alone until it exits, never by CMD (#lock-close). Each job also
 holds heavy.lock shared, so a job that locks it whole, as flock does by
 default, waits for an empty box and holds all of it (#lock-old).
 """
@@ -27,10 +35,12 @@ import sys
 import time
 from pathlib import Path
 
-CPUS = 4  # CPUs per slot (#lock-slots)
-MEMORY = 6 * 10**9  # bytes of memory per slot (#lock-slots)
-POLL = 1  # seconds between tries while every lock is held
-USAGE = "usage: octo-lite-lock [--cap RESOURCE=N] CMD [ARG...]"
+CORES = 4  # CPUs a job naming no number gets, what a full suite needs (#lock-cores)
+MEMORY = 6 * 10**9  # bytes free the first in line waits for (#lock-memory)
+MEMINFO = Path("/proc/meminfo")
+POLL = 1  # seconds between tries while what a job waits for is held
+TOLD = "BOX_HEAVY_CORES"
+USAGE = "usage: octo-lite-lock [--cores N] [--cap RESOURCE=N] CMD [ARG...]"
 
 
 def cpus() -> int:
@@ -38,55 +48,84 @@ def cpus() -> int:
     return os.cpu_count()
 
 
-def memory() -> int:
-    """The box's memory in bytes."""
-    meminfo = Path("/proc/meminfo").read_text()
-    return int(re.search(r"^MemTotal:\s+(\d+) kB", meminfo, re.M)[1]) * 1024
+def free() -> int:
+    """The box's free memory in bytes."""
+    return int(re.search(r"^MemAvailable:\s+(\d+) kB", MEMINFO.read_text(), re.M)[1]) * 1024
 
 
-def slots(cpus: int, memory: int) -> int:
-    return max(1, min(cpus // CPUS, memory // MEMORY))
+def lock(path: Path, how: int = fcntl.LOCK_EX | fcntl.LOCK_NB) -> int | None:
+    """path's descriptor, locked as how asks, or None while another holds it.
+    The lock holds until the descriptor closes, at the latest as this command
+    exits; it is not inherited (PEP 446), so CMD never holds it."""
+    fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
+    try:
+        fcntl.flock(fd, how)
+        return fd
+    except BlockingIOError:
+        os.close(fd)
+        return None
 
 
-def take(paths: list[Path]) -> int:
-    """Lock the first free file of paths, trying each about once a second
-    while all are held, and return its index. The lock holds until this
-    command exits; its descriptor is not inherited (PEP 446), so CMD never
-    holds it."""
-    while True:
-        for index, path in enumerate(paths):
-            fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o666)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return index
-            except BlockingIOError:
-                os.close(fd)
+def take(paths: list[Path]) -> None:
+    """Lock the first free file of paths, trying each about once a second while
+    all are held."""
+    while not any(lock(path) is not None for path in paths):
         time.sleep(POLL)
 
 
+def hold(box: Path, want: int) -> list[int]:
+    """Line up, then take the box's CPUs as they come free until want of them,
+    at most every one, are held and the box has MEMORY free or runs no other
+    heavy job; then hold heavy.lock shared, leave the line, and return the
+    CPUs held."""
+    line = lock(box / "heavy-line.lock", fcntl.LOCK_EX)
+    heavy = os.open(box / "heavy.lock", os.O_RDONLY | os.O_CREAT, 0o666)
+    count = cpus()
+    want = min(want, count)
+    held: list[int] = []
+    while True:
+        for cpu in range(count):
+            if len(held) < want and cpu not in held and lock(box / f"heavy-cpu-{cpu}.lock") is not None:
+                held.append(cpu)
+        if len(held) == want:
+            if free() >= MEMORY:
+                break
+            try:  # whole only while no other heavy job holds it
+                fcntl.flock(heavy, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                pass
+        time.sleep(POLL)
+    fcntl.flock(heavy, fcntl.LOCK_SH)
+    os.close(line)
+    return held
+
+
 def main(argv: list[str]) -> int:
-    cap = None
-    if argv[:1] == ["--cap"]:
-        cap = re.fullmatch(r"([\w.-]+)=([1-9][0-9]*)", argv[1] if len(argv) > 1 else "")
-        argv = argv[2:] if cap else []
-    if not argv or argv[0].startswith("-"):
+    asks = {}
+    while argv[:1] in (["--cores"], ["--cap"]) and len(argv) > 1:
+        asks[argv[0]] = argv[1]
+        argv = argv[2:]
+    want = re.fullmatch(r"[1-9][0-9]*", asks.get("--cores", str(CORES)))
+    caps = [re.fullmatch(r"([\w.-]+)=([1-9][0-9]*)", asks["--cap"])] if "--cap" in asks else []
+    if not want or not all(caps) or not argv or argv[0].startswith("-"):
         print(USAGE, file=sys.stderr)
         return 64
-    box = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state", "octo-lite")
-    box.mkdir(parents=True, exist_ok=True)
     start = time.monotonic()
-    if cap:
-        resource, count = cap.groups()
-        take([box / f"heavy-cap-{resource}-{i}.lock" for i in range(int(count))])
-    every = cpus()
-    count = slots(every, memory())
-    slot = take([box / f"heavy-slot-{i}.lock" for i in range(count)])
-    fcntl.flock(os.open(box / "heavy.lock", os.O_RDONLY | os.O_CREAT, 0o666), fcntl.LOCK_SH)
-    share = every // count
-    os.sched_setaffinity(0, range(slot * share, (slot + 1) * share))
+    if TOLD in os.environ:  # under a heavy job already: on its CPUs, at once
+        held = sorted(os.sched_getaffinity(0))[:int(want[0])]
+    else:
+        box = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state", "octo-lite")
+        box.mkdir(parents=True, exist_ok=True)
+        for cap in caps:
+            resource, count = cap.groups()
+            take([box / f"heavy-cap-{resource}-{i}.lock" for i in range(int(count))])
+        held = hold(box, int(want[0]))
+    os.sched_setaffinity(0, held)
     print(f"flock: getting lock took {time.monotonic() - start:.6f} seconds",
           file=sys.stderr, flush=True)
-    job = subprocess.Popen(argv)  # returns once CMD runs, its dispositions its own
+    # returns once CMD runs, its dispositions its own
+    job = subprocess.Popen(argv, env={**os.environ, TOLD: str(len(held))})
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     code = job.wait()
     if code < 0:  # killed by a signal: be killed by it too
