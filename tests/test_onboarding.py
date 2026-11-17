@@ -440,7 +440,6 @@ class AfterPullTest(unittest.TestCase):
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         # State and spawned scratch folders go in the test home, never the box's.
         self.env.pop("XDG_STATE_HOME", None)
-        self.env.pop("XDG_CACHE_HOME", None)
         self.upstream = base / "upstream"
         (self.upstream / "scripts").mkdir(parents=True)
         (self.upstream / "agents").mkdir()
