@@ -2166,11 +2166,11 @@ class HerdrWrapperTest(unittest.TestCase):
         # scratch folder. Full Chromium in a persistent context makes the
         # socket under TMPDIR that a long path breaks; Playwright's headless
         # shell makes none. /tmp is the one folder short enough to hold the home.
-        home = tempfile.mkdtemp(prefix="ol", dir="/tmp")
-        self.addCleanup(shutil.rmtree, home)
-        self.assertEqual(len(home), 15)
+        home = tempfile.TemporaryDirectory(prefix="ol", dir="/tmp")
+        self.addCleanup(home.cleanup)
+        self.assertEqual(len(home.name), 15)
         scratch = subprocess.run([str(STATE), "--scratch", "implementer-ann-1"], capture_output=True, text=True,
-                                 check=True, env={**self.env, "HOME": home}).stdout.strip()
+                                 check=True, env={**self.env, "HOME": home.name}).stdout.strip()
         deepest = Path(scratch, "n" * 9, "n" * 9, "n" * 9)
         self.assertEqual(len(str(deepest)) - len(scratch), 30)
         deepest.mkdir(parents=True)
