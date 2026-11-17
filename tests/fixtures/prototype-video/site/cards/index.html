@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saved</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  .card { width: 320px; padding: 24px; box-sizing: border-box; background: #fff; border: 1px solid #ccc; border-radius: 8px }
+  .menu { position: fixed; padding: 8px; background: #fff; border: 1px solid #ccc; border-radius: 8px }
+</style>
+<!-- A card whose own menu opens where it is right-clicked. -->
+<div class="card">Pitch deck</div>
+<div class="menu" hidden><button class="move" type="button">Move to a collection</button></div>
+<script>
+  const card = document.querySelector('.card')
+  const menu = document.querySelector('.menu')
+  card.addEventListener('contextmenu', e => {
+    e.preventDefault()
+    Object.assign(menu.style, { left: `${e.clientX + 8}px`, top: `${e.clientY + 8}px` })
+    menu.hidden = false
+  })
+  menu.querySelector('.move').addEventListener('click', () => { menu.hidden = true })
+</script>

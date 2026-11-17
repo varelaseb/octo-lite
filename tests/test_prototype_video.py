@@ -1,6 +1,7 @@
 """octo-lite's round video recorder fails a recording that would skip a step or hide a press, naming the step, and
-records real use of a prototype. Spec: spec/domains/octo-lite.spec.html #delivery-round-video; criteria
-#acceptance-video-unknown-action and #acceptance-video-check. The recorder reads a mockup file in its browser, so these
+records real use of a prototype, each step action as a person does it. Spec: spec/domains/octo-lite.spec.html
+#delivery-round-video, #delivery-round-video-actions; criteria #acceptance-video-unknown-action, -check, -drag, -hold,
+-hold-slide, -menu, -hover, -select, -busy, and -length. The recorder reads a mockup file in its browser, so these
 tests need its pinned driver and browser, as the installer adds them (install.spec.html #install-recorder): run
 `npm ci && npx playwright-core install chromium` at the clone root once per clone. The check reads crops of frames the
 recorder recorded, kept as fixtures."""
@@ -58,6 +59,14 @@ COVERED = """<!doctype html>
 </ol>
 """
 
+def mockup(route, *steps):
+    """A prototype mockup file of the route whose walkthrough is the steps, each its name, caption, and actions."""
+    items = "\n".join(f'<li data-step="{name}">{caption}' + (f"<ul>{actions}</ul>" if actions else "")
+                      for name, caption, actions in steps)
+    return (f'<!doctype html>\n<html lang="en">\n<meta charset="utf-8">\n<meta name="mockup-prototype" content="{route}">\n'
+            f"<ol data-mockup-steps>\n{items}\n</ol>\n")
+
+
 # Reads crops kept as binary PGM, one byte of luma a pixel, and hands each step's press to the check.
 CHECK = """
 import { readFileSync } from 'node:fs'
@@ -75,11 +84,11 @@ for (const step of steps) {
 """
 
 
-# Runs the recorder on its arguments and reads the frames its video is made of, as its screencast hands them over:
-# whether any frame before the first hover shows the touch at the page's corner, where the page's own first hover at 0, 0
-# lands, by the probes on the frame there; and for each tap, whether the touch shows at its point in the last frame
-# before the tap, and in the last frame before the next hover, or the video's last, once the finger has lifted.
-TAPS = """
+# Runs the recorder on its arguments, logging each input it sends and every frame its video is made of, as its
+# screencast hands them over, for the test's own lines after it to read: `inputs`, each mouse move, down, and up with
+# its button, each touch, with its point and time; `frames`; and helpers that read a frame at a point.
+HARNESS = """
+import { readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 const [dir, ...argv] = process.argv.slice(1)
 const require = createRequire(`${dir}/recorder.mjs`)
@@ -88,18 +97,33 @@ const { jpegjs } = require('playwright-core/lib/utilsBundle')
 const { SHAPES, crop, drawn } = await import(`${dir}/check.mjs`)
 const { main } = await import(`${dir}/recorder.mjs`)
 const frames = []
-const moves = []
-const taps = []
+const inputs = []
+const log = (type, { x, y }, more) => inputs.push({ type, x, y, at: Date.now(), ...more })
 const launch = chromium.launch.bind(chromium)
 chromium.launch = async options => {
   const browser = await launch(options)
   const newContext = browser.newContext.bind(browser)
   browser.newContext = async options => {
     const context = await newContext(options)
-    context.on('page', ({ mouse, touchscreen, screencast }) => {
-      const logged = (calls, call) => (x, y, ...rest) => (calls.push({ x, y, at: Date.now() }), call(x, y, ...rest))
-      mouse.move = logged(moves, mouse.move.bind(mouse))
-      touchscreen.tap = logged(taps, touchscreen.tap.bind(touchscreen))
+    const newCDPSession = context.newCDPSession.bind(context)
+    context.newCDPSession = async page => {
+      const session = await newCDPSession(page)
+      const send = session.send.bind(session)
+      session.send = (method, params) => {
+        if (method === 'Input.dispatchTouchEvent') {
+          log(params.type, params.touchPoints[0] ?? inputs.findLast(input => input.type.startsWith('touch')))
+        }
+        return send(method, params)
+      }
+      return session
+    }
+    context.on('page', page => {
+      const { mouse, screencast } = page
+      let at = { x: 0, y: 0 }
+      const [move, down, up] = [mouse.move, mouse.down, mouse.up].map(call => call.bind(mouse))
+      mouse.move = (x, y, ...rest) => (at = { x, y }, log('move', at), move(x, y, ...rest))
+      mouse.down = options => (log('down', at, { button: options?.button ?? 'left' }), down(options))
+      mouse.up = options => (log('up', at, { button: options?.button ?? 'left' }), up(options))
       const start = screencast.start.bind(screencast)
       screencast.start = ({ onFrame, ...rest }) =>
         start({ ...rest, onFrame: frame => (frames.push(frame), onFrame(frame)) })
@@ -109,19 +133,51 @@ chromium.launch = async options => {
   return browser
 }
 await main(argv)
+const videos = `${argv[0]}.review/videos`
+const of = type => inputs.filter(input => input.type === type)
 const before = at => frames.findLast(frame => frame.timestamp < at)
-const touch = (frame, { x, y }, probes = SHAPES.phone.cursor) =>
-  drawn(crop(jpegjs.decode(frame.data, { useTArray: true, formatAsRGBA: true }), x, y), probes)
+const after = at => frames.find(frame => frame.timestamp > at)
+const decode = frame => jpegjs.decode(frame.data, { useTArray: true, formatAsRGBA: true })
+const shape = (frame, { x, y }, probes) => drawn(crop(decode(frame), x, y), probes)
+const color = (frame, { x, y }) => {
+  const { width, data } = decode(frame)
+  const k = 4 * (Math.round(y) * width + Math.round(x))
+  return [...data.subarray(k, k + 3)]
+}
+const like = (rgb, hex) => rgb.every((value, n) => Math.abs(value - parseInt(hex.slice(1 + 2 * n, 3 + 2 * n), 16)) < 48)
+// What `read`, run with `arg` on a page holding a video and a canvas, reads of the spool's video `webm` at /video.webm.
+const play = async (webm, read, arg) => {
+  const browser = await launch()
+  try {
+    const page = await browser.newPage()
+    await page.route('http://video.test/**', route => route.request().url().endsWith('.webm')
+      ? route.fulfill({ path: `${videos}/${webm}`, contentType: 'video/webm' })
+      : route.fulfill({ contentType: 'text/html', body: '<video muted></video><canvas></canvas>' }))
+    await page.goto('http://video.test/')
+    return await page.evaluate(read, arg)
+  } finally {
+    await browser.close()
+  }
+}
+"""
+
+# Whether any frame before the first hover shows the touch at the page's corner, where the page's own first hover at
+# 0, 0 lands, by the probes on the frame there; and for each tap, whether the touch shows at its point in the last
+# frame before the tap, and in the last frame before the next hover, or the video's last, once the finger has lifted.
+TAPS = HARNESS + """
 const corner = SHAPES.phone.cursor.filter(([dx, dy]) => dx >= 0 && dy >= 0)
+const moves = of('move')
 console.log(JSON.stringify({
-  corner: frames.filter(frame => frame.timestamp < moves[0].at).some(frame => touch(frame, { x: 0, y: 0 }, corner)),
-  taps: taps.map(tap => {
+  corner: frames.filter(frame => frame.timestamp < moves[0].at).some(frame => shape(frame, { x: 0, y: 0 }, corner)),
+  taps: of('touchStart').map(tap => {
     const next = moves.find(move => move.at > tap.at)
-    return { rested: touch(before(tap.at), tap), after: touch(next ? before(next.at) : frames.at(-1), tap) }
+    return {
+      rested: shape(before(tap.at), tap, SHAPES.phone.cursor),
+      after: shape(next ? before(next.at) : frames.at(-1), tap, SHAPES.phone.cursor),
+    }
   }),
 }))
 """
-
 
 class Site(ThreadingHTTPServer):
     """The fixture prototype, served on a free port."""
@@ -256,10 +312,196 @@ class RecordingTest(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout.splitlines()[-1]),
                          {"corner": False, "taps": [{"rested": True, "after": False}] * 2})
 
+    def probe(self, mockup, viewport, program):
+        """The harness's run of the recorder (HARNESS), passing, and what `program` read of it."""
+        result = self.record(mockup, viewport, program=HARNESS + program)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout.splitlines()[-1])
+
+    def test_drag_lifts_the_card_under_the_cursor_and_drops_it_on_the_day(self):
+        """#acceptance-video-drag: the browser draws the card a native drag lifts outside the page, so the recorder
+        draws it, lifted under the cursor as it travels through the gap between the tray and the week, where the page
+        shows no card; then the card sits on Tuesday where the cursor let go."""
+        seen = self.probe(mockup("/calendar/", ("week", "The week with its pitch deck", ""),
+                                 ("planned", "The deck sits on Tuesday",
+                                  '<li data-hold=".tray .card" data-to=".day[data-day=tue]">')), "desktop", """
+const [down] = of('down')
+const [up] = of('up')
+const gap = Array.from({ length: 23 * 8 }, (_, n) => ({ x: 400 + 20 * (n % 23), y: 40 + 20 * Math.floor(n / 23) }))
+const carried = frames.filter(frame => frame.timestamp > down.at && frame.timestamp < up.at)
+const blue = frame => {
+  const { width, data } = decode(frame)
+  return gap.filter(({ x, y }) => like([...data.subarray(4 * (y * width + x), 4 * (y * width + x) + 3)], '#2563eb')).length
+}
+console.log(JSON.stringify({
+  lifted: carried.some(frame => blue(frame) >= 3),
+  dropped: like(color(frames.at(-1), { x: up.x - 30, y: up.y - 30 }), '#2563eb'),
+}))
+""")
+        self.assertEqual(seen, {"lifted": True, "dropped": True})
+
+    def test_drag_to_a_day_far_below_scrolls_it_into_view_and_rests_there(self):
+        """#delivery-round-video: the card held, the page first scrolls Tuesday, 1600 px below, into view, and the
+        cursor rests on it before it lets go there, which drops the card on Tuesday."""
+        seen = self.probe(mockup("/far/", ("week", "The week with its pitch deck", ""),
+                                 ("planned", "The deck sits on Tuesday, far below",
+                                  '<li data-hold=".tray .card" data-to=".day[data-day=tue]">')), "desktop", """
+const [up] = of('up')
+const last = of('move').findLast(move => move.at < up.at)
+console.log(JSON.stringify({
+  rested: up.at - last.at >= 400,
+  dropped: like(color(frames.at(-1), { x: up.x - 30, y: up.y + 20 }), '#2563eb'),
+}))
+""")
+        self.assertEqual(seen, {"rested": True, "dropped": True})
+
+    def test_phone_carry_to_a_day_far_below_scrolls_it_into_view(self):
+        """#delivery-round-video on a phone: the touch holds the card, the page first scrolls Tuesday, 1600 px below,
+        into view, and the touch slides there still down and rests on it before it lifts: the recording passes only
+        once that rest lands on Tuesday."""
+        seen = self.probe(mockup("/far/", ("week", "The week with its pitch deck", ""),
+                                 ("planned", "The deck carried to Tuesday, far below",
+                                  '<li data-hold=".tray .card" data-to=".day[data-day=tue]">')), "phone", """
+const starts = of('touchStart')
+const [end] = of('touchEnd')
+const slides = of('touchMove')
+console.log(JSON.stringify({
+  stillDown: starts.length === 1 && slides.length > 0 && slides.every(slide => slide.at < end.at),
+  rested: end.at - slides.at(-1).at >= 400,
+}))
+""")
+        self.assertEqual(seen, {"stillDown": True, "rested": True})
+
+    def test_hold_shows_the_touch_down_while_the_full_text_shows_then_lifts(self):
+        """#acceptance-video-hold: the touch holds the title, its mark full, through the step whose full text shows
+        only while it is down, and lifts as the next step starts, which shows the full text gone and no touch."""
+        seen = self.probe(mockup("/title/", ("list", "The reel's title, cut short", ""),
+                                 ("peek", "Held &rarr; the full title", '<li data-hold=".title">'),
+                                 ("let-go", "Let go &rarr; cut short again", "")), "phone", """
+const [start] = of('touchStart')
+const [end] = of('touchEnd')
+const held = before(end.at)
+const last = frames.at(-1)
+const full = { x: 180, y: 230 }
+console.log(JSON.stringify({
+  held: shape(held, start, SHAPES.phone.cursor) && shape(held, start, SHAPES.phone.mark) && like(color(held, full), '#f59e0b'),
+  after: shape(last, start, SHAPES.phone.cursor) || like(color(last, full), '#f59e0b'),
+  down: end.at - start.at >= 1400,
+}))
+""")
+        self.assertEqual(seen, {"held": True, "after": False, "down": True})
+
+    def test_hold_slides_still_down_to_the_item_its_menu_opened_and_picks_it(self):
+        """#acceptance-video-hold-slide: the touch holds Save until its menu shows, however the page hides it until
+        then, slides still down to Trips, and lifts there, which saves to Trips."""
+        for hide in ("opacity", "visibility", "display"):
+            with self.subTest(hide=hide):
+                seen = self.probe(mockup(f"/save/?hide={hide}", ("reel", "The reel with Save", ""),
+                                         ("saved", "Held &rarr; its collections; slid to Trips &rarr; saved there",
+                                          '<li data-hold=".save" data-to=".menu [data-collection=trips]">')), "phone", """
+const starts = of('touchStart')
+const [end] = of('touchEnd')
+const slides = of('touchMove')
+console.log(JSON.stringify({
+  heldUntilOpen: slides.length > 0 && slides[0].at - starts[0].at >= 500,
+  stillDown: starts.length === 1 && slides.every(slide => slide.at < end.at),
+  picked: like(color(frames.at(-1), { x: 180, y: 450 }), '#16a34a'),
+}))
+""")
+                self.assertEqual(seen, {"heldUntilOpen": True, "stillDown": True, "picked": True})
+
+    def test_menu_right_clicks_the_card_which_opens_its_menu(self):
+        """#acceptance-video-menu: on a desktop the card's menu opens by a right-click, its mark checked by the
+        recorder; the next step rests on the menu's item, which shows only once the menu opened."""
+        seen = self.probe(mockup("/cards/", ("cards", "A saved card", ""),
+                                 ("menu", "Right-clicked &rarr; its menu", '<li data-menu=".card">'),
+                                 ("move", "Move to a collection", '<li data-hover=".menu .move">')), "desktop", """
+console.log(JSON.stringify(of('down').map(down => down.button)))
+""")
+        self.assertEqual(seen, ["right"])
+
+    def test_hover_rests_with_no_press_mark_while_the_tip_shows(self):
+        """#acceptance-video-hover: the cursor rests on Export, pressing nothing, and no frame from then shows a
+        press mark there, while its tip shows."""
+        seen = self.probe(mockup("/tip/", ("toolbar", "The toolbar", ""),
+                                 ("tip", "Resting on Export &rarr; its tip", '<li data-hover=".export">')), "desktop", """
+const rest = of('move').at(-1)
+const since = frames.filter(frame => frame.timestamp > rest.at)
+console.log(JSON.stringify({
+  presses: of('down').length,
+  cursor: shape(frames.at(-1), rest, SHAPES.desktop.cursor),
+  mark: since.some(frame => shape(frame, rest, SHAPES.desktop.mark)),
+  tip: like(color(frames.at(-1), { x: 190, y: 330 }), '#7c3aed'),
+}))
+""")
+        self.assertEqual(seen, {"presses": 0, "cursor": True, "mark": False, "tip": True})
+
+    def test_select_picks_its_option_with_a_mark_and_no_list_opened(self):
+        """#acceptance-video-select: the cursor presses the select, its mark checked by the recorder, with no press
+        sent that opens the list the browser draws apart from the page; the next step rests on the reels in the order
+        picked, which shows only once the option is."""
+        seen = self.probe(mockup("/sort/", ("reels", "Reels, oldest first", ""),
+                                 ("sorted", "Newest first",
+                                  """<li data-type="select[aria-label='Sort reels']" data-text="Newest first">"""),
+                                 ("newest", "The newest reel on top", '<li data-hover=".reels[data-sort=newest] li">')),
+                          "desktop", """
+console.log(JSON.stringify(of('down').length))
+""")
+        self.assertEqual(seen, 0)
+
+    def test_press_on_a_page_busy_after_it_shows_its_mark(self):
+        """#acceptance-video-busy: the page is too busy to draw for 1.5 s from the press, yet the recording passes,
+        its check finding the cursor, on a phone the touch, and its mark at the press, which still opens Tuesday."""
+        result = self.record(mockup("/busy/", ("card", "Tuesday's card", ""),
+                                    ("open", "Pressed &rarr; Tuesday done", '<li data-press=".card">'),
+                                    ("done", "Tuesday done", '<li data-hover=".card.done">')), "desktop", "phone")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_video_lasts_as_long_as_its_captions_to_the_last_step_result(self):
+        """#acceptance-video-length: the last step scrolls to Send far below and presses it, then nothing moves; the
+        video, read back as a browser plays it, lasts as long as its captions, and its last frame shows Send sent."""
+        seen = self.probe(mockup("/long/", ("chat", "The chat", ""),
+                                 ("sent", "Send, far below &rarr; sent", '<li data-press=".send">')), "desktop", """
+const webm = readdirSync(videos).find(name => name.endsWith('-desktop.webm'))
+const vtt = readFileSync(`${videos}/${webm.replace(/webm$/, 'vtt')}`, 'utf8')
+const [h, m, sec] = vtt.match(/--> (\\S+)\\n[^\\n]*\\n?$/)[1].split(':').map(Number)
+const press = of('down').at(-1)
+const played = await play(webm, async ({ x, y }) => {
+  const video = document.querySelector('video')
+  video.src = '/video.webm'
+  await new Promise(done => video.addEventListener('loadedmetadata', done, { once: true }))
+  video.playbackRate = 8 // played through: a seek may show the frame it decodes from, not the last
+  await video.play()
+  await new Promise(done => video.addEventListener('ended', done, { once: true }))
+  const canvas = document.querySelector('canvas')
+  Object.assign(canvas, { width: video.videoWidth, height: video.videoHeight })
+  const context = canvas.getContext('2d')
+  context.drawImage(video, 0, 0)
+  return { duration: video.duration, rgb: [...context.getImageData(x, y, 1, 1).data.slice(0, 3)] }
+}, { x: press.x - 200, y: press.y })
+console.log(JSON.stringify({ drift: Math.abs(played.duration - (h * 3600 + m * 60 + sec)) < 0.05, sent: like(played.rgb, '#16a34a') }))
+""")
+        self.assertEqual(seen, {"drift": True, "sent": True})
+
+    def test_press_again_on_a_part_taller_than_the_screen_waits_on_no_scroll(self):
+        """#delivery-round-video: a part taller than the screen never fits in view, so the page scrolls it no further
+        once the pointer can rest on it there: its second press follows its first by the step's hold, with no wait on a
+        scroll that cannot start."""
+        seen = self.probe(mockup("/tall/", ("poster", "The poster", ""),
+                                 ("once", "Pressed once", '<li data-press=".poster">'),
+                                 ("twice", "Pressed twice", '<li data-press=".poster">')), "desktop", """
+const [up] = of('up')
+const next = of('move').find(move => move.at > up.at)
+console.log(JSON.stringify(next.at - up.at))
+""")
+        self.assertLess(seen, 1400 + 2000)
+
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn('step "open": a press on ".tile" lands on another part', result.stderr)
+        self.assertIn('step "open": a press on ".tile" never lands on it: it does not show there or lets presses through,'
+                      ' or another part lies over it'
+                      ' or acts inside it', result.stderr)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reels</title>
+<style>
+  body { margin: 0; padding: 40px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  select { width: 200px; height: 40px; font: inherit }
+</style>
+<!-- Reels in the sort order a native select picks. -->
+<select aria-label="Sort reels"><option>Oldest first</option><option>Newest first</option></select>
+<ol class="reels" data-sort="oldest"><li>Reel 1</li><li>Reel 2</li><li>Reel 3</li></ol>
+<script>
+  const sort = document.querySelector('select')
+  const reels = document.querySelector('.reels')
+  sort.addEventListener('change', () => {
+    reels.dataset.sort = sort.value === 'Newest first' ? 'newest' : 'oldest'
+    reels.append(...[...reels.children].reverse())
+  })
+</script>

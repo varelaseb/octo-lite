@@ -1,8 +1,9 @@
 // A prototype mockup file's route and walkthrough, read as Spec Chat reads them (mockups #prototype-file,
 // #prototype-steps, #markup-steps): the browser parses the file and its DOM is read as Spec Chat's walkthroughOf reads
 // it, for the route in <meta name="mockup-prototype"> and each [data-step] of [data-mockup-steps] with its caption,
-// its text outside its lists, and the actions that reach it from the step before, the items of a list in it:
-// data-press with a selector, data-type with a selector and data-text.
+// its text outside its lists, and the actions that reach it from the step before, the items of a list in it, each
+// Spec Chat's step action (mockups #prototype-step-actions) with the selector of the part it acts on: data-press,
+// data-type with data-text, data-hold with an optional data-to, data-menu, and data-hover.
 // An action the recorder does not know fails here, naming its step and the action, before any recording starts
 // (octo-lite #delivery-round-video), so no video skips one.
 
@@ -38,17 +39,20 @@ function readSteps(html) {
     walk(node)
     return parts.join('').split(/\s+/).filter(Boolean).join(' ')
   }
-  const action = el => el.hasAttribute('data-press') ? { press: el.getAttribute('data-press') }
-    : el.hasAttribute('data-type') ? { type: el.getAttribute('data-type'), text: el.getAttribute('data-text') || '' }
-    : { unknown: el.getAttributeNames().find(name => name.startsWith('data-'))?.slice(5) || text(el, 'script,style') || `<${el.localName}>` }
+  const kinds = ['press', 'type', 'hold', 'menu', 'hover']
+  const action = el => {
+    const kind = kinds.find(kind => el.hasAttribute(`data-${kind}`))
+    if (!kind) return { unknown: el.getAttributeNames().find(name => name.startsWith('data-'))?.slice(5) || text(el, 'script,style') || `<${el.localName}>` }
+    return { kind, selector: el.getAttribute(`data-${kind}`), text: el.getAttribute('data-text') || '', to: el.getAttribute('data-to')?.trim() || null }
+  }
   const list = doc.querySelector('[data-mockup-steps]')
   return {
     route: doc.querySelector('meta[name="mockup-prototype"]')?.content.trim(),
     steps: list ? [...list.querySelectorAll('[data-step]')].map(item => ({
       name: item.getAttribute('data-step').trim(),
       caption: text(item, 'script,style,ul,ol'),
-      actions: [...item.querySelectorAll(':is(ul, ol) > li, [data-press], [data-type]')].map(action)
-        .filter(a => a.unknown || (a.press ?? a.type).trim()),
+      actions: [...item.querySelectorAll(`:is(ul, ol) > li, ${kinds.map(kind => `[data-${kind}]`)}`)].map(action)
+        .filter(a => a.unknown || a.selector.trim()),
     })).filter(step => step.name) : [],
   }
 }
