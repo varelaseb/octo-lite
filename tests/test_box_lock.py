@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "scripts" / "octo-lite-lock"
 ALIAS = ROOT / "scripts" / "box-heavy"
 WAIT = re.compile(r"flock: getting lock took ([0-9.]+) seconds\n")
+USAGE = "usage: octo-lite-lock [--cores N] [--cap RESOURCE=N] CMD [ARG...]\n"
 SETTLE = 1.2  # seconds a waiting job is given to run if it wrongly would, past its first tries
 REAL = os.cpu_count()
 # The lock run on a box of argv[2] CPUs with the free memory in meminfo file
@@ -322,6 +323,15 @@ class CapTest(BoxLockCase):
         self.assert_wait(*names, ran=2)
         self.start("suite")
         self.wait_ran("suite")
+
+    def test_a_repeated_ask_is_refused_and_the_job_never_runs(self):
+        # #lock-recipe, #lock-cap: a dropped cap lets more jobs at a resource than it fits
+        for ask in (["--cap", "qa-db=1", "--cap", "other=2"], ["--cores", "1", "--cores", "2"]):
+            with self.subTest(ask=ask):
+                done = subprocess.run(self.boxed("job", *ask, job='touch "$0.ran"'), env=self.env,
+                                      capture_output=True, text=True, timeout=30)
+                self.assertEqual((done.returncode, done.stdout, done.stderr), (64, "", USAGE))
+                self.assertEqual(self.ran("job"), [])
 
 
 class AliasTest(BoxLockCase):

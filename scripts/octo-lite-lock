@@ -103,12 +103,13 @@ def hold(box: Path, want: int) -> list[int]:
 
 def main(argv: list[str]) -> int:
     asks = {}
-    while argv[:1] in (["--cores"], ["--cap"]) and len(argv) > 1:
+    # a repeated ask stays in argv, refused as an unknown flag
+    while argv[:1] in (["--cores"], ["--cap"]) and len(argv) > 1 and argv[0] not in asks:
         asks[argv[0]] = argv[1]
         argv = argv[2:]
     want = re.fullmatch(r"[1-9][0-9]*", asks.get("--cores", str(CORES)))
-    caps = [re.fullmatch(r"([\w.-]+)=([1-9][0-9]*)", asks["--cap"])] if "--cap" in asks else []
-    if not want or not all(caps) or not argv or argv[0].startswith("-"):
+    cap = re.fullmatch(r"([\w.-]+)=([1-9][0-9]*)", asks.get("--cap", ""))
+    if not want or ("--cap" in asks and not cap) or not argv or argv[0].startswith("-"):
         print(USAGE, file=sys.stderr)
         return 64
     start = time.monotonic()
@@ -117,7 +118,7 @@ def main(argv: list[str]) -> int:
     else:
         box = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state", "octo-lite")
         box.mkdir(parents=True, exist_ok=True)
-        for cap in caps:
+        if cap:
             resource, count = cap.groups()
             take([box / f"heavy-cap-{resource}-{i}.lock" for i in range(int(count))])
         held = hold(box, int(want[0]))
