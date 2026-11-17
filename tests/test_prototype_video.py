@@ -499,7 +499,8 @@ console.log(JSON.stringify(next.at - up.at))
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
         self.assertEqual(result.returncode, 1, result.stderr)
-        self.assertIn('step "open": a press on ".tile" never lands on it: it does not show there, or another part lies over it'
+        self.assertIn('step "open": a press on ".tile" never lands on it: it does not show there or lets presses through,'
+                      ' or another part lies over it'
                       ' or acts inside it', result.stderr)
 
 

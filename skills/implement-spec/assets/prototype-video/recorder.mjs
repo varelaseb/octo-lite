@@ -163,7 +163,7 @@ async function record(browser, url, steps, viewport, file) {
       const layout = () => target.boundingBox({ timeout: WAIT.part }).catch(() => null)
       let box = null
       await until(async () => (box = await layout()), WAIT.part)
-      if (!box) throw new Error(`step "${step.name}": nothing on the route matches "${selector}"`)
+      if (!box) throw new Error(`step "${step.name}": nothing on the route shows as "${selector}"`)
       const { width, height } = page.viewportSize()
       if (points(box).some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)) {
         if (pointer.down !== null) {
@@ -201,8 +201,8 @@ async function record(browser, url, steps, viewport, file) {
         await sleep(PACE.rest)
         if (await lands(target, point)) return target
       }
-      throw new Error(`step "${step.name}": ${doing} on "${selector}" never lands on it: it does not show there, `
-        + 'or another part lies over it or acts inside it')
+      throw new Error(`step "${step.name}": ${doing} on "${selector}" never lands on it: it does not show there `
+        + 'or lets presses through, or another part lies over it or acts inside it')
     }
 
     // The press goes down where the pointer is, its mark drawn first, so the video shows both before the page answers
