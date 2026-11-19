@@ -150,9 +150,9 @@ send() {
     name="$(jq -r .name <<<"$line")"
     if ! herdr agent get "$name" >/dev/null 2>&1; then
       resume=(--cwd "$(jq -r .cwd <<<"$line")" --name "$name" --resume "$(jq -r .session <<<"$line")")
-      role=($(jq -r '.role // empty | "--role", .' <<<"$line")) at="$(jq -r .pane <<<"$line")"
-      if herdr pane get "$at" >/dev/null 2>&1; then
-        started="$("$here/herdr-spawn" --pane "$at" "${role[@]}" "${resume[@]}" -- claude)"
+      role=($(jq -r '.role // empty | "--role", .' <<<"$line")) parked_pane="$(jq -r .pane <<<"$line")"
+      if herdr pane get "$parked_pane" >/dev/null 2>&1; then
+        started="$("$here/herdr-spawn" --pane "$parked_pane" "${role[@]}" "${resume[@]}" -- claude)"
       elif [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
         started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
       else
