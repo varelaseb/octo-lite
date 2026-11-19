@@ -293,7 +293,10 @@ case "$sub" in
     # poses the agent exiting first. FAKE_WAIT_GATE holds the wait until the
     # test creates that file, held on as Herdr holds a wait on an agent whose
     # tab closes. Held past --timeout, the wait fails with Herdr's code timeout,
-    # at a fast stand-in bound.
+    # at a fast stand-in bound. While FAKE_UNAVAILABLE exists, Herdr's server is
+    # too loaded to answer. The target's pane is FAKE_WAIT_PANE, else w9:p1.
+    [[ ! -e "${FAKE_UNAVAILABLE:-}" ]] ||
+      { echo '{"error":{"code":"server_unavailable","message":"server unavailable"}}' >&2; exit 1; }
     gone "$3" && not_found
     target="$3" states=() bound=; shift 3
     while (($#)); do case "$1" in --until) states+=("$2") ;; --timeout) bound=1 ;; esac; shift 2; done
@@ -324,8 +327,8 @@ case "$sub" in
       s=working seq=43
     fi
     [[ -z "${FAKE_WORKS_AFTER_WAIT:-}" ]] || touch "$FAKE_WORKED"
-    jq -nc --arg n "$target" --arg s "$s" --argjson seq "$seq" \
-      '{result: {agent: {name: $n, agent_status: $s, state_change_seq: $seq}}, type: "agent_info"}' ;;
+    jq -nc --arg n "$target" --arg p "${FAKE_WAIT_PANE:-w9:p1}" --arg s "$s" --argjson seq "$seq" \
+      '{result: {agent: {name: $n, pane_id: $p, agent_status: $s, state_change_seq: $seq}}, type: "agent_info"}' ;;
   *)
     echo "{}" ;;
 esac
@@ -1803,6 +1806,54 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.awaits("--notice", "implementer-ann-1")
         self.assertEqual((r.returncode, r.stdout), (0, "herdr-await: implementer-ann-1 stop=idle seq=42\n"))
         self.assertNotIn("agent prompt w5:p2", self.calls())
+
+    def test_await_names_a_stop_its_last_reply_an_api_error_ended_stalled(self):
+        # spec/domains/herdr-transport.spec.html#transport-await,
+        # acceptance-await-stalled, acceptance-stall-awaited: Herdr reports a
+        # turn a dropped connection ended as idle; the last reply in the
+        # worker's pane's Claude session names it stalled, with that error,
+        # until a later reply ends a turn well.
+        self.claude_caller()
+        self.claude("w9:p1", "w9:t1", "w9", "s-w", replies=["2026-11-19T07:00:00.000Z"])
+        transcript = Path(self.env["HOME"]) / ".claude/projects/-p-s-w/s-w.jsonl"
+        text = "API Error: Connection lost mid-response. The response above may be incomplete."
+
+        def record(r):
+            with transcript.open("a") as f:
+                f.write(json.dumps({"isSidechain": False, **r}) + "\n")
+
+        record({"type": "assistant", "isApiErrorMessage": True, "error": "server_error",
+                "message": {"content": [{"type": "text", "text": text}]}})
+        record({"type": "assistant", "isSidechain": True})  # a subagent's, after it
+        r = self.awaits("implementer-ann-1")
+        self.assertEqual((r.returncode, r.stdout), (0, f"herdr-await: implementer-ann-1 stop=stalled (server_error: {text})\n"))
+        record({"type": "user"})
+        record({"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}})
+        self.assertEqual(self.awaits("implementer-ann-1").stdout, "herdr-await: implementer-ann-1 stop=idle seq=42\n")
+
+    def test_await_waits_out_a_herdr_server_too_loaded_to_answer(self):
+        # spec/domains/herdr-transport.spec.html#transport-await,
+        # acceptance-await-unavailable: server_unavailable is no stop; the
+        # wait waits again, a second apart, and ends once, on the stop Herdr
+        # reports once it answers. Its own name, so no herdr-close of another
+        # run of this suite on the box ends it in its wait.
+        self.claude_caller()
+        unavailable = Path(self.tmp.name) / "unavailable"
+        unavailable.touch()
+        tab, name = f"w5:t-{uuid.uuid4()}", f"implementer-{uuid.uuid4().hex[:8]}"
+        self.addCleanup(self.reap, tab)
+        p = subprocess.Popen([str(AWAIT), name], stdout=subprocess.PIPE, text=True,
+                             start_new_session=True,
+                             env={**self.env, "HERDR_PANE_ID": "w5:p2", "HERDR_TAB_ID": tab,
+                                  "HERDR_WORKSPACE_ID": "w5", "FAKE_UNAVAILABLE": str(unavailable)})
+        self.addCleanup(lambda: (p.kill(), p.wait(), p.stdout.close()))
+        waits = lambda: self.calls().count(f"agent wait {name}")
+        self.assertTrue(self.until(lambda: waits() >= 2), "no wait again after server_unavailable")
+        time.sleep(1)
+        self.assertIsNone(p.poll(), "ended on server_unavailable")
+        self.assertLess(waits(), 6, "waits again with no pause")
+        unavailable.unlink()
+        self.assertEqual(p.communicate(timeout=10)[0], f"herdr-await: {name} stop=idle seq=42\n")
 
     def test_await_by_a_caller_with_no_claude_session_wakes_it_by_herdr_say(self):
         # spec/domains/herdr-transport.spec.html#transport-await: a Codex or pi
