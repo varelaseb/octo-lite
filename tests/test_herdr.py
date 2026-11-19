@@ -884,7 +884,7 @@ class HerdrWrapperTest(unittest.TestCase):
     # --- park ------------------------------------------------------------
 
     def claude(self, pane, tab, space, sid, replies=(), stale=False, sidechain=None, agent="implementer",
-               name=None, cmd=("sleep", "600"), stdin=None, **env):
+               name=None, cmd=("sleep", "600"), stdin=None, entrypoint=None, **env):
         # A detached stand-in for an agent's Claude process in a pane, with
         # Claude's own session file for its pid unless sid is None, recording
         # the process start time, or another one when stale: an ended Claude's
@@ -894,6 +894,7 @@ class HerdrWrapperTest(unittest.TestCase):
         # sidechain is the timestamp of a subagent's assistant record after them.
         # agent is the role the record names; None, it names none. name is
         # the session name it records; cmd and stdin, what the stand-in runs.
+        # entrypoint is the one it records, "sdk-cli" for a claude -p run.
         p = subprocess.Popen(list(cmd), start_new_session=True, stdin=stdin, cwd=self.cwd, env={
             **self.env, "HERDR_PANE_ID": pane, "HERDR_TAB_ID": tab, "HERDR_WORKSPACE_ID": space, **env})
         self.addCleanup(lambda: (p.kill(), p.wait()))
@@ -904,7 +905,8 @@ class HerdrWrapperTest(unittest.TestCase):
             start = int(Path(f"/proc/{p.pid}/stat").read_text().split()[21]) + stale
             (sessions / f"{p.pid}.json").write_text(json.dumps({
                 "pid": p.pid, "sessionId": sid, "cwd": str(self.cwd), "procStart": str(start), "status": "idle",
-                **({"agent": agent} if agent else {}), **({"name": name} if name else {})}))
+                **({"agent": agent} if agent else {}), **({"name": name} if name else {}),
+                **({"entrypoint": entrypoint} if entrypoint else {})}))
             if replies:
                 project = home / ".claude/projects" / f"-p-{sid}"
                 project.mkdir(parents=True, exist_ok=True)
@@ -1232,6 +1234,19 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual((r.returncode, json.loads(r.stdout)["transcript"]), (0, None), r.stderr)
         r = run(f"{space}:p3")
         self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+
+    def test_claude_session_never_counts_a_one_shot_claude_in_the_pane(self):
+        # spec/domains/herdr-transport.spec.html#transport-claude-session,
+        # #acceptance-native-judge: a QA capture the owner runs starts its judge
+        # by claude -p, which carries the owner's pane id and, judging, replies
+        # after the owner's last reply, so a report reached the judge (octo-lite #302).
+        space = f"w-{uuid.uuid4()}"
+        pane, tab = f"{space}:p1", f"{space}:t1"
+        self.claude(pane, tab, space, "s-owner", ["2026-10-21T09:00:00.000Z"], entrypoint="cli")
+        self.claude(pane, tab, space, "s-judge", ["2026-10-21T09:05:00.000Z"], agent=None, entrypoint="sdk-cli")
+        r = subprocess.run([str(SESSION), pane], capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["sessionId"], "s-owner")
 
     def test_claude_session_cost_does_not_grow_with_the_transcript(self):
         # The operator's transcript grows past 200MB; a whole read took 7s, so

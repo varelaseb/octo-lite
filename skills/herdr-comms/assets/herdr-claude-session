@@ -2,15 +2,18 @@
 # Print the Claude session of Herdr pane PANE as one JSON line: Claude's own
 # record ~/.claude/sessions/<pid>.json plus transcript, the path of its
 # ~/.claude/projects/*/<sessionId>.jsonl, null before its first message.
-# Exit 1 when no record counts. herdr-close --park, herdr-spawn (its readiness
-# and --reload), herdr-say, herdr-await (its caller's form), and a native report
-# share it.
+# Exit 1 when no record counts. Every reader of a pane's Claude session shares
+# it: spec/domains/herdr-transport.spec.html#transport-claude-session is the one
+# list of them.
 #
 # A record counts when its live process carries HERDR_PANE_ID=PANE and the
 # caller's HERDR_SESSION (unset in both for the default session), foreground
-# or not: a spare Claude claimed into the pane is its live agent. Its
-# procStart must be that process's start time, field 22 of /proc/<pid>/stat,
-# so a record an ended Claude left at a pid since reused is never read. Of
+# or not: a spare Claude claimed into the pane is its live agent. A one-shot
+# Claude, a claude -p run or the SDK's, its entrypoint sdk-*, never counts: a
+# command of the pane's agent may start one, as a QA capture starts its judge,
+# and it carries the pane's id. Its procStart must be that process's start
+# time, field 22 of /proc/<pid>/stat, so a record an ended Claude left at a pid
+# since reused is never read. Of
 # those, the pane's session is the one whose transcript holds the latest reply,
 # an assistant record off any sidechain. Claude appends in order, so a
 # transcript's latest reply is its last one, read from its end: a transcript
@@ -32,6 +35,7 @@ best=""; latest=""
 for file in "$HOME"/.claude/sessions/[0-9]*.json; do
   pid="${file##*/}"; pid="${pid%.json}"
   ours /proc/"$pid"/environ "HERDR_PANE_ID=$1" || continue
+  [[ "$(jq -r '.entrypoint // ""' "$file")" != sdk-* ]] || continue
   [[ "$(jq -r .procStart "$file")" == "$(cut -d' ' -f22 /proc/"$pid"/stat 2>/dev/null)" ]] || continue
   transcripts=("$HOME"/.claude/projects/*/"$(jq -r .sessionId "$file")".jsonl)
   transcript=""; at=""
