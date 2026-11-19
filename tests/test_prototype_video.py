@@ -182,7 +182,8 @@ console.log(JSON.stringify({
 """
 
 class Site(ThreadingHTTPServer):
-    """The fixture prototype, served on a free port; /answer?ms=N answers after N ms, as a slow fixture does."""
+    """The fixture prototype, served on a free port; /answer?ms=N answers after N ms, as a slow fixture does, and
+    /stream is an event stream that sends a message every 0.5 s until the page leaves."""
 
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
@@ -190,6 +191,16 @@ class Site(ThreadingHTTPServer):
 
         def do_GET(self):
             url = urlsplit(self.path)
+            if url.path == "/stream":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                try:
+                    while True:
+                        self.wfile.write(b"data: tick\n\n")
+                        time.sleep(0.5)
+                except OSError:
+                    return
             if url.path != "/answer":
                 return super().do_GET()
             time.sleep(int(parse_qs(url.query)["ms"][0]) / 1000)
@@ -549,6 +560,33 @@ console.log(JSON.stringify(like(color(frames.at(-1), { x: press.x - 150, y: pres
         result = self.record(mockup("/tabs/", ("ready", "The board on Ready", ""),
                                     ("edited", "Edited", '<li data-press="[role=tab][data-column=edited]">')), "phone")
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_phone_row_wider_than_the_screen_is_pressed_where_it_shows(self):
+        """#delivery-round-video: the plan's row, wider than a phone's screen in a table that scrolls sideways, never
+        shows the point off its words, however the table scrolls; once scrolled into view, the touch presses it where
+        it shows, its middle."""
+        result = self.record(mockup("/wide/", ("plan", "The plan", ""),
+                                    ("opened", "Tuesday's row opened", '<li data-press=".row">')), "phone")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_hold_at_the_middle_of_a_part_off_the_screen_sets_off_toward_it(self):
+        """#delivery-round-video: the pointer holds the meeting's grip, resting at the exact middle of its day, which
+        lies taller than the screen; still down, it first sets off toward where the day lies off the screen before the
+        page scrolls it in, then lets go on it."""
+        result = self.record(mockup("/column/", ("day", "The day", ""),
+                                    ("moved", "The meeting held &rarr; let go on its day",
+                                     '<li data-hold=".grip" data-to=".day">')), "desktop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_event_stream_kept_open_holds_no_step(self):
+        """#delivery-round-video: the chat reads an event stream by fetch that never ends, so a step's result waits on
+        no answer from it, as annotateanything's QA settle never counts one busy (jev-capture #jc-ac-settle): the
+        recording ends well within the 30 s a step's wait may last, where waiting on the stream would cost it that at
+        every step."""
+        started = time.monotonic()
+        result = self.record(mockup("/stream/", ("chat", "The chat", "")), "desktop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, 30)
 
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")

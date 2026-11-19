@@ -123,10 +123,14 @@ async function record(browser, url, steps, viewport, file) {
     await context.exposeBinding('octoLiteRecorder', now)
     await context.addInitScript(overlay, { ARROW, EDGE, MARK, TOUCH, touch })
     const page = await context.newPage()
-    // The fetches the page has sent that have not answered yet, which each step's result may wait on (settle).
-    const pending = new Set()
-    page.on('request', request => ['fetch', 'xhr'].includes(request.resourceType()) && pending.add(request))
+    // The fetches the page has sent that have not answered yet, each with when it was sent, which each step's result may
+    // wait on (settle); an event stream answers for as long as the page reads it, so none counts once it starts, as
+    // annotateanything's QA settle never counts one busy (jev-capture #jc-ac-settle).
+    const pending = new Map()
+    page.on('request', request => ['fetch', 'xhr'].includes(request.resourceType()) && pending.set(request, Date.now()))
     for (const end of ['requestfinished', 'requestfailed']) page.on(end, request => pending.delete(request))
+    page.on('response', answer => /^text\/event-stream/i.test(answer.headers()['content-type'] ?? '')
+      && pending.delete(answer.request()))
     // A document the action opens asks for the pointer as it starts, so one this misses still draws it.
     const show = () => page.evaluate(state => dispatchEvent(new CustomEvent('octo-lite-recorder', { detail: state })), now())
       .catch(() => {})
@@ -155,33 +159,36 @@ async function record(browser, url, steps, viewport, file) {
       verify(viewport, step.name, [{ action, crops, mark }])
     }
 
-    // The pointer goes to the part `selector` names once it shows, the page first scrolling it into view when a point to
-    // rest on lies off the screen, or no press there lands on it, as when a scroller holding it hides it (scroll), and
-    // rests on it: inside it but off its words (Stageshow motion.md, The cursor), else its middle. The part shows once a
-    // press at such a point lands on it, as Spec Chat's click on it does, however the page hid it until then; the pointer
-    // rests at the first such point, judged again once it rests there, as its hover may show a part over that point, or
-    // the page, still drawing, may have moved the part; else it goes again to the first point a press lands on then. A
-    // press still down travels there by `move`, setting off toward the part before the page scrolls, as a drag starts,
-    // so what it lifts goes along. A phone's tap hovers the point before it presses there, so the mouse hovers it, the
-    // finger resting there as the cause of that hover.
+    // The pointer goes to the part `selector` names once it shows, the page first scrolling it into view, once when a
+    // point to rest on lies off the screen, and while no press at either lands on it, as when a scroller holding it
+    // hides it (scroll), and rests on it: inside it but off its words (Stageshow motion.md, The cursor), else its middle.
+    // The part shows once a press at such a point lands on it, as Spec Chat's click on it does, however the page hid it
+    // until then, a point off the screen never; the pointer rests at the first such point, judged again once it rests
+    // there, as its hover may show a part over that point, or the page, still drawing, may have moved the part; else it
+    // goes again to the first point a press lands on then. A press still down travels there by `move`, first setting off
+    // toward where the part lies off the screen before the page scrolls it in, as a drag starts, so what it lifts goes
+    // along; while it waits on the part to show, it stays still. A phone's tap hovers the point before it presses there,
+    // so the mouse hovers it, the finger resting there as the cause of that hover.
     const reach = async (step, selector, doing, move = !touch && mouse) => {
       const target = page.locator(selector).first()
       const { width, height } = page.viewportSize()
       let shown = false
+      let centered = false // scrolled once to the middle of the screen from off it
       for (const by = Date.now() + WAIT.part; Date.now() < by;) {
         const box = await target.boundingBox({ timeout: Math.max(1, by - Date.now()) }).catch(() => null)
         shown ||= Boolean(box)
         const rests = box ? points(box) : []
-        const away = rests.some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)
+        const away = rests.find(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)
         let point = null
-        if (!away) for (const rest of rests) if (!point && await lands(target, rest)) point = rest
-        if (box && !point) {
-          if (away && pointer.down !== null) {
-            const [dx, dy] = [box.x + box.width / 2 - pointer.x, box.y + box.height / 2 - pointer.y]
+        for (const rest of rests) if (!point && await lands(target, rest)) point = rest
+        if (box && (!point || (away && !centered))) {
+          if (away && !centered && pointer.down !== null) { // the pointer, on the screen, is never at that point
+            const [dx, dy] = [away.x - pointer.x, away.y - pointer.y]
             const off = LIFT / Math.hypot(dx, dy)
             await travel(pointer, { x: Math.round(pointer.x + dx * off), y: Math.round(pointer.y + dy * off) }, move)
           }
-          await target.evaluate(scroll, { away, ms: by - Date.now() })
+          await target.evaluate(scroll, { away: Boolean(away), ms: by - Date.now() })
+          centered ||= Boolean(away)
           continue
         }
         if (!point) {
@@ -367,12 +374,15 @@ function ease(t) {
 
 // As Spec Chat's frames settle: a page an action opens loads, the fetches still `pending` answer, fonts arrive, and each
 // finite motion the page started ends; then again while an answer, once drawn, sent another, as a step's result comes
-// back over several slow answers, until all have answered or the wait a part has ends.
+// back over several slow answers, until all have answered or the wait a part has ends. A fetch already open longer
+// than that wait as it starts, as a long poll is, holds it no more, as annotateanything's QA settle waits on none.
 async function settle(page, pending) {
   await sleep(50)
-  const by = Date.now() + WAIT.part
+  const start = Date.now()
+  const by = start + WAIT.part
+  const answered = () => [...pending.values()].every(sent => start - sent > WAIT.part)
   for (let tries = 0; ;) {
-    await until(() => !pending.size, by - Date.now())
+    await until(answered, by - Date.now())
     try {
       await page.waitForLoadState()
       await page.evaluate(async () => {
@@ -386,7 +396,7 @@ async function settle(page, pending) {
       if (tries++) throw e // the page the action opened replaced the one asked; asked once more
       continue
     }
-    if (!pending.size || Date.now() >= by) return
+    if (answered() || Date.now() >= by) return
   }
 }
 
