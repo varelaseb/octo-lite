@@ -272,7 +272,7 @@ class RecordingTest(unittest.TestCase):
         (self.repo / "screen.mockup.html").write_text(mockup)
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                "GIT_COMMITTER_EMAIL": "t@t"}
-        for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "screen"]):
+        for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "--allow-empty", "-m", "screen"]):
             subprocess.run(["git", "-C", str(self.repo), *argv], check=True, env=env)
         recorder = ["node", "--input-type=module", "-e", program, str(RECORDER)] if program else [
             str(RECORDER / "prototype-video")]
@@ -495,6 +495,30 @@ const next = of('move').find(move => move.at > up.at)
 console.log(JSON.stringify(next.at - up.at))
 """)
         self.assertLess(seen, 1400 + 2000)
+
+    def test_part_that_shows_long_after_its_press_is_waited_for(self):
+        """#delivery-round-video: a loaded box can take a page seconds to draw what a press shows, so a working step
+        never fails on it: the result that shows 8 s after its search is still reached and pressed."""
+        result = self.record(mockup("/late/", ("search", "The search", ""),
+                                    ("searched", "Searched", '<li data-press=".search">'),
+                                    ("opened", "Its result, shown late &rarr; opened", '<li data-press=".result">')),
+                             "desktop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_press_on_a_part_the_page_still_moves_lands_where_it_ends(self):
+        """#delivery-round-video: the week's days arrive in pieces for 6 s after Load, each pushing Tuesday down while
+        the pointer travels and rests on it, as a loaded box commits a render late; the pointer goes again to where
+        Tuesday is until it rests on it, so its press opens Tuesday."""
+        for viewport in ("desktop", "phone"):
+            with self.subTest(viewport=viewport):
+                seen = self.probe(mockup("/arriving/", ("week", "The week, not loaded", ""),
+                                         ("loading", "Loading its days", '<li data-press=".load">'),
+                                         ("opened", "Tuesday, once its days arrived &rarr; opened",
+                                          '<li data-press=".tuesday">')), viewport, """
+const press = [...of('down'), ...of('touchStart')].at(-1)
+console.log(JSON.stringify(like(color(frames.at(-1), { x: press.x - 150, y: press.y }), '#16a34a')))
+""")
+                self.assertTrue(seen)
 
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
