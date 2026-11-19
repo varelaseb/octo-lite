@@ -294,13 +294,15 @@ class LaneRecordTests(unittest.TestCase):
     def test_operator_relays_gates_decisions_blockers_lane_closes(self) -> None:
         # spec #roles-operator-writes, #acceptance-operator-quiet,
         # #acceptance-operator-bundle, #acceptance-operator-trade-off,
-        # #roles-box-problem, #acceptance-box-problem-human.
+        # #roles-box-problem, #acceptance-box-problem-human; #roles-eta,
+        # #acceptance-eta-relay: a lane's progress line carries its latest ETA.
         text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
         self.assertIn("You are the filter (spec `#roles-operator-writes`): relay to the human only gates, decisions, "
                       "real blockers, lane closes with their complaints (spec `#roles-complaint`), and each problem "
                       "of the box an owner reports (spec "
                       "`#roles-box-problem`) once with the step that fixes it, however many lanes report it, plus the "
-                      "one addendum receipt line; progress gets one line or nothing.", text)
+                      "one addendum receipt line; progress gets one line or nothing, a lane's line carrying its latest "
+                      "ETA (spec `#roles-eta`), its time from now counted as you write.", text)
         self.assertIn("go together as one question asking whether to take your recommendations, one plain line "
                       "per question naming its recommendation", text)
         self.assertIn("A question that weighs real trade-offs goes alone, never in that bundle.", text)
@@ -416,6 +418,38 @@ class LaneRecordTests(unittest.TestCase):
                       "in your pane names the question it settles, and acts on it", text)
         self.assertIn("It is no rules store: a standing direction", text)
         self.assertIn("It reaches the rest, and you, once that change merges, as a contract change", text)
+
+    def test_owner_challenges_the_asked_frame_once_in_its_first_review_link(self) -> None:
+        # spec #delivery-challenge, #acceptance-challenge-said,
+        # #acceptance-challenge-silent: at its shaping step the owner names a
+        # simpler or sturdier way once, in its first review link's message, and
+        # asks nothing when the asked way is the best path.
+        shape = [line for line in (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").splitlines()
+                 if line.startswith("- Shape with `spec-chat-shape`")]
+        self.assertEqual(len(shape), 1, shape)
+        self.assertIn("Before non-trivial work, when a simpler or sturdier way exists than the one asked, say so once, "
+                      "up front, in the first review link's message, as \"Are you sure you want X? Y is simpler "
+                      "because Z\", challenging the frame, not only the details, then go the way the human chooses; "
+                      "say nothing when you checked and the asked way is the best path (spec `#delivery-challenge`).",
+                      shape[0])
+
+    def test_prototype_worker_sends_its_commit_before_it_records(self) -> None:
+        # spec #delivery-path (its shaping-round sentence), #acceptance-path-prototype:
+        # the worker sends its commit as a status report before recording and goes
+        # on; the owner merges and runs that commit while the worker records, then
+        # merges the final commit its last report names.
+        worker = " ".join((ROOT / "agents/implementer.md").read_text(encoding="utf-8").split())
+        send = ("Then commit, and before you record, send the owner that commit's id as a status report the way "
+                "Output sends one, then go on, since it is not your last report: the owner runs it while you record "
+                "(spec `#delivery-path`).")
+        self.assertIn(send, worker)
+        self.assertLess(worker.index(send), worker.index("record from it with `prototype-video`"))
+        self.assertNotIn("still serves the prior round's build", worker)
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("Merge into the lane branch the commit it sends before it records, so the prototype runs it while "
+                      "the worker records, then the final commit its last report names (spec `#delivery-path`); run "
+                      "the prototype from the lane worktree", owner)
+        self.assertIn("restarted through that file after each merge", owner)
 
     def test_owner_reports_each_box_problem_to_operator_once(self) -> None:
         # spec #roles-box-problem, #acceptance-box-problem-owner: the owner reports
@@ -674,6 +708,20 @@ class LaneRecordTests(unittest.TestCase):
             OPERATOR.read_text(encoding="utf-8"))
         for path in ROOT.glob("agents/*.md"):
             self.assertNotIn("natively or by", path.read_text(encoding="utf-8"), path.name)
+
+    def test_owner_status_carries_its_eta_and_resends_it_when_it_slips(self) -> None:
+        # spec #roles-eta, #acceptance-eta-report, #acceptance-eta-slip: every
+        # status the owner sends names its next ask of the human as a UTC time
+        # with the time from now, how sure, and what could slip it; a later time
+        # goes out at once with what moved it.
+        output = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+                          .split("\n## Output\n", 1)[1].split())
+        self.assertIn("Concise status with exact gate, health, material change, blocker, next action, and ETA (spec "
+                      "`#roles-eta`): the time you expect your next ask of the human (review link, answer, or merge "
+                      "ask) as a UTC time with the time from now, such as `19:40 UTC, in about 2 h`, how sure you "
+                      "are, and what could slip it, most likely first.", output)
+        self.assertIn("When that time moves later than the one you last sent, send a report with the new time and "
+                      "what moved it.", output)
 
     def test_claude_roles_report_natively_to_the_pane_session(self) -> None:
         # spec/domains/herdr-transport.spec.html#transport-native: every Claude role
