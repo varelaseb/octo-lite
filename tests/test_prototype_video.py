@@ -569,10 +569,9 @@ console.log(JSON.stringify(like(color(frames.at(-1), { x: press.x - 150, y: pres
                                     ("opened", "Tuesday's row opened", '<li data-press=".row">')), "phone")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_hold_at_the_middle_of_a_part_off_the_screen_sets_off_toward_it(self):
+    def test_hold_at_the_middle_of_a_part_off_the_screen_reaches_it(self):
         """#delivery-round-video: the pointer holds the meeting's grip, resting at the exact middle of its day, which
-        lies taller than the screen; still down, it first sets off toward where the day lies off the screen before the
-        page scrolls it in, then lets go on it."""
+        lies taller than the screen, and lets go on it."""
         result = self.record(mockup("/column/", ("day", "The day", ""),
                                     ("moved", "The meeting held &rarr; let go on its day",
                                      '<li data-hold=".grip" data-to=".day">')), "desktop")
