@@ -123,11 +123,11 @@ async function record(browser, url, steps, viewport, file) {
     await context.exposeBinding('octoLiteRecorder', now)
     await context.addInitScript(overlay, { ARROW, EDGE, MARK, TOUCH, touch })
     const page = await context.newPage()
-    // The fetches the page has sent that have not answered yet, each with when it was sent, which each step's result may
-    // wait on (settle); an event stream answers for as long as the page reads it, so none counts once it starts, as
-    // annotateanything's QA settle never counts one busy (jev-capture #jc-ac-settle).
-    const pending = new Map()
-    page.on('request', request => ['fetch', 'xhr'].includes(request.resourceType()) && pending.set(request, Date.now()))
+    // The fetches the page has sent that have not answered yet, which each step's result may wait on (settle); an event
+    // stream answers for as long as the page reads it, so none counts once it starts, as annotateanything's QA settle
+    // never counts one busy (jev-capture #jc-ac-settle).
+    const pending = new Set()
+    page.on('request', request => ['fetch', 'xhr'].includes(request.resourceType()) && pending.add(request))
     for (const end of ['requestfinished', 'requestfailed']) page.on(end, request => pending.delete(request))
     page.on('response', answer => /^text\/event-stream/i.test(answer.headers()['content-type'] ?? '')
       && pending.delete(answer.request()))
@@ -374,13 +374,11 @@ function ease(t) {
 
 // As Spec Chat's frames settle: a page an action opens loads, the fetches still `pending` answer, fonts arrive, and each
 // finite motion the page started ends; then again while an answer, once drawn, sent another, as a step's result comes
-// back over several slow answers, until all have answered or the wait a part has ends. A fetch already open longer
-// than that wait as it starts, as a long poll is, holds it no more, as annotateanything's QA settle waits on none.
+// back over several slow answers, until all have answered or the wait a part has ends.
 async function settle(page, pending) {
   await sleep(50)
-  const start = Date.now()
-  const by = start + WAIT.part
-  const answered = () => [...pending.values()].every(sent => start - sent > WAIT.part)
+  const by = Date.now() + WAIT.part
+  const answered = () => pending.size === 0
   for (let tries = 0; ;) {
     await until(answered, by - Date.now())
     try {
