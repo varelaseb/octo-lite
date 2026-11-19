@@ -129,9 +129,10 @@ read from `herdr agent list` before the close, sending no message (a Claude
 caller's wait prints `closed by its caller`): you closed it, so no stop reads
 as news of an agent spawned again under the same name
 (`spec/domains/herdr-transport.spec.html#transport-close-waits`).
-Then it removes the scratch folder of each agent it closed, by name in the
-caller's session; an agent spawned before scratch folders has none, so its
-close removes nothing (`spec/domains/disk.spec.html#scratch-end`).
+Then it removes the scratch folder of each agent in it, a parked one's
+included: the `TMPDIR` its tab gave the processes of the caller's session it
+tags, read before the close; an agent spawned before scratch folders has none,
+so its close removes nothing (`spec/domains/disk.spec.html#scratch-end`).
 Another caller's wait on it ends as gone at its bound. Parking (below) closes
 nothing. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's

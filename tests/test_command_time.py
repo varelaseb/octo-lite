@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,7 +71,10 @@ class HookCase(unittest.TestCase):
                     "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_DISK": str(self.disk),
                     "PYTHONPATH": os.pathsep.join(filter(None, (str(FAKE_DISK), os.environ.get("PYTHONPATH")))),
                     "FAKE_SENT": str(self.sent), "FAKE_DU_LOG": str(self.du)}
-        self.env.pop("HERDR_SESSION", None)
+        # A Herdr session of its own: the hook scans the box's processes by
+        # session, so in the default one a concurrent run's wait would hold
+        # this run's report.
+        self.env["HERDR_SESSION"] = f"test-{uuid.uuid4().hex}"
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
         for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
@@ -84,10 +88,12 @@ class HookCase(unittest.TestCase):
         text = payload if isinstance(payload, str) else json.dumps(payload)
         return subprocess.run([str(HOOK)], input=text, capture_output=True, text=True, env=self.env)
 
-    def operator(self, session: str | None = None, pane: str = "w9:p1") -> None:
-        state = self.state / "octo-lite" / ("sessions/" + session if session else "")
+    def operator(self, session: str | None = None, pane: str = "w9:p1") -> Path:
+        """The operator of Herdr session session, else the caller's: its file."""
+        state = self.state / "octo-lite/sessions" / (session or self.env["HERDR_SESSION"])
         state.mkdir(parents=True, exist_ok=True)
         (state / "operator.toml").write_text(f'pane = "{pane}"\n')
+        return state / "operator.toml"
 
     def messages(self, count: int, within: float = 10.0) -> list:
         """The operator's messages, once there are count of them, else at the bound."""
@@ -325,7 +331,7 @@ class DiskWarningTests(HookCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.operator()
+        self.operator_file = self.operator()
 
     def run_at(self, full: int, **env: str) -> str:
         """A lane agent's command, run with the disk at full%: the line it is told."""
@@ -426,7 +432,7 @@ class DiskWarningTests(HookCase):
 
     def test_with_no_operator_the_agent_is_told_beside_its_result(self) -> None:
         # acceptance-disk-warn-no-operator, warning-no-operator.
-        (self.state / "octo-lite/operator.toml").unlink()
+        self.operator_file.unlink()
         told = (f"octo-lite: this command took 1.2s. octo-lite disk warning: the box's disk is 86% full,"
                 f" 13.3 GiB free. {self.TAIL}")
         self.assertEqual(told, self.run_at(86))
