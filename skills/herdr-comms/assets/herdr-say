@@ -38,12 +38,15 @@
 # A target Herdr does not find may be parked: the latest parked line naming it,
 # in any lane hand-off log of the caller's Herdr session (octo-lite-state),
 # decides; another session's lanes repeat its ids. A live agent under the
-# line's name gets the message; otherwise the agent is resumed first (an owner,
-# the lane's name, in a new lane space; a worker in the caller's space, under
-# the line's role, else the one its spawn name <role>-<ticket> carries), and its
-# new pane= is printed. Every re-send does the same, so a target parked during
-# a wait is resumed. A log line that is not one JSON object is skipped, its log
-# and line number named on stderr.
+# line's name gets the message; otherwise the agent is resumed first, under the
+# line's name and role, none when it names none, and its pane= is printed: in
+# the line's pane, while Herdr still has it, so its id never moves; else, as
+# when its tab was closed, an owner (the lane's name) in a new lane space, a
+# worker in the caller's space (spec/domains/herdr-transport.spec.html
+# #transport-resume). A resume that fails exits 1 naming it, never 69, since a
+# sender sends again what did not exit 0. Every re-send does the same, so a
+# target parked during a wait is resumed. A log line that is not one JSON
+# object is skipped, its log and line number named on stderr.
 # `herdr-say --parked TARGET` prints that line, or exits 1 when there is none.
 set -euo pipefail
 
@@ -147,12 +150,15 @@ send() {
     name="$(jq -r .name <<<"$line")"
     if ! herdr agent get "$name" >/dev/null 2>&1; then
       resume=(--cwd "$(jq -r .cwd <<<"$line")" --name "$name" --resume "$(jq -r .session <<<"$line")")
-      if [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
+      role=($(jq -r '.role // empty | "--role", .' <<<"$line")) at="$(jq -r .pane <<<"$line")"
+      if herdr pane get "$at" >/dev/null 2>&1; then
+        started="$("$here/herdr-spawn" --pane "$at" "${role[@]}" "${resume[@]}" -- claude)"
+      elif [[ "$name" == "$(jq -r .lane <<<"$line")" ]]; then
         started="$("$here/../../../scripts/octo-lite-start" "${resume[@]}")"
       else
         started="$("$here/herdr-spawn" --workspace "${HERDR_WORKSPACE_ID:-}" --label "$name" \
-          --role "$(jq -r '.role // (.name | capture("^(?<r>.+)-[a-z0-9]+-[0-9]+$").r)' <<<"$line")" "${resume[@]}" -- claude)"
-      fi
+          "${role[@]}" "${resume[@]}" -- claude)"
+      fi || { echo "herdr-say: $target: its resume failed; not sent" >&2; exit 1; }
       name="$(sed -n 's/.* pane=\([^ ]*\).*/\1/p' <<<"$started")"
       echo "pane=$name"
     fi
