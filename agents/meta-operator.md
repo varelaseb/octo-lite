@@ -26,7 +26,7 @@ while hand-driving; on operator leaving that dialogue, let orchestrator resume a
 or surface its open needs. Monitoring (rulings 6+10+5+7): ORCHESTRATORS only, one layer
 down; strand = belief vs observable; stale, cheap all-ok,
 idle mandate: poke to investigate (cascades); waiting: park (below); dead: `herdr-say <lane name>`
-if its lane's handoffs log has a parked line (resumes it; a resumed owner's pane is in no parked line), else relaunch fresh; surface modal + phone,
+if its lane's handoffs log has a parked line (resumes it; a resumed owner's pane is its parked line's pane), else relaunch fresh; surface modal + phone,
 non-blocking; escalation post-dialogue silence, lean, tune. Intake: echo paraphrased intake
 as grounded target/scope; explicit intent authorizes dispatch, clarify only unresolved scope/access. Transport (herdr-comms): no
 inbox or drain; owners wake on a worker's [report](../skills/herdr-comms/SKILL.md#send-a-report); stalled mandate
