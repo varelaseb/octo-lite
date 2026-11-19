@@ -1,7 +1,9 @@
 """install-octo-lite registers the command-time hook in each agent CLI's hook
 settings beside other tools' hooks, verifies it, and undoes only its own.
 Spec: spec/domains/install.spec.html#install-hooks; criteria
-#acceptance-hooks-register, -codex-trust, -check, -undo. The other tool's
+#acceptance-hooks-register, -codex-trust, -check, -undo, and project rules
+#acceptance-install-again and #acceptance-check-lines for Claude's StopFailure
+entry (herdr-transport.spec.html#transport-stall-report). The other tool's
 entries are shaped as this box's moshi-hook entries are."""
 
 from __future__ import annotations
@@ -50,8 +52,10 @@ hooks = true
 [hooks.state."/home/op/.codex/hooks.json:stop:0:0"]
 trusted_hash = "sha256:0a9e"
 """
-EVENTS = {".claude/settings.json": ["PostToolUse", "PostToolUseFailure"],
+EVENTS = {".claude/settings.json": ["PostToolUse", "PostToolUseFailure", "StopFailure"],
           ".codex/hooks.json": ["PreToolUse", "PostToolUse"]}
+# Tool events run the hook on shell commands; StopFailure on every API error.
+MATCHERS = {"PreToolUse": "Bash", "PostToolUse": "Bash", "PostToolUseFailure": "Bash", "StopFailure": None}
 
 
 class InstallHooksTests(unittest.TestCase):
@@ -92,8 +96,10 @@ class InstallHooksTests(unittest.TestCase):
             with self.subTest(settings=path.name):
                 data = json.loads(path.read_text())
                 for event in EVENTS[str(path.relative_to(self.prefix))]:
-                    self.assertIn({"matcher": "Bash", "hooks": [{"type": "command", "command": self.hook}]},
-                                  data["hooks"][event])
+                    entry = {"hooks": [{"type": "command", "command": self.hook}]}
+                    if MATCHERS[event]:
+                        entry["matcher"] = MATCHERS[event]
+                    self.assertIn(entry, data["hooks"][event])
                 self.assertEqual(original, self.without_ours(path), "other entries unchanged")
         self.assertEqual(Path(self.hook).resolve(), (ROOT / "scripts/octo-lite-command-time").resolve())
         before = (self.claude.read_text(), self.codex.read_text())
@@ -114,8 +120,23 @@ class InstallHooksTests(unittest.TestCase):
         self.assertEqual([], problems(self.install("--check")))
         self.claude.write_text(json.dumps(CLAUDE_SETTINGS, indent=2))
         result = self.install("--check", ok=False)
-        self.assertEqual([f"missing command-time hook (PostToolUse, PostToolUseFailure): {self.claude};"
-                          f" fix: run {INSTALLER} --prefix {self.prefix}"], problems(result))
+        self.assertEqual([f"missing command-time hook (PostToolUse, PostToolUseFailure, StopFailure):"
+                          f" {self.claude}; fix: run {INSTALLER} --prefix {self.prefix}"], problems(result))
+
+    def test_an_install_from_before_the_stall_report_gains_it_on_install_again(self) -> None:
+        # acceptance-install-again, acceptance-check-lines: a box whose Claude
+        # settings hold the tool entries alone, as an earlier octo-lite wrote them.
+        self.install()
+        data = json.loads(self.claude.read_text())
+        del data["hooks"]["StopFailure"]
+        self.claude.write_text(json.dumps(data, indent=2))
+        self.assertEqual([f"missing command-time hook (StopFailure): {self.claude};"
+                          f" fix: run {INSTALLER} --prefix {self.prefix}"],
+                         problems(self.install("--check", ok=False)))
+        self.install()
+        self.assertEqual([{"hooks": [{"type": "command", "command": self.hook}]}],
+                         json.loads(self.claude.read_text())["hooks"]["StopFailure"])
+        self.assertEqual([], problems(self.install("--check")))
 
     def test_check_names_every_settings_file_that_lacks_the_hook(self) -> None:
         self.install()

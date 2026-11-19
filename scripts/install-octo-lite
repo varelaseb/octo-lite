@@ -75,11 +75,14 @@ send = [\"$waker\", \"send\", \"{owner}\", \"{artifact}\", \"{message}\"]"
 # A verifying run names each problem with its fix and fails once all are named.
 # Claude's PostToolUse and PostToolUseFailure inputs carry the command's
 # duration; Codex's PostToolUse does not, so its PreToolUse stamps the start.
+# Claude's StopFailure, a turn any API error ended, carries the stall report
+# (herdr-transport.spec.html#transport-stall-report): its matcher matches the
+# error, so its entry has none; a tool event's matches shell commands.
 # Codex runs a new or changed entry only once the operator trusts it there;
 # nothing here records that trust.
 hook_settings() {
   python3 - "$1" "$verify" "$prefix/.local/bin/octo-lite-command-time" "$install_cmd" \
-    "$prefix/.claude/settings.json" PostToolUse,PostToolUseFailure \
+    "$prefix/.claude/settings.json" PostToolUse,PostToolUseFailure,StopFailure \
     "$prefix/.codex/hooks.json" PreToolUse,PostToolUse <<'PY'
 import json, os, shlex, shutil, sys
 
@@ -120,8 +123,8 @@ for path, events in zip(files[::2], files[1::2]):
         continue
     if mode == "install":
         for e in missing:
-            hooks.setdefault(e, []).append(
-                {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]})
+            entry = {"hooks": [{"type": "command", "command": command}]}
+            hooks.setdefault(e, []).append({"matcher": "Bash", **entry} if "ToolUse" in e else entry)
         changed = bool(missing)
     else:
         changed = False
