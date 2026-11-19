@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,7 +71,10 @@ class HookCase(unittest.TestCase):
                     "PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_DISK": str(self.disk),
                     "PYTHONPATH": os.pathsep.join(filter(None, (str(FAKE_DISK), os.environ.get("PYTHONPATH")))),
                     "FAKE_SENT": str(self.sent), "FAKE_DU_LOG": str(self.du)}
-        self.env.pop("HERDR_SESSION", None)
+        # A Herdr session of its own: the hook scans the box's processes by
+        # session, so in the default one a concurrent run's wait would hold
+        # this run's report.
+        self.env["HERDR_SESSION"] = f"test-{uuid.uuid4().hex}"
         self.repo = self.tmp / "repo"
         self.repo.mkdir()
         for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
@@ -83,6 +87,24 @@ class HookCase(unittest.TestCase):
     def hook(self, payload: dict | str) -> subprocess.CompletedProcess:
         text = payload if isinstance(payload, str) else json.dumps(payload)
         return subprocess.run([str(HOOK)], input=text, capture_output=True, text=True, env=self.env)
+
+    def operator(self, session: str | None = None, pane: str = "w9:p1") -> Path:
+        """The operator of Herdr session session, else the caller's: its file."""
+        state = self.state / "octo-lite/sessions" / (session or self.env["HERDR_SESSION"])
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "operator.toml").write_text(f'pane = "{pane}"\n')
+        return state / "operator.toml"
+
+    def messages(self, count: int, within: float = 10.0) -> list:
+        """The operator's messages, once there are count of them, else at the bound."""
+        end = time.monotonic() + within
+        while time.monotonic() < end:
+            sent = [json.loads(line) for line in self.sent.read_text().splitlines()] if self.sent.exists() else []
+            if len(sent) >= count:
+                break
+            time.sleep(0.05)
+        time.sleep(0.3)  # and no more after it
+        return [json.loads(line) for line in self.sent.read_text().splitlines()] if self.sent.exists() else []
 
     def told(self, result: subprocess.CompletedProcess, event: str = "PostToolUse") -> str:
         """The one line the agent is told, checked to only inform."""
@@ -309,12 +331,7 @@ class DiskWarningTests(HookCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.operator()
-
-    def operator(self, session: str | None = None, pane: str = "w9:p1") -> None:
-        state = self.state / "octo-lite" / ("sessions/" + session if session else "")
-        state.mkdir(parents=True, exist_ok=True)
-        (state / "operator.toml").write_text(f'pane = "{pane}"\n')
+        self.operator_file = self.operator()
 
     def run_at(self, full: int, **env: str) -> str:
         """A lane agent's command, run with the disk at full%: the line it is told."""
@@ -324,17 +341,6 @@ class DiskWarningTests(HookCase):
             return self.told(self.claude("npm ci", 1234))
         finally:
             self.env = saved
-
-    def messages(self, count: int, within: float = 10.0) -> list:
-        """The operator's messages, once there are count of them, else at the bound."""
-        end = time.monotonic() + within
-        while time.monotonic() < end:
-            sent = [json.loads(line) for line in self.sent.read_text().splitlines()] if self.sent.exists() else []
-            if len(sent) >= count:
-                break
-            time.sleep(0.05)
-        time.sleep(0.3)  # and no more after it
-        return [json.loads(line) for line in self.sent.read_text().splitlines()] if self.sent.exists() else []
 
     def warning(self, full: int, free: str) -> str:
         return f"octo-lite disk warning: the box's disk is {full}% full, {free} free. {self.FOLDERS} {self.TAIL}"
@@ -426,7 +432,7 @@ class DiskWarningTests(HookCase):
 
     def test_with_no_operator_the_agent_is_told_beside_its_result(self) -> None:
         # acceptance-disk-warn-no-operator, warning-no-operator.
-        (self.state / "octo-lite/operator.toml").unlink()
+        self.operator_file.unlink()
         told = (f"octo-lite: this command took 1.2s. octo-lite disk warning: the box's disk is 86% full,"
                 f" 13.3 GiB free. {self.TAIL}")
         self.assertEqual(told, self.run_at(86))
@@ -447,6 +453,80 @@ class DiskWarningTests(HookCase):
         self.assertEqual("kept", (keep / "run.log").read_text())
         self.disk.write_text("not a number")
         self.assertEqual("octo-lite: this command took 1.2s.", self.told(self.claude("ls", 1234)))
+
+
+class StallReportTests(HookCase):
+    """spec/domains/herdr-transport.spec.html#transport-stall-report, criteria
+    #acceptance-stall-told and #acceptance-stall-awaited's operator half: a
+    Claude lane agent's turn a dropped connection ended, as Claude 2.1.328's
+    StopFailure input carries it; the operator's pane gets herdr-say's prompt.
+    Waits are processes started as herdr-await starts them, among the box's."""
+
+    NAME, PANE = "ann9999-stall-owner", "wZZ9:p2"
+    TOLD = ("octo-lite: ann9999-stall-owner (pane wZZ9:p2) stopped on an API error"
+            " (server_error: API Error: Connection lost mid-response.) with no wait on it."
+            " Resume it: herdr-await ann9999-stall-owner continue")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.operator()
+        self.env["HERDR_PANE_ID"] = self.PANE
+        self.session("s-owner", self.NAME)
+
+    def session(self, session: str, name: str, source: str = "user") -> None:
+        """Claude's own record of a session: herdr-spawn's --name is a user name."""
+        records = self.tmp / ".claude/sessions"
+        records.mkdir(parents=True, exist_ok=True)
+        (records / f"{100 + len(list(records.iterdir()))}.json").write_text(json.dumps(
+            {"sessionId": session, "kind": "interactive", "name": name, "nameSource": source}))
+
+    def stop(self, session: str = "s-owner", **env: str | None) -> None:
+        """The agent's turn ends on a dropped connection; the hook tells it nothing."""
+        payload = {"session_id": session, "transcript_path": "/dev/null", "cwd": str(self.repo),
+                   "hook_event_name": "StopFailure", "error": "server_error",
+                   "last_assistant_message": "API Error: Connection lost mid-response.\nRetry later."}
+        run = {k: v for k, v in {**self.env, **env}.items() if v is not None}
+        result = subprocess.run([str(HOOK)], input=json.dumps(payload), capture_output=True, text=True, env=run)
+        self.assertEqual((0, "", ""), (result.returncode, result.stdout, result.stderr))
+
+    def wait_on(self, target: str, **env: str) -> subprocess.Popen:
+        """A herdr-await of the owner's pane on target."""
+        wait = subprocess.Popen(["sleep", "60"], env={**self.env, "HERDR_PANE_ID": "wZZ9:p1",
+                                                       "HERDR_AWAIT_ON": target, **env})
+        self.addCleanup(wait.wait)
+        self.addCleanup(wait.kill)
+        return wait
+
+    def test_a_lane_agent_stopped_with_no_wait_on_it_is_told_to_the_operator(self) -> None:
+        # acceptance-stall-told.
+        self.stop()
+        self.assertEqual([["w9:p1", self.TOLD]], self.messages(1))
+
+    def test_only_a_wait_of_its_session_on_it_holds_the_report(self) -> None:
+        # acceptance-stall-awaited: that wait names it stalled; the operator
+        # is told nothing, the wait on it by name or by pane.
+        self.wait_on("ann9999-stall-worker")
+        self.wait_on(self.NAME, HERDR_SESSION="s2")
+        self.stop()
+        self.assertEqual(1, len(self.messages(1)), "a wait on another agent or of another session held it")
+        for target in (self.NAME, self.PANE):
+            wait = self.wait_on(target)
+            self.stop()
+            wait.kill()
+        self.assertEqual([["w9:p1", self.TOLD]], self.messages(2, within=1.5))
+
+    def test_only_a_lane_agents_stop_is_told(self) -> None:
+        # transport-stall-report: not the operator's own turn, a one-shot
+        # Claude a command of the pane ran, a Claude in no Herdr pane, or a
+        # turn in a session with no operator.
+        self.session("s-operator", "ops-10")
+        self.session("s-judge", "tmp-58", source="derived")
+        self.stop("s-operator", HERDR_PANE_ID="w9:p1")
+        self.stop("s-judge")
+        self.stop(HERDR_PANE_ID=None)
+        self.stop(HERDR_SESSION="s3")
+        self.stop()
+        self.assertEqual([["w9:p1", self.TOLD]], self.messages(2, within=1.5))
 
 
 class HooksInformRuleTests(HookCase):

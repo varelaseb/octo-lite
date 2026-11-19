@@ -73,7 +73,7 @@ home: git identity, consent, and sessions.
 
 Each agent gets an empty scratch folder of its own, exported into its tab as
 `TMPDIR`, so every program it runs puts its temporary files there.
-`herdr-close` removes it when it closes or parks the agent
+`herdr-close` removes it when it closes the agent; a park keeps it
 (`spec/domains/disk.spec.html#scratch-folder`).
 
 Codex runs with `--no-daemon`, so its thread and commands live in the tab's own
@@ -95,9 +95,23 @@ those leave to the caller:
 Any failure closes the tab, so a failed spawn never leaves an orphan.
 
 `--resume SESSION` (Claude only) starts a parked agent as it was launched:
-Claude gets `--name NAME --agent ROLE --resume SESSION` and keeps its
-conversation. An owner resumes through `octo-lite-start --cwd WORKTREE --name
-LANE --resume SESSION`, in a new lane space. `herdr-say` does both for you; see below.
+Claude gets `--name NAME --agent ROLE --resume SESSION`, with no `--agent`
+when its parked line names no role, and keeps its conversation. It resumes in
+the pane it was parked from
+(`spec/domains/herdr-transport.spec.html#transport-resume`):
+
+```
+herdr-spawn --pane PANE --name NAME [--role ROLE] --resume SESSION -- claude
+```
+
+`--pane PANE` starts the agent in that pane, at its shell prompt, in place of
+a new tab: no tab, no scratch folder, no dialog read off the old conversation
+its screen still shows. The pane, its tab, and its space keep their ids, so
+the lane record, review rows, and briefs naming it still reach the agent. Only
+one whose pane Herdr no longer has, as when its tab was closed, resumes in a
+new place: an owner through `octo-lite-start --cwd WORKTREE --name LANE
+--resume SESSION`, in a new lane space, a worker through `herdr-spawn
+--resume` in the caller's space. `herdr-say` does all of it for you; see below.
 
 ## Close an agent or a lane space
 
@@ -115,11 +129,18 @@ read from `herdr agent list` before the close, sending no message (a Claude
 caller's wait prints `closed by its caller`): you closed it, so no stop reads
 as news of an agent spawned again under the same name
 (`spec/domains/herdr-transport.spec.html#transport-close-waits`).
-Then it removes the scratch folder of each agent it closed, by name in the
-caller's session; an agent spawned before scratch folders has none, so its
-close removes nothing (`spec/domains/disk.spec.html#scratch-end`).
+Then it removes the scratch folder of each agent in it, a parked one's
+included: the `TMPDIR` its tab gave the processes it tags, read before the
+close, unless a live process outside what it closed still has it, or a folder
+under it, for `TMPDIR`. Ids repeat across sessions and that read takes every
+session's processes, so it also reads the folder of another session's agent
+under the same ids, whose own folder that agent keeps; an agent spawned again
+under the name of one whose tab is still open shares the folder, as the Herdr
+server may, and keeps it too. One it closed still running at 5s keeps none.
+An agent spawned before scratch folders has none, so its close removes nothing
+(`spec/domains/disk.spec.html#scratch-end`, `#acceptance-disk-own-only-rule`).
 Another caller's wait on it ends as gone at its bound. Parking (below) closes
-the same way. Run it from outside
+nothing. Run it from outside
 what it closes: the spawner closes a tab, the operator closes a finished lane's
 own space, or only its owner tab when the lane started in a shared space.
 Prints one closed hand-off line (`at kind tab|space close_rc killed`;
@@ -133,25 +154,31 @@ the close status.
 herdr-close --park PANE >>"$lanes/<lane>.handoffs.jsonl"
 ```
 
-`$lanes` is `$(octo-lite-state)/lanes`. Reads the Claude session of PANE, a
-pane of the caller's session, by `herdr-claude-session` (below), closes its
-tab, or its whole space when that tab is the space's only one (a lane owner in
-its own space), and prints one parked line (`at kind pane name role cwd
-session`) on stdout, even when the close fails; its closed line goes to
-stderr. The role is the session record's, else the one a worker's spawn name
-`<role>-<ticket>` carries. The parker appends the line: the operator for an
-owner, the owner for a worker. An agent Herdr does not report idle is refused
-with exit 75, a Codex or pi agent (no Claude session file) with 65; nothing is
-closed.
+`$lanes` is `$(octo-lite-state)/lanes`
+(`spec/domains/herdr-transport.spec.html#transport-park`). Reads the Claude
+session of PANE, a pane of the caller's session, by `herdr-claude-session`
+(below), ends that Claude and every process under the pane's shell (its
+`shell_pid` from `herdr pane process-info`): what the agent ran in its
+terminal, its waits among them. The caller's own waits on it end first,
+sending no message. It closes nothing: the pane stays at its shell prompt in
+its tab and space under its id, the agent's scratch folder stays, and what the
+agent started apart from its terminal, as the role contracts' server rule
+starts a server, runs on until the tab closes. Herdr then lists no agent in
+the pane. Prints one parked line (`at kind pane name role cwd session`) on
+stdout and nothing else. The role is the session record's, else the one a
+worker's spawn name `<role>-<ticket>` carries. The parker appends the line: the
+operator for an owner, the owner for a worker. An agent Herdr does not report
+idle is refused with exit 75, a Codex or pi agent (no Claude session file) with
+65; nothing is ended.
 
 A park also frees the installed packages of the agent's own lane worktree:
 the `node_modules` folders Git ignores in the worktree it works in, only when
 that is a Git linked worktree, off its repository's main branch (the one
-`origin/HEAD` names, else `main`), that no process outside the parked tab or
-space works in. A main checkout, an install clone, and a worktree another
-agent works in keep theirs, and every other file stays. The resumed agent
-installs them again with its repository's install command
-(`spec/domains/disk.spec.html#park`).
+`origin/HEAD` names, else `main`), that no live process but the pane's shell
+works in once the agent has ended. A main checkout, an install clone, and a
+worktree another agent or a server the parked one left running works in keep
+theirs, and every other file stays. The resumed agent installs them again with
+its repository's install command (`spec/domains/disk.spec.html#park`).
 
 ## Reload an agent
 
@@ -191,18 +218,18 @@ exit 0 ends the reload, the agent kept as it was.
 herdr-claude-session PANE
 ```
 
-The one lookup `herdr-close --park`, `herdr-spawn --reload`, `herdr-say`,
-`herdr-await` (its caller's form), and a [native report](#send-a-report) share
-(`spec/domains/herdr-transport.spec.html#transport-claude-session`).
+The one lookup every reader of a pane's Claude session shares, listed once in
+`spec/domains/herdr-transport.spec.html#transport-claude-session`.
 Prints one JSON line: Claude's own record
 `~/.claude/sessions/<pid>.json` plus `transcript`, the path of
 `~/.claude/projects/*/<sessionId>.jsonl`, `null` before its first message.
 Exits 1 when no record counts. A record counts when its live process carries
 `HERDR_PANE_ID=PANE` and the caller's `HERDR_SESSION`, foreground or not (a
-spare Claude claimed into the pane), and its `procStart` is that process's
-start time, so a record left at a reused pid is never read. Of those, the one
-whose transcript holds the latest reply (an assistant record off any sidechain)
-wins.
+spare Claude claimed into the pane), its `entrypoint` is no one-shot `sdk-*`
+(a `claude -p` a command of the pane's agent started, as a QA capture starts
+its judge), and its `procStart` is that process's start time, so a record left
+at a reused pid is never read. Of those, the one whose transcript holds the
+latest reply (an assistant record off any sidechain) wins.
 
 ## Send a message
 
@@ -249,10 +276,13 @@ confirms.
 
 A target Herdr does not find may be parked. The latest parked line naming it,
 by pane or name, in any lane hand-off log in `$lanes` decides: a live agent
-under the line's name gets the message; otherwise the agent is resumed (an
+under the line's name gets the message; otherwise the agent is resumed under
+the line's name and role, none when it names none, in the line's pane while
+Herdr still has it (`herdr pane get`), else as when its tab was closed (an
 owner, the line named after its log, in a new lane space; a worker in the
-caller's `$HERDR_WORKSPACE_ID` under the line's role, else its spawn name's),
-gets the message, and `herdr-say` prints its new `pane=`. Every re-send does
+caller's `$HERDR_WORKSPACE_ID`), gets the message, and `herdr-say` prints its
+`pane=`. A resume that fails exits 1, its error output naming the target and
+the failed resume, never 69, so its sender sends it again. Every re-send does
 the same, so a target parked during a wait is resumed. `herdr-say --parked
 TARGET` prints that line, or exits 1. A log line that is not one JSON object
 is skipped and named once on stderr by its log and line number (spec
@@ -290,9 +320,12 @@ another Herdr session:
 herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'
 ```
 
-then `SendMessage` with `to` set to `uds:<that path>`. It counts as sent once
-Claude reports it delivered to the receiver's inbox or reports it timed out: a
-timed-out send may still have been delivered, so it is no failure. Send it with
+then `SendMessage` with `to` set to `uds:<that path>`. Look it up at each
+send, just before it, never reusing one from an earlier send: a resumed or
+reloaded Claude listens at a new path, and an old one reaches nothing. It
+counts as sent once Claude reports it delivered to the receiver's inbox or
+reports it timed out: a timed-out send may still have been delivered, so it is
+no failure. Send it with
 `herdr-say PANE REPORT` instead, under its exit codes, only when the lookup
 exits 1 or prints nothing (a parked, closed, Codex, or pi agent; `herdr-say`
 resumes a parked one), when Claude reports it undelivered (as when the receiver
@@ -318,9 +351,17 @@ line naming NAME and the stop:
 
 ```
 herdr-await: NAME stop=STATE seq=N                     stopped in STATE at Herdr's state_change_seq N
+herdr-await: NAME stop=stalled (ERROR: TEXT)           its turn ended on an API error
 herdr-await: NAME stop=gone (REASON)                   Herdr's error code, or the wait's exit
 herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   the send did not exit 0; no wait ran
 ```
+
+Herdr reports a Claude turn an API error ended, a dropped connection as much
+as a rate limit, as idle or done, as if it had finished: a stop whose last
+reply in the [Claude session](#find-a-panes-claude-session) of NAME's pane is
+an API error is `stalled`, naming that error. A Herdr wait its server is too
+loaded to answer (`server_unavailable`) is no stop: it waits again a second
+later, so only an agent that exited or a tab that closed ends it as gone.
 
 A Claude caller runs it with its Bash tool in the background
 (`run_in_background`), its description naming NAME, and asks for nothing
@@ -335,8 +376,8 @@ a send that waits out a rate limit holds no caller in the foreground. Given
 once NAME has changed state since that stop and stopped again, or is gone: a
 re-wait on an agent still at its task never wakes its caller before it moves,
 and one that works and stops before the wait starts still ends it at once.
-Wait by agent name: a parked worker `herdr-say` resumes gets a new pane, never
-a new name. Each Herdr wait it runs
+Wait by agent name: a parked worker whose pane was gone resumes in a new pane,
+never under a new name. Each Herdr wait it runs
 is bounded, and at the bound it waits again, given `--since` reading the stop
 first, so it ends within the bound once the agent is gone, its tab closed
 however it closed (Herdr leaves its own wait running), or has worked and
@@ -359,9 +400,9 @@ whose result or reply you still await, read its stop line (on Claude, the
 task's output), then its screen with `herdr agent read <name>`.
 
 - A finished result or reply there is its report: consume it.
-- A turn ended on an API error: resume it with `herdr-await <name> continue`,
-  which sends again while a rate limit lasts; its `stop=send-failed` means it
-  is blocked.
+- `stop=stalled`, a turn ended on an API error: resume it with
+  `herdr-await <name> continue`, which sends again while a rate limit lasts;
+  its `stop=send-failed` means it is blocked.
 - Still at its task, such as on its own background command:
   `herdr-await --since <seq> <name>`, `<seq>` the one the stop line named, so
   you wake only once it has worked and stopped again, even if it did so before

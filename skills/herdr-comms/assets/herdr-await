@@ -9,8 +9,12 @@
 # gone: its agent exited, its tab closed, or Herdr finds no agent by that name.
 # Its end is one line naming NAME and the stop:
 #   herdr-await: NAME stop=STATE seq=N      stopped in STATE, Herdr's state_change_seq N
+#   herdr-await: NAME stop=stalled (ERROR: TEXT)   its turn ended on an API error
 #   herdr-await: NAME stop=gone (REASON)    Herdr's error code, or the wait's exit
 #   herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   no wait ran
+# Herdr reports a Claude turn an API error ended, a dropped connection as much
+# as a rate limit, as idle or done: a stop whose last reply in the Claude
+# session (herdr-claude-session) of NAME's pane is an API error is stalled.
 # A caller whose pane ($HERDR_PANE_ID) holds a live Claude session
 # (herdr-claude-session), which runs it as its own background task, gets it
 # as the call's end: it waits in that task's foreground, prints the line on
@@ -28,7 +32,8 @@
 # --since reading NAME's stop first: Herdr leaves a wait on an agent whose tab
 # closed running, so a closed tab ends it as gone, and work and a stop between
 # two waits ends it, within the bound. At the bound a caller pane Herdr no
-# longer finds ends it, waking no one.
+# longer finds ends it, waking no one. A Herdr wait its server is too loaded
+# to answer (server_unavailable) is no stop: it waits again a second later.
 # The wait keeps the caller's environ, HERDR_TAB_ID included, so herdr-close of
 # the caller's tab, parking included, ends it with the caller's other
 # processes. It leads its own process group and carries HERDR_AWAIT_ON=NAME, so
@@ -69,22 +74,25 @@ name="$1"
 # herdr-close's TERM; detached, stdout is /dev/null.
 trap 'echo "herdr-await: $name closed by its caller"; exit' TERM
 # One Herdr wait, bounded: its result in $out, else its exit in $rc and Herdr's
-# error code in $code, timeout at the bound, where a caller Herdr finds no agent
-# for ends it all. Herdr's result goes to stdout, its error to stderr, either
-# beside warnings.
+# error code in $errcode, timeout at the bound, where a caller Herdr finds no
+# agent for ends it all; server_unavailable waits again. Herdr's result goes to
+# stdout, its error to stderr, either beside warnings.
 code() { jq -Rr 'fromjson? | .error.code // empty' <<<"$1"; }
 bounded() {
-  out="$(herdr agent wait "$@" --timeout "$bound" 2>&1)" && return
-  rc=$?; code="$(code "$out")"
-  [[ "$code" != timeout || "$(code "$(herdr agent get "$caller" 2>&1)")" != agent_not_found ]] || exit
-  return 1
+  until out="$(herdr agent wait "$@" --timeout "$bound" 2>&1)"; do
+    rc=$?; errcode="$(code "$out")"
+    [[ "$errcode" == server_unavailable ]] || {
+      [[ "$errcode" != timeout || "$(code "$(herdr agent get "$caller" 2>&1)")" != agent_not_found ]] || exit
+      return 1; }
+    sleep 1
+  done
 }
 # One wake per stop, its line on stdout for a Claude caller, else sent: a caller
 # blocked on interactive input (herdr-say exit 75) gets it once it frees.
 stop() {
   [[ -z "$notice" ]] || { echo "herdr-await: $name stop=$1"; exit; }
   until "$here/herdr-say" "$caller" "herdr-await: $name stop=$1" >/dev/null 2>&1; (($? != 75)); do
-    bounded "$caller" --until idle --until done --until working || [[ "$code" == timeout ]] || break
+    bounded "$caller" --until idle --until done --until working || [[ "$errcode" == timeout ]] || break
   done
   exit
 }
@@ -94,7 +102,7 @@ if (($# == 2)); then
 fi
 # A wait on NAME, its seq in $seq; false at the bound; any other failure is gone.
 await() {
-  bounded "$name" "$@" || { [[ "$code" == timeout ]] || stop "gone (${code:-herdr agent wait exit $rc})"; return 1; }
+  bounded "$name" "$@" || { [[ "$errcode" == timeout ]] || stop "gone (${errcode:-herdr agent wait exit $rc})"; return 1; }
   seq="$(jq -Rr 'fromjson? | .result.agent.state_change_seq // empty' <<<"$out")"
 }
 # Till NAME stops; given --since and still at that stop, its next work, then
@@ -102,4 +110,16 @@ await() {
 until await && { [[ -z "$since" ]] || ((seq > since)); }; do
   [[ -z "$since" ]] || await --until working
 done
+# The last reply in the transcript of pane $1's Claude session, an assistant
+# record off any sidechain read from its end, when it is an API error: its
+# error and text.
+api_error() {
+  local transcript
+  transcript="$("$here/herdr-claude-session" "$1" 2>/dev/null | jq -r '.transcript // empty')"
+  [[ -n "$transcript" ]] && tac "$transcript" 2>/dev/null | jq -rn '
+    first(inputs | select(.type == "assistant" and .isSidechain == false))
+    | select(.isApiErrorMessage == true) | "\(.error): \(.message.content[0].text)"'
+}
+error="$(api_error "$(jq -Rr 'fromjson? | .result.agent.pane_id // empty' <<<"$out")")"
+[[ -z "$error" ]] || stop "stalled (${error//$'\n'/ })"
 stop "$(jq -Rr 'fromjson? | .result.agent // empty | "\(.agent_status) seq=\(.state_change_seq)"' <<<"$out")"

@@ -2,15 +2,18 @@
 # Print the Claude session of Herdr pane PANE as one JSON line: Claude's own
 # record ~/.claude/sessions/<pid>.json plus transcript, the path of its
 # ~/.claude/projects/*/<sessionId>.jsonl, null before its first message.
-# Exit 1 when no record counts. herdr-close --park, herdr-spawn (its readiness
-# and --reload), herdr-say, herdr-await (its caller's form), and a native report
-# share it.
+# Exit 1 when no record counts. Every reader of a pane's Claude session shares
+# it: spec/domains/herdr-transport.spec.html#transport-claude-session is the one
+# list of them.
 #
 # A record counts when its live process carries HERDR_PANE_ID=PANE and the
 # caller's HERDR_SESSION (unset in both for the default session), foreground
-# or not: a spare Claude claimed into the pane is its live agent. Its
-# procStart must be that process's start time, field 22 of /proc/<pid>/stat,
-# so a record an ended Claude left at a pid since reused is never read. Of
+# or not: a spare Claude claimed into the pane is its live agent. A one-shot
+# Claude, a claude -p run or the SDK's, its entrypoint sdk-*, never counts: a
+# command of the pane's agent may start one, as a QA capture starts its judge,
+# and it carries the pane's id. Its procStart must be that process's start
+# time, field 22 of /proc/<pid>/stat, so a record an ended Claude left at a pid
+# since reused is never read. Of
 # those, the pane's session is the one whose transcript holds the latest reply,
 # an assistant record off any sidechain. Claude appends in order, so a
 # transcript's latest reply is its last one, read from its end: a transcript
@@ -19,12 +22,17 @@ set -uo pipefail
 # True when the process behind environ file $1 runs in the caller's Herdr
 # session, HERDR_SESSION unset in both for the default one, and carries the
 # line $2 when given. Unreadable entries are silently not ours. The one
-# session-membership check: herdr-close sources this script for it, and only it.
+# session-membership check: herdr-close sources this script for it.
 ours() {
   local vars
   vars="$(tr '\0' '\n' 2>/dev/null <"$1")" && { (($# == 1)) || grep -qxF "$2" <<<"$vars"; } &&
     [[ "$(sed -n 's/^HERDR_SESSION=//p' <<<"$vars")" == "${HERDR_SESSION:-}" ]]
 }
+# Once pane $1's Claude has ended, until Herdr finds no agent in the pane, at
+# most a minute: Herdr holds an ended agent a while, refusing its name to a
+# start. The one such bound: herdr-close --park and herdr-spawn --reload, which
+# each end a pane's Claude, source this script for it.
+freed() { for _ in {1..60}; do herdr agent get "$1" >/dev/null 2>&1 || return 0; sleep 1; done; }
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 (($# == 1)) || { echo "usage: herdr-claude-session PANE" >&2; exit 64; }
 
@@ -32,6 +40,7 @@ best=""; latest=""
 for file in "$HOME"/.claude/sessions/[0-9]*.json; do
   pid="${file##*/}"; pid="${pid%.json}"
   ours /proc/"$pid"/environ "HERDR_PANE_ID=$1" || continue
+  [[ "$(jq -r '.entrypoint // ""' "$file")" != sdk-* ]] || continue
   [[ "$(jq -r .procStart "$file")" == "$(cut -d' ' -f22 /proc/"$pid"/stat 2>/dev/null)" ]] || continue
   transcripts=("$HOME"/.claude/projects/*/"$(jq -r .sessionId "$file")".jsonl)
   transcript=""; at=""

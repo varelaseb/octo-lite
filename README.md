@@ -89,7 +89,11 @@ hook settings: `~/.claude/settings.json` (`PostToolUse` and
 unchanged. After each shell command the agent is told how long it took, any
 box lock wait (`octo-lite-lock CMD`) told apart, and a warning when it reruns a
 slow command after an edit
-([Command time](spec/domains/command-time.spec.html)). The hook only informs:
+([Command time](spec/domains/command-time.spec.html)). Claude's settings also
+get `StopFailure`, no matcher: a lane agent whose turn an API error ended, with
+no `herdr-await` on it, is told to the session's operator with the step that
+resumes it
+([stall report](spec/domains/herdr-transport.spec.html#transport-stall-report)). The hook only informs:
 it never blocks or changes a command. A file it cannot read as settings, or
 write, is left untouched and reported. `--check` fails naming the settings file
 that lacks the hook, and `--undo` removes only octo-lite's entries.

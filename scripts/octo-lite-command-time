@@ -16,6 +16,10 @@ which lasts until the disk is under 80% full.
 After each command it also reads how full the box's disk is, and warns the
 session's operator, or with none the agent, as the levels fill
 (spec/domains/disk.spec.html#warning).
+
+Claude also runs it on StopFailure, each turn an API error ended: a lane
+agent's, with no wait on it, is told to the session's operator
+(spec/domains/herdr-transport.spec.html#transport-stall-report).
 """
 
 import hashlib
@@ -185,15 +189,70 @@ def disk(store: Path) -> str | None:
     if not [mark for level, mark in zip(LEVELS, marks) if full >= level and first(mark)]:
         return None
     warning = f"octo-lite disk warning: the box's disk is {full}% full, {size(free / 1024)} free."
-    state = subprocess.run([HERE / "octo-lite-state"], capture_output=True, text=True, check=True).stdout
-    operator = Path(state.strip()) / "operator.toml"
-    if not operator.exists():
+    pane = operator()
+    if not pane:
         return f"{warning} {TAIL}"
-    import tomllib  # only here: its import costs every command ~15ms
-    pane = tomllib.loads(operator.read_text())["pane"]
-    subprocess.Popen([sys.executable, __file__, "--disk-warning", pane, warning], start_new_session=True,
-                     cwd="/", stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    detach(sys.executable, __file__, "--disk-warning", pane, warning)
     return None
+
+
+def operator() -> str | None:
+    """The pane of the caller's Herdr session's operator, None with none."""
+    state = subprocess.run([HERE / "octo-lite-state"], capture_output=True, text=True, check=True).stdout
+    path = Path(state.strip()) / "operator.toml"
+    if not path.exists():
+        return None
+    import tomllib  # only here: its import costs every command ~15ms
+    return tomllib.loads(path.read_text())["pane"]
+
+
+def detach(*argv: object) -> None:
+    """Run argv apart from the hook, so the agent waits on none of it."""
+    subprocess.Popen(argv, start_new_session=True, cwd="/",
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def awaited(agent: set) -> bool:
+    """True when a herdr-await of the caller's Herdr session waits on agent, by
+    name or pane: its process started with HERDR_AWAIT_ON naming it."""
+    session = os.environ.get("HERDR_SESSION", "")
+    for environ in Path("/proc").glob("[0-9]*/environ"):
+        try:
+            text = environ.read_bytes().decode(errors="replace")
+        except OSError:
+            continue  # another user's, or ended
+        env = dict(var.partition("=")[::2] for var in text.split("\0"))
+        if env.get("HERDR_AWAIT_ON") in agent and env.get("HERDR_SESSION", "") == session:
+            return True
+    return False
+
+
+def stall(event: dict) -> None:
+    """A Claude turn an API error ended, told to the session's operator by a
+    detached herdr-say when it is a lane agent's, no wait is on it, and the
+    agent is not the operator (herdr-transport.spec.html#transport-stall-report).
+    A lane agent is one herdr-spawn started: in a Herdr pane, under the name
+    its Claude session record holds from --name. A Claude a command of the
+    pane started, such as a one-shot judge, has a name Claude derived."""
+    pane = os.environ.get("HERDR_PANE_ID")
+    name = None
+    for path in (Path.home() / ".claude/sessions").glob("*.json"):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue  # its Claude ended
+        if record.get("sessionId") == event.get("session_id") and record.get("nameSource") == "user":
+            name = record.get("name")
+    if not pane or not name or awaited({name, pane}):
+        return
+    told = operator()
+    if told in (None, pane):
+        return
+    said = str(event.get("last_assistant_message") or "").strip().splitlines()
+    error = ": ".join([str(event.get("error")), *said[:1]])
+    detach(HERE.parent / "skills/herdr-comms/assets/herdr-say", told,
+           f"octo-lite: {name} (pane {pane}) stopped on an API error ({error}) with no wait on it."
+           f" Resume it: herdr-await {name} continue")
 
 
 def tell_operator(pane: str, warning: str) -> None:
@@ -218,13 +277,16 @@ def main() -> None:
         tell_operator(*sys.argv[2:4])
         return
     event = json.load(sys.stdin)
+    hook = event.get("hook_event_name")
+    if hook == "StopFailure":
+        stall(event)
+        return
     command = event.get("tool_input", {}).get("command")
     if not isinstance(command, str):
         command = json.dumps(command)
     if running(event.get("tool_response")):
         return  # not finished when its call returns: no line, no record (#time-line)
     store = records()
-    hook = event.get("hook_event_name")
     if hook == "PreToolUse":
         (store / f"{name(event.get('tool_use_id', ''))}.start").write_text(str(time.time()))
         return

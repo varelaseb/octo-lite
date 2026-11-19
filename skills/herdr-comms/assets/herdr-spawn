@@ -11,12 +11,15 @@
 # The runtime (model, effort, skills) comes from the agent definition and the
 # CLI's own defaults. This script pins none of it.
 #
-# --reload PANE LAST FIRST spawns into a running Claude agent's own pane instead
-# of a new tab (spec/domains/herdr-transport.spec.html#transport-reload).
+# --pane PANE starts the agent in that existing pane instead of a new tab, as a
+# parked agent resumes in the pane it was parked from
+# (spec/domains/herdr-transport.spec.html#transport-resume); --reload PANE LAST
+# FIRST spawns so into a running Claude agent's own pane (#transport-reload).
 set -euo pipefail
 here="$(dirname "$(readlink -f "$0")")"
+. "$here/herdr-claude-session" # freed PANE: once Herdr has freed an ended agent's pane
 
-argv=("$@") workspace="" name="" label="" cwd="$PWD" role="" resume="" reload=""
+argv=("$@") workspace="" name="" label="" cwd="$PWD" role="" resume="" pane="" reload=""
 # The operating model is inherited: each spawn exports a given one into the tab
 # it creates, so every child spawned from there defaults to the same file. Given
 # none, the box's applies, kept in the onboarding file below.
@@ -27,10 +30,13 @@ usage() {
 usage:
   herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
     [--operating-model FILE] [--resume SESSION] -- claude|codex|pi
+  herdr-spawn --pane PANE --name NAME [--role ROLE] --resume SESSION -- claude
   herdr-spawn --reload PANE LAST FIRST
 
-Spawn bare, then send the brief with herdr-say. Claude gets --name NAME and
---agent ROLE from --role. --resume SESSION continues a parked Claude session (Claude only).
+Spawn bare, then send the brief with herdr-say. Claude gets --name NAME, and
+--agent ROLE when given --role. --resume SESSION continues a parked Claude
+session (Claude only), with no role when its parked line names none.
+--pane PANE starts it in that pane, at its shell prompt, instead of a new tab.
 --reload, run by a Claude agent on its own pane as a turn's last step, returns
 at once; once the agent has gone quiet it sends LAST, then replaces the agent
 in PANE with a fresh Claude under its old name, role, and goal, and sends FIRST.
@@ -49,13 +55,15 @@ while (($#)); do
     --role) role="${2:?}"; shift 2 ;;
     --operating-model) model="${2:?}"; shift 2 ;;
     --resume) resume="${2:?}"; shift 2 ;;
-    --reload) (($# == 4)) || { usage >&2; exit 64; }; reload="$2" last="$3" first="$4"; set -- claude; break ;;
+    --pane) pane="${2:?}"; shift 2 ;;
+    --reload) (($# == 4)) || { usage >&2; exit 64; }; reload="$2" pane="$2" last="$3" first="$4"; set -- claude; break ;;
     --direct) shift ;;                 # accepted and ignored; kept for callers
     --) shift; break ;;
     *) echo "herdr-spawn: unknown option $1" >&2; exit 64 ;;
   esac
 done
-[[ -n "$reload" || -n "$workspace" && -n "$name" && -n "$role" && $# -gt 0 ]] || { usage >&2; exit 64; }
+[[ -n "$reload" || ( -n "$workspace" || -n "$pane" ) && -n "$name" && ( -n "$role" || -n "$resume" ) && $# -gt 0 ]] ||
+  { usage >&2; exit 64; }
 [[ -d "$cwd" ]] || { echo "herdr-spawn: no such worktree: $cwd" >&2; exit 66; }
 cwd="$(cd "$cwd" && pwd -P)"
 if [[ -n "$model" ]]; then
@@ -81,7 +89,6 @@ esac
 # the old session ran under. Run by that agent on itself, it returns at once
 # and goes on in a session of its own, so it outlives the Claude it ends.
 if [[ -n "$reload" ]]; then
-  pane="$reload"
   if [[ -z "${HERDR_SPAWN_RELOADING:-}" ]]; then
     # Only Claude keeps a session to end and a goal to carry.
     session="$("$here/herdr-claude-session" "$pane")" ||
@@ -129,11 +136,10 @@ if [[ -n "$reload" ]]; then
   role="$(latest agent-setting | jq -r '.agentSetting // empty')"
   # A goal Claude ended, met or failed, is none.
   goal="$(latest goal_status | jq -r 'select(.attachment.met == false and (.attachment.failed | not)) | .attachment.condition')"
-  # Herdr holds an ended agent's name a while, refusing it to a start, so the
-  # spawn goes on, bounded, once Herdr finds no agent in the pane. Until the
-  # start, a send to the pane fails at its sender, and a failure prints at the
-  # shell prompt the agent left.
-  for _ in $(seq 1 60); do herdr agent get "$pane" >/dev/null 2>&1 || break; sleep 1; done
+  # The spawn goes on once Herdr frees the pane. Until the start, a send to the
+  # pane fails at its sender, and a failure prints at the shell prompt the
+  # agent left.
+  freed "$pane"
 fi
 
 # The box comes current before the agent starts, its contract included: when
@@ -189,7 +195,8 @@ contract="not-found"
 if [[ "$kind" == claude ]]; then
   contract="loaded-by-agent-flag"
   # --name puts the Herdr name in Claude's own session list, resumed too.
-  launch_argv=(--name "$name" --agent "$role")
+  launch_argv=(--name "$name")
+  [[ -z "$role" ]] || launch_argv+=(--agent "$role")
   [[ -z "$resume" ]] || launch_argv+=(--resume "$resume")
 elif [[ "$kind" == pi ]]; then
   launch_argv=()
@@ -231,9 +238,9 @@ fi
 # runs puts its temporary files, and herdr-close removes it with the agent
 # (disk.spec.html#scratch-folder). Every folder made for it is the user's
 # alone, whatever the umask.
-# A reloaded pane has them already.
+# A pane spawned into has them already.
 tab=""
-if [[ -z "$reload" ]]; then
+if [[ -z "$pane" ]]; then
   scratch="$("$here/../../../scripts/octo-lite-state" --scratch "$name")"
   (umask 077 && mkdir -p -- "$scratch")
   tab_env=(--env "HOME=$HOME" --env "TMPDIR=$scratch")
@@ -244,8 +251,8 @@ if [[ -z "$reload" ]]; then
   [[ -n "$tab" && -n "$pane" ]] || { echo "herdr-spawn: tab create returned no tab or pane" >&2; exit 1; }
 fi
 
-# A failed spawn closes the tab it created; a reload created none, so its pane
-# stays, and its failures name no tab.
+# A failed spawn closes the tab it created; one into a pane created none, so the
+# pane stays, and its failures name no tab.
 close_orphan_tab() { [[ -z "$tab" ]] || herdr tab close "$tab" >/dev/null 2>&1 || true; }
 
 # A new root pane may not have reached its shell prompt yet; herdr reports that
@@ -319,9 +326,10 @@ send_key() {
 }
 
 cleared=0 tries="${HERDR_SPAWN_TRUST_RETRIES:-14}"
-# A reloaded pane's folder is trusted already, and its screen still shows the
-# old conversation, which no dialog may be read from.
-[[ -z "$reload" ]] || cleared=1 tries=0
+# A pane spawned into, a resume's or a reload's, is at a folder trusted
+# already, and its screen still shows the old conversation, which no dialog
+# may be read from.
+[[ -n "$tab" ]] || cleared=1 tries=0
 for _ in $(seq 1 "$tries"); do
   state=0; dialog_state || state=$?
   [[ "$state" == 1 ]] && { cleared=1; break; }
