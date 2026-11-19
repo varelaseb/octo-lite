@@ -14,9 +14,11 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 RECORDER = ROOT / "skills" / "implement-spec" / "assets" / "prototype-video"
@@ -180,11 +182,20 @@ console.log(JSON.stringify({
 """
 
 class Site(ThreadingHTTPServer):
-    """The fixture prototype, served on a free port."""
+    """The fixture prototype, served on a free port; /answer?ms=N answers after N ms, as a slow fixture does."""
 
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def do_GET(self):
+            url = urlsplit(self.path)
+            if url.path != "/answer":
+                return super().do_GET()
+            time.sleep(int(parse_qs(url.query)["ms"][0]) / 1000)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
     def __init__(self):
         super().__init__(("127.0.0.1", 0), functools.partial(self.Handler, directory=FIXTURES / "site"))
@@ -403,7 +414,7 @@ const starts = of('touchStart')
 const [end] = of('touchEnd')
 const slides = of('touchMove')
 console.log(JSON.stringify({
-  heldUntilOpen: slides.length > 0 && slides[0].at - starts[0].at >= 500,
+  heldUntilOpen: slides.length > 0 && slides[0].at - starts[0].at >= 500 && slides[0].at - starts[0].at < 2500,
   stillDown: starts.length === 1 && slides.every(slide => slide.at < end.at),
   picked: like(color(frames.at(-1), { x: 180, y: 450 }), '#16a34a'),
 }))
@@ -519,6 +530,25 @@ const press = [...of('down'), ...of('touchStart')].at(-1)
 console.log(JSON.stringify(like(color(frames.at(-1), { x: press.x - 150, y: press.y }), '#16a34a')))
 """)
                 self.assertTrue(seen)
+
+    def test_last_step_holds_its_result_that_slow_answers_bring(self):
+        """#delivery-round-video: the last step's search runs again and its counts come back only after three slow
+        answers, each read once the one before has drawn, 5.3 s after the press, longer than the last step holds; the
+        video holds until they have, so its last frame shows the counts back."""
+        seen = self.probe(mockup("/counts/", ("results", "The results", ""),
+                                 ("again", "Searched again &rarr; its counts back", '<li data-press=".again">')),
+                          "desktop", """
+const press = of('down').at(-1)
+console.log(JSON.stringify(like(color(frames.at(-1), { x: press.x - 150, y: press.y }), '#16a34a')))
+""")
+        self.assertTrue(seen)
+
+    def test_phone_tab_a_track_clips_is_scrolled_into_view_and_tapped(self):
+        """#delivery-round-video: the board's tab track, narrower than the screen, clips Edited where the screen
+        would still show it; the track first scrolls it into view, so the touch rests on it and taps it."""
+        result = self.record(mockup("/tabs/", ("ready", "The board on Ready", ""),
+                                    ("edited", "Edited", '<li data-press="[role=tab][data-column=edited]">')), "phone")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
