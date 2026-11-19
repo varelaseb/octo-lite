@@ -291,6 +291,74 @@ class LaneRecordTests(unittest.TestCase):
                 self.assertEqual(run.returncode != 0, fail == "1", run.stderr)
                 self.assertEqual(log.read_text(encoding="utf-8").splitlines(), calls)
 
+    def test_merge_at_the_go_never_merges_main_first(self) -> None:
+        # spec #gates-merge-check, #delivery-path ("later only on a conflict"),
+        # #acceptance-merge-pin: at the go the owner merges the named head at
+        # once, a queue taking it as an entry; only a refusal moves the head,
+        # and that head needs a fresh go.
+        github = " ".join((ROOT / "skills/octo-lite-github/SKILL.md").read_text(encoding="utf-8").split())
+        for phrase in ("merge pinned to that commit at once, never merging main first",
+                       "a repo with a merge queue takes the merge as a queue entry",
+                       "After the go the head changes only when the merge or queue refuses it, for a conflict "
+                       "(main goes in) or a failure on the combined build (a fix batch)",
+                       "the new head needs a fresh go"):
+            self.assertIn(phrase, github)
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        callback = skill[skill.index("## Human acceptance callback"):]
+        for phrase in ("merge that head at once by its pinned chain", "never merging main first",
+                       "a repo with a merge queue takes the merge as a queue entry",
+                       "Only when the merge or queue refuses the head, for a conflict (main goes in) or a failure "
+                       "on the combined build (a fix batch), does the head change, and that new head goes back "
+                       "to the human for a fresh go"):
+            self.assertIn(phrase, callback)
+
+    def test_lane_merges_main_once_and_checks_the_candidate_at_once(self) -> None:
+        # spec #delivery-path, #roles-load: every ticket integrated, then the
+        # lane's one main merge makes the candidate, on which review, the full
+        # suite, and any capture start at once; no one-shot run before it.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        finish = skill[skill.index("## Review and finish"):skill.index("## Human acceptance callback")]
+        for phrase in ("start each check as soon as the input it checks is ready, never waiting on a step it does not read",
+                       "Overlap never skips a gate or lowers a bar: a check whose input an in-flight change would "
+                       "alter waits for that change alone",
+                       "Once every ticket is integrated, have the integrator merge main into the lane branch, "
+                       "the lane's one main merge: the head that leaves is the candidate",
+                       "Main goes in earlier only when a conflict with it or a change on it blocks a ticket, "
+                       "later only on a conflict with the lane branch",
+                       "On the candidate start at once: the full suite under the box lock",
+                       "any capture the target requires before a merge ask, and a fresh reviewer",
+                       "never runs on a head before a candidate"):
+            self.assertIn(phrase, finish)
+        self.assertNotIn("Run the target repo's required validation.", finish)
+        self.assertIn("The lane runs the full suite only on a candidate head, beside its review, "
+                      "and the PR body's validation names the run on the merge ask's head", skill)
+        self.assertNotIn("full suite once", skill)
+
+    def test_every_finding_on_one_head_goes_in_one_fix_batch(self) -> None:
+        # spec #delivery-path, #delivery-review, #health-notes: one batch per
+        # head, two rounds over the whole PR, notes in one last batch with no
+        # blocker, a batch's delta reviewed as its implementer reports it.
+        # Step 2 stays the step acting on the verdict: agents/orchestrator.md
+        # and annotateanything's operating model link it by number.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        step2 = re.search(r" 2\. (.*?) 3\. ", skill[skill.index("## Review and finish"):]).group(1)
+        for phrase in ("Every finding on one head, the verdict's blockers and its notes marked `Fix in this PR`, "
+                       "the suite's failures, the capture's code faults, and your own, goes into one fix batch",
+                       "the findings, not the history, and its round, one Herdr integrator, one push",
+                       "at most 2 fix rounds, counted over the whole PR, so neither a main merge nor the merge ask "
+                       "restarts the count",
+                       "the second a fresh step-back pass",
+                       "With no blocker, the notes marked `Fix in this PR` still go in one last batch, which is no fix round",
+                       "A batch's head is a candidate too",
+                       "starting on the batch commit as its implementer reports it, beside its integration, "
+                       "while the full suite runs again",
+                       "A commit that only renames or renumbers",
+                       "gets the required checks and no review"):
+            self.assertIn(phrase, step2)
+        self.assertNotIn("batch of their own", skill)
+        self.assertIn("[Review and finish](../skills/implement-spec/SKILL.md#review-and-finish) step 2",
+                      (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"))
+
     def test_operator_relays_gates_decisions_blockers_lane_closes(self) -> None:
         # spec #roles-operator-writes, #acceptance-operator-quiet,
         # #acceptance-operator-bundle, #acceptance-operator-trade-off,

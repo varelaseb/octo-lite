@@ -101,18 +101,22 @@ Do not create extra workflow labels unless the operator explicitly asks.
   worklane. An explicit instruction to merge a named PR accepts that exact head
   unless the human says otherwise. A mechanical update onto accepted main made
   before the human's go (merge main in, never rebase or force-push) does not
-  require renewed acceptance when behavior and scope are unchanged; an update
-  after the go moves the head, so the pinned merge stops and needs a fresh go. A
+  require renewed acceptance when behavior and scope are unchanged. After the
+  go the head changes only when the merge or queue refuses it, for a conflict
+  (main goes in) or a failure on the combined build (a fix batch); that update
+  moves the head, so the pinned merge stops and the new head needs a fresh go. A
   human statement assigning the current lane ownership is sufficient for this
   action. No worker merges, no agent decides acceptance, and no agent merges
   unaccepted work. Required failed checks remain blockers until fixed or
   durably waived through a repository-approved path.
-- Check the PR head is the accepted commit and required checks pass, then
-  record acceptance as the receipt comment on the PR (octo-lite spec
-  `#acceptance-receipt`) and merge pinned to that commit (spec
-  `#gates-merge-check`). Every receipt the merge needs, an addendum receipt
-  included, is on the PR first. Run them as one chain, so a receipt that
-  cannot be recorded, or a head that moved, means no merge; report why:
+- At the go, check the PR head is the accepted commit and required checks
+  pass, then record acceptance as the receipt comment on the PR (octo-lite spec
+  `#acceptance-receipt`) and merge pinned to that commit at once, never merging
+  main first (spec `#gates-merge-check`, `#delivery-path`); a repo with a merge
+  queue takes the merge as a queue entry. Every receipt the merge needs, an
+  addendum receipt included, is on the PR first. Run them as one chain, so a
+  receipt that cannot be recorded, or a head that moved, means no merge;
+  report why:
 
 ```sh
 gh pr comment <pr> --body-file - <<'EOF' && gh pr merge <pr> --merge --match-head-commit <accepted sha>
