@@ -123,6 +123,10 @@ async function record(browser, url, steps, viewport, file) {
     await context.exposeBinding('octoLiteRecorder', now)
     await context.addInitScript(overlay, { ARROW, EDGE, MARK, TOUCH, touch })
     const page = await context.newPage()
+    // The fetches the page has sent that have not answered yet, which each step's result may wait on (settle).
+    const pending = new Set()
+    page.on('request', request => ['fetch', 'xhr'].includes(request.resourceType()) && pending.add(request))
+    for (const end of ['requestfinished', 'requestfailed']) page.on(end, request => pending.delete(request))
     // A document the action opens asks for the pointer as it starts, so one this misses still draws it.
     const show = () => page.evaluate(state => dispatchEvent(new CustomEvent('octo-lite-recorder', { detail: state })), now())
       .catch(() => {})
@@ -152,13 +156,14 @@ async function record(browser, url, steps, viewport, file) {
     }
 
     // The pointer goes to the part `selector` names once it shows, the page first scrolling it into view when a point to
-    // rest on lies off the screen, and rests on it: inside it but off its words (Stageshow motion.md, The cursor), else
-    // its middle. The part shows once a press at such a point lands on it, as Spec Chat's click on it does, however the
-    // page hid it until then; the pointer rests at the first such point, judged again once it rests there, as its hover
-    // may show a part over that point, or the page, still drawing, may have moved the part; else it goes again to the
-    // first point a press lands on then. A press still down travels there by `move`, setting off toward the part before
-    // the page scrolls, as a drag starts, so what it lifts goes along. A phone's tap hovers the point before it presses
-    // there, so the mouse hovers it, the finger resting there as the cause of that hover.
+    // rest on lies off the screen, or no press there lands on it, as when a scroller holding it hides it (scroll), and
+    // rests on it: inside it but off its words (Stageshow motion.md, The cursor), else its middle. The part shows once a
+    // press at such a point lands on it, as Spec Chat's click on it does, however the page hid it until then; the pointer
+    // rests at the first such point, judged again once it rests there, as its hover may show a part over that point, or
+    // the page, still drawing, may have moved the part; else it goes again to the first point a press lands on then. A
+    // press still down travels there by `move`, setting off toward the part before the page scrolls, as a drag starts,
+    // so what it lifts goes along. A phone's tap hovers the point before it presses there, so the mouse hovers it, the
+    // finger resting there as the cause of that hover.
     const reach = async (step, selector, doing, move = !touch && mouse) => {
       const target = page.locator(selector).first()
       const { width, height } = page.viewportSize()
@@ -167,21 +172,18 @@ async function record(browser, url, steps, viewport, file) {
         const box = await target.boundingBox({ timeout: Math.max(1, by - Date.now()) }).catch(() => null)
         shown ||= Boolean(box)
         const rests = box ? points(box) : []
-        if (rests.some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)) {
-          if (pointer.down !== null) {
+        const away = rests.some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)
+        let point = null
+        if (!away) for (const rest of rests) if (!point && await lands(target, rest)) point = rest
+        if (box && !point) {
+          if (away && pointer.down !== null) {
             const [dx, dy] = [box.x + box.width / 2 - pointer.x, box.y + box.height / 2 - pointer.y]
             const off = LIFT / Math.hypot(dx, dy)
             await travel(pointer, { x: Math.round(pointer.x + dx * off), y: Math.round(pointer.y + dy * off) }, move)
           }
-          await target.evaluate(el => new Promise(done => {
-            addEventListener('scrollend', done, { capture: true, once: true })
-            setTimeout(done, 3000) // a page that cannot scroll it ends no scroll
-            el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
-          }))
+          await target.evaluate(scroll, { away, ms: by - Date.now() })
           continue
         }
-        let point = null
-        for (const rest of rests) if (!point && await lands(target, rest)) point = rest
         if (!point) {
           await sleep(20)
           continue
@@ -230,7 +232,7 @@ async function record(browser, url, steps, viewport, file) {
       if (!held) return
       await held.up()
       held = null
-      await settle(page)
+      await settle(page, pending)
     }
 
     // One action, as a person does it (#delivery-round-video-actions); then the motion it starts ends, as Spec Chat waits
@@ -251,7 +253,7 @@ async function record(browser, url, steps, viewport, file) {
       } else if (action.kind === 'hold' || (action.kind === 'menu' && touch)) {
         if (!action.to) {
           held = { step, label, up }
-          return settle(page)
+          return settle(page, pending)
         }
         // Held until the part `data-to` names shows, then carried there still down and let go on it.
         await reach(step, action.to, 'letting go', touch ? (x, y) => finger('touchMove', { x, y }) : mouse)
@@ -266,11 +268,11 @@ async function record(browser, url, steps, viewport, file) {
         if (await target.inputValue().catch(() => '')) await page.keyboard.press('ControlOrMeta+A')
         await page.keyboard.type(action.text, { delay: PACE.key })
       }
-      await settle(page)
+      await settle(page, pending)
     }
 
     await page.goto(url)
-    await settle(page)
+    await settle(page, pending)
     if (!touch) await page.mouse.move(pointer.x, pointer.y)
     const cues = []
     await page.screencast.start({ path: file, size, onFrame: frame => {
@@ -283,7 +285,7 @@ async function record(browser, url, steps, viewport, file) {
       if (!n) await sleep(PACE.open)
       await letGo()
       for (const action of step.actions) await act(step, action)
-      await settle(page) // a step the screen reaches on its own plays with the cursor at rest
+      await settle(page, pending) // a step the screen reaches on its own plays with the cursor at rest
       await sleep(n === steps.length - 1 ? PACE.last : PACE.hold)
       if (held) await seen(held.step, held.label, true) // a hold shows down for as long as it is down
       frames = []
@@ -302,6 +304,21 @@ async function record(browser, url, steps, viewport, file) {
 function points(box) {
   return [[box.width > 40 ? 0.85 : 0.5, 0.6], [0.5, 0.5]]
     .map(([across, down]) => ({ x: Math.round(box.x + box.width * across), y: Math.round(box.y + box.height * down) }))
+}
+
+// The page scrolls `part` into view, every scroller holding it: to the middle of the screen when it lies `away` from
+// it, else only as far as it then shows. It ends as the scroll ends, at once when nothing scrolls, as for a part the
+// page hides or covers where it already shows, and at the latest in `ms`.
+function scroll(part, { away, ms }) {
+  return new Promise(done => {
+    let moving = false
+    addEventListener('scroll', () => { moving = true }, { capture: true, once: true })
+    addEventListener('scrollend', done, { capture: true, once: true })
+    setTimeout(done, ms)
+    const to = away ? 'center' : 'nearest'
+    part.scrollIntoView({ block: to, inline: to, behavior: 'smooth' })
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => moving || done())))
+  })
 }
 
 function lands(target, point) {
@@ -348,13 +365,17 @@ function ease(t) {
   return curve(y1, y2, (lo + hi) / 2)
 }
 
-// As Spec Chat's frames settle: a page an action opens loads, fonts arrive, and each finite motion the page started ends.
-async function settle(page) {
+// As Spec Chat's frames settle: a page an action opens loads, the fetches still `pending` answer, fonts arrive, and each
+// finite motion the page started ends; then again while an answer, once drawn, sent another, as a step's result comes
+// back over several slow answers, until all have answered or the wait a part has ends.
+async function settle(page, pending) {
   await sleep(50)
-  for (let tries = 0; ; tries++) {
+  const by = Date.now() + WAIT.part
+  for (let tries = 0; ;) {
+    await until(() => !pending.size, by - Date.now())
     try {
       await page.waitForLoadState()
-      return await page.evaluate(async () => {
+      await page.evaluate(async () => {
         await document.fonts.ready
         await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))
         const moving = document.getAnimations()
@@ -362,8 +383,10 @@ async function settle(page) {
         await Promise.race([Promise.all(moving.map(a => a.finished.catch(() => {}))), new Promise(done => setTimeout(done, 5000))])
       })
     } catch (e) {
-      if (tries) throw e // the page the action opened replaced the one asked; asked once more
+      if (tries++) throw e // the page the action opened replaced the one asked; asked once more
+      continue
     }
+    if (!pending.size || Date.now() >= by) return
   }
 }
 
