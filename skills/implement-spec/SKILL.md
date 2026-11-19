@@ -224,11 +224,12 @@ The merge ask lists, in its PR body, each failed criterion as judged at the merg
    the first a fix batch, the second a fresh step-back pass toward the
    simplest design that meets the spec, not another patch. With no blocker,
    the notes marked `Fix in this PR` still go in one last batch, which is no
-   fix round (spec `#health-notes`). A batch's head is a candidate too: a
-   fresh reviewer reviews only its fix delta (base = the last reviewed head)
-   plus the surface it touches, starting on the batch commit as its
-   implementer reports it, beside its integration, while the full suite runs
-   again and the capture as the target's QA rules decide; never re-review
+   fix round (spec `#health-notes`). A batch's head, or a later main merge's,
+   is a candidate too: a fresh reviewer reviews only its fix delta or conflict
+   resolution (base = the last reviewed head) plus the surface it touches,
+   starting on the batch commit as its implementer reports it, beside its
+   integration, while the full suite runs again and the capture as the
+   target's QA rules decide; never re-review
    unchanged code. A commit that only renames or renumbers, such as a
    migration renumbered after main moved, gets the required checks and no
    review. Blockers the review after round
@@ -278,7 +279,9 @@ A human statement that this worklane owns the action is sufficient.
 Failed required checks still block merge until fixed or durably waived through
 a repository-approved path.
 
-The merge completes the worklane: reconcile the PR and worklane state together,
+The merge completes the worklane only once the PR reads merged, a queue entry
+watched until it merges or the queue refuses it (the head then changes, as
+above): reconcile the PR and worklane state together,
 reconcile the primary Linear issue to Done, file the PR's review notes by the
 [filing rule](../repo-health/SKILL.md#filing-rule), add to the PR body a permalink
 to each report the lane kept outside main, tear down in the close order of
