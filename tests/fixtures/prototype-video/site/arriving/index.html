@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Week</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  button { display: block; width: min(640px, 100%); height: 50px; font: inherit; background: #fff }
+  .piece { width: min(640px, 100%); height: 60px; background: #e5e7eb }
+  .tuesday.opened { background: #16a34a }
+</style>
+<!-- A week whose days arrive in pieces for 6 s after its press, each pushing Tuesday down, as a loaded box commits a
+     render late and in parts. -->
+<button class="load" type="button">Load the week</button>
+<div class="pieces"></div>
+<button class="tuesday" type="button">Tuesday</button>
+<script>
+  const pieces = document.querySelector('.pieces')
+  document.querySelector('.load').addEventListener('click', () => {
+    for (let n = 1; n <= 10; n++) setTimeout(() => pieces.append(Object.assign(document.createElement('div'), { className: 'piece' })), 600 * n)
+  })
+  document.querySelector('.tuesday').addEventListener('click', e => e.target.classList.add('opened'))
+</script>

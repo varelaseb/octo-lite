@@ -27,8 +27,8 @@ const TRAVEL = [0.45, 0, 0.1, 1]
 const PACE = { open: 1200, reach: 500, rest: 400, press: 90, key: 90, hold: 1400, last: 2200 }
 // How far, in px, a press still down sets off as a drag starts, past the browser's own threshold.
 const LIFT = 12
-// How long, in ms, a part may take to show, and the video to show an action, however loaded the box.
-const WAIT = { part: 5000, video: 10000 }
+// How long, in ms, a part may take to show and take a press, and the video to show an action, however loaded the box.
+const WAIT = { part: 30000, video: 10000 }
 // What acts of its own when pressed, as Spec Chat tells a press through a prototype from a click on nothing that acts
 // (its runtime's PROTOTYPE_ACTS).
 const ACTS = 'a[href],button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],[role=menuitem],'
@@ -155,37 +155,37 @@ async function record(browser, url, steps, viewport, file) {
     // rest on lies off the screen, and rests on it: inside it but off its words (Stageshow motion.md, The cursor), else
     // its middle. The part shows once a press at such a point lands on it, as Spec Chat's click on it does, however the
     // page hid it until then; the pointer rests at the first such point, judged again once it rests there, as its hover
-    // may show a part over that point, else at the next. A press still down travels there by `move`, setting off toward
-    // the part before the page scrolls, as a drag starts, so what it lifts goes along. A phone's tap hovers the point
-    // before it presses there, so the mouse hovers it, the finger resting there as the cause of that hover.
+    // may show a part over that point, or the page, still drawing, may have moved the part; else it goes again to the
+    // first point a press lands on then. A press still down travels there by `move`, setting off toward the part before
+    // the page scrolls, as a drag starts, so what it lifts goes along. A phone's tap hovers the point before it presses
+    // there, so the mouse hovers it, the finger resting there as the cause of that hover.
     const reach = async (step, selector, doing, move = !touch && mouse) => {
       const target = page.locator(selector).first()
-      const layout = () => target.boundingBox({ timeout: WAIT.part }).catch(() => null)
-      let box = null
-      await until(async () => (box = await layout()), WAIT.part)
-      if (!box) throw new Error(`step "${step.name}": nothing on the route matches "${selector}", or the first part it matches never shows`)
       const { width, height } = page.viewportSize()
-      if (points(box).some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)) {
-        if (pointer.down !== null) {
-          const [dx, dy] = [box.x + box.width / 2 - pointer.x, box.y + box.height / 2 - pointer.y]
-          const off = LIFT / Math.hypot(dx, dy)
-          await travel(pointer, { x: Math.round(pointer.x + dx * off), y: Math.round(pointer.y + dy * off) }, move)
+      let shown = false
+      for (const by = Date.now() + WAIT.part; Date.now() < by;) {
+        const box = await target.boundingBox({ timeout: Math.max(1, by - Date.now()) }).catch(() => null)
+        shown ||= Boolean(box)
+        const rests = box ? points(box) : []
+        if (rests.some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)) {
+          if (pointer.down !== null) {
+            const [dx, dy] = [box.x + box.width / 2 - pointer.x, box.y + box.height / 2 - pointer.y]
+            const off = LIFT / Math.hypot(dx, dy)
+            await travel(pointer, { x: Math.round(pointer.x + dx * off), y: Math.round(pointer.y + dy * off) }, move)
+          }
+          await target.evaluate(el => new Promise(done => {
+            addEventListener('scrollend', done, { capture: true, once: true })
+            setTimeout(done, 3000) // a page that cannot scroll it ends no scroll
+            el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+          }))
+          continue
         }
-        await target.evaluate(el => new Promise(done => {
-          addEventListener('scrollend', done, { capture: true, once: true })
-          setTimeout(done, 3000) // a page that cannot scroll it ends no scroll
-          el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
-        }))
-      }
-      for (let from = 0; from < 2; from++) { // the two points to rest on
         let point = null
-        await until(async () => {
-          const laid = await layout()
-          const rests = laid ? points(laid) : []
-          for (let n = from; n < rests.length && !point; n++) if (await lands(target, rests[n])) [from, point] = [n, rests[n]]
-          return point
-        }, WAIT.part)
-        if (!point) break
+        for (const rest of rests) if (!point && await lands(target, rest)) point = rest
+        if (!point) {
+          await sleep(20)
+          continue
+        }
         if (move) {
           await travel(pointer, point, move)
         } else {
@@ -201,6 +201,7 @@ async function record(browser, url, steps, viewport, file) {
         await sleep(PACE.rest)
         if (await lands(target, point)) return target
       }
+      if (!shown) throw new Error(`step "${step.name}": nothing on the route matches "${selector}", or the first part it matches never shows`)
       throw new Error(`step "${step.name}": ${doing} on "${selector}" never lands on it: it does not show there `
         + 'or lets presses through, or another part lies over it or acts inside it')
     }
