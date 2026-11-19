@@ -2456,6 +2456,24 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(dying.wait(timeout=5), 0)
         self.assertFalse(folder.exists(), "removed before its process had exited")
 
+    def test_close_removes_the_scratch_folder_at_5s_while_a_process_it_closed_still_runs(self):
+        # scratch-end, acceptance-disk-own-only-rule: one inside what it
+        # closed, as a TERM handler slower than 5s, a graceful server, or a
+        # recorder finalizing, and what its handler starts, keeps no folder:
+        # nothing would remove it later.
+        tab = f"w1:t-{uuid.uuid4()}"
+        folder = self.made(self.folder("implementer-ann-1"))
+        slow = subprocess.Popen(["bash", "-c", "trap 'sleep 7; exit' TERM; while :; do sleep 0.1; done"],
+                                start_new_session=True, env={**self.env, "HERDR_TAB_ID": tab,
+                                                             "HERDR_WORKSPACE_ID": "w1", "TMPDIR": str(folder)})
+        self.addCleanup(lambda: (os.killpg(slow.pid, signal.SIGKILL), slow.wait()))
+        time.sleep(0.2)  # its trap is set
+        r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True,
+                           env={**self.env, "FAKE_AGENT_LIST": self.listing(("implementer-ann-1", tab, "w1"))})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIsNone(slow.poll(), "its TERM handler ended before 5s")
+        self.assertFalse(folder.exists(), "a process the close ended, still running at 5s, kept the folder")
+
     def test_closing_a_lane_space_removes_every_scratch_folder_of_its_agents_only(self):
         # acceptance-disk-lane-space, lane-close: another lane's agents keep theirs.
         space, other = f"w-{uuid.uuid4()}", f"w-{uuid.uuid4()}"
