@@ -400,10 +400,17 @@ class HerdrWrapperTest(unittest.TestCase):
         self.log, self.closed, self.wrong, self.dialog, self.gone_file, self.blocked_file, self.panes = (
             Path(self.env[f"FAKE_{name}"]) for name in ("LOG", "CLOSED", "WRONG", "DIALOG", "GONE", "BLOCKED", "PANES"))
         self.env.pop("OCTO_LITE_OPERATING_MODEL", None)
-        # The suite runs in the default Herdr session, from no pane, unless a
-        # test names one: a Herdr pane's caller env must not reach a wrapper.
-        for var in ("HERDR_SESSION", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"):
+        # Each test runs from no pane, in a Herdr session of its own: herdr-close
+        # sweeps the box's /proc by session, so in the default one it would end
+        # a concurrent run's waits, or a live agent's processes, under the same
+        # ids. A test of the default session unsets it (default_session).
+        for var in ("HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"):
             self.env.pop(var, None)
+        self.env["HERDR_SESSION"] = f"test-{uuid.uuid4().hex}"
+
+    def default_session(self):
+        # The test runs in the default Herdr session, its ids its own.
+        del self.env["HERDR_SESSION"]
 
     def spawn(self, extra=(), **env):
         return subprocess.run(
@@ -851,7 +858,9 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def test_close_stops_only_processes_of_the_callers_session(self):
         # spec/domains/herdr-transport.spec.html#acceptance-session-close:
-        # another session repeats the space id.
+        # another session repeats the space id; the caller's is the default
+        # one, which no process names.
+        self.default_session()
         space, other = f"w-{uuid.uuid4()}", f"s-{uuid.uuid4()}"
         here = self.tagged(f"{space}:t1", space)
         there = self.tagged(f"{space}:t1", space, HERDR_SESSION=other)
@@ -1494,7 +1503,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w1:p1", name="implementer-ann-1", role="implementer")
         self.panes.write_text("w1:p1\n")
-        log = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes/ann45.handoffs.jsonl"
+        log = self.session_dir() / "lanes/ann45.handoffs.jsonl"
         held = log.rename(log.with_suffix(".held"))
         park = f'[ ! -e "{held}" ] || {{ mv "{held}" "{log}"; echo implementer-ann-1 >"{self.gone_file}"; }}'
         r = self.say_to_claude("rate_limit", "ok", on_wait=park, HERDR_WORKSPACE_ID="w1")
@@ -1506,9 +1515,14 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("tab create", self.calls())
         self.assertEqual((self.sends("implementer-ann-1"), self.sends("w1:p1")), (2, 1))
 
-    def parked_line(self, lane, at="2026-10-14T10:00:00Z", session=None, **fields):
+    def session_dir(self, session=None):
+        # octo-lite's state dir of Herdr session session, else the caller's.
+        session = session or self.env.get("HERDR_SESSION")
         state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
-        lanes = (state / "sessions" / session if session else state) / "lanes"
+        return state / "sessions" / session if session else state
+
+    def parked_line(self, lane, at="2026-10-14T10:00:00Z", session=None, **fields):
+        lanes = self.session_dir(session) / "lanes"
         lanes.mkdir(parents=True, exist_ok=True)
         line = {"at": at, "kind": "parked", "cwd": str(self.cwd), "session": "s-1", **fields}
         with open(lanes / f"{lane}.handoffs.jsonl", "a") as f:
@@ -1537,7 +1551,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.dialog.write_text("none\n")
         self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
         self.parked_line("ann46", pane="w2:p3", name="implementer-ann-2", role="implementer")
-        bad = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes/ann46.handoffs.jsonl"
+        bad = self.session_dir() / "lanes/ann46.handoffs.jsonl"
         with open(bad, "a") as f:
             f.write("tab=w2:t3 tab_close_rc=0 killed=1\n[]\n")
         self.gone_file.write_text("w1:p7\nimplementer-ann-1\n")
@@ -1554,7 +1568,7 @@ class HerdrWrapperTest(unittest.TestCase):
         # handoff-lines-json: a log's last line cut off before its newline is
         # named by its own number, and hides no line of the next log.
         self.parked_line("ann45", pane="w1:p7", name="implementer-ann-1", role="implementer")
-        cut = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes/ann45.handoffs.jsonl"
+        cut = self.session_dir() / "lanes/ann45.handoffs.jsonl"
         with open(cut, "a") as f:
             f.write('{"at": "2026-10-14T11')
         named = f"herdr-say: {cut}: line 2 is not a JSON object; skipped\n"
@@ -1652,7 +1666,7 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def test_say_never_resumes_a_lane_parked_in_another_session(self):
         # spec/domains/herdr-transport.spec.html#acceptance-session-wake: the
-        # parked owner is in the default session.
+        # parked owner is in the caller's session.
         self.parked_line("ann45", pane="w9:p2")
         self.gone_file.write_text("w9:p2\nann45\n")
         r = self.say("w9:p2", "hi", HERDR_SESSION="s2")
@@ -2032,8 +2046,8 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(self.wake("check", "w1:p2").returncode, 1)
 
     def operator(self, pane="w5:p2"):
-        # The operator pane of the default session's state, as it writes it.
-        state = Path(self.env["XDG_STATE_HOME"]) / "octo-lite"
+        # The operator pane of the caller's session's state, as it writes it.
+        state = self.session_dir()
         state.mkdir(parents=True, exist_ok=True)
         (state / "operator.toml").write_text(f'pane = "{pane}"\n')
         return f"agent prompt {pane} "
@@ -2164,7 +2178,8 @@ class HerdrWrapperTest(unittest.TestCase):
 
     def test_wake_names_an_owner_pane_gone_from_its_session(self):
         # spec/domains/install.spec.html#acceptance-wake-owner-gone: gone from
-        # Herdr, or resolving elsewhere.
+        # Herdr, or resolving elsewhere; a caller of the default session.
+        self.default_session()
         self.gone_file.write_text("w1:p9\n")
         for owner, session in (("w1:p9", "default"), ("s2/w1:p9", "s2"), ("w1:p2", "default")):
             for args in (("check", owner), ("send", owner, "a.spec.html", "m")):
@@ -2204,14 +2219,14 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual((r.returncode, r.stderr), (75, ""))
 
     def test_wake_reason_stays_one_line_beside_a_malformed_handoff_log(self):
-        lanes = Path(self.env["XDG_STATE_HOME"]) / "octo-lite/lanes"
+        lanes = self.session_dir() / "lanes"
         lanes.mkdir(parents=True)
         (lanes / "ann45.handoffs.jsonl").write_text("not json\n")
         for args in (("check", "w1:p2"), ("send", "w1:p2", "a.spec.html", "m")):
             r = self.wake(*args)
             self.assertEqual(r.returncode, 1)
             self.assertEqual(r.stderr, "herdr-wake: owner pane w1:p2 not found "
-                                       "in Herdr session default\n")
+                                       f"in Herdr session {self.env['HERDR_SESSION']}\n")
 
     # --- session state ---------------------------------------------------
 
@@ -2228,6 +2243,7 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_state_of_the_default_session_is_the_top_dir(self):
         # spec/domains/herdr-transport.spec.html#acceptance-session-default: the
         # one holding onboarding.toml
+        self.default_session()
         self.assertEqual(self.state(), f"{self.env['XDG_STATE_HOME']}/octo-lite\n")
 
     # --- start command ---------------------------------------------------
@@ -2302,10 +2318,11 @@ class HerdrWrapperTest(unittest.TestCase):
         return {str(p.relative_to(root)): p.read_text() if p.is_file() else None
                 for p in sorted(root.rglob("*")) if ".git" not in p.relative_to(root).parts}
 
-    def folder(self, name, key="default", root=None):
-        # The scratch folder of agent name in Herdr session key: 12 hex
-        # characters of sha256 of <key>/<name>, in ~/.ol, or under root, as an
-        # earlier octo-lite put it in the user's cache folder.
+    def folder(self, name, key=None, root=None):
+        # The scratch folder of agent name in Herdr session key, else the
+        # caller's: 12 hex characters of sha256 of <key>/<name>, in ~/.ol, or
+        # under root, as an earlier octo-lite put it in the user's cache folder.
+        key = key or self.env.get("HERDR_SESSION", "default")
         return (root or self.scratch) / hashlib.sha256(f"{key}/{name}".encode()).hexdigest()[:12]
 
     def test_spawn_gives_each_agent_an_empty_scratch_folder_of_its_own_as_tmpdir(self):
@@ -2433,7 +2450,7 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_close_removes_only_its_own_sessions_scratch_folder(self):
         # acceptance-disk-scratch-session: agent names repeat across sessions.
         other = f"s-{uuid.uuid4()}"
-        here, there = (self.made(self.folder("implementer-ann-1", key)) for key in ("default", other))
+        here, there = (self.made(self.folder("implementer-ann-1", key)) for key in (None, other))
         listed = self.listing(("implementer-ann-1", "w1:t2", "w1"))
         r = subprocess.run([str(CLOSE), "w1:t2"], capture_output=True, text=True,
                            env={**self.env, "FAKE_AGENT_LIST": listed})
