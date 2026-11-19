@@ -344,9 +344,17 @@ line naming NAME and the stop:
 
 ```
 herdr-await: NAME stop=STATE seq=N                     stopped in STATE at Herdr's state_change_seq N
+herdr-await: NAME stop=stalled (ERROR: TEXT)           its turn ended on an API error
 herdr-await: NAME stop=gone (REASON)                   Herdr's error code, or the wait's exit
 herdr-await: NAME stop=send-failed (herdr-say exit RC: ERROR)   the send did not exit 0; no wait ran
 ```
+
+Herdr reports a Claude turn an API error ended, a dropped connection as much
+as a rate limit, as idle or done, as if it had finished: a stop whose last
+reply in the [Claude session](#find-a-panes-claude-session) of NAME's pane is
+an API error is `stalled`, naming that error. A Herdr wait its server is too
+loaded to answer (`server_unavailable`) is no stop: it waits again a second
+later, so only an agent that exited or a tab that closed ends it as gone.
 
 A Claude caller runs it with its Bash tool in the background
 (`run_in_background`), its description naming NAME, and asks for nothing
@@ -385,9 +393,9 @@ whose result or reply you still await, read its stop line (on Claude, the
 task's output), then its screen with `herdr agent read <name>`.
 
 - A finished result or reply there is its report: consume it.
-- A turn ended on an API error: resume it with `herdr-await <name> continue`,
-  which sends again while a rate limit lasts; its `stop=send-failed` means it
-  is blocked.
+- `stop=stalled`, a turn ended on an API error: resume it with
+  `herdr-await <name> continue`, which sends again while a rate limit lasts;
+  its `stop=send-failed` means it is blocked.
 - Still at its task, such as on its own background command:
   `herdr-await --since <seq> <name>`, `<seq>` the one the stop line named, so
   you wake only once it has worked and stopped again, even if it did so before
