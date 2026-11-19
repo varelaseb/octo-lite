@@ -291,16 +291,94 @@ class LaneRecordTests(unittest.TestCase):
                 self.assertEqual(run.returncode != 0, fail == "1", run.stderr)
                 self.assertEqual(log.read_text(encoding="utf-8").splitlines(), calls)
 
+    def test_merge_at_the_go_never_merges_main_first(self) -> None:
+        # spec #gates-merge-check, #delivery-path ("later only on a conflict"),
+        # #acceptance-merge-pin: at the go the owner merges the named head at
+        # once, a queue taking it as an entry; only a refusal moves the head,
+        # and that head needs a fresh go. #delivery-linear: only a PR that
+        # reads merged completes the lane, a queue entry watched till then.
+        github = " ".join((ROOT / "skills/octo-lite-github/SKILL.md").read_text(encoding="utf-8").split())
+        for phrase in ("merge pinned to that commit at once, never merging main first",
+                       "a repo with a merge queue takes the merge as a queue entry",
+                       "After the go the head changes only when the merge or queue refuses it, for a conflict "
+                       "(main goes in) or a failure on the combined build (a fix batch)",
+                       "the new head needs a fresh go",
+                       "The merge completes the worklane only once `gh pr view <pr> --json state` reads `MERGED`, "
+                       "a queue entry watched until it merges or the queue refuses it"):
+            self.assertIn(phrase, github)
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        callback = skill[skill.index("## Human acceptance callback"):]
+        for phrase in ("merge that head at once by its pinned chain", "never merging main first",
+                       "a repo with a merge queue takes the merge as a queue entry",
+                       "Only when the merge or queue refuses the head, for a conflict (main goes in) or a failure "
+                       "on the combined build (a fix batch), does the head change, and that new head goes back "
+                       "to the human for a fresh go",
+                       "The merge completes the worklane only once the PR reads merged, a queue entry watched "
+                       "until it merges or the queue refuses it"):
+            self.assertIn(phrase, callback)
+
+    def test_lane_merges_main_once_and_checks_the_candidate_at_once(self) -> None:
+        # spec #delivery-path, #roles-load: every ticket integrated, then the
+        # lane's one main merge makes the candidate, on which review, the full
+        # suite, and any capture start at once; no one-shot run before it.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        finish = skill[skill.index("## Review and finish"):skill.index("## Human acceptance callback")]
+        for phrase in ("start each check as soon as the input it checks is ready, never waiting on a step it does not read",
+                       "Overlap never skips a gate or lowers a bar: a check whose input an in-flight change would "
+                       "alter waits for that change alone",
+                       "Once every ticket is integrated, have the integrator merge main into the lane branch, "
+                       "the lane's one main merge: the head that leaves is the candidate",
+                       "Main goes in earlier only when a conflict with it or a change on it blocks a ticket, "
+                       "later only on a conflict with the lane branch",
+                       "On the candidate start at once: the full suite under the box lock",
+                       "any capture the target requires before a merge ask, and a fresh reviewer",
+                       "never runs on a head before a candidate"):
+            self.assertIn(phrase, finish)
+        self.assertNotIn("Run the target repo's required validation.", finish)
+        self.assertIn("The lane runs the full suite only on a candidate head, beside its review, "
+                      "and the PR body's validation names the run on the merge ask's head", skill)
+        self.assertNotIn("full suite once", skill)
+
+    def test_every_finding_on_one_head_goes_in_one_fix_batch(self) -> None:
+        # spec #delivery-path, #delivery-review, #health-notes: one batch per
+        # head, two rounds over the whole PR, notes in one last batch with no
+        # blocker, a batch's delta reviewed as its implementer reports it;
+        # #acceptance-path-round-count: a later main merge's resolution is
+        # reviewed as a candidate's delta.
+        # Step 2 stays the step acting on the verdict: agents/orchestrator.md
+        # and annotateanything's operating model link it by number.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        step2 = re.search(r" 2\. (.*?) 3\. ", skill[skill.index("## Review and finish"):]).group(1)
+        for phrase in ("Every finding on one head, the verdict's blockers and its notes marked `Fix in this PR`, "
+                       "the suite's failures, the capture's code faults, and your own, goes into one fix batch",
+                       "the findings, not the history, and its round, one Herdr integrator, one push",
+                       "at most 2 fix rounds, counted over the whole PR, so neither a main merge nor the merge ask "
+                       "restarts the count",
+                       "the second a fresh step-back pass",
+                       "With no blocker, the notes marked `Fix in this PR` still go in one last batch, which is no fix round",
+                       "A batch's head, or a later main merge's, is a candidate too: a fresh reviewer reviews "
+                       "only its fix delta or conflict resolution",
+                       "starting on the batch commit as its implementer reports it, beside its integration, "
+                       "while the full suite runs again",
+                       "A commit that only renames or renumbers",
+                       "gets the required checks and no review"):
+            self.assertIn(phrase, step2)
+        self.assertNotIn("batch of their own", skill)
+        self.assertIn("[Review and finish](../skills/implement-spec/SKILL.md#review-and-finish) step 2",
+                      (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"))
+
     def test_operator_relays_gates_decisions_blockers_lane_closes(self) -> None:
         # spec #roles-operator-writes, #acceptance-operator-quiet,
         # #acceptance-operator-bundle, #acceptance-operator-trade-off,
-        # #roles-box-problem, #acceptance-box-problem-human.
+        # #roles-box-problem, #acceptance-box-problem-human; #roles-eta,
+        # #acceptance-eta-relay: a lane's progress line carries its latest ETA.
         text = " ".join(OPERATOR.read_text(encoding="utf-8").split())
         self.assertIn("You are the filter (spec `#roles-operator-writes`): relay to the human only gates, decisions, "
                       "real blockers, lane closes with their complaints (spec `#roles-complaint`), and each problem "
                       "of the box an owner reports (spec "
                       "`#roles-box-problem`) once with the step that fixes it, however many lanes report it, plus the "
-                      "one addendum receipt line; progress gets one line or nothing.", text)
+                      "one addendum receipt line; progress gets one line or nothing, a lane's line carrying its latest "
+                      "ETA (spec `#roles-eta`), its time from now counted as you write.", text)
         self.assertIn("go together as one question asking whether to take your recommendations, one plain line "
                       "per question naming its recommendation", text)
         self.assertIn("A question that weighs real trade-offs goes alone, never in that bundle.", text)
@@ -416,6 +494,38 @@ class LaneRecordTests(unittest.TestCase):
                       "in your pane names the question it settles, and acts on it", text)
         self.assertIn("It is no rules store: a standing direction", text)
         self.assertIn("It reaches the rest, and you, once that change merges, as a contract change", text)
+
+    def test_owner_challenges_the_asked_frame_once_in_its_first_review_link(self) -> None:
+        # spec #delivery-challenge, #acceptance-challenge-said,
+        # #acceptance-challenge-silent: at its shaping step the owner names a
+        # simpler or sturdier way once, in its first review link's message, and
+        # asks nothing when the asked way is the best path.
+        shape = [line for line in (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").splitlines()
+                 if line.startswith("- Shape with `spec-chat-shape`")]
+        self.assertEqual(len(shape), 1, shape)
+        self.assertIn("Before non-trivial work, when a simpler or sturdier way exists than the one asked, say so once, "
+                      "up front, in the first review link's message, as \"Are you sure you want X? Y is simpler "
+                      "because Z\", challenging the frame, not only the details, then go the way the human chooses; "
+                      "say nothing when you checked and the asked way is the best path (spec `#delivery-challenge`).",
+                      shape[0])
+
+    def test_prototype_worker_sends_its_commit_before_it_records(self) -> None:
+        # spec #delivery-path (its shaping-round sentence), #acceptance-path-prototype:
+        # the worker sends its commit as a status report before recording and goes
+        # on; the owner merges and runs that commit while the worker records, then
+        # merges the final commit its last report names.
+        worker = " ".join((ROOT / "agents/implementer.md").read_text(encoding="utf-8").split())
+        send = ("Then commit, and before you record, send the owner that commit's id as a status report the way "
+                "Output sends one, then go on, since it is not your last report: the owner runs it while you record "
+                "(spec `#delivery-path`).")
+        self.assertIn(send, worker)
+        self.assertLess(worker.index(send), worker.index("record from it with `prototype-video`"))
+        self.assertNotIn("still serves the prior round's build", worker)
+        owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
+        self.assertIn("Merge into the lane branch the commit it sends before it records, so the prototype runs it while "
+                      "the worker records, then the final commit its last report names (spec `#delivery-path`); run "
+                      "the prototype from the lane worktree", owner)
+        self.assertIn("restarted through that file after each merge", owner)
 
     def test_owner_reports_each_box_problem_to_operator_once(self) -> None:
         # spec #roles-box-problem, #acceptance-box-problem-owner: the owner reports
@@ -674,6 +784,20 @@ class LaneRecordTests(unittest.TestCase):
             OPERATOR.read_text(encoding="utf-8"))
         for path in ROOT.glob("agents/*.md"):
             self.assertNotIn("natively or by", path.read_text(encoding="utf-8"), path.name)
+
+    def test_owner_status_carries_its_eta_and_resends_it_when_it_slips(self) -> None:
+        # spec #roles-eta, #acceptance-eta-report, #acceptance-eta-slip: every
+        # status the owner sends names its next ask of the human as a UTC time
+        # with the time from now, how sure, and what could slip it; a later time
+        # goes out at once with what moved it.
+        output = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+                          .split("\n## Output\n", 1)[1].split())
+        self.assertIn("Concise status with exact gate, health, material change, blocker, next action, and ETA (spec "
+                      "`#roles-eta`): the time you expect your next ask of the human (review link, answer, or merge "
+                      "ask) as a UTC time with the time from now, such as `19:40 UTC, in about 2 h`, how sure you "
+                      "are, and what could slip it, most likely first.", output)
+        self.assertIn("When that time moves later than the one you last sent, send a report with the new time and "
+                      "what moved it.", output)
 
     def test_claude_roles_report_natively_to_the_pane_session(self) -> None:
         # spec/domains/herdr-transport.spec.html#transport-native: every Claude role
