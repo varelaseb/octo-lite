@@ -128,7 +128,9 @@ EOF
   that chain after `gh pr checks <pr> --watch --fail-fast &&`, never `--auto`,
   so a head pushed after the human's go is never merged. On Claude, run it as a
   background task of your own.
-- The merge completes the worklane. Move the primary Linear issue to Done, the
+- The merge completes the worklane only once `gh pr view <pr> --json state`
+  reads `MERGED`, a queue entry watched until it merges or the queue refuses
+  it (the head then changes, as above). Move the primary Linear issue to Done, the
   team's completed state, and stop the lane. Do not assume deployment-named
   states exist.
 - Verify the state change landed, whether performed by repository automation

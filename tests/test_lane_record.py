@@ -295,13 +295,16 @@ class LaneRecordTests(unittest.TestCase):
         # spec #gates-merge-check, #delivery-path ("later only on a conflict"),
         # #acceptance-merge-pin: at the go the owner merges the named head at
         # once, a queue taking it as an entry; only a refusal moves the head,
-        # and that head needs a fresh go.
+        # and that head needs a fresh go. #delivery-linear: only a PR that
+        # reads merged completes the lane, a queue entry watched till then.
         github = " ".join((ROOT / "skills/octo-lite-github/SKILL.md").read_text(encoding="utf-8").split())
         for phrase in ("merge pinned to that commit at once, never merging main first",
                        "a repo with a merge queue takes the merge as a queue entry",
                        "After the go the head changes only when the merge or queue refuses it, for a conflict "
                        "(main goes in) or a failure on the combined build (a fix batch)",
-                       "the new head needs a fresh go"):
+                       "the new head needs a fresh go",
+                       "The merge completes the worklane only once `gh pr view <pr> --json state` reads `MERGED`, "
+                       "a queue entry watched until it merges or the queue refuses it"):
             self.assertIn(phrase, github)
         skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
         callback = skill[skill.index("## Human acceptance callback"):]
@@ -309,7 +312,9 @@ class LaneRecordTests(unittest.TestCase):
                        "a repo with a merge queue takes the merge as a queue entry",
                        "Only when the merge or queue refuses the head, for a conflict (main goes in) or a failure "
                        "on the combined build (a fix batch), does the head change, and that new head goes back "
-                       "to the human for a fresh go"):
+                       "to the human for a fresh go",
+                       "The merge completes the worklane only once the PR reads merged, a queue entry watched "
+                       "until it merges or the queue refuses it"):
             self.assertIn(phrase, callback)
 
     def test_lane_merges_main_once_and_checks_the_candidate_at_once(self) -> None:
@@ -337,7 +342,9 @@ class LaneRecordTests(unittest.TestCase):
     def test_every_finding_on_one_head_goes_in_one_fix_batch(self) -> None:
         # spec #delivery-path, #delivery-review, #health-notes: one batch per
         # head, two rounds over the whole PR, notes in one last batch with no
-        # blocker, a batch's delta reviewed as its implementer reports it.
+        # blocker, a batch's delta reviewed as its implementer reports it;
+        # #acceptance-path-round-count: a later main merge's resolution is
+        # reviewed as a candidate's delta.
         # Step 2 stays the step acting on the verdict: agents/orchestrator.md
         # and annotateanything's operating model link it by number.
         skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
@@ -349,7 +356,8 @@ class LaneRecordTests(unittest.TestCase):
                        "restarts the count",
                        "the second a fresh step-back pass",
                        "With no blocker, the notes marked `Fix in this PR` still go in one last batch, which is no fix round",
-                       "A batch's head is a candidate too",
+                       "A batch's head, or a later main merge's, is a candidate too: a fresh reviewer reviews "
+                       "only its fix delta or conflict resolution",
                        "starting on the batch commit as its implementer reports it, beside its integration, "
                        "while the full suite runs again",
                        "A commit that only renames or renumbers",
