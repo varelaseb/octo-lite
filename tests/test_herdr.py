@@ -2498,21 +2498,52 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(there.exists())
 
+    def test_close_keeps_a_scratch_folder_a_live_process_outside_it_still_uses(self):
+        # acceptance-disk-own-only-rule, scratch-end: the folder is named by
+        # session and agent name, so an agent spawned again under the name of
+        # one whose tab is still open shares it, as a dead owner relaunched in
+        # a new space, or a dead worker respawned, does; so does the Herdr
+        # server, whose environment a tab started without one gets, and a
+        # suite that agent runs, in a folder under it. Closing the old tab
+        # ends what it ran and keeps the folder, with its files, while any of
+        # them runs.
+        sharers = {"agent spawned again": ({"HERDR_TAB_ID": "w9:t3", "HERDR_WORKSPACE_ID": "w9"}, ""),
+                   "Herdr server": ({}, ""),
+                   "suite under it": ({"HERDR_TAB_ID": "w9:t3", "HERDR_WORKSPACE_ID": "w9"}, "/unit-1")}
+        for sharer, (tags, under) in sharers.items():
+            tab = f"w1:t-{uuid.uuid4()}"
+            folder = self.made(self.folder("implementer-ann-1"))
+            old = self.tagged(tab, "w1", TMPDIR=str(folder))
+            live = subprocess.Popen(["sleep", "600"], start_new_session=True,
+                                    env={**self.env, **tags, "TMPDIR": f"{folder}{under}"})
+            self.addCleanup(lambda p=live: (p.kill(), p.wait()))
+            r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True,
+                               env={**self.env, "FAKE_AGENT_LIST": self.listing(("implementer-ann-1", tab, "w1"))})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(self.gone(old))
+            self.assertIsNone(live.poll(), f"the close ended the {sharer}")
+            self.assertEqual(self.tree(folder), {"tmp.x1": None, "tmp.x1/run.log": "made"},
+                             f"the close removed the scratch folder the {sharer} uses")
+            live.kill()
+            live.wait()
+
     def test_closing_an_agent_started_before_the_update_removes_no_file(self):
         # acceptance-disk-scratch-old, scratch-old: it has no scratch folder,
         # in the home or the cache folder, and the close ends it and its
-        # processes as before.
+        # processes as before. Its TMPDIR, the box's own, is named as a
+        # scratch folder is, but in neither; the test's stands in for it.
         tab = f"w1:t-{uuid.uuid4()}"
-        old = self.tagged(tab, TMPDIR="/tmp")
+        box = self.made(self.folder("implementer-ann-1", root=Path(self.tmp.name) / "box-tmp"))
+        old = self.tagged(tab, TMPDIR=str(box))
         for root in (self.scratch, self.cached):
             self.made(self.folder("ann45", root=root))
-        before = self.tree(self.scratch), self.tree(self.cached)
+        before = self.tree(self.scratch), self.tree(self.cached), self.tree(box)
         r = subprocess.run([str(CLOSE), tab], capture_output=True, text=True,
                            env={**self.env, "FAKE_AGENT_LIST": self.listing(("implementer-ann-1", tab, "w1"))})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.gone(old))
         self.assertEqual(self.closed_line(r.stdout), {"kind": "closed", "tab": tab, "close_rc": 0, "killed": 1})
-        self.assertEqual((self.tree(self.scratch), self.tree(self.cached)), before)
+        self.assertEqual((self.tree(self.scratch), self.tree(self.cached), self.tree(box)), before)
 
     def test_close_removes_the_scratch_folder_an_earlier_octo_lite_put_in_the_cache_folder(self):
         # acceptance-disk-scratch-cache, scratch-old: where the user's cache
