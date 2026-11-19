@@ -133,11 +133,11 @@ Then it removes the scratch folder of each agent in it, a parked one's
 included: the `TMPDIR` its tab gave the processes it tags, read before the
 close, unless a live process outside what it closed still has it, or a folder
 under it, for `TMPDIR`. Ids repeat across sessions and that read takes every
-session's processes, so it also reads another session's agent under the same
-ids, whose own folder that agent keeps; an agent spawned again under the name
-of one whose tab is still open shares the folder, as the Herdr server may, and
-keeps it too. One it closed still running at 5s keeps none. An agent
-spawned before scratch folders has none, so its close removes nothing
+session's processes, so it also reads the folder of another session's agent
+under the same ids, whose own folder that agent keeps; an agent spawned again
+under the name of one whose tab is still open shares the folder, as the Herdr
+server may, and keeps it too. One it closed still running at 5s keeps none.
+An agent spawned before scratch folders has none, so its close removes nothing
 (`spec/domains/disk.spec.html#scratch-end`, `#acceptance-disk-own-only-rule`).
 Another caller's wait on it ends as gone at its bound. Parking (below) closes
 nothing. Run it from outside
