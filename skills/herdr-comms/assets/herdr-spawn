@@ -17,6 +17,7 @@
 # FIRST spawns so into a running Claude agent's own pane (#transport-reload).
 set -euo pipefail
 here="$(dirname "$(readlink -f "$0")")"
+. "$here/herdr-claude-session" # freed PANE: once Herdr has freed an ended agent's pane
 
 argv=("$@") workspace="" name="" label="" cwd="$PWD" role="" resume="" pane="" reload=""
 # The operating model is inherited: each spawn exports a given one into the tab
@@ -135,11 +136,10 @@ if [[ -n "$reload" ]]; then
   role="$(latest agent-setting | jq -r '.agentSetting // empty')"
   # A goal Claude ended, met or failed, is none.
   goal="$(latest goal_status | jq -r 'select(.attachment.met == false and (.attachment.failed | not)) | .attachment.condition')"
-  # Herdr holds an ended agent's name a while, refusing it to a start, so the
-  # spawn goes on, bounded, once Herdr finds no agent in the pane. Until the
-  # start, a send to the pane fails at its sender, and a failure prints at the
-  # shell prompt the agent left.
-  for _ in $(seq 1 60); do herdr agent get "$pane" >/dev/null 2>&1 || break; sleep 1; done
+  # The spawn goes on once Herdr frees the pane. Until the start, a send to the
+  # pane fails at its sender, and a failure prints at the shell prompt the
+  # agent left.
+  freed "$pane"
 fi
 
 # The box comes current before the agent starts, its contract included: when

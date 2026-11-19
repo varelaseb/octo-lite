@@ -22,12 +22,17 @@ set -uo pipefail
 # True when the process behind environ file $1 runs in the caller's Herdr
 # session, HERDR_SESSION unset in both for the default one, and carries the
 # line $2 when given. Unreadable entries are silently not ours. The one
-# session-membership check: herdr-close sources this script for it, and only it.
+# session-membership check: herdr-close sources this script for it.
 ours() {
   local vars
   vars="$(tr '\0' '\n' 2>/dev/null <"$1")" && { (($# == 1)) || grep -qxF "$2" <<<"$vars"; } &&
     [[ "$(sed -n 's/^HERDR_SESSION=//p' <<<"$vars")" == "${HERDR_SESSION:-}" ]]
 }
+# Once pane $1's Claude has ended, until Herdr finds no agent in the pane, at
+# most a minute: Herdr holds an ended agent a while, refusing its name to a
+# start. The one such bound: herdr-close --park and herdr-spawn --reload, which
+# each end a pane's Claude, source this script for it.
+freed() { for _ in {1..60}; do herdr agent get "$1" >/dev/null 2>&1 || return 0; sleep 1; done; }
 [[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
 (($# == 1)) || { echo "usage: herdr-claude-session PANE" >&2; exit 64; }
 

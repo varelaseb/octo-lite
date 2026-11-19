@@ -37,19 +37,23 @@
 #
 # Once the processes it ended have exited, or at 5s, a close removes the
 # scratch folder of each agent in what it closed, a parked one's included: the
-# TMPDIR its tab gave every process there, its pane's shell among them, read
-# from the caller's session's processes alone, since ids repeat across
-# sessions, and only one in octo-lite's scratch folder or in the user's cache
-# folder, where an earlier octo-lite put it; an agent started before herdr-spawn
-# gave one has none, so its close removes nothing. A park returns once Herdr
-# lists no agent in the pane, as a resume there needs, and removes the
-# node_modules folders Git ignores in the parked agent's own lane worktree
-# (disk.spec.html#scratch-end, #scratch-old, #park).
+# TMPDIR its tab gave every process there, its pane's shell among them, only
+# one in octo-lite's scratch folder or in the user's cache folder, where an
+# earlier octo-lite put it, and only while no live process still has it, or a
+# folder under it, for TMPDIR. The folder is named by session and agent name,
+# so another session's agent under the same ids, an agent spawned again under
+# the name of one whose tab is still open, and the Herdr server, whose
+# environment a tab started without one gets, may use it too; each keeps it.
+# An agent started before herdr-spawn gave one has none, so its close removes
+# nothing. A park returns once Herdr lists no agent in the pane, as a resume
+# there needs, and removes the node_modules folders Git ignores in the parked
+# agent's own lane worktree (disk.spec.html#scratch-end, #scratch-old, #park,
+# #acceptance-disk-own-only-rule).
 set -uo pipefail
 here="$(dirname "$(readlink -f "$0")")"
 
 usage() { echo "usage: herdr-close TAB|SPACE | --park PANE" >&2; exit 64; }
-. "$here/herdr-claude-session" # ours ENVIRON [LINE]: the caller's session membership
+. "$here/herdr-claude-session" # ours ENVIRON [LINE], the caller's session membership; freed PANE
 
 # True when process $1 is a herdr-await of the caller's pane on one of $agents,
 # names and pane ids one per line: it leads its process group and carries
@@ -124,9 +128,7 @@ if [[ "${1:-}" == --park ]]; then
   kill -TERM "${run[@]}" 2>/dev/null
   ended+=("${run[@]}")
   exited
-  # Herdr holds an ended agent a while, refusing its name to a start, so the
-  # park returns, bounded, once Herdr finds no agent in the pane.
-  for _ in {1..60}; do herdr agent get "$pane" >/dev/null 2>&1 || break; sleep 1; done
+  freed "$pane"
   packages "$(jq -r .cwd <<<"$line")" "$shell" 2>/dev/null
   echo "$line"
   exit 0
@@ -144,22 +146,15 @@ agents="$(herdr agent list 2>/dev/null | jq -r --arg f "$field" --arg id "$id" \
 tagged() { ours "/proc/$1/environ" "$tag=$id"; }
 
 # Each scratch folder in it, read before the close ends its panes' shells: the
-# TMPDIR of a process of the caller's session it tags, when that is a folder
-# named as octo-lite-state names one, in the folder octo-lite-state gives it or
-# the cache one. Only a tagged process costs a fork: a box runs hundreds.
+# TMPDIR of a process it tags, when that is a folder named as octo-lite-state
+# names one, in the folder octo-lite-state gives it or the cache one.
 scratch="$("$here/../../../scripts/octo-lite-state" --scratch .)"
 roots=("${scratch%/*}" "${XDG_CACHE_HOME:-$HOME/.cache}/octo-lite/scratch")
 scratch=()
-for env in /proc/[0-9]*/environ; do
-  mapfile -d '' vars 2>/dev/null <"$env" || continue
-  hit="" dir=""
-  for v in "${vars[@]}"; do
-    [[ "$v" != "$tag=$id" ]] || hit=1
-    [[ "$v" != TMPDIR=* ]] || dir="${v#*=}"
-  done
-  [[ -n "$hit" ]] && ours "$env" || continue
+while IFS= read -r -d '' dir; do
   for root in "${roots[@]}"; do [[ "$dir" != "$root"/+([[:xdigit:]]) ]] || scratch+=("$dir"); done
-done
+done < <(grep -lzxF "$tag=$id" /proc/[0-9]*/environ 2>/dev/null |
+  xargs -r grep -hzx 'TMPDIR=.*' 2>/dev/null | sed -z 's/^TMPDIR=//' | sort -zu)
 
 # Its own awaits end before the close, so none waits again on a closed agent.
 sweep awaits -
@@ -167,7 +162,10 @@ rc=0
 herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
 sweep tagged
 exited
-rm -rf -- "${scratch[@]}"
+# A folder a live process still has for TMPDIR, or a folder under it, is in use.
+for dir in "${scratch[@]}"; do
+  grep -qzF "TMPDIR=$dir" /proc/[0-9]*/environ 2>/dev/null || rm -rf -- "$dir"
+done
 
 jq -nc --arg at "$(date -u +%FT%TZ)" --arg kind "$kind" --arg id "$id" --argjson rc "$rc" \
   --argjson killed "${#ended[@]}" '{at: $at, kind: "closed", ($kind): $id, close_rc: $rc, killed: $killed}'
