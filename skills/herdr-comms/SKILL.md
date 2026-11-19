@@ -211,18 +211,18 @@ exit 0 ends the reload, the agent kept as it was.
 herdr-claude-session PANE
 ```
 
-The one lookup `herdr-close --park`, `herdr-spawn --reload`, `herdr-say`,
-`herdr-await` (its caller's form), and a [native report](#send-a-report) share
-(`spec/domains/herdr-transport.spec.html#transport-claude-session`).
+The one lookup every reader of a pane's Claude session shares, listed once in
+`spec/domains/herdr-transport.spec.html#transport-claude-session`.
 Prints one JSON line: Claude's own record
 `~/.claude/sessions/<pid>.json` plus `transcript`, the path of
 `~/.claude/projects/*/<sessionId>.jsonl`, `null` before its first message.
 Exits 1 when no record counts. A record counts when its live process carries
 `HERDR_PANE_ID=PANE` and the caller's `HERDR_SESSION`, foreground or not (a
-spare Claude claimed into the pane), and its `procStart` is that process's
-start time, so a record left at a reused pid is never read. Of those, the one
-whose transcript holds the latest reply (an assistant record off any sidechain)
-wins.
+spare Claude claimed into the pane), its `entrypoint` is no one-shot `sdk-*`
+(a `claude -p` a command of the pane's agent started, as a QA capture starts
+its judge), and its `procStart` is that process's start time, so a record left
+at a reused pid is never read. Of those, the one whose transcript holds the
+latest reply (an assistant record off any sidechain) wins.
 
 ## Send a message
 
@@ -313,9 +313,12 @@ another Herdr session:
 herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'
 ```
 
-then `SendMessage` with `to` set to `uds:<that path>`. It counts as sent once
-Claude reports it delivered to the receiver's inbox or reports it timed out: a
-timed-out send may still have been delivered, so it is no failure. Send it with
+then `SendMessage` with `to` set to `uds:<that path>`. Look it up at each
+send, just before it, never reusing one from an earlier send: a resumed or
+reloaded Claude listens at a new path, and an old one reaches nothing. It
+counts as sent once Claude reports it delivered to the receiver's inbox or
+reports it timed out: a timed-out send may still have been delivered, so it is
+no failure. Send it with
 `herdr-say PANE REPORT` instead, under its exit codes, only when the lookup
 exits 1 or prints nothing (a parked, closed, Codex, or pi agent; `herdr-say`
 resumes a parked one), when Claude reports it undelivered (as when the receiver
