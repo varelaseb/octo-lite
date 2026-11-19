@@ -39,11 +39,14 @@
 # scratch folder of each agent in what it closed, a parked one's included: the
 # TMPDIR its tab gave every process there, its pane's shell among them, only
 # one in octo-lite's scratch folder or in the user's cache folder, where an
-# earlier octo-lite put it, and only while no live process still has it, or a
-# folder under it, for TMPDIR. The folder is named by session and agent name,
-# so another session's agent under the same ids, an agent spawned again under
-# the name of one whose tab is still open, and the Herdr server, whose
-# environment a tab started without one gets, may use it too; each keeps it.
+# earlier octo-lite put it, and only while no live process outside what it
+# closed still has it, or a folder under it, for TMPDIR. Herdr ids repeat
+# across sessions and that read takes every session's processes, so it also
+# reads the folder of another session's agent under the same ids, named for
+# that session, and keeps it while that agent runs. An agent spawned again
+# under the name of one whose tab is still open shares the folder, named by
+# session and agent name, and the Herdr server, whose environment a tab
+# started without one gets, may use it; each keeps it too.
 # An agent started before herdr-spawn gave one has none, so its close removes
 # nothing. A park returns once Herdr lists no agent in the pane, as a resume
 # there needs, and removes the node_modules folders Git ignores in the parked
@@ -162,10 +165,16 @@ rc=0
 herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
 sweep tagged
 exited
-# A folder a live process still has for TMPDIR, or a folder under it, is in use.
-for dir in "${scratch[@]}"; do
-  grep -qzF "TMPDIR=$dir" /proc/[0-9]*/environ 2>/dev/null || rm -rf -- "$dir"
-done
+# True when a live process outside what it closed has folder $1 for TMPDIR, or
+# a folder under it: one inside it still running at 5s keeps none.
+used() {
+  local env
+  for env in $(grep -lzF "TMPDIR=$1" /proc/[0-9]*/environ 2>/dev/null); do
+    ours "$env" "$tag=$id" || return 0
+  done
+  return 1
+}
+for dir in "${scratch[@]}"; do used "$dir" || rm -rf -- "$dir"; done
 
 jq -nc --arg at "$(date -u +%FT%TZ)" --arg kind "$kind" --arg id "$id" --argjson rc "$rc" \
   --argjson killed "${#ended[@]}" '{at: $at, kind: "closed", ($kind): $id, close_rc: $rc, killed: $killed}'
