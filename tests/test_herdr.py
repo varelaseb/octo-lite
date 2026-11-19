@@ -2463,7 +2463,7 @@ class HerdrWrapperTest(unittest.TestCase):
         # nothing would remove it later.
         tab = f"w1:t-{uuid.uuid4()}"
         folder = self.made(self.folder("implementer-ann-1"))
-        slow = subprocess.Popen(["bash", "-c", "trap 'sleep 7; exit' TERM; while :; do sleep 0.1; done"],
+        slow = subprocess.Popen(["bash", "-c", "trap 'sleep 60; exit' TERM; while :; do sleep 0.1; done"],
                                 start_new_session=True, env={**self.env, "HERDR_TAB_ID": tab,
                                                              "HERDR_WORKSPACE_ID": "w1", "TMPDIR": str(folder)})
         self.addCleanup(lambda: (os.killpg(slow.pid, signal.SIGKILL), slow.wait()))
