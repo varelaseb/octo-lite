@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Close one Herdr tab or space and end everything it ran, or park one idle
-# Claude agent.
+# Claude agent in its pane.
 #
 # Closing a tab or space kills its panes, but a detached command child (setsid)
 # survives, reparented. Every process started in a tab carries
@@ -13,28 +13,33 @@
 # Herdr leaves `herdr agent wait` on an agent running when the agent's tab
 # closes; herdr-await bounds its every wait, so another caller's wait on an
 # agent in what it closes ends as gone at its bound. The caller's own
-# herdr-awaits on one, by name or pane id noted from Herdr, it ends whole before
-# the close, waking no one: the caller closed it, so a gone would read as news
-# of an agent spawned again under the same name.
+# herdr-awaits on one it closes or parks, by name or pane id noted from Herdr,
+# it ends whole first, waking no one: the caller closed it, so a gone would read
+# as news of an agent spawned again under the same name.
 #
-# A close or park that runs prints only hand-off lines: one closed line ({at,
-# kind, tab|space, close_rc, killed}), which the owner closing a consumed worker
-# appends to the lane's hand-off log. A refusal or usage text is plain stderr.
+# A close prints only its closed hand-off line ({at, kind, tab|space, close_rc,
+# killed}), which the owner closing a consumed worker appends to the lane's
+# hand-off log. A refusal or usage text is plain stderr.
 #
-# --park PANE reads the pane's Claude session (herdr-claude-session), closes its
-# tab, or its space when that tab is the space's only one (a lane owner in its
-# own space), and prints one parked hand-off line, even when the close fails;
-# its closed line goes to stderr. The role is the record's, else the one a
-# worker's spawn name <role>-<ticket> carries; a name not of that form, none.
-# An agent Herdr does not report idle or done (Herdr 0.9.0 reports a Claude
-# agent waiting at its prompt as done), or one with no Claude session file
-# (Codex, pi), is refused with nothing closed.
+# --park PANE (spec/domains/herdr-transport.spec.html#transport-park) reads the
+# pane's Claude session (herdr-claude-session), ends that Claude and every
+# process under the pane's shell, which the agent ran in its terminal, its
+# waits among them, and prints only one parked hand-off line. It closes
+# nothing: the pane stays at its shell prompt under its id, in its tab, with
+# the agent's scratch folder, and what the agent started apart from its
+# terminal, as the role contracts' server rule starts a server (setsid, so no
+# longer under the shell once its starter exits), runs on until the tab
+# closes. The role is the record's, else the one a worker's spawn name
+# <role>-<ticket> carries; a name not of that form, none. An agent Herdr does
+# not report idle or done (Herdr 0.9.0 reports a Claude agent waiting at its
+# prompt as done), or one with no Claude session file (Codex, pi), is refused
+# with nothing ended.
 #
-# Once the processes it ended have exited, or at 5s, a close or park removes the
+# Once the processes it ended have exited, or at 5s, a close removes the
 # scratch folder of each agent it closed, the caller's session's alone, since
 # names repeat across sessions, and the one an earlier octo-lite gave it under
 # the same name in the user's cache folder; an agent started before herdr-spawn
-# gave one has none, so its close removes nothing. A park also removes the
+# gave one has none, so its close removes nothing. A park removes the
 # node_modules folders Git ignores in the parked agent's own lane worktree
 # (disk.spec.html#scratch-end, #scratch-old, #park).
 set -uo pipefail
@@ -42,35 +47,10 @@ here="$(dirname "$(readlink -f "$0")")"
 
 usage() { echo "usage: herdr-close TAB|SPACE | --park PANE" >&2; exit 64; }
 . "$here/herdr-claude-session" # ours ENVIRON [LINE]: the caller's session membership
-line=""
-if [[ "${1:-}" == --park ]]; then
-  (($# == 2)) && [[ "$2" == *:* ]] || usage
-  pane="$2"
-  session="$("$here/herdr-claude-session" "$pane")" ||
-    { echo "herdr-close: no Claude session in $pane; parking is Claude only" >&2; exit 65; }
-  agent="$(herdr agent get "$pane")" || { printf '%s\n' "$agent" >&2; exit 1; }
-  [[ "$(jq -r .result.agent.agent_status <<<"$agent")" == @(idle|done) ]] || { echo "herdr-close: $pane is not idle; not parked" >&2; exit 75; }
-  name="$(jq -r .result.agent.name <<<"$agent")"
-  space="$(jq -r '.result.agent.workspace_id // empty' <<<"$agent")"
-  tabs="$(herdr workspace get "$space" 2>/dev/null | jq -r '.result.workspace.tab_count // empty')"
-  [[ "$tabs" == 1 ]] && set -- "$space" || set -- "$(jq -r '.result.agent.tab_id // empty' <<<"$agent")"
-  line="$(jq -c --arg at "$(date -u +%FT%TZ)" --arg pane "$pane" --arg name "$name" \
-    '{at: $at, kind: "parked", pane: $pane, name: $name,
-      role: (.agent // ($name | capture("^(?<r>.+)-[a-z0-9]+-[0-9]+$").r) // null), cwd, session: .sessionId}' <<<"$session")"
-fi
 
-id="${1:-}"
-[[ -n "$id" && "$id" != -* && $# -eq 1 ]] || usage
-
-if [[ "$id" == *:* ]]; then kind=tab; tag=HERDR_TAB_ID; field=tab_id; cmd=(tab close)
-else kind=space; tag=HERDR_WORKSPACE_ID; field=workspace_id; cmd=(workspace close); fi
-
-# The agents in it, then their names and pane ids, one per line.
-listed="$(herdr agent list 2>/dev/null | jq -c --arg f "$field" --arg id "$id" \
-  '[.result.agents[]? | select(.[$f] == $id)]' 2>/dev/null)"
-agents="$(jq -r '.[] | (.name // empty), .pane_id' <<<"$listed" 2>/dev/null)"
-# True when process $1 is a herdr-await of the caller's pane on one of them:
-# it leads its process group and carries HERDR_AWAIT_ON=<that name or pane id>.
+# True when process $1 is a herdr-await of the caller's pane on one of $agents,
+# names and pane ids one per line: it leads its process group and carries
+# HERDR_AWAIT_ON=<that name or pane id>.
 awaits() {
   local vars v
   mapfile -d '' vars 2>/dev/null <"/proc/$1/environ" || return
@@ -90,31 +70,20 @@ sweep() {
     "$1" "$pid" && kill -TERM -- "${2:-}$pid" 2>/dev/null && ended+=("$pid")
   done
 }
-tagged() { ours "/proc/$1/environ" "$tag=$id"; }
+# Until what it ended has exited, since a dying browser still writes to its
+# scratch, or 5s; a zombie has exited.
+exited() {
+  for _ in {1..50}; do
+    ps -o stat= -p "${ended[*]}" 2>/dev/null | grep -qv '^Z' || return
+    sleep 0.1
+  done
+}
 
-# Its own awaits end before the close, so none waits again on a closed agent.
-sweep awaits -
-rc=0
-herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
-sweep tagged
-# Files go once what it ended has exited, since a dying browser still writes to
-# its scratch, or at 5s; a zombie has exited.
-for _ in {1..50}; do
-  ps -o stat= -p "${ended[*]}" 2>/dev/null | grep -qv '^Z' || break
-  sleep 0.1
-done
-
-# Each closed agent's scratch folder, by its name in the caller's session, and
-# its earlier one in the user's cache folder.
-while read -r n; do
-  scratch="$("$here/../../../scripts/octo-lite-state" --scratch "$n" 2>/dev/null)" &&
-    rm -rf -- "$scratch" "${XDG_CACHE_HOME:-$HOME/.cache}/octo-lite/scratch/${scratch##*/}"
-done < <(jq -r '.[].name // empty' <<<"$listed" 2>/dev/null)
-
-# The parked agent's packages: in the worktree it works in, only when that is
-# its own lane's, a Git linked worktree off its repository's main branch (the
-# one origin/HEAD names, else main) that no process outside what was closed
-# works in, as another live agent may. Its install command restores them.
+# The parked agent's packages, in worktree $1 that it works in: only when that
+# is its own lane's, a Git linked worktree off its repository's main branch
+# (the one origin/HEAD names, else main) that no live process but the pane's
+# shell, process $2, works in, as another agent or a server the parked one
+# left running may. Its install command restores them.
 packages() {
   local top main dir pid
   top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 0
@@ -123,17 +92,66 @@ packages() {
   main="$(git -C "$top" symbolic-ref -q --short refs/remotes/origin/HEAD)" || main=origin/main
   [[ "$(git -C "$top" symbolic-ref -q --short HEAD)" != "${main#origin/}" ]] || return 0
   while IFS=$'\t' read -r dir pid; do
-    [[ "$dir" != "$top" && "$dir" != "$top"/* ]] || tagged "${pid#/proc/}" || return 0
+    [[ "$dir" != "$top" && "$dir" != "$top"/* || "$pid" == "/proc/$2" ]] || return 0
   done < <(find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%l\t%h\n' 2>/dev/null)
   git -C "$top" ls-files -z --others --ignored --exclude-standard --directory |
     while IFS= read -r -d '' dir; do
       [[ "$dir" != @(node_modules|*/node_modules)/ ]] || rm -rf -- "$top/$dir"
     done
 }
-[[ -z "$line" ]] || packages "$(jq -r .cwd <<<"$line")" 2>/dev/null
 
-closed="$(jq -nc --arg at "$(date -u +%FT%TZ)" --arg kind "$kind" --arg id "$id" --argjson rc "$rc" \
-  --argjson killed "${#ended[@]}" '{at: $at, kind: "closed", ($kind): $id, close_rc: $rc, killed: $killed}')"
-if [[ -z "$line" ]]; then echo "$closed"
-else echo "$closed" >&2; echo "$line"; fi
+if [[ "${1:-}" == --park ]]; then
+  (($# == 2)) && [[ "$2" == *:* ]] || usage
+  pane="$2"
+  session="$("$here/herdr-claude-session" "$pane")" ||
+    { echo "herdr-close: no Claude session in $pane; parking is Claude only" >&2; exit 65; }
+  agent="$(herdr agent get "$pane")" || { printf '%s\n' "$agent" >&2; exit 1; }
+  [[ "$(jq -r .result.agent.agent_status <<<"$agent")" == @(idle|done) ]] || { echo "herdr-close: $pane is not idle; not parked" >&2; exit 75; }
+  shell="$(herdr pane process-info --pane "$pane" | jq -r .result.process_info.shell_pid)" || exit 1
+  name="$(jq -r .result.agent.name <<<"$agent")"
+  agents="$name"$'\n'"$pane"
+  line="$(jq -c --arg at "$(date -u +%FT%TZ)" --arg pane "$pane" --arg name "$name" \
+    '{at: $at, kind: "parked", pane: $pane, name: $name,
+      role: (.agent // ($name | capture("^(?<r>.+)-[a-z0-9]+-[0-9]+$").r) // null), cwd, session: .sessionId}' <<<"$session")"
+  # The processes under process $1: the agent's Claude, what it runs, theirs.
+  under() { local c; for c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do echo "$c"; under "$c"; done; }
+  # The caller's own waits on the agent end first, so none sees it gone.
+  sweep awaits -
+  run=("$(jq -r .pid <<<"$session")" $(under "$shell"))
+  kill -TERM "${run[@]}" 2>/dev/null
+  ended+=("${run[@]}")
+  exited
+  packages "$(jq -r .cwd <<<"$line")" "$shell" 2>/dev/null
+  echo "$line"
+  exit 0
+fi
+
+id="${1:-}"
+[[ -n "$id" && "$id" != -* && $# -eq 1 ]] || usage
+
+if [[ "$id" == *:* ]]; then kind=tab; tag=HERDR_TAB_ID; field=tab_id; cmd=(tab close)
+else kind=space; tag=HERDR_WORKSPACE_ID; field=workspace_id; cmd=(workspace close); fi
+
+# The agents in it, then their names and pane ids, one per line.
+listed="$(herdr agent list 2>/dev/null | jq -c --arg f "$field" --arg id "$id" \
+  '[.result.agents[]? | select(.[$f] == $id)]' 2>/dev/null)"
+agents="$(jq -r '.[] | (.name // empty), .pane_id' <<<"$listed" 2>/dev/null)"
+tagged() { ours "/proc/$1/environ" "$tag=$id"; }
+
+# Its own awaits end before the close, so none waits again on a closed agent.
+sweep awaits -
+rc=0
+herdr "${cmd[@]}" "$id" >/dev/null 2>&1 || rc=$?
+sweep tagged
+exited
+
+# Each closed agent's scratch folder, by its name in the caller's session, and
+# its earlier one in the user's cache folder.
+while read -r n; do
+  scratch="$("$here/../../../scripts/octo-lite-state" --scratch "$n" 2>/dev/null)" &&
+    rm -rf -- "$scratch" "${XDG_CACHE_HOME:-$HOME/.cache}/octo-lite/scratch/${scratch##*/}"
+done < <(jq -r '.[].name // empty' <<<"$listed" 2>/dev/null)
+
+jq -nc --arg at "$(date -u +%FT%TZ)" --arg kind "$kind" --arg id "$id" --argjson rc "$rc" \
+  --argjson killed "${#ended[@]}" '{at: $at, kind: "closed", ($kind): $id, close_rc: $rc, killed: $killed}'
 exit "$rc"
