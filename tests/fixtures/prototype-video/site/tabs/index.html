@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  [role=tablist] { display: flex; width: 220px; overflow-x: auto; background: #fff }
+  [role=tab] { flex: none; width: 100px; height: 44px; font: inherit; background: #fff }
+  [role=tab][aria-selected=true] { background: #16a34a }
+</style>
+<!-- A board's column tabs in a sideways-scrolling track narrower than the screen, so the track clips Edited and
+     Posted where the screen would still show them. -->
+<div role="tablist">
+  <button role="tab" type="button" aria-selected="true" data-column="ready">Ready</button>
+  <button role="tab" type="button" data-column="recorded">Recorded</button>
+  <button role="tab" type="button" data-column="edited">Edited</button>
+  <button role="tab" type="button" data-column="posted">Posted</button>
+</div>
+<script>
+  const tabs = document.querySelectorAll('[role=tab]')
+  for (const tab of tabs) tab.addEventListener('click', () => tabs.forEach(each => each.setAttribute('aria-selected', each === tab)))
+</script>
