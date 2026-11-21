@@ -299,6 +299,16 @@ class CoresTest(BoxLockCase):
         self.assertEqual(run.stdout, "out\n")
         self.assertRegex(run.stderr, rf"\A{WAIT.pattern}err\n\Z")
 
+    def test_a_job_run_from_a_deleted_folder_runs_and_ends_as_its_command_did(self):
+        # #lock-recipe, #lock-holder: its folder recorded as gone, on this machine's own CPUs
+        folder = self.lane("gone")
+        run = subprocess.run(["sh", "-c", 'rmdir "$PWD" && exec "$@"', "sh", str(LOCK), "--cores", "1",
+                              "sh", "-c", "echo out; exit 3"],
+                             cwd=folder, capture_output=True, text=True, env=self.env)
+        self.assertFalse(folder.exists())
+        self.assertEqual((run.returncode, run.stdout), (3, "out\n"), run.stderr)
+        self.assertRegex(run.stderr, rf"\A{WAIT.pattern}")  # then sh's own getcwd warning
+
     def test_a_job_sizes_its_workers_to_the_cpus_it_asked_for(self):
         # #acceptance-lock-cores: a box of 16 CPUs, 3 asked
         self.needs(3)
@@ -398,7 +408,8 @@ class HolderTest(BoxLockCase):
         [(named, held)] = self.told("mine")
         self.assertEqual(named, f"{self.named('other', job)} in {folder}")
         self.assertRegex(held, r"^\d+s$")
-        self.assertLessEqual(1, int(held[:-1]), time.monotonic() - start)
+        self.assertLessEqual(1, int(held[:-1]))
+        self.assertLessEqual(int(held[:-1]), time.monotonic() - start)
         self.assertEqual(self.ran("mine"), [])
         self.end("other")
         self.wait_ran("mine")
@@ -460,6 +471,9 @@ class CapTest(BoxLockCase):
         for name in names:
             self.start(name, "--cap", "qa-db=2")
         self.assert_wait(*names, ran=2)
+        [waiting] = set(names) - set(self.ran(*names))
+        self.assertEqual(HOLDER.findall((self.tmp / f"{waiting}.out").read_text()), [],
+                         "waiting on its cap, it waits on no CPU")
         self.end(self.ran(*names)[0])
         self.wait_ran(*names, count=3)
 
