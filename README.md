@@ -175,7 +175,9 @@ the job on those CPUs only, telling it their count in `BOX_HEAVY_CORES`, and
 ends as the job did. It holds the CPUs itself, so a server or browser the job
 leaves running holds none. A heavy job inside a heavy job runs at once on the
 outer job's CPUs. `--cap RESOURCE=N` also caps how many jobs naming that
-resource run at once. A ticket's own tests, a server, or a watcher never take it.
+resource run at once, and `--merge` lines a job a merge waits on up ahead of
+every other waiting job. A ticket's own tests, a server, or a watcher never
+take it.
 
 With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
 `wake` provider by writing
