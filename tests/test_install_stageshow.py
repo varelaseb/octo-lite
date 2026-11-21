@@ -221,15 +221,19 @@ class StageshowBrowserTest(CloneCase):
         return [(self.clone / f"{base}/stageshow/scripts/browser.mjs").read_text()
                 for base in ("agents/skills", ".skillfile/cache/skills")]
 
-    def test_after_pull_patches_a_stageshow_fetched_without_the_patch(self):
-        # spec/domains/install.spec.html#install-stageshow-browser: pulling and
-        # installing are safe in any order
+    def assert_after_pull_deploys_the_pulled_patch(self, older):
+        """Installs under the patch OLDER, or none for "", then pulls the
+        current one: --after-pull deploys it, once, keeping the filming
+        dependencies."""
         patch = self.clone / self.PATCH
         text = patch.read_text()
-        patch.unlink()
+        if older:
+            patch.write_text(older)
+        else:
+            patch.unlink()
         self.install()
         deployed, upstream = self.browser_lookup()
-        self.assertEqual(deployed, upstream)
+        self.assertEqual(deployed, upstream + older)
         patch.write_text(text)
         self.install("--after-pull")
         deployed, upstream = self.browser_lookup()
@@ -240,6 +244,16 @@ class StageshowBrowserTest(CloneCase):
                          "the filming dependencies must be kept")
         self.install("--after-pull")
         self.assertEqual(self.browser_lookup()[0], upstream + text, "the patch applies once")
+
+    def test_after_pull_patches_a_stageshow_fetched_without_the_patch(self):
+        # spec/domains/install.spec.html#install-stageshow-browser: pulling and
+        # installing are safe in any order
+        self.assert_after_pull_deploys_the_pulled_patch("")
+
+    def test_after_pull_deploys_the_patch_over_an_older_one(self):
+        # spec/domains/install.spec.html#install-after-pull: the after-pull step
+        # brings the box onto the pulled code, its patch too
+        self.assert_after_pull_deploys_the_pulled_patch("older patch\n")
 
     def test_check_names_stageshow_without_its_browser(self):
         # spec/domains/install.spec.html#acceptance-check-no-browser
@@ -266,7 +280,6 @@ class StageshowBrowserTest(CloneCase):
         # after an install that left the filming dependencies and Chromium
         self.install()
         (self.clone / ".skillfile/cache/skills/stageshow/scripts/browser.mjs").write_text("drifted upstream\n")
-        (self.stageshow / "scripts/browser.mjs").unlink()
         line = ("Stageshow not installed: octo-lite's patch no longer applies to its pin; fix: pull a fixed"
                 f" octo-lite, run skillfile resolve --abort in {self.clone}, then {self.fix}")
         r = self.run_installer()
