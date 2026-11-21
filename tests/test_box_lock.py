@@ -300,7 +300,7 @@ class CoresTest(BoxLockCase):
         self.assertRegex(run.stderr, rf"\A{WAIT.pattern}err\n\Z")
 
     def test_a_job_run_from_a_deleted_folder_runs_and_ends_as_its_command_did(self):
-        # #lock-recipe, #lock-holder: its folder recorded as gone, on this machine's own CPUs
+        # #lock-recipe, on this machine's own CPUs
         folder = self.lane("gone")
         run = subprocess.run(["sh", "-c", 'rmdir "$PWD" && exec "$@"', "sh", str(LOCK), "--cores", "1",
                               "sh", "-c", "echo out; exit 3"],
