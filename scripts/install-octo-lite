@@ -455,15 +455,15 @@ if command -v skillfile >/dev/null; then why="" stageshow_fix="run $install_cmd"
 else why="skillfile not found" stageshow_fix="$skillfile_install, then run $install_cmd"
 fi
 if [[ "$check" != true && -z "$why" ]]; then
-  # skillfile leaves a pin it deployed as it is, so a patch arriving after the
-  # fetch never applies: a file a patch names, still its upstream copy in
-  # skillfile's cache, is removed, and skillfile deploys it again patched,
-  # keeping the skill's dependencies.
+  # skillfile deploys only a file missing from a pin it deployed, so a patch
+  # that arrives or changes after the fetch would never apply: each file a
+  # Stageshow patch names is removed, and skillfile deploys it again from its
+  # pin with the patch this clone holds, keeping the skill's dependencies.
+  # tdd's patched file is committed, so a pull brings it.
   while IFS= read -r patch; do
-    file="${patch#.skillfile/patches/}"
-    file="${file%.patch}"
-    if cmp -s "$root/agents/$file" "$root/.skillfile/cache/$file"; then rm "$root/agents/$file"; fi
-  done < <(git -C "$root" ls-files -- '.skillfile/patches/*.patch')
+    patch="${patch#.skillfile/patches/skills/stageshow/}"
+    rm -f "$stageshow/${patch%.patch}"
+  done < <(git -C "$root" ls-files -- .skillfile/patches/skills/stageshow)
   if ! (cd "$root" && skillfile install -q); then why="skillfile install failed"
   elif ! npm_deps "$stageshow"; then why="npm ci failed"
   elif ! playwright_chromium "$stageshow"; then why="browser install failed"
