@@ -166,9 +166,71 @@ sys.exit(failed)
 PY
 }
 
+# Keys (install.spec.html#install-keys): each key or account a feature of
+# octo-lite needs, as NAME:FILE under the prefix's home:VARIABLE:CHECK. A new
+# key is one more entry and its CHECK. --onboard asks for each once and keeps
+# it; --check proves each works; --after-pull leaves keys out, since no install
+# run writes one; --undo leaves each file, the box owner's, so nothing records
+# what onboarding wrote.
+keys=(
+  "X token:.config/workbench/x.env:X_BEARER_TOKEN:x_check"
+)
+each_key() {
+  local key name file variable key_check
+  for key in "${keys[@]}"; do
+    IFS=: read -r name file variable key_check <<<"$key"
+    "$1" "$name" "$prefix/$file" "$variable" "$key_check"
+  done
+}
+# A file there is adopted, never overwritten. Else the key comes from its
+# variable, else from a question asked only at a terminal, so piped consent
+# answers are never read as a key. Skipping writes nothing. The file, the
+# box user's alone from creation, holds only VARIABLE=key; no output names
+# the key.
+onboard_key() {
+  local key="${!3:-}"
+  if [[ -e "$2" ]]; then echo "$1 adopted: $2"; return; fi
+  if [[ -z "$key" && -t 0 ]]; then
+    read -rs -p "$1 for $2 (Enter skips): " key || key=""
+    echo >&2
+  fi
+  if [[ -z "$key" ]]; then echo "$1 not given, nothing written: $2"; return; fi
+  (umask 077 && mkdir -p "$(dirname "$2")" && printf '%s=%s\n' "$3" "$key" >"$2")
+  echo "$1 written: $2"
+}
+check_key() {
+  local key
+  key="$(sed -n "/^$3=/{s///p;q;}" "$2" 2>/dev/null)" || key=""
+  if [[ -z "$key" ]]; then
+    problem "missing $1: $2" "put the one line $3=<$1> in $2, or run $install_cmd --onboard"
+  else
+    "$4" "$1" "$2" "$key"
+  fi
+}
+keep_key() { [[ ! -e "$2" ]] || echo "kept $1: $2 (the box owner's to delete)"; }
+# The cheapest call the X token makes: one recent search, at its fewest
+# results. The token reaches curl on its standard input, never its command
+# line. A 2xx proves it; any other answer but a 5xx is X refusing it, named
+# with X's own answer; no answer means nothing on the box is wrong.
+x_check() {
+  local out status answer=""
+  out="$(curl -s --max-time 10 -w '\n%{http_code}' -H @- \
+    'https://api.x.com/2/tweets/search/recent?query=octo-lite&max_results=10' \
+    <<<"Authorization: Bearer $3" 2>/dev/null)" || true
+  status="${out##*$'\n'}" status="${status#000}" # curl's 000: no answer
+  [[ "${out%$'\n'*}" =~ \"(title|detail)\":\ ?\"([^\"]*)\" ]] && answer="${BASH_REMATCH[2]}"
+  case "$status" in
+    2??) echo "$1 proved by X: $2" ;;
+    ""|5??) echo "$1 not proved, X did not answer${status:+ ($status)}: $2" ;;
+    *) problem "$1 refused by X ($status${answer:+ $answer}): $2" \
+         "get a new token, or a plan with recent search, and put it in $2" ;;
+  esac
+}
+
 if [[ "$undo" == true ]]; then
   hook_settings undo
   [[ -f "$wake_file" ]] && echo "kept wake provider: $wake_file (spec-chat depends on it)"
+  each_key keep_key
   exit 0
 fi
 
@@ -209,6 +271,7 @@ if [[ "$check" != true ]]; then
     "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" \
     "$(argv --after-pull)" "$(argv --check)" "$commit" "$model" "$consent" >"$onboarding"
   echo "onboarding $status: $onboarding"
+  [[ "$onboard" != true ]] || each_key onboard_key
 fi
 
 # Canonical owner/repo from a git remote URL so SSH and HTTPS match:
@@ -571,6 +634,7 @@ if [[ "$verify" == true ]]; then
   echo "version floors:"
   check_floors
 fi
+[[ "$check" != true ]] || each_key check_key
 # Last, so it is the line an operator sees: a pinned skill or the recorder not
 # installed fails every mode alike (install.spec.html#install-peers,
 # #install-recorder). Any problem this run named fails it.

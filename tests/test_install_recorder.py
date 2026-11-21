@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_install_keys import give_keys
+
 ROOT = Path(__file__).resolve().parents[1]
 OFFLINE = ROOT / "tests" / "offline-bin"
 # Runtime tools stubbed at their floors: a verifying run finds them on any box.
@@ -43,6 +45,7 @@ class RecorderInstallTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name).resolve()
         self.prefix = base / "prefix"
+        give_keys(self.prefix)
         self.npm_log = base / "npm.log"
         self.bindir = base / "bin"
         self.bindir.mkdir()
