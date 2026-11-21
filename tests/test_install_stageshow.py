@@ -159,14 +159,17 @@ class CloneCase(unittest.TestCase):
         self.fix = f"run {self.installer} --prefix {self.prefix}"
         self.stageshow = self.clone / "agents/skills/stageshow"
 
-    def upstream_at(self, sha, browser="upstream\n"):
+    def upstream_at(self, sha, browser="upstream\n", text="upstream\n"):
         """Stageshow's tree at SHA on the stand-in GitHub the skillfile stub
-        fetches from, its browser lookup reading BROWSER."""
+        fetches from: its SKILL.md and package files reading TEXT, and its
+        browser lookup reading BROWSER, or none for None."""
         tree = self.github / sha
-        (tree / "scripts").mkdir(parents=True)
+        tree.mkdir(parents=True)
         for name in ("SKILL.md", "package.json", "package-lock.json"):
-            (tree / name).write_text("upstream\n")
-        (tree / "scripts/browser.mjs").write_text(browser)
+            (tree / name).write_text(text)
+        if browser is not None:
+            (tree / "scripts").mkdir()
+            (tree / "scripts/browser.mjs").write_text(browser)
 
     def bump_pin(self, sha):
         """Pulls a Skillfile.lock pinning Stageshow at SHA."""
@@ -246,6 +249,14 @@ class StageshowBrowserTest(CloneCase):
     def browser_lookup(self):
         return (self.stageshow / "scripts/browser.mjs").read_text()
 
+    def npm_ci_runs(self):
+        return [line for line in self.npm_log.read_text().splitlines()
+                if line.startswith(f"{self.stageshow} ci ")]
+
+    def patch_line(self):
+        return ("Stageshow not installed: octo-lite's patch no longer applies to its pin; fix: pull a fixed"
+                f" octo-lite, run skillfile resolve --abort in {self.clone}, then {self.fix}")
+
     def assert_after_pull_deploys_the_pulled_patch(self, older):
         """Installs under a patch adding the line OLDER, or none for "", then
         pulls the current one: --after-pull deploys it, once, keeping the
@@ -261,9 +272,7 @@ class StageshowBrowserTest(CloneCase):
         patch.write_text(text)
         self.install("--after-pull")
         self.assertEqual(self.browser_lookup(), "upstream\npatched\n", "the pulled patch must apply")
-        self.assertEqual([line for line in self.npm_log.read_text().splitlines()
-                          if line.startswith(f"{self.stageshow} ci ")],
-                         [f"{self.stageshow} ci --no-audit --no-fund --loglevel=error"],
+        self.assertEqual(self.npm_ci_runs(), [f"{self.stageshow} ci --no-audit --no-fund --loglevel=error"],
                          "the filming dependencies must be kept")
         self.install("--after-pull")
         self.assertEqual(self.browser_lookup(), "upstream\npatched\n", "the patch applies once")
@@ -304,8 +313,7 @@ class StageshowBrowserTest(CloneCase):
         self.install()
         self.upstream_at("d" * 40, browser="drifted upstream\n")
         self.bump_pin("d" * 40)
-        line = ("Stageshow not installed: octo-lite's patch no longer applies to its pin; fix: pull a fixed"
-                f" octo-lite, run skillfile resolve --abort in {self.clone}, then {self.fix}")
+        line = self.patch_line()
         r = self.run_installer()
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual(r.stderr.splitlines()[-1], line)
@@ -313,6 +321,33 @@ class StageshowBrowserTest(CloneCase):
         r = self.run_installer("--check")
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual(r.stderr.splitlines(), [line])
+
+    def test_a_pin_bump_deploys_the_new_pin_plus_the_patch(self):
+        # spec/domains/install.spec.html#install-peers: a pin change reaches the
+        # box through the after-pull step, with the filming dependencies its
+        # lockfile at that commit names, and keeps the patch while it applies
+        self.install()
+        self.upstream_at("a" * 40, text="bumped\n")
+        self.bump_pin("a" * 40)
+        self.install("--after-pull")
+        self.assertEqual(json.loads((self.stageshow / ".meta").read_text())["sha"], "a" * 40)
+        for name in ("SKILL.md", "package-lock.json"):
+            self.assertEqual((self.stageshow / name).read_text(), "bumped\n", name)
+        self.assertEqual(self.browser_lookup(), "upstream\npatched\n")
+        self.assertEqual(len(self.npm_ci_runs()), 2, "the new lockfile's dependencies must install")
+
+    def test_a_pin_without_the_patched_file_fails_naming_the_fix(self):
+        # spec/domains/install.spec.html#install-stageshow-browser and
+        # #acceptance-check-lines: skillfile ignores a patch naming no file of
+        # its pin, and the old pin's patched file stays deployed
+        self.install()
+        self.upstream_at("b" * 40, browser=None)
+        self.bump_pin("b" * 40)
+        for mode in ((), ("--after-pull",), ("--check",)):
+            with self.subTest(mode=mode):
+                r = self.run_installer(*mode)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(r.stderr.splitlines(), [self.patch_line()])
 
 
 class FetchFailsTest(CloneCase):
