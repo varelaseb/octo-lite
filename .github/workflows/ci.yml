@@ -12,5 +12,5 @@ jobs:
       # The recorder reads mockup files and records in a browser, which its tests
       # drive (tests/test_prototype_video.py): its pinned driver and browser, as
       # the installer adds them (spec/domains/install.spec.html #install-recorder).
-      - run: npm ci --no-audit --no-fund && npx playwright-core install --with-deps chromium
+      - run: npm ci --no-audit --no-fund && PLAYWRIGHT_SKIP_BROWSER_GC=1 npx playwright-core install --with-deps chromium
       - run: python3 -m unittest discover -s tests -v

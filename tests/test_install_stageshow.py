@@ -5,8 +5,12 @@ check names every problem with its fix. Spec: spec/domains/install.spec.html
 #acceptance-pinned-install-fail, #acceptance-pinned-no-skillfile, and
 #acceptance-check-all; and every install run passes as the first, each skill
 folder holding only its tracked files: #install-recorder,
-#acceptance-install-again, and #acceptance-after-pull-recorder-deps. skillfile
-and npm are stubbed: nothing fetches."""
+#acceptance-install-again, and #acceptance-after-pull-recorder-deps. Stageshow
+gets octo-lite's patch, after a pull too, and its driver's Chromium, which
+--check names when missing, and no browser install removes another lane's
+browser: #install-stageshow-browser, #acceptance-check-no-browser, and
+#acceptance-browser-install-keeps. skillfile and npm are stubbed: nothing
+fetches."""
 
 from __future__ import annotations
 
@@ -28,23 +32,37 @@ SKILL_DIRS = (".claude/skills", ".codex/skills", ".agents/skills")
 PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stageshow$",
                 (ROOT / "Skillfile").read_text(), re.M).group(1)
 
-# skillfile's observable contract: `skillfile install` deploys each pin in
-# Skillfile.lock into agents/skills, with its cache in .skillfile/cache, and
-# leaves files it already deployed unchanged. It writes a local skill's tracked
-# files only, so a local skill folder holding a file git does not track fails it.
+# skillfile's observable contract: `skillfile install` keeps each pin of
+# Skillfile.lock in .skillfile/cache and deploys each file of it missing from
+# agents/skills, as a patch in .skillfile/patches changes it, leaving files it
+# already deployed unchanged. A patch that no longer applies, here one the
+# cached file says it drifted from, leaves .skillfile/conflict and fails it. It
+# writes a local skill's tracked files only, so a local skill folder holding a
+# file git does not track fails it.
 SKILLFILE = """#!/usr/bin/env python3
 import json, subprocess, sys
 from pathlib import Path
 assert sys.argv[1:] == ["install", "-q"], sys.argv
 pin = json.loads(Path("Skillfile.lock").read_text())["github/skill/stageshow"]
-skill = Path("agents/skills/stageshow")
-if not skill.exists():
-    skill.mkdir(parents=True)
-    (skill / ".meta").write_text(json.dumps(pin))
-    for name in ("SKILL.md", "package.json", "package-lock.json"):
-        (skill / name).write_text("{}")
-    Path(".skillfile/cache/stageshow").mkdir(parents=True)
-    Path(".skillfile/cache/stageshow/SKILL.md").write_text("{}")
+cache, skill = Path(".skillfile/cache/skills/stageshow"), Path("agents/skills/stageshow")
+if not cache.exists():
+    (cache / "scripts").mkdir(parents=True)
+    (cache / ".meta").write_text(json.dumps(pin))
+    for name in ("SKILL.md", "package.json", "package-lock.json", "scripts/browser.mjs"):
+        (cache / name).write_text("upstream\\n")
+for upstream in cache.rglob("*"):
+    rel = upstream.relative_to(cache)
+    if upstream.is_dir() or (skill / rel).exists():
+        continue
+    text = upstream.read_text()
+    patch = Path(".skillfile/patches/skills/stageshow", f"{rel}.patch")
+    if patch.exists():
+        if "drifted" in text:
+            Path(".skillfile/conflict").write_text(str(rel))
+            sys.exit(f"error: patch for {rel} does not apply")
+        text += patch.read_text()
+    (skill / rel).parent.mkdir(parents=True, exist_ok=True)
+    (skill / rel).write_text(text)
 for entry in Path("Skillfile").read_text().splitlines():
     field = entry.split()
     if field[:2] != ["local", "skill"] or not Path(field[3]).is_dir():
@@ -58,13 +76,25 @@ for entry in Path("Skillfile").read_text().splitlines():
                  f" only {written} of {files} expected file(s) were written")
 """
 # npm ci installs the lockfile's packages and records them in node_modules;
-# npm exec runs the recorder driver's browser install.
+# npm exec runs a driver's browser install, a Chromium named for the folder it
+# runs in, or with --dry-run lists where that goes. Unless told to skip it, the
+# install removes each browser no driver it installed for names, as
+# Playwright's does.
 NPM = """#!/bin/sh
 echo "$PWD $*" >>"{log}"
-[ "$1" = ci ] && mkdir -p node_modules/playwright-core && echo '{{}}' >node_modules/.package-lock.json
+browser="$PLAYWRIGHT_BROWSERS_PATH/chromium-${{PWD##*/}}"
+case "$*" in
+  ci\\ *) mkdir -p node_modules/playwright-core && echo '{{}}' >node_modules/.package-lock.json ;;
+  "exec -- playwright-core install --dry-run chromium") echo "  Install location:    $browser" ;;
+  "exec -- playwright-core install chromium")
+    mkdir -p "$browser" "$PLAYWRIGHT_BROWSERS_PATH/.links"
+    touch "$browser/INSTALLATION_COMPLETE" "$PLAYWRIGHT_BROWSERS_PATH/.links/${{browser##*/}}"
+    [ -n "$PLAYWRIGHT_SKIP_BROWSER_GC" ] || for b in "$PLAYWRIGHT_BROWSERS_PATH"/*; do
+      [ -e "$PLAYWRIGHT_BROWSERS_PATH/.links/${{b##*/}}" ] || rm -rf "$b"
+    done ;;
+esac
 exit 0
 """
-
 
 def run(argv, env, cwd=None):
     return subprocess.run(argv, capture_output=True, text=True, env=env, cwd=cwd)
@@ -85,12 +115,15 @@ class CloneCase(unittest.TestCase):
         for name, body in (("skillfile", SKILLFILE), ("npm", NPM.format(log=self.npm_log))):
             (bindir / name).write_text(body)
             (bindir / name).chmod(0o755)
+        self.browsers = base / "browsers"
         self.env = {**os.environ, "PATH": f"{bindir}:{FLOORS}:{os.environ['PATH']}",
+                    "PLAYWRIGHT_BROWSERS_PATH": str(self.browsers),
                     "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         upstream = base / "upstream"
         scripts = [str(path.relative_to(ROOT)) for path in (ROOT / "scripts").iterdir() if path.is_file()]
-        for rel in (*scripts, ".gitignore", "Skillfile", "Skillfile.lock"):
+        patches = [str(path.relative_to(ROOT)) for path in (ROOT / ".skillfile/patches").rglob("*.patch")]
+        for rel in (*scripts, *patches, ".gitignore", "Skillfile", "Skillfile.lock"):
             (upstream / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / rel, upstream / rel, follow_symlinks=False)
         (upstream / "agents").mkdir()
@@ -108,6 +141,7 @@ class CloneCase(unittest.TestCase):
         self.recorder = self.clone / recorder.relative_to(upstream)
         self.installer = str(self.clone / "scripts/install-octo-lite")
         self.fix = f"run {self.installer} --prefix {self.prefix}"
+        self.stageshow = self.clone / "agents/skills/stageshow"
 
     def run_installer(self, *extra):
         return run([self.installer, "--prefix", str(self.prefix), *extra], self.env)
@@ -164,10 +198,75 @@ class PinnedInstallTest(CloneCase):
     def test_reinstall_keeps_the_filming_dependencies(self):
         self.install()
         self.install()
-        skill = self.clone / "agents/skills/stageshow"
         self.assertEqual([line for line in self.npm_log.read_text().splitlines()
-                          if line.startswith(f"{skill} ")],
-                         [f"{skill} ci --no-audit --no-fund --loglevel=error"])
+                          if line.startswith(f"{self.stageshow} ci ")],
+                         [f"{self.stageshow} ci --no-audit --no-fund --loglevel=error"])
+
+
+class StageshowBrowserTest(CloneCase):
+    """Stageshow's browser: octo-lite's patch to its lookup and the Chromium
+    its driver installs."""
+
+    PATCH = ".skillfile/patches/skills/stageshow/scripts/browser.mjs.patch"
+
+    def install(self, *extra):
+        r = self.run_installer(*extra)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r
+
+    def browser_lookup(self):
+        return [(self.clone / f"{base}/stageshow/scripts/browser.mjs").read_text()
+                for base in ("agents/skills", ".skillfile/cache/skills")]
+
+    def test_after_pull_patches_a_stageshow_fetched_without_the_patch(self):
+        # spec/domains/install.spec.html#install-stageshow-browser: pulling and
+        # installing are safe in any order
+        patch = self.clone / self.PATCH
+        text = patch.read_text()
+        patch.unlink()
+        self.install()
+        deployed, upstream = self.browser_lookup()
+        self.assertEqual(deployed, upstream)
+        patch.write_text(text)
+        self.install("--after-pull")
+        deployed, upstream = self.browser_lookup()
+        self.assertEqual(deployed, upstream + text, "the pulled patch must apply")
+        self.assertEqual([line for line in self.npm_log.read_text().splitlines()
+                          if line.startswith(f"{self.stageshow} ci ")],
+                         [f"{self.stageshow} ci --no-audit --no-fund --loglevel=error"],
+                         "the filming dependencies must be kept")
+        self.install("--after-pull")
+        self.assertEqual(self.browser_lookup()[0], upstream + text, "the patch applies once")
+
+    def test_check_names_stageshow_without_its_browser(self):
+        # spec/domains/install.spec.html#acceptance-check-no-browser
+        self.install()
+        shutil.rmtree(self.browsers / "chromium-stageshow")
+        r = self.run_installer("--check")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stderr.splitlines(), [
+            f"Stageshow not installed: no browser, its Chromium not installed; fix: {self.fix}"])
+
+    def test_browser_installs_keep_another_lanes_browser(self):
+        # spec/domains/install.spec.html#acceptance-browser-install-keeps
+        other = self.browsers / "chromium-other-lane"
+        other.mkdir(parents=True)
+        (other / "INSTALLATION_COMPLETE").touch()
+        self.install()
+        self.assertTrue((self.browsers / "chromium-stageshow/INSTALLATION_COMPLETE").exists())
+        self.assertTrue((self.browsers / "chromium-clone/INSTALLATION_COMPLETE").exists())
+        self.assertTrue(other.is_dir(), "another lane's browser must stay on the box")
+
+    def test_a_pin_the_patch_no_longer_applies_to_fails_naming_the_fix(self):
+        # spec/domains/install.spec.html#install-stageshow-browser
+        cache = self.clone / ".skillfile/cache/skills/stageshow/scripts"
+        cache.mkdir(parents=True)
+        (cache / "browser.mjs").write_text("drifted upstream\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stderr.splitlines()[-1], "Stageshow not installed: skillfile install failed;"
+                         f" fix: run skillfile resolve --abort in {self.clone}, then {self.fix}")
+        self.assert_linked_the_rest()
 
 
 class FetchFailsTest(CloneCase):

@@ -33,10 +33,11 @@ model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
   bundled templates.
 - `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` are the skillfile
   (eljulians/skillfile) manifest, lockfile, and pinned patches that manage
-  skills per ADR 0002: they pin tdd and Stageshow at exact SHAs and carry the
-  single tdd seam-gate patch across upstream updates. tdd is committed;
-  Stageshow never is: `scripts/install-octo-lite` fetches it at its pin with
-  `skillfile install`, then `npm ci` in its folder.
+  skills per ADR 0002: they pin tdd and Stageshow at exact SHAs and carry one
+  patch for each across upstream updates, tdd's seam gate and Stageshow's
+  Chromium fallback. tdd is committed; Stageshow never is:
+  `scripts/install-octo-lite` fetches it at its pin with `skillfile install`,
+  then `npm ci` and its driver's Chromium in its folder.
 - `agents/` contains the hand-written Claude role contracts plus the managed
   skillfile install target `agents/skills/`. Never hand-edit `agents/skills/`; it is
   materialized by skillfile from the `Skillfile`, and `scripts/install-octo-lite
@@ -77,8 +78,9 @@ model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
 - Check Markdown and TOML syntax after edits.
 - Run `python3 -m unittest tests.test_herdr` after changing the Herdr wrappers.
 - The suite drives the round video recorder in a browser: once per clone, run
-  `npm ci && npx playwright-core install chromium` at the clone root, as CI
-  does.
+  `npm ci && PLAYWRIGHT_SKIP_BROWSER_GC=1 npx playwright-core install chromium`
+  at the clone root, as CI does; the variable keeps every browser already on
+  the box, which another lane may use.
 - Verify skill symlinks point at this source repo when installing locally.
 - Run `scripts/install-octo-lite --check` after installed-surface changes.
 
