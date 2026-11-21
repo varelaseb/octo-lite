@@ -1,8 +1,9 @@
 """octo-lite's box lock admits a box's heavy jobs by the CPUs each asks for,
-in line, while memory stays free, pins each job to its CPUs and tells it their
-count, runs a nested job at once on its outer job's CPUs, caps the jobs naming
-a resource, keeps a job that locks heavy.lock whole safe, and is also
-box-heavy. Spec: spec/domains/box-lock.spec.html, every criterion, one test
+in line, merge-path jobs first, while memory stays free, tells a waiting job
+which jobs hold its CPUs, pins each job to its CPUs and tells it their count,
+runs a nested job at once on its outer job's CPUs, caps the jobs naming a
+resource, keeps jobs lined up before an update and a job that locks heavy.lock
+whole safe, and is also box-heavy. Spec: spec/domains/box-lock.spec.html, every criterion, one test
 each. Real flocks under a temporary XDG_STATE_HOME; the lock's CPU count and
 free memory are faked, never the box's."""
 
@@ -25,7 +26,12 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "scripts" / "octo-lite-lock"
 ALIAS = ROOT / "scripts" / "box-heavy"
 WAIT = re.compile(r"flock: getting lock took ([0-9.]+) seconds\n")
-USAGE = "usage: octo-lite-lock [--cores N] [--cap RESOURCE=N] CMD [ARG...]\n"
+USAGE = "usage: octo-lite-lock [--cores N] [--cap RESOURCE=N] [--merge] CMD [ARG...]\n"
+# The line naming the one other job holding CPUs, its held time in group 2.
+HOLDER = re.compile(r"octo-lite-lock: waiting on CPUs held by (.+) for ((?:\d+m )?\d+s)\n")
+# The wait line as Command time reads it (scripts/octo-lite-command-time).
+TIME_WAIT = re.compile(r"^flock: getting lock took ([0-9.]+) seconds$", re.M)
+BEFORE = "93d480f"  # the lock as octo-lite ran it before merge-path jobs lined up first
 SETTLE = 1.2  # seconds a waiting job is given to run if it wrongly would, past its first tries
 REAL = os.cpu_count()
 # The lock run on a box of argv[2] CPUs with the free memory in meminfo file
@@ -105,8 +111,27 @@ class BoxLockCase(unittest.TestCase):
         return [sys.executable, "-B", "-c", BOX, str(command), str(cpus), str(self.meminfo),
                 *ask, "sh", "-c", job, str(self.tmp / name)]
 
-    def start(self, name: str, *ask: str, **box) -> subprocess.Popen:
-        return self.spawn(name, self.boxed(name, *ask, **box))
+    def start(self, name: str, *ask: str, cwd: Path | None = None, **box) -> subprocess.Popen:
+        return self.spawn(name, self.boxed(name, *ask, **box), cwd=cwd)
+
+    def lane(self, name: str) -> Path:
+        """A folder a lane's job runs in, as the lock reads it."""
+        folder = self.tmp / name
+        folder.mkdir()
+        return folder.resolve()
+
+    def named(self, name: str, job=JOB) -> str:
+        """How a waiting job names heavy job name of command job: on one line."""
+        return " ".join(shlex.join(["sh", "-c", job, str(self.tmp / name)]).split())
+
+    def told(self, name: str, count: int = 1) -> list[tuple[str, str]]:
+        """The first count holder lines name's lock printed, each the job it
+        names and how long that job held its CPUs, waiting until it has."""
+        deadline = time.monotonic() + 30
+        while len(lines := HOLDER.findall((self.tmp / f"{name}.out").read_text())) < count:
+            self.assertLess(time.monotonic(), deadline, f"{name} told {lines}, not {count}")
+            time.sleep(0.02)
+        return lines[:count]
 
     def old(self, name: str) -> subprocess.Popen:
         """Start heavy job name the old way, locking heavy.lock whole."""
@@ -162,10 +187,13 @@ class BoxLockCase(unittest.TestCase):
         self.assertEqual(len(self.ran(*names)), ran)
 
     def waited(self, name: str) -> float:
-        """The wait name's lock printed on its own line, its job's output after it."""
+        """The wait name's lock printed on its own line, after only the lines
+        naming what it waited on, its job's output after it."""
         self.end(name)
         self.jobs[name].wait(30)
         out = (self.tmp / f"{name}.out").read_text()
+        while HOLDER.match(out):
+            out = out[HOLDER.match(out).end():]
         wait = WAIT.match(out)
         self.assertTrue(wait, out)
         self.assertEqual(out[wait.end():], "ran\n")
@@ -223,7 +251,7 @@ class CoresTest(BoxLockCase):
         self.wait_on("big", "heavy-line.lock")
         for name in ("small0", "small1"):
             self.start(name, "--cores", "1", cpus=4)
-            self.wait_on(name, "heavy-line.lock")
+            self.wait_on(name, "heavy-wait.lock")
         for cpu, name in enumerate(held):
             self.end(name)
             self.wait_on("big", f"heavy-cpu-{cpu}.lock")
@@ -305,6 +333,126 @@ class CoresTest(BoxLockCase):
         self.assertEqual(self.read("inner", "on"), self.read("outer", "on"))
 
 
+class MergeTest(BoxLockCase):
+    def test_a_merge_path_job_runs_before_every_job_waiting(self):
+        # #acceptance-lock-merge-first: a box of 4 CPUs, 3 held; a job of 4
+        # first in line holding the fourth, a job of 1 behind it
+        self.start("held", "--cores", "3", cpus=4)
+        self.wait_ran("held")
+        self.start("first", "--cores", "4", cpus=4)
+        self.wait_on("first", "heavy-cpu-3.lock")
+        self.start("behind", "--cores", "1", cpus=4)
+        self.wait_on("behind", "heavy-wait.lock")
+        self.start("merge", "--merge", "--cores", "4", cpus=4)
+        self.wait_on("merge", "heavy-cpu-3.lock")  # the first in line gave it back
+        self.end("held")
+        self.wait_ran("merge")
+        self.assert_wait("first", "behind", ran=0)
+        self.end("merge")
+        self.wait_ran("first")  # its place kept ahead of the job behind it
+        self.assert_wait("behind", ran=0)
+        self.end("first")
+        self.wait_ran("behind")
+
+    def test_merge_path_jobs_run_in_the_order_they_asked(self):
+        # #acceptance-lock-merge-in-turn: 4 CPUs, each held by a job of 1; a
+        # merge-path job of 4 waiting, then a merge-path job of 1
+        held = [f"held{cpu}" for cpu in range(4)]
+        for name in held:  # in turn, so held<cpu> holds CPU cpu
+            self.start(name, "--cores", "1", cpus=4)
+            self.wait_ran(name)
+        self.start("merge0", "--merge", "--cores", "4", cpus=4)
+        self.wait_on("merge0", "heavy-line.lock")
+        self.start("merge1", "--merge", "--cores", "1", cpus=4)
+        self.wait_on("merge1", "heavy-line.lock")
+        for cpu, name in enumerate(held):
+            self.end(name)
+            self.wait_on("merge0", f"heavy-cpu-{cpu}.lock")
+        self.wait_ran("merge0")
+        self.assert_wait("merge1", ran=0)
+        self.end("merge0")
+        self.wait_ran("merge1")
+
+    def test_a_merge_path_job_waits_for_a_running_job_to_end(self):
+        # #acceptance-lock-merge-running: a box of 4 CPUs, all held by a running job
+        running = self.start("running", "--cores", "4", cpus=4)
+        self.wait_ran("running")
+        self.start("merge", "--merge", cpus=4)
+        self.assert_waits("merge")
+        self.assertIsNone(running.poll(), "the running job still runs")
+        self.end("running")
+        self.assertEqual(running.wait(30), 0)
+        self.wait_ran("merge")
+
+
+class HolderTest(BoxLockCase):
+    def test_a_waiting_job_is_told_the_job_holding_its_cpus(self):
+        # #acceptance-lock-holder: a box of 4 CPUs, all held by a job in
+        # another folder, its command holding the wait line on a line of its
+        # own, which the line naming it never is (#lock-holder, #time-lock)
+        folder, job = self.lane("lane-a"), f"{JOB}\n: '\nflock: getting lock took 9.000000 seconds\n'"
+        start = time.monotonic()
+        self.start("other", "--cores", "4", cpus=4, job=job, cwd=folder)
+        self.wait_ran("other")
+        self.start("mine", "--cores", "4", cpus=4)
+        [(named, held)] = self.told("mine")
+        self.assertEqual(named, f"{self.named('other', job)} in {folder}")
+        self.assertRegex(held, r"^\d+s$")
+        self.assertLessEqual(1, int(held[:-1]), time.monotonic() - start)
+        self.assertEqual(self.ran("mine"), [])
+        self.end("other")
+        self.wait_ran("mine")
+        self.waited("mine")
+        self.assertEqual(len(TIME_WAIT.findall((self.tmp / "mine.out").read_text())), 1)
+
+    def test_a_waiting_job_is_told_anew_when_the_jobs_holding_its_cpus_change(self):
+        # #acceptance-lock-holder-changes: a box of 4 CPUs, all held; a job of 4
+        # first in line, the agent's job behind it
+        first, third = self.lane("lane-a"), self.lane("lane-c")
+        self.start("first", "--cores", "4", cpus=4, cwd=first)
+        self.wait_ran("first")
+        self.start("third", "--cores", "4", cpus=4, cwd=third)
+        self.wait_on("third", "heavy-line.lock")
+        self.start("mine", "--cores", "4", cpus=4)
+        self.wait_on("mine", "heavy-wait.lock")
+        self.assertEqual(self.told("mine")[0][0], f"{self.named('first')} in {first}")
+        self.end("first")
+        self.wait_ran("third")
+        self.assertEqual(self.told("mine", 2)[1][0], f"{self.named('third')} in {third}")
+        self.assertEqual(self.ran("mine"), [])
+
+
+class UpdateTest(BoxLockCase):
+    def test_jobs_lined_up_before_an_update_and_after_it_all_run_in_turn(self):
+        # #acceptance-lock-update: a box of 4 CPUs, 3 held by jobs of 1; two
+        # jobs of the lock before the update waiting, the first holding the
+        # fourth CPU; then a merge-path job and another job of the lock after
+        # it. A job after it taking CPUs beside a job before it would split the
+        # CPUs between them, neither able to run.
+        before = self.tmp / "lock-before"
+        before.write_text(subprocess.run(["git", "-C", str(ROOT), "show", f"{BEFORE}:scripts/octo-lite-lock"],
+                                         capture_output=True, text=True, check=True).stdout)
+        held = [f"held{cpu}" for cpu in range(3)]
+        for name in held:  # in turn, so held<cpu> holds CPU cpu
+            self.start(name, "--cores", "1", cpus=4)
+            self.wait_ran(name)
+        self.start("before0", "--cores", "4", cpus=4, command=before)
+        self.wait_on("before0", "heavy-cpu-3.lock")
+        self.start("before1", "--cores", "2", cpus=4, command=before)
+        self.wait_on("before1", "heavy-line.lock")
+        self.start("merge", "--merge", "--cores", "4", cpus=4)
+        self.wait_on("merge", "heavy-merge.lock")
+        self.start("after", "--cores", "2", cpus=4)
+        self.wait_on("after", "heavy-wait.lock")
+        for cpu, name in enumerate(held):
+            self.end(name)
+            self.wait_on("before0", f"heavy-cpu-{cpu}.lock")
+        order = ["before0", "before1", "merge", "after"]
+        for at, name in enumerate(order):
+            self.wait_ran(name)
+            self.assert_wait(*order[at + 1:], ran=0)
+            self.end(name)
+
 class CapTest(BoxLockCase):
     def test_jobs_naming_a_resource_run_only_as_many_as_it_fits(self):
         # #acceptance-lock-cap: 16 CPUs fit 4 captures, the QA database 2
@@ -326,7 +474,8 @@ class CapTest(BoxLockCase):
 
     def test_a_repeated_ask_is_refused_and_the_job_never_runs(self):
         # #lock-recipe, #lock-cap: a dropped cap lets more jobs at a resource than it fits
-        for ask in (["--cap", "qa-db=1", "--cap", "other=2"], ["--cores", "1", "--cores", "2"]):
+        for ask in (["--cap", "qa-db=1", "--cap", "other=2"], ["--cores", "1", "--cores", "2"],
+                    ["--merge", "--merge"]):
             with self.subTest(ask=ask):
                 done = subprocess.run(self.boxed("job", *ask, job='touch "$0.ran"'), env=self.env,
                                       capture_output=True, text=True, timeout=30)
