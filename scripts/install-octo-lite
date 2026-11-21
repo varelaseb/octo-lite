@@ -198,30 +198,32 @@ onboard_key() {
   (umask 077 && mkdir -p "$(dirname "$2")" && printf '%s=%s\n' "$3" "$key" >"$2")
   echo "$1 written: $2"
 }
+# Every reader of a key's file takes its value as this sed does, never by
+# sourcing the file. --onboard writes only an absent file, so only then is it
+# the fix.
 check_key() {
-  local key
-  key="$(sed -n "/^$3=/{s///p;q;}" "$2" 2>/dev/null)" || key=""
-  if [[ -z "$key" ]]; then
-    problem "missing $1: $2" "put the one line $3=<$1> in $2, or run $install_cmd --onboard"
-  else
-    "$4" "$1" "$2" "$key"
-  fi
+  local key fix="put the one line $3=<$1> in $2, mode 0600"
+  key="$(sed -n "s/^$3=//p" "$2" 2>/dev/null)" || key=""
+  if [[ -n "$key" ]]; then "$4" "$1" "$2" "$key"; return; fi
+  [[ -e "$2" ]] || fix+=", or run $install_cmd --onboard"
+  problem "missing $1: $2" "$fix"
 }
 keep_key() { [[ ! -e "$2" ]] || echo "kept $1: $2 (the box owner's to delete)"; }
-# The cheapest call the X token makes: one recent search, at its fewest
-# results. The token reaches curl on its standard input, never its command
-# line. A 2xx proves it; any other answer but a 5xx is X refusing it, named
-# with X's own answer; no answer means nothing on the box is wrong.
+# The cheapest call the X token makes: one recent search for a word no post
+# contains, so it reads no post against the token's cap. The token reaches
+# curl on its standard input, never its command line. A 2xx proves it; a 429
+# (rate limit), a 5xx, or no answer means nothing on the box is wrong; any
+# other answer is X refusing it, named with X's own answer.
 x_check() {
   local out status answer=""
   out="$(curl -s --max-time 10 -w '\n%{http_code}' -H @- \
-    'https://api.x.com/2/tweets/search/recent?query=octo-lite&max_results=10' \
+    'https://api.x.com/2/tweets/search/recent?query=octolitekeycheck7f3a9c2e&max_results=10' \
     <<<"Authorization: Bearer $3" 2>/dev/null)" || true
   status="${out##*$'\n'}" status="${status#000}" # curl's 000: no answer
   [[ "${out%$'\n'*}" =~ \"(title|detail)\":\ ?\"([^\"]*)\" ]] && answer="${BASH_REMATCH[2]}"
   case "$status" in
     2??) echo "$1 proved by X: $2" ;;
-    ""|5??) echo "$1 not proved, X did not answer${status:+ ($status)}: $2" ;;
+    ""|429|5??) echo "$1 not proved, X did not answer${status:+ ($status)}: $2" ;;
     *) problem "$1 refused by X ($status${answer:+ $answer}): $2" \
          "get a new token, or a plan with recent search, and put it in $2" ;;
   esac
