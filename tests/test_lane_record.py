@@ -339,6 +339,22 @@ class LaneRecordTests(unittest.TestCase):
                       "and the PR body's validation names the run on the merge ask's head", skill)
         self.assertNotIn("full suite once", skill)
 
+    def test_candidate_head_jobs_take_the_lock_as_merge_path_on_the_head_as_they_start(self) -> None:
+        # spec #roles-load-merge (#acceptance-box-lock-merge-first,
+        # #acceptance-box-lock-head-moves): the recipe asks merge-path for a
+        # candidate head's heavy jobs only, read at start, never restarted.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        validation = skill[skill.index("## Validation"):skill.index("## Review and finish")]
+        for phrase in ("A heavy job on a candidate head, its full suite or a capture its merge ask needs, "
+                       "adds `--merge`, so it runs ahead of every waiting job that is not; every other heavy "
+                       "job takes the lock without it (spec `#roles-load-merge`)",
+                       "Such a job reads the lane's head only as it starts, never a commit fixed as it lined up, "
+                       "and names the head it ran",
+                       "`octo-lite-lock --merge sh -c 'git rev-parse HEAD && SUITE'`",
+                       "A fix batch that moves the head while it waits leaves it in line, to run on the new head, "
+                       "so never stop it to line up again"):
+            self.assertIn(phrase, validation)
+
     def test_every_finding_on_one_head_goes_in_one_fix_batch(self) -> None:
         # spec #delivery-path, #delivery-review, #health-notes: one batch per
         # head, two rounds over the whole PR, notes in one last batch with no
