@@ -858,7 +858,8 @@ class LaneRecordTests(unittest.TestCase):
         # and no command line holds it; with no file, or one whose line holds no
         # value, no search runs. It takes the line's value as the installer's
         # check does, one pair of matching quotes around it dropped, never
-        # running the file.
+        # running the file (spec/domains/install.spec.html#acceptance-x-token-quoted,
+        # #install-x-token).
         text = (ROOT / "agents/researcher.md").read_text(encoding="utf-8")
         block = next(b for _, b in re.findall(r"\n( *)```sh\n(.*?)\n\1```", text, flags=re.DOTALL) if "x.env" in b)
         with tempfile.TemporaryDirectory() as tmp:
@@ -877,9 +878,11 @@ class LaneRecordTests(unittest.TestCase):
                 self.assertFalse((out / "argv").exists(), f"searched with no X token: {held!r}")
             # One pair of matching quotes around the value is dropped, as a shell
             # assignment holds it; sourcing would run the planted command.
-            token = f"AAAA%3D$(touch {out}/ran)secret"
-            for quote in ("'", '"', ""):
+            for n, quote in enumerate(("'", '"', "")):
                 with self.subTest(quote=quote):
+                    for f in ("argv", "stdin"):
+                        (out / f).unlink(missing_ok=True)
+                    token = f"AAAA%3D{n}$(touch {out}/ran)secret"
                     (home / ".config/workbench/x.env").write_text(f"X_BEARER_TOKEN={quote}{token}{quote}\n")
                     run()
                     argv = (out / "argv").read_text()
