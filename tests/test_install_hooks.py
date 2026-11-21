@@ -15,6 +15,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_install_keys import give_keys
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
 # skillfile and npm stubbed unreachable: installer runs never fetch.
@@ -72,6 +74,7 @@ class InstallHooksTests(unittest.TestCase):
         self.codex.write_text(json.dumps(CODEX_HOOKS, indent=2))
         self.config.write_text(CODEX_CONFIG)
         self.hook = str(self.prefix / ".local/bin/octo-lite-command-time")
+        give_keys(self.prefix)
 
     def install(self, *extra: str, ok: bool = True) -> subprocess.CompletedProcess:
         result = subprocess.run([str(INSTALLER), "--prefix", str(self.prefix), *extra],
