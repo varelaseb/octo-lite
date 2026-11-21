@@ -205,14 +205,15 @@ def main(argv: list[str]) -> int:
     else:
         box = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state", "octo-lite")
         box.mkdir(parents=True, exist_ok=True)
+        if cap:  # waiting on it, a job holds no CPU, so is told of none (#lock-cap)
+            resource, count = cap.groups()
+            take([box / f"heavy-cap-{resource}-{i}.lock" for i in range(int(count))])
         done = threading.Event()
         teller = threading.Thread(target=tell, args=(box, done), daemon=True)
         teller.start()
-        if cap:
-            resource, count = cap.groups()
-            take([box / f"heavy-cap-{resource}-{i}.lock" for i in range(int(count))])
+        # the folder as /proc names it, "<path> (deleted)" once it is gone
         held = hold(box, int(want[0]), "--merge" in asks,
-                    {"pid": os.getpid(), "command": argv, "folder": os.getcwd()})
+                    {"pid": os.getpid(), "command": argv, "folder": os.readlink("/proc/self/cwd")})
         done.set()
         teller.join()
     os.sched_setaffinity(0, held)
