@@ -852,6 +852,47 @@ class LaneRecordTests(unittest.TestCase):
         for path, text in {**callers, "herdr-comms": recipe}.items():
             self.assertNotIn("--notice", text, path)
 
+    def test_steward_owns_a_self_improvement_lane_and_directs_no_research(self) -> None:
+        # spec #self-improvement-steward, -team, -messages (steward and operator
+        # rows), -spend, -cap, -stop, -finish, #acceptance-self-improvement-(owner,
+        # no-direction, no-gain, human-stop, status, ask-spend, merge-ask,
+        # spec-change, no-keep): the lane owner's steward rule.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        owner = " ".join(raw.split())
+        steward = " ".join(raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0].split())
+        for phrase in (
+            "shape no spec, file no ticket graph, run no experiment, and never name a hypothesis or an experiment "
+            "to a scientist",
+            "spawn three scientists, `--role scientist`",
+            "`scientist1-<issue key>` to `scientist3-<issue key>` lowercase",
+            "each in its own worktree and branch off the lane branch",
+            # herdr-transport spec #acceptance-pane-for-life-rule: a live pane is recovered in place.
+            "one whose pane is still open you recover in that pane, never a new one",
+            "`git merge --ff-only <commit>`",
+            "worklane-provider.spec.html#spend)",
+            "`GET <the box's evidence address>/lanes`",
+            "name the spend so far in every report and every ask you send",
+            "No budget caps it",
+            "a round ending with no keep",
+            "the human's stop the operator relays",
+            "`Stop: record the running experiment and start none.`",
+            "[Review and finish](../skills/implement-spec/SKILL.md#review-and-finish)",
+            "the main number at the baseline and at the champion on the dev and held-out splits, each keep with its "
+            "gain and what made it win, and the spend",
+            "before the merge ask",
+            "close the PR unmerged",
+            "naming no PR to merge",
+        ):
+            self.assertIn(phrase, steward)
+        # The stop line it appends carries the spec's stop fields and nothing else.
+        line = json.loads(re.search(r'`(\{"at": [^`]*"kind": "stop"[^`]*\})`', steward).group(1))
+        row = re.search(r'<tr data-anchor="self-improvement-log-stop">.*?</td><td>.*?</td><td>(.*?)</td></tr>',
+                        SPEC.read_text(encoding="utf-8")).group(1)
+        self.assertEqual(set(line) - {"at", "by", "kind"}, set(re.findall(r"<code>(\w+)</code>", row)))
+        self.assertIn(line["reason"], {"no gain", "human"})
+        # Before the finish the scientists make every change; the steward writes only keeps.
+        self.assertIn("On a self-improvement lane (Steward) the scientists make every change until the finish", owner)
+
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")
         match = re.search(r"```toml\n(.*?)```", text, flags=re.DOTALL)
