@@ -212,8 +212,9 @@ keep_key() { [[ ! -e "$2" ]] || echo "kept $1: $2 (the box owner's to delete)"; 
 # The cheapest call the X token makes: one recent search for a word no post
 # contains, so it reads no post against the token's cap. The token reaches
 # curl on its standard input, never its command line. A 2xx proves it; a 429
-# (rate limit), a 5xx, or no answer means nothing on the box is wrong; any
-# other answer is X refusing it, named with X's own answer.
+# (a rate limit, or a spent monthly cap until its reset), a 5xx, or no answer
+# means nothing on the box is wrong; any other answer is X refusing it. A 429
+# and a refusal are named with X's own answer.
 x_check() {
   local out status answer=""
   out="$(curl -s --max-time 10 -w '\n%{http_code}' -H @- \
@@ -223,7 +224,8 @@ x_check() {
   [[ "${out%$'\n'*}" =~ \"(title|detail)\":\ ?\"([^\"]*)\" ]] && answer="${BASH_REMATCH[2]}"
   case "$status" in
     2??) echo "$1 proved by X: $2" ;;
-    ""|429|5??) echo "$1 not proved, X did not answer${status:+ ($status)}: $2" ;;
+    429) echo "$1 not proved, X answered ($status${answer:+ $answer}): $2" ;;
+    ""|5??) echo "$1 not proved, X did not answer${status:+ ($status)}: $2" ;;
     *) problem "$1 refused by X ($status${answer:+ $answer}): $2" \
          "get a new token, or a plan with recent search, and put it in $2" ;;
   esac
