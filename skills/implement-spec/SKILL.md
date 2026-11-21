@@ -173,6 +173,14 @@ waits for N CPUs (4 by default), prints its wait, runs the job on them, and ends
 as the job did. Where the target `AGENTS.md` names, beside the job's command,
 a resource, its number, and the CPUs the job asks for, run
 `octo-lite-lock --cores C --cap RESOURCE=N CMD`.
+A heavy job on a candidate head, its full suite or a capture its merge ask
+needs, adds `--merge`, so it runs ahead of every waiting job that is not; every
+other heavy job takes the lock without it (spec `#roles-load-merge`). Such a
+job reads the lane's head only as it starts, never a commit fixed as it lined
+up, and names the head it ran: run it in the lane's worktree as
+`octo-lite-lock --merge sh -c 'git rev-parse HEAD && SUITE'`. A fix batch that
+moves the head while it waits leaves it in line, to run on the new head, so
+never stop it to line up again.
 A head before the lane's candidate ([Review and finish](#review-and-finish))
 gets only the tests for what it touched; those are no heavy job and never take
 the lock. The lane runs the full suite only on a candidate head, beside its

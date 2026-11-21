@@ -13,6 +13,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_install_keys import give_keys
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
 # skillfile and npm stubbed unreachable: installer runs never fetch.
@@ -42,6 +44,7 @@ class InstallRepoSkillsTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name).resolve()
         self.prefix = tmp / "prefix"
+        give_keys(self.prefix)
         skills = ("skills/ui-rules", "tools/lint/house-style")
         self.checkout = make_checkout(
             tmp / "main", "- Repo skills: skills/ui-rules, tools/lint/house-style", skills

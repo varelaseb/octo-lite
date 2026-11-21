@@ -339,6 +339,22 @@ class LaneRecordTests(unittest.TestCase):
                       "and the PR body's validation names the run on the merge ask's head", skill)
         self.assertNotIn("full suite once", skill)
 
+    def test_candidate_head_jobs_take_the_lock_as_merge_path_on_the_head_as_they_start(self) -> None:
+        # spec #roles-load-merge (#acceptance-box-lock-merge-first,
+        # #acceptance-box-lock-head-moves): the recipe asks merge-path for a
+        # candidate head's heavy jobs only, read at start, never restarted.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        validation = skill[skill.index("## Validation"):skill.index("## Review and finish")]
+        for phrase in ("A heavy job on a candidate head, its full suite or a capture its merge ask needs, "
+                       "adds `--merge`, so it runs ahead of every waiting job that is not; every other heavy "
+                       "job takes the lock without it (spec `#roles-load-merge`)",
+                       "Such a job reads the lane's head only as it starts, never a commit fixed as it lined up, "
+                       "and names the head it ran",
+                       "`octo-lite-lock --merge sh -c 'git rev-parse HEAD && SUITE'`",
+                       "A fix batch that moves the head while it waits leaves it in line, to run on the new head, "
+                       "so never stop it to line up again"):
+            self.assertIn(phrase, validation)
+
     def test_every_finding_on_one_head_goes_in_one_fix_batch(self) -> None:
         # spec #delivery-path, #delivery-review, #health-notes: one batch per
         # head, two rounds over the whole PR, notes in one last batch with no
@@ -396,7 +412,7 @@ class LaneRecordTests(unittest.TestCase):
         # each worker asks itself the one question in its last step and, on yes
         # only, ends its last report with one Annoyed: line; the owner turns that
         # line into one complaint line naming the worker, its session, its sentence.
-        for role in ("implementer", "integrator", "code-reviewer"):
+        for role in ("implementer", "integrator", "code-reviewer", "researcher"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "Before your last report, answer one question: did anything about the system annoy you? "
@@ -749,7 +765,7 @@ class LaneRecordTests(unittest.TestCase):
         # #transport-native, #acceptance-native-*: natively to a live Claude
         # session; a timed-out native send counts as sent (#acceptance-native-timeout);
         # herdr-say only when undelivered, or a later notice says held, denied, expired.
-        for role in ("implementer", "integrator", "code-reviewer"):
+        for role in ("implementer", "integrator", "code-reviewer", "researcher"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
@@ -851,6 +867,73 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIn("on Claude run in the background", " ".join(callers[path].split()), path)
         for path, text in {**callers, "herdr-comms": recipe}.items():
             self.assertNotIn("--notice", text, path)
+
+    def test_researcher_hands_the_x_token_to_curl_on_stdin_only(self) -> None:
+        # spec #roles-research-x, #acceptance-research-x, #acceptance-research-x-missing:
+        # the researcher reads the token from the X credential file at each search
+        # and no command line holds it; with no file, or one whose line holds no
+        # value, no search runs. It takes the line's value as the installer's
+        # check does, one pair of matching quotes around it dropped, never
+        # running the file (spec/domains/install.spec.html#acceptance-x-token-quoted,
+        # #install-x-token).
+        text = (ROOT / "agents/researcher.md").read_text(encoding="utf-8")
+        block = next(b for _, b in re.findall(r"\n( *)```sh\n(.*?)\n\1```", text, flags=re.DOTALL) if "x.env" in b)
+        with tempfile.TemporaryDirectory() as tmp:
+            home, out, bin_ = Path(tmp, "home"), Path(tmp, "out"), Path(tmp, "bin")
+            for d in (home / ".config/workbench", out, bin_):
+                d.mkdir(parents=True)
+            (bin_ / "curl").write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$OUT/argv"\ncat > "$OUT/stdin"\n')
+            (bin_ / "curl").chmod(0o755)
+            env = {**os.environ, "HOME": str(home), "OUT": str(out), "PATH": f"{bin_}:{os.environ['PATH']}"}
+            run = lambda: subprocess.run(["bash", "-c", block], env=env, capture_output=True, text=True)
+            run()
+            self.assertFalse((out / "argv").exists(), "searched with no X credential file")
+            for held in ("", "X_BEARER_TOKEN=\n", "TOKEN=kept\n"):
+                (home / ".config/workbench/x.env").write_text(held)
+                run()
+                self.assertFalse((out / "argv").exists(), f"searched with no X token: {held!r}")
+            # One pair of matching quotes around the value is dropped, as a shell
+            # assignment holds it; sourcing would run the planted command.
+            for n, quote in enumerate(("'", '"', "")):
+                with self.subTest(quote=quote):
+                    for f in ("argv", "stdin"):
+                        (out / f).unlink(missing_ok=True)
+                    token = f"AAAA%3D{n}$(touch {out}/ran)secret"
+                    (home / ".config/workbench/x.env").write_text(f"X_BEARER_TOKEN={quote}{token}{quote}\n")
+                    run()
+                    argv = (out / "argv").read_text()
+                    self.assertEqual((out / "stdin").read_text(), f"Authorization: Bearer {token}\n")
+                    self.assertFalse((out / "ran").exists(), "ran the X credential file")
+                    self.assertNotIn("secret", argv)
+                    self.assertIn("https://api.x.com/2/tweets/search/recent", argv)
+        self.assertNotRegex(block, r"\s(-v|--verbose|--trace\S*)\s")  # each prints the header
+
+    def test_report_skill_states_the_folder_other_lanes_read(self) -> None:
+        # spec #roles-report, #boundary-report, #delivery-notes, #store-research:
+        # one folder per question, in the lane's notes or a research folder, its
+        # latest pair on top and earlier rounds under round-<n>; the owner and
+        # the fleet operator load the skill and spawn the researcher; Proof
+        # serves it at /reports/<lane>/<question>/ or /research/<name>/.
+        skill = " ".join((ROOT / "skills/report/SKILL.md").read_text(encoding="utf-8").split())
+        for token in ("`$(octo-lite-state)/lanes/<lane record name>-notes/reports/<question>/`",
+                      "`$(octo-lite-state)/research/<name>/`", "`summary.html`", "`findings.html`",
+                      "`round-<n>/summary.html`", 'data-anchor="<id>"', 'data-answers="A, B, C"',
+                      "`findings.html#<id>`", "no `data-comment-*` attribute", "slug `operator`",
+                      "`<Proof's address>/reports/<lane record name>/<question>/`",
+                      "`<Proof's address>/research/<name>/`", "prefers-color-scheme", "no dotfiles"):
+            self.assertIn(token, skill)
+        researcher = (ROOT / "agents/researcher.md").read_text(encoding="utf-8")
+        skills = json.loads(re.search(r"^skills: (\[.*\])$", researcher, flags=re.MULTILINE).group(1))
+        self.assertIn("report", skills)
+        for name in skills:
+            self.assertTrue((ROOT / "skills" / name / "SKILL.md").is_file(), name)
+        tools = json.loads(re.search(r"^tools: (\[.*\])$", researcher, flags=re.MULTILINE).group(1))
+        self.assertLessEqual({"WebSearch", "WebFetch"}, set(tools))
+        for role in ("orchestrator", "meta-operator"):
+            text = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8")
+            self.assertIn('"report"', text.split("---", 2)[1], role)
+            self.assertIn("researcher", text, role)
+        self.assertIn("--role researcher --cwd <target main checkout>", OPERATOR.read_text(encoding="utf-8"))
 
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")

@@ -17,6 +17,9 @@ client, product, or engagement.
   graph after acceptance, fills the ready ticket frontier with
   parallel Herdr workers, integrates onto one branch, runs review, and
   leaves one PR ready for human review.
+- Research reports: a `researcher` answers a question for a human as an
+  executive summary and its research findings, the `report` skill's two pages,
+  which any agent loads to answer in writing and Proof publishes for comments.
 - Templates bundled inside skills, not copied as top-level target repo
   template files.
 
@@ -67,7 +70,8 @@ scripts/install-octo-lite --after-pull
 `--check` reads the box, changes nothing, and names every problem it finds,
 never stopping at the first: a link missing or wrong, a leftover link of an
 earlier install, a pinned skill not installed, missing hook entries, a version
-floor not met, or a stale project skill link. Each is one stderr line, the
+floor not met, a stale project skill link, or a [key](#onboarding) missing or
+refused. Each is one stderr line, the
 problem then `; fix: ` and the step that fixes it, and the check exits non-zero
 when it finds any. Every stderr line is such a problem: what is not, such as
 another owner's link left untouched, goes to stdout. Version floors cover each
@@ -76,9 +80,10 @@ one of claude or codex): stdout gets the version found when it meets its floor;
 a tool missing or too old is a problem whose fix is its upgrade source.
 
 `--after-pull` installs as a plain run does, asking nothing, then verifies as
-`--check` does, and exits non-zero when the verification fails, naming each
-problem with its fix. A host runs it after fast-forwarding this clone: every
-install publishes it as `after_pull` in the [onboarding file](#onboarding).
+`--check` does, all but keys, and exits non-zero when the verification fails,
+naming each problem with its fix. A host runs it after fast-forwarding this
+clone: every install publishes it as `after_pull` in the
+[onboarding file](#onboarding).
 When no host did, `herdr-spawn`, which `octo-lite-start` also runs, runs it
 before it starts the next agent, once per move of the clone: a failing step is
 printed and the spawn goes on.
@@ -142,6 +147,16 @@ file as it is.
 given; a spawn given none starts its agent with it, and every run keeps it as
 found.
 
+`--onboard` then asks for each key an octo-lite feature needs, today the X
+token researchers search X with, kept as `X_BEARER_TOKEN=<token>` in
+`~/.config/workbench/x.env`, mode 0600. It adopts a file already there and
+never overwrites it, takes the key from its variable (`X_BEARER_TOKEN`) when
+set, and else asks only at a terminal, so piped consent answers are never read
+as a key; skipping writes nothing. `--check` proves each key with the cheapest
+call that uses it, for X one recent search: a missing or refused key is a
+problem, X not answering a stdout line. `--undo` leaves each key's file: the
+box owner deletes it.
+
 `octo-lite-start`, installed on `PATH`, creates a Herdr space labelled with the
 lane name and starts the lane's orchestrator alone in it at the worktree,
 printing `workspace=` beside `pane=`. It is the published start command; callers never use
@@ -162,7 +177,9 @@ the job on those CPUs only, telling it their count in `BOX_HEAVY_CORES`, and
 ends as the job did. It holds the CPUs itself, so a server or browser the job
 leaves running holds none. A heavy job inside a heavy job runs at once on the
 outer job's CPUs. `--cap RESOURCE=N` also caps how many jobs naming that
-resource run at once. A ticket's own tests, a server, or a watcher never take it.
+resource run at once, and `--merge` lines a job a merge waits on up ahead of
+every other waiting job. A ticket's own tests, a server, or a watcher never
+take it.
 
 With Herdr on the box, every install registers `herdr-wake` as Spec Chat's
 `wake` provider by writing

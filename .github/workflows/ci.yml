@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        # the box lock's update test runs the lock of an older commit
+        # (tests/test_box_lock.py UpdateTest)
+        with:
+          fetch-depth: 0
       # The suite runs in a clone installed as a box's is: skillfile by the command
       # the installer names, then the installer, into a throwaway prefix, fetches
       # Stageshow with its filming dependencies and Chromium, which
