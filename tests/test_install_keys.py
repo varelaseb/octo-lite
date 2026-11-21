@@ -112,13 +112,22 @@ class KeysTest(unittest.TestCase):
         self.assertIn(f"X token not given, nothing written: {self.x_env}", r.stdout)
 
     def test_check_names_a_missing_x_token_with_its_fix(self) -> None:
-        # spec/domains/install.spec.html#acceptance-x-token-missing
+        # spec/domains/install.spec.html#acceptance-x-token-missing,
+        # octo-lite.spec.html#roles-research-x (mode 0600)
         self.run_installer()
+        fix = f"put the one line X_BEARER_TOKEN=<X token> in {self.x_env}, mode 0600"
         r = self.run_installer("--check")
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertEqual(problems(r), [
-            f"missing X token: {self.x_env}; fix: put the one line X_BEARER_TOKEN=<X token>"
-            f" in {self.x_env}, or {self.fix} --onboard"])
+        self.assertEqual(problems(r), [f"missing X token: {self.x_env}; fix: {fix}, or {self.fix} --onboard"])
+        # a file without the line: --onboard adopts it and changes nothing, so
+        # the fix is the line alone
+        self.x_env.parent.mkdir(parents=True)
+        for held in ("", "X_BEARER_TOKEN=\n", "TOKEN=kept\n"):
+            with self.subTest(held=held):
+                self.x_env.write_text(held)
+                r = self.run_installer("--check")
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(problems(r), [f"missing X token: {self.x_env}; fix: {fix}"])
 
     def test_check_names_a_refused_x_token_with_x_answer_and_its_fix(self) -> None:
         # spec/domains/install.spec.html#acceptance-x-token-refused
@@ -136,7 +145,8 @@ class KeysTest(unittest.TestCase):
         # spec/domains/install.spec.html#acceptance-x-token-offline
         self.run_installer()
         self.x_env.parent.mkdir(parents=True)
-        for token, said in (("unreachable-token", ""), ("unavailable-token", " (503)")):
+        for token, said in (("unreachable-token", ""), ("unavailable-token", " (503)"),
+                            ("limited-token", " (429)")):
             with self.subTest(token):
                 self.x_env.write_text(f"X_BEARER_TOKEN={token}\n")
                 r = self.run_installer("--check")

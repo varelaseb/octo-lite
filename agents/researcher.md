@@ -39,10 +39,10 @@ Answer one research question for a human who decides, such as the current best p
   - Semantic Scholar, `https://api.semanticscholar.org/graph/v1/paper/search?query=...&fields=...`, `/paper/<id>/references`, `/paper/<id>/citations`: without a key it shares one rate limit and answers 429; wait and retry, else take the trail from OpenAlex.
 - Read each paper the summary relies on in full, its method and results, never only its abstract. Its finding names authors, year, venue, link by DOI or preprint id, what it measured and on how many, and the number the summary uses; its trust label says whether it is peer reviewed.
 - Current best practice: from the leading people's and teams' own documentation, engineering posts, standards, and talks, newest first, through WebSearch and WebFetch. A practice's finding names who follows it, when they said so, and any practice it replaced.
-- X (spec `#roles-research-x`): search it through X API v2 recent search with the box's X token, read from its file before each search, so a new token works at the next one. The token never appears on a command line, in a page, report, or log: it goes into curl's header from stdin, never with `-v` or `--trace`, which print it:
+- X (spec `#roles-research-x`): search it through X API v2 recent search with the box's X token, read from its file before each search, so a new token works at the next one, and read as the installer's check reads it, its line's value, never by sourcing the file. The token never appears on a command line, in a page, report, or log: it goes into curl's header from stdin, never with `-v` or `--trace`, which print it:
   ```sh
   test -r ~/.config/workbench/x.env &&
-  ( . ~/.config/workbench/x.env; printf 'Authorization: Bearer %s\n' "$X_BEARER_TOKEN" ) |
+  printf 'Authorization: Bearer %s\n' "$(sed -n 's/^X_BEARER_TOKEN=//p' ~/.config/workbench/x.env)" |
     curl -sS -H @- -w '\n%{http_code}\n' --get https://api.x.com/2/tweets/search/recent \
       --data-urlencode 'query=<query> -is:retweet' --data-urlencode max_results=100 \
       --data-urlencode tweet.fields=created_at,author_id --data-urlencode expansions=author_id \

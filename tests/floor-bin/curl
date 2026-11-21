@@ -2,7 +2,8 @@
 # X as it answers the installer's key check (install.spec.html#install-x-token):
 # installer tests put this folder first on PATH, so no test calls X. It answers
 # by the bearer token on its standard input: a token starting "refused" is
-# refused, "unavailable" gets a 503, "unreachable" no answer, any other proves.
+# refused, "limited" gets a 429, "unavailable" a 503, "unreachable" no answer,
+# any other proves.
 # A token on its command line fails it, as the installer never puts one there.
 for arg; do
   case "$arg" in *Bearer*) echo "curl stub: token on the command line" >&2; exit 2 ;; esac
@@ -10,6 +11,7 @@ done
 read -r header
 case "${header#Authorization: Bearer }" in
   refused*) printf '%s\n401' '{"title":"Unauthorized","type":"about:blank","status":401,"detail":"Unauthorized"}' ;;
+  limited*) printf '%s\n429' '{"title":"Too Many Requests","detail":"Too Many Requests","type":"about:blank","status":429}' ;;
   unavailable*) printf '%s\n503' '{"title":"Service Unavailable","status":503}' ;;
   unreachable*) printf '\n000'; exit 28 ;;
   *) printf '%s\n200' '{"meta":{"result_count":0}}' ;;

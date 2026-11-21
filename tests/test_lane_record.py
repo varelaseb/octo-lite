@@ -855,7 +855,8 @@ class LaneRecordTests(unittest.TestCase):
     def test_researcher_hands_the_x_token_to_curl_on_stdin_only(self) -> None:
         # spec #roles-research-x, #acceptance-research-x, #acceptance-research-x-missing:
         # the researcher reads the token from the X credential file at each search
-        # and no command line holds it; with no file, no search runs.
+        # and no command line holds it; with no file, no search runs. It takes the
+        # line's value as the installer's check does, never running the file.
         text = (ROOT / "agents/researcher.md").read_text(encoding="utf-8")
         block = next(b for _, b in re.findall(r"\n( *)```sh\n(.*?)\n\1```", text, flags=re.DOTALL) if "x.env" in b)
         with tempfile.TemporaryDirectory() as tmp:
@@ -868,10 +869,12 @@ class LaneRecordTests(unittest.TestCase):
             run = lambda: subprocess.run(["bash", "-c", block], env=env, capture_output=True, text=True)
             run()
             self.assertFalse((out / "argv").exists(), "searched with no X credential file")
-            (home / ".config/workbench/x.env").write_text("X_BEARER_TOKEN=AAAA%3Dsecret\n")
+            token = f'"AAAA%3D$(touch {out}/ran)secret"'  # sourcing would run it and drop the quotes
+            (home / ".config/workbench/x.env").write_text(f"X_BEARER_TOKEN={token}\n")
             run()
             argv = (out / "argv").read_text()
-            self.assertEqual((out / "stdin").read_text(), "Authorization: Bearer AAAA%3Dsecret\n")
+            self.assertEqual((out / "stdin").read_text(), f"Authorization: Bearer {token}\n")
+            self.assertFalse((out / "ran").exists(), "ran the X credential file")
             self.assertNotIn("secret", argv)
             self.assertIn("https://api.x.com/2/tweets/search/recent", argv)
         self.assertNotRegex(block, r"\s(-v|--verbose|--trace\S*)\s")  # each prints the header
