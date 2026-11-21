@@ -14,6 +14,7 @@ fetches."""
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -36,13 +37,13 @@ PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stage
 
 # skillfile's observable contract: `skillfile install` keeps each pin of
 # Skillfile.lock in .skillfile/cache and deploys each file of it missing from
-# agents/skills, as a patch in .skillfile/patches changes it, leaving files it
-# already deployed unchanged. A patch that no longer applies, here one the
-# cached file says it drifted from, leaves .skillfile/conflict and fails it. It
-# writes a local skill's tracked files only, so a local skill folder holding a
-# file git does not track fails it.
+# agents/skills, applying its patch in .skillfile/patches as git apply does,
+# leaving files it already deployed unchanged. A patch that no longer applies
+# leaves .skillfile/conflict and the file missing, and fails it. It writes a
+# local skill's tracked files only, so a local skill folder holding a file git
+# does not track fails it.
 SKILLFILE = """#!/usr/bin/env python3
-import json, subprocess, sys
+import json, shutil, subprocess, sys
 from pathlib import Path
 assert sys.argv[1:] == ["install", "-q"], sys.argv
 pin = json.loads(Path("Skillfile.lock").read_text())["github/skill/stageshow"]
@@ -56,15 +57,13 @@ for upstream in cache.rglob("*"):
     rel = upstream.relative_to(cache)
     if upstream.is_dir() or (skill / rel).exists():
         continue
-    text = upstream.read_text()
-    patch = Path(".skillfile/patches/skills/stageshow", f"{rel}.patch")
-    if patch.exists():
-        if "drifted" in text:
-            Path(".skillfile/conflict").write_text(str(rel))
-            sys.exit(f"error: patch for {rel} does not apply")
-        text += patch.read_text()
     (skill / rel).parent.mkdir(parents=True, exist_ok=True)
-    (skill / rel).write_text(text)
+    shutil.copy(upstream, skill / rel)
+    patch = Path(".skillfile/patches/skills/stageshow", f"{rel}.patch").resolve()
+    if patch.exists() and subprocess.run(["git", "apply", patch], cwd=skill).returncode:
+        (skill / rel).unlink()
+        Path(".skillfile/conflict").write_text(str(rel))
+        sys.exit(f"error: patch for {rel} does not apply")
 for entry in Path("Skillfile").read_text().splitlines():
     field = entry.split()
     if field[:2] != ["local", "skill"] or not Path(field[3]).is_dir():
@@ -98,6 +97,15 @@ esac
 exit 0
 """
 
+PATCH = ".skillfile/patches/skills/stageshow/scripts/browser.mjs.patch"
+
+
+def browser_patch(line):
+    """A real diff adding LINE to the stub's upstream browser.mjs."""
+    return "".join(difflib.unified_diff(["upstream\n"], ["upstream\n", line],
+                                        "a/scripts/browser.mjs", "b/scripts/browser.mjs"))
+
+
 def run(argv, env, cwd=None):
     return subprocess.run(argv, capture_output=True, text=True, env=env, cwd=cwd)
 
@@ -129,6 +137,7 @@ class CloneCase(unittest.TestCase):
         for rel in (*scripts, *patches, ".gitignore", "Skillfile", "Skillfile.lock"):
             (upstream / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / rel, upstream / rel, follow_symlinks=False)
+        (upstream / PATCH).write_text(browser_patch("patched\n"))
         (upstream / "agents").mkdir()
         (upstream / "agents/role.md").write_text("role\n")
         for name in ("package.json", "package-lock.json"):
@@ -210,40 +219,35 @@ class StageshowBrowserTest(CloneCase):
     """Stageshow's browser: octo-lite's patch to its lookup and the Chromium
     its driver installs."""
 
-    PATCH = ".skillfile/patches/skills/stageshow/scripts/browser.mjs.patch"
-
     def install(self, *extra):
         r = self.run_installer(*extra)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r
 
     def browser_lookup(self):
-        return [(self.clone / f"{base}/stageshow/scripts/browser.mjs").read_text()
-                for base in ("agents/skills", ".skillfile/cache/skills")]
+        return (self.stageshow / "scripts/browser.mjs").read_text()
 
     def assert_after_pull_deploys_the_pulled_patch(self, older):
-        """Installs under the patch OLDER, or none for "", then pulls the
-        current one: --after-pull deploys it, once, keeping the filming
-        dependencies."""
-        patch = self.clone / self.PATCH
+        """Installs under a patch adding the line OLDER, or none for "", then
+        pulls the current one: --after-pull deploys it, once, keeping the
+        filming dependencies."""
+        patch = self.clone / PATCH
         text = patch.read_text()
         if older:
-            patch.write_text(older)
+            patch.write_text(browser_patch(older))
         else:
             patch.unlink()
         self.install()
-        deployed, upstream = self.browser_lookup()
-        self.assertEqual(deployed, upstream + older)
+        self.assertEqual(self.browser_lookup(), "upstream\n" + older)
         patch.write_text(text)
         self.install("--after-pull")
-        deployed, upstream = self.browser_lookup()
-        self.assertEqual(deployed, upstream + text, "the pulled patch must apply")
+        self.assertEqual(self.browser_lookup(), "upstream\npatched\n", "the pulled patch must apply")
         self.assertEqual([line for line in self.npm_log.read_text().splitlines()
                           if line.startswith(f"{self.stageshow} ci ")],
                          [f"{self.stageshow} ci --no-audit --no-fund --loglevel=error"],
                          "the filming dependencies must be kept")
         self.install("--after-pull")
-        self.assertEqual(self.browser_lookup()[0], upstream + text, "the patch applies once")
+        self.assertEqual(self.browser_lookup(), "upstream\npatched\n", "the patch applies once")
 
     def test_after_pull_patches_a_stageshow_fetched_without_the_patch(self):
         # spec/domains/install.spec.html#install-stageshow-browser: pulling and
@@ -301,6 +305,19 @@ class FetchFailsTest(CloneCase):
         self.assertEqual(r.stderr.splitlines()[-1], "Stageshow not installed: skillfile install failed;"
                          f" fix: resolve its error above, then {self.fix}")
         self.assert_linked_the_rest()
+
+    def test_leaves_an_earlier_stageshow_as_it_found_it(self):
+        # spec/domains/install.spec.html#acceptance-pinned-install-fail: a
+        # failed fetch over an earlier install's current Stageshow
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        browser = self.stageshow / "scripts/browser.mjs"
+        found = browser.read_text()
+        self.env["PATH"] = f"{OFFLINE}:{os.environ['PATH']}"
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertTrue(browser.is_file(), "a failed fetch must leave the deployed patched file")
+        self.assertEqual(browser.read_text(), found)
 
 
 class NoSkillfileTest(CloneCase):
