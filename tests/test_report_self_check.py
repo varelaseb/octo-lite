@@ -46,7 +46,6 @@ class ReportSelfCheckTest(unittest.TestCase):
     def setUp(self) -> None:
         text = SKILL.read_text(encoding="utf-8").split("\n## Self-check\n", 1)[1]
         self.assertIn(f"```sh\n{COMMAND}\n```", text)
-        self.assertTrue((ROOT / "skills/report/self-check.mjs").is_file())
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name).resolve()

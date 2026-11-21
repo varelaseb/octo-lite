@@ -142,9 +142,10 @@ class KeysTest(unittest.TestCase):
         self.assertNotIn("refused-token", r.stdout + r.stderr)
 
     def test_check_proves_a_quoted_x_token_unquoted_and_never_runs_it(self) -> None:
-        # spec/domains/install.spec.html#install-x-token: the line's value, one
-        # pair of matching quotes around it dropped, as a shell assignment holds
-        # it, reaches X; the file is never sourced, so a planted command never runs
+        # spec/domains/install.spec.html#acceptance-x-token-quoted, #install-x-token:
+        # the line's value, one pair of matching quotes around it dropped, as a
+        # shell assignment holds it, reaches X; the file is never sourced, so a
+        # planted command never runs
         self.run_installer()
         self.x_env.parent.mkdir(parents=True)
         ran = self.prefix / "ran"
@@ -172,9 +173,10 @@ class KeysTest(unittest.TestCase):
                                               ("unavailable-token", "X did not answer (503)"))
 
     def test_check_says_x_answered_429_and_names_no_problem(self) -> None:
-        # spec/domains/install.spec.html#install-keys: a key the service may not
-        # use right now, such as X's 429 for a rate limit or a spent monthly cap,
-        # is a line on standard output naming its answer and no problem
+        # spec/domains/install.spec.html#acceptance-x-token-limited, #install-keys:
+        # a key the service may not use right now, such as X's 429 for a rate
+        # limit or a spent monthly cap, is a line on standard output naming its
+        # answer and no problem
         self.assert_not_proved_and_no_problem(("limited-token", "X answered (429 Too Many Requests)"),
                                               ("capped-token", "X answered (429 UsageCapExceeded)"))
 
