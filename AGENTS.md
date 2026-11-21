@@ -29,6 +29,9 @@ model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
   under the `implementer`, `integrator`, and `code-reviewer` contracts, which
   declare the skills available to them, so no prose list has to be kept in
   step by hand.
+- `skills/report/` owns each report's design, its executive summary and
+  research findings; any agent loads it, and the `researcher` contract answers
+  a research question with it.
 - `skills/` contains reusable octo-lite skills authored locally and their
   bundled templates.
 - `Skillfile`, `Skillfile.lock`, and `.skillfile/patches/` are the skillfile

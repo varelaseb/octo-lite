@@ -2739,7 +2739,7 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_writers_keep_temporary_files_and_media_in_their_scratch_never_notes(self):
         # acceptance-disk-notes-media, scratch-write: every role that writes is
         # told so where it writes; none removes a /tmp scratch by hand.
-        for role in ("orchestrator", "implementer", "integrator", "code-reviewer"):
+        for role in ("orchestrator", "implementer", "integrator", "code-reviewer", "researcher"):
             self.assertRegex(
                 self.contract(role),
                 r"Write temporary files under `\$TMPDIR`, never at a `/tmp` path of your own, and keep there what "

@@ -17,6 +17,9 @@ client, product, or engagement.
   graph after acceptance, fills the ready ticket frontier with
   parallel Herdr workers, integrates onto one branch, runs review, and
   leaves one PR ready for human review.
+- Research reports: a `researcher` answers a question for a human as an
+  executive summary and its research findings, the `report` skill's two pages,
+  which any agent loads to answer in writing and Proof publishes for comments.
 - Templates bundled inside skills, not copied as top-level target repo
   template files.
 
