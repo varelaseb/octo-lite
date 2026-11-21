@@ -892,6 +892,49 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIn(line["reason"], {"no gain", "human"})
         # Before the finish the scientists make every change; the steward writes only keeps.
         self.assertIn("On a self-improvement lane (Steward) the scientists make every change until the finish", owner)
+
+    def test_steward_writes_the_lane_report_and_links_it(self) -> None:
+        # spec #self-improvement-report, -finish, -stop, -log-kinds,
+        # #acceptance-self-improvement-(report, no-keep, merge-ask): the steward
+        # writes the lane's report with the report skill, from the log, and the
+        # merge ask, PR body, and close report link it, a PR by its Proof path only.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        owner = " ".join(raw.split())
+        steward = raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0]
+        bullet = lambda name: " ".join(steward.split(f"\n  - {name} (spec ", 1)[1].split("\n  - ", 1)[0].split())
+        report = bullet("Report")
+        # The skill's lane folder and address, its question the fixed one of the lane's report.
+        skill = " ".join((ROOT / "skills/report/SKILL.md").read_text(encoding="utf-8").split())
+        address = "`<Proof's address>/reports/<lane record name>/<question>/`"
+        self.assertIn(address, skill)
+        self.assertIn(address.replace("<question>", "self-improvement"), report)
+        self.assertIn("`reports/self-improvement/`", report)
+        # Written as the owner-side rule says, never restated: one scope-row recipe in the contract.
+        self.assertIn("as Research says for a report you write yourself", report)
+        self.assertEqual(owner.count("review-host register"), 1)
+        for phrase in ("once the log holds its `eval` line", "at every keep", "before the stop report",
+                       "before the merge ask", "`experiments.jsonl`", "leads with the gain",
+                       "`data-answers=\"Let it run, Stop\"`", "is the human's stop",
+                       "every report and ask you send links its address",
+                       "only its Proof path, `/reports/<lane record name>/self-improvement/`, never the evidence address"):
+            self.assertIn(phrase, report)
+        # Every log kind and field it reads from is one the spec's log table names.
+        html = SPEC.read_text(encoding="utf-8")
+        rows = dict(re.findall(r'<tr data-anchor="self-improvement-log-\w+"><td><code>(\w+)</code></td><td>.*?</td>'
+                               r'<td>(.*?)</td></tr>', html))
+        fields = {f for row in rows.values() for f in re.findall(r"<code>(\w+)</code>", row)}
+        for kind in ("eval", "hypothesis", "proposal", "result"):
+            self.assertIn(kind, rows)
+            self.assertIn(f"`{kind}`", report)
+        for field in ("noise", "taught", "unreached"):
+            self.assertIn(field, fields)
+            self.assertIn(f"`{field}`", report)
+        # The human's stop may come on the report; the PR body and close report link it.
+        self.assertIn("or a hand-off on the lane's report gives", bullet("Stop"))
+        finish = bullet("Finish")
+        self.assertIn("and the spend, and links the lane's report", finish)
+        self.assertIn("your close report linking the lane's report and naming no PR to merge", finish)
+
     def test_researcher_hands_the_x_token_to_curl_on_stdin_only(self) -> None:
         # spec #roles-research-x, #acceptance-research-x, #acceptance-research-x-missing:
         # the researcher reads the token from the X credential file at each search
