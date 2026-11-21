@@ -141,21 +141,42 @@ class KeysTest(unittest.TestCase):
             f" or a plan with recent search, and put it in {self.x_env}"])
         self.assertNotIn("refused-token", r.stdout + r.stderr)
 
-    def test_check_says_x_did_not_answer_and_names_no_problem(self) -> None:
-        # spec/domains/install.spec.html#acceptance-x-token-offline; a 429, a
-        # rate limit or a spent cap, is X's answer and no problem either, named
-        # with that answer
+    def test_check_proves_a_quoted_x_token_unquoted_and_never_runs_it(self) -> None:
+        # spec/domains/install.spec.html#install-x-token: the line's value, one
+        # pair of matching quotes around it dropped, as a shell assignment holds
+        # it, reaches X; the file is never sourced, so a planted command never runs
         self.run_installer()
         self.x_env.parent.mkdir(parents=True)
-        for token, said in (("unreachable-token", "X did not answer"),
-                            ("unavailable-token", "X did not answer (503)"),
-                            ("limited-token", "X answered (429 Too Many Requests)"),
-                            ("capped-token", "X answered (429 UsageCapExceeded)")):
+        ran = self.prefix / "ran"
+        for held in ("'proved-token'", '"proved-token"', f'"$(touch {ran})proved"'):
+            with self.subTest(held):
+                self.x_env.write_text(f"X_BEARER_TOKEN={held}\n")
+                r = self.run_installer("--check")
+                self.assertEqual(problems(r), [], r.stderr)
+                self.assertIn(f"X token proved by X: {self.x_env}", r.stdout)
+                self.assertFalse(ran.exists(), "ran the X credential file")
+
+    def assert_not_proved_and_no_problem(self, *answers: tuple[str, str]) -> None:
+        self.run_installer()
+        self.x_env.parent.mkdir(parents=True)
+        for token, said in answers:
             with self.subTest(token):
                 self.x_env.write_text(f"X_BEARER_TOKEN={token}\n")
                 r = self.run_installer("--check")
                 self.assertEqual(problems(r), [])
                 self.assertIn(f"X token not proved, {said}: {self.x_env}", r.stdout)
+
+    def test_check_says_x_did_not_answer_and_names_no_problem(self) -> None:
+        # spec/domains/install.spec.html#acceptance-x-token-offline
+        self.assert_not_proved_and_no_problem(("unreachable-token", "X did not answer"),
+                                              ("unavailable-token", "X did not answer (503)"))
+
+    def test_check_says_x_answered_429_and_names_no_problem(self) -> None:
+        # spec/domains/install.spec.html#install-keys: a key the service may not
+        # use right now, such as X's 429 for a rate limit or a spent monthly cap,
+        # is a line on standard output naming its answer and no problem
+        self.assert_not_proved_and_no_problem(("limited-token", "X answered (429 Too Many Requests)"),
+                                              ("capped-token", "X answered (429 UsageCapExceeded)"))
 
     def test_undo_leaves_the_x_credential_file_onboarding_wrote(self) -> None:
         # spec/domains/install.spec.html#acceptance-x-token-undo

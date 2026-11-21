@@ -857,7 +857,8 @@ class LaneRecordTests(unittest.TestCase):
         # the researcher reads the token from the X credential file at each search
         # and no command line holds it; with no file, or one whose line holds no
         # value, no search runs. It takes the line's value as the installer's
-        # check does, never running the file.
+        # check does, one pair of matching quotes around it dropped, never
+        # running the file.
         text = (ROOT / "agents/researcher.md").read_text(encoding="utf-8")
         block = next(b for _, b in re.findall(r"\n( *)```sh\n(.*?)\n\1```", text, flags=re.DOTALL) if "x.env" in b)
         with tempfile.TemporaryDirectory() as tmp:
@@ -874,14 +875,18 @@ class LaneRecordTests(unittest.TestCase):
                 (home / ".config/workbench/x.env").write_text(held)
                 run()
                 self.assertFalse((out / "argv").exists(), f"searched with no X token: {held!r}")
-            token = f'"AAAA%3D$(touch {out}/ran)secret"'  # sourcing would run it and drop the quotes
-            (home / ".config/workbench/x.env").write_text(f"X_BEARER_TOKEN={token}\n")
-            run()
-            argv = (out / "argv").read_text()
-            self.assertEqual((out / "stdin").read_text(), f"Authorization: Bearer {token}\n")
-            self.assertFalse((out / "ran").exists(), "ran the X credential file")
-            self.assertNotIn("secret", argv)
-            self.assertIn("https://api.x.com/2/tweets/search/recent", argv)
+            # One pair of matching quotes around the value is dropped, as a shell
+            # assignment holds it; sourcing would run the planted command.
+            token = f"AAAA%3D$(touch {out}/ran)secret"
+            for quote in ("'", '"', ""):
+                with self.subTest(quote=quote):
+                    (home / ".config/workbench/x.env").write_text(f"X_BEARER_TOKEN={quote}{token}{quote}\n")
+                    run()
+                    argv = (out / "argv").read_text()
+                    self.assertEqual((out / "stdin").read_text(), f"Authorization: Bearer {token}\n")
+                    self.assertFalse((out / "ran").exists(), "ran the X credential file")
+                    self.assertNotIn("secret", argv)
+                    self.assertIn("https://api.x.com/2/tweets/search/recent", argv)
         self.assertNotRegex(block, r"\s(-v|--verbose|--trace\S*)\s")  # each prints the header
 
     def test_report_skill_states_the_folder_other_lanes_read(self) -> None:
