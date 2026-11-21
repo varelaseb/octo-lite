@@ -28,8 +28,10 @@ herdr-spawn --workspace ID --name NAME --label LABEL --cwd DIR --role ROLE \
 ```
 
 A lane worker spawns into its lane space, `--workspace "$HERDR_WORKSPACE_ID"`,
-named `<role>-<ticket>` lowercase (`implementer-ann-64`). A pane never moves
-between spaces: Herdr rewrites its ids.
+named `<role>-<ticket>` lowercase (`implementer-ann-64`); several of one role
+on one issue at once are numbered in it (`scientist1-ann-64`,
+`scientist2-ann-64`), the role being the name's with the number dropped. A
+pane never moves between spaces: Herdr rewrites its ids.
 
 Spawn bare, then send the brief with `herdr-say`, or with `herdr-await` to wait
 on the agent (below). Nothing follows the runtime:
@@ -166,7 +168,8 @@ agent started apart from its terminal, as the role contracts' server rule
 starts a server, runs on until the tab closes. Herdr then lists no agent in
 the pane. Prints one parked line (`at kind pane name role cwd session`) on
 stdout and nothing else. The role is the session record's, else the one a
-worker's spawn name `<role>-<ticket>` carries. The parker appends the line: the
+worker's spawn name `<role>-<ticket>` carries, a numbered one's with its number
+dropped (`scientist1-ann-64`: `scientist`). The parker appends the line: the
 operator for an owner, the owner for a worker. An agent Herdr does not report
 idle is refused with exit 75, a Codex or pi agent (no Claude session file) with
 65; nothing is ended.

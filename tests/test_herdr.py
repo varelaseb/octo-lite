@@ -1083,6 +1083,16 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["role"], "code-reviewer")
 
+    def test_park_drops_the_number_a_numbered_spawn_name_carries(self):
+        # spec/domains/herdr-transport.spec.html#acceptance-park-role-numbered,
+        # transport-spawn-name: one of several workers of a role on one issue
+        # is <role><n>-<ticket>; its role is the role with the number dropped.
+        for name, role in (("scientist1-ann-64", "scientist"), ("scientist12-ann-64", "scientist"),
+                           ("code-reviewer2-ann-7", "code-reviewer")):
+            p, r, *_ = self.park(name=name, agent=None)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads(r.stdout)["role"], role, name)
+
     def test_park_takes_no_role_from_a_name_not_of_spawn_form(self):
         # spec/domains/herdr-transport.spec.html#transport-spawn-name: a name
         # not <role>-<ticket> carries no role.
