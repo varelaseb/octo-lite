@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        # the box lock's update test runs the lock of an older commit
+        # (tests/test_box_lock.py UpdateTest)
+        with:
+          fetch-depth: 0
       # The recorder reads mockup files and records in a browser, which its tests
       # drive (tests/test_prototype_video.py): its pinned driver and browser, as
       # the installer adds them (spec/domains/install.spec.html #install-recorder).
