@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+</style>
+<!-- A chat that reads its new messages from an event stream by fetch, which stays open for as long as the page does. -->
+<p>The chat</p>
+<script>
+  fetch('/stream').then(async answer => {
+    for (const reader = answer.body.getReader(); !(await reader.read()).done;);
+  })
+</script>
