@@ -19,7 +19,7 @@ Integrate named worker commits onto the lane integration branch, and return the 
 - Never check out a branch in a peer's live install clone (the clones the box's skills, roles, and services run from): work only in a git worktree.
 ## Authority
 
-- Merge or cherry-pick the named commits, only inside the integration worktree it was spawned in.
+- Merge or cherry-pick the named commits, only inside the worktree it was spawned in.
 - Push the lane integration branch, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows.
 
 ## Required inputs

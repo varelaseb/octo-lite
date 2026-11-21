@@ -1,4 +1,4 @@
-# octo-lite skill management (ADR 0002: spec/adr/0002-tdd-skill-vendoring.spec.html).
+# octo-lite skill management (ADR 0006: spec/adr/0006-tdd-skill-vendoring.spec.html).
 #
 # skillfile (github.com/eljulians/skillfile) manages the pinned skills: it pins
 # upstream skills at exact SHAs and preserves the tdd seam-gate patch across
