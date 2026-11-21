@@ -35,24 +35,26 @@ SKILL_DIRS = (".claude/skills", ".codex/skills", ".agents/skills")
 PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stageshow$",
                 (ROOT / "Skillfile").read_text(), re.M).group(1)
 
-# skillfile's observable contract: `skillfile install` keeps each pin of
-# Skillfile.lock in .skillfile/cache and deploys each file of it missing from
-# agents/skills, applying its patch in .skillfile/patches as git apply does,
-# leaving files it already deployed unchanged. A patch that no longer applies
-# leaves .skillfile/conflict and the file missing, and fails it. It writes a
-# local skill's tracked files only, so a local skill folder holding a file git
-# does not track fails it.
+# skillfile's observable contract, as skillfile 1.9.2 behaves: `skillfile
+# install` fetches each pin of Skillfile.lock into .skillfile/cache, here from
+# the stand-in GitHub's tree at that sha, again whenever the lock's sha differs
+# from the cached one, and deploys each file of it missing from agents/skills,
+# applying its patch in .skillfile/patches as git apply does, leaving files it
+# already deployed unchanged, across pin changes too. A patch that no longer
+# applies leaves .skillfile/conflict and the file missing, and fails it. It
+# writes a local skill's tracked files only, so a local skill folder holding a
+# file git does not track fails it.
 SKILLFILE = """#!/usr/bin/env python3
 import json, shutil, subprocess, sys
 from pathlib import Path
 assert sys.argv[1:] == ["install", "-q"], sys.argv
 pin = json.loads(Path("Skillfile.lock").read_text())["github/skill/stageshow"]
 cache, skill = Path(".skillfile/cache/skills/stageshow"), Path("agents/skills/stageshow")
-if not cache.exists():
-    (cache / "scripts").mkdir(parents=True)
-    (cache / ".meta").write_text(json.dumps(pin))
-    for name in ("SKILL.md", "package.json", "package-lock.json", "scripts/browser.mjs"):
-        (cache / name).write_text("upstream\\n")
+meta = cache / ".meta"
+if not meta.exists() or json.loads(meta.read_text())["sha"] != pin["sha"]:
+    shutil.rmtree(cache, ignore_errors=True)
+    shutil.copytree(Path(__file__).parents[1] / "github" / pin["sha"], cache)
+    meta.write_text(json.dumps(pin))
 for upstream in cache.rglob("*"):
     rel = upstream.relative_to(cache)
     if upstream.is_dir() or (skill / rel).exists():
@@ -126,6 +128,8 @@ class CloneCase(unittest.TestCase):
         for name, body in (("skillfile", SKILLFILE), ("npm", NPM.format(log=self.npm_log))):
             (bindir / name).write_text(body)
             (bindir / name).chmod(0o755)
+        self.github = base / "github"
+        self.upstream_at(PIN)
         self.browsers = base / "browsers"
         self.env = {**os.environ, "PATH": f"{bindir}:{FLOORS}:{os.environ['PATH']}",
                     "PLAYWRIGHT_BROWSERS_PATH": str(self.browsers),
@@ -154,6 +158,21 @@ class CloneCase(unittest.TestCase):
         self.installer = str(self.clone / "scripts/install-octo-lite")
         self.fix = f"run {self.installer} --prefix {self.prefix}"
         self.stageshow = self.clone / "agents/skills/stageshow"
+
+    def upstream_at(self, sha, browser="upstream\n"):
+        """Stageshow's tree at SHA on the stand-in GitHub the skillfile stub
+        fetches from, its browser lookup reading BROWSER."""
+        tree = self.github / sha
+        (tree / "scripts").mkdir(parents=True)
+        for name in ("SKILL.md", "package.json", "package-lock.json"):
+            (tree / name).write_text("upstream\n")
+        (tree / "scripts/browser.mjs").write_text(browser)
+
+    def bump_pin(self, sha):
+        """Pulls a Skillfile.lock pinning Stageshow at SHA."""
+        lock = json.loads((self.clone / "Skillfile.lock").read_text())
+        lock["github/skill/stageshow"]["sha"] = sha
+        (self.clone / "Skillfile.lock").write_text(json.dumps(lock, indent=2) + "\n")
 
     def run_installer(self, *extra):
         return run([self.installer, "--prefix", str(self.prefix), *extra], self.env)
@@ -283,7 +302,8 @@ class StageshowBrowserTest(CloneCase):
         # #acceptance-check-lines: a pin change the patch no longer applies to,
         # after an install that left the filming dependencies and Chromium
         self.install()
-        (self.clone / ".skillfile/cache/skills/stageshow/scripts/browser.mjs").write_text("drifted upstream\n")
+        self.upstream_at("d" * 40, browser="drifted upstream\n")
+        self.bump_pin("d" * 40)
         line = ("Stageshow not installed: octo-lite's patch no longer applies to its pin; fix: pull a fixed"
                 f" octo-lite, run skillfile resolve --abort in {self.clone}, then {self.fix}")
         r = self.run_installer()
@@ -307,8 +327,9 @@ class FetchFailsTest(CloneCase):
         self.assert_linked_the_rest()
 
     def test_leaves_an_earlier_stageshow_as_it_found_it(self):
-        # spec/domains/install.spec.html#acceptance-pinned-install-fail: a
-        # failed fetch over an earlier install's current Stageshow
+        # spec/domains/install.spec.html#install-stageshow-browser: pulling and
+        # installing are safe in any order, a failed fetch over an earlier
+        # install's current Stageshow too
         r = self.run_installer()
         self.assertEqual(r.returncode, 0, r.stderr)
         browser = self.stageshow / "scripts/browser.mjs"

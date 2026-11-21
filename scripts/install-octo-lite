@@ -454,26 +454,30 @@ has_chromium() {
 if command -v skillfile >/dev/null; then why="" stageshow_fix="run $install_cmd"
 else why="skillfile not found" stageshow_fix="$skillfile_install, then run $install_cmd"
 fi
-if [[ "$check" != true && -z "$why" ]]; then
-  # skillfile deploys only a file missing from a pin it deployed, so a patch
-  # that arrives or changes after the fetch would never apply: a file a
-  # Stageshow patch names is removed only when it differs from its pin in
-  # skillfile's cache with the patch this clone holds applied, and skillfile
-  # deploys it again, keeping the skill's dependencies. One the patch no longer
-  # applies to is removed too, so skillfile records the conflict.
-  # tdd's patched file is committed, so a pull brings it.
-  cache="$root/.skillfile/cache/skills/stageshow" want="$(mktemp -d)"
+# skillfile deploys only files missing from agents/skills, across pin changes
+# too, so a patch that arrives or changes after the fetch, or a pin it no
+# longer applies to, would never reach the deployed file: after the fetch, each
+# file a Stageshow patch names is removed when it differs from its now-current
+# pin in skillfile's cache with the patch this clone holds applied, and
+# skillfile deploys it again, keeping the skill's dependencies, or records the
+# conflict. A failed fetch removes nothing. tdd's patched file is committed, so
+# a pull brings it.
+remove_unpatched() {
+  local patch file want
+  want="$(mktemp -d)"
   while IFS= read -r patch; do
     file="${patch#.skillfile/patches/skills/stageshow/}"
     file="${file%.patch}"
-    [[ -e "$cache/$file" ]] || continue
     mkdir -p "$want/$(dirname "$file")"
-    cp "$cache/$file" "$want/$file"
-    (cd "$want" && git apply "$root/$patch" 2>/dev/null) && cmp -s "$want/$file" "$stageshow/$file" ||
+    cp "$root/.skillfile/cache/skills/stageshow/$file" "$want/$file" &&
+      (cd "$want" && git apply "$root/$patch" 2>/dev/null) && cmp -s "$want/$file" "$stageshow/$file" ||
       rm -f "$stageshow/$file"
   done < <(git -C "$root" ls-files -- .skillfile/patches/skills/stageshow)
   rm -r "$want"
-  if ! (cd "$root" && skillfile install -q); then why="skillfile install failed"
+}
+if [[ "$check" != true && -z "$why" ]]; then
+  if ! (cd "$root" && skillfile install -q && remove_unpatched && skillfile install -q); then
+    why="skillfile install failed"
   elif ! npm_deps "$stageshow"; then why="npm ci failed"
   elif ! playwright_chromium "$stageshow"; then why="browser install failed"
   fi
