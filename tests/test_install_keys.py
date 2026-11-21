@@ -142,16 +142,20 @@ class KeysTest(unittest.TestCase):
         self.assertNotIn("refused-token", r.stdout + r.stderr)
 
     def test_check_says_x_did_not_answer_and_names_no_problem(self) -> None:
-        # spec/domains/install.spec.html#acceptance-x-token-offline
+        # spec/domains/install.spec.html#acceptance-x-token-offline; a 429, a
+        # rate limit or a spent cap, is X's answer and no problem either, named
+        # with that answer
         self.run_installer()
         self.x_env.parent.mkdir(parents=True)
-        for token, said in (("unreachable-token", ""), ("unavailable-token", " (503)"),
-                            ("limited-token", " (429)")):
+        for token, said in (("unreachable-token", "X did not answer"),
+                            ("unavailable-token", "X did not answer (503)"),
+                            ("limited-token", "X answered (429 Too Many Requests)"),
+                            ("capped-token", "X answered (429 UsageCapExceeded)")):
             with self.subTest(token):
                 self.x_env.write_text(f"X_BEARER_TOKEN={token}\n")
                 r = self.run_installer("--check")
                 self.assertEqual(problems(r), [])
-                self.assertIn(f"X token not proved, X did not answer{said}: {self.x_env}", r.stdout)
+                self.assertIn(f"X token not proved, {said}: {self.x_env}", r.stdout)
 
     def test_undo_leaves_the_x_credential_file_onboarding_wrote(self) -> None:
         # spec/domains/install.spec.html#acceptance-x-token-undo
