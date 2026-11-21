@@ -399,11 +399,13 @@ if [[ "$check" != true && -z "$why" ]]; then
   elif ! npm_deps "$stageshow"; then why="npm ci failed"
   elif ! playwright_chromium "$stageshow"; then why="browser install failed"
   fi
-  # A patch that no longer applies leaves skillfile's conflict state behind.
-  if [[ -e "$root/.skillfile/conflict" ]]; then
-    stageshow_fix="run skillfile resolve --abort in $root, then $stageshow_fix"
-  elif [[ -n "$why" ]]; then stageshow_fix="resolve its error above, then $stageshow_fix"
-  fi
+  [[ -z "$why" ]] || stageshow_fix="resolve its error above, then $stageshow_fix"
+fi
+# A patch that no longer applies leaves skillfile's conflict state behind, and
+# the file it patches missing, so every mode reads it.
+if [[ -e "$root/.skillfile/conflict" ]]; then
+  why="octo-lite's patch no longer applies to its pin"
+  stageshow_fix="pull a fixed octo-lite, run skillfile resolve --abort in $root, then run $install_cmd"
 fi
 [[ -n "$why" ]] || deps_current "$stageshow" || why="filming dependencies not installed"
 [[ -n "$why" ]] || has_chromium "$stageshow" || why="no browser, its Chromium not installed"

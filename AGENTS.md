@@ -79,8 +79,9 @@ model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
 - Run `python3 -m unittest tests.test_herdr` after changing the Herdr wrappers.
 - The suite drives the round video recorder in a browser: once per clone, run
   `npm ci && PLAYWRIGHT_SKIP_BROWSER_GC=1 npx playwright-core install chromium`
-  at the clone root, as CI does; the variable keeps every browser already on
-  the box, which another lane may use.
+  at the clone root; the variable keeps every browser already on the box,
+  which another lane may use. `tests/test_stageshow_film.py` films only in a
+  clone the installer fetched Stageshow into, as CI's is.
 - Verify skill symlinks point at this source repo when installing locally.
 - Run `scripts/install-octo-lite --check` after installed-surface changes.
 

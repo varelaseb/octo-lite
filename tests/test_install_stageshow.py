@@ -258,15 +258,21 @@ class StageshowBrowserTest(CloneCase):
         self.assertTrue(other.is_dir(), "another lane's browser must stay on the box")
 
     def test_a_pin_the_patch_no_longer_applies_to_fails_naming_the_fix(self):
-        # spec/domains/install.spec.html#install-stageshow-browser
-        cache = self.clone / ".skillfile/cache/skills/stageshow/scripts"
-        cache.mkdir(parents=True)
-        (cache / "browser.mjs").write_text("drifted upstream\n")
+        # spec/domains/install.spec.html#install-stageshow-browser and
+        # #acceptance-check-lines: a pin change the patch no longer applies to,
+        # after an install that left the filming dependencies and Chromium
+        self.install()
+        (self.clone / ".skillfile/cache/skills/stageshow/scripts/browser.mjs").write_text("drifted upstream\n")
+        (self.stageshow / "scripts/browser.mjs").unlink()
+        line = ("Stageshow not installed: octo-lite's patch no longer applies to its pin; fix: pull a fixed"
+                f" octo-lite, run skillfile resolve --abort in {self.clone}, then {self.fix}")
         r = self.run_installer()
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertEqual(r.stderr.splitlines()[-1], "Stageshow not installed: skillfile install failed;"
-                         f" fix: run skillfile resolve --abort in {self.clone}, then {self.fix}")
+        self.assertEqual(r.stderr.splitlines()[-1], line)
         self.assert_linked_the_rest()
+        r = self.run_installer("--check")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stderr.splitlines(), [line])
 
 
 class FetchFailsTest(CloneCase):
