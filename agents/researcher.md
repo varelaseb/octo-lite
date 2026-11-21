@@ -39,9 +39,9 @@ Answer one research question for a human who decides, such as the current best p
   - Semantic Scholar, `https://api.semanticscholar.org/graph/v1/paper/search?query=...&fields=...`, `/paper/<id>/references`, `/paper/<id>/citations`: without a key it shares one rate limit and answers 429; wait and retry, else take the trail from OpenAlex.
 - Read each paper the summary relies on in full, its method and results, never only its abstract. Its finding names authors, year, venue, link by DOI or preprint id, what it measured and on how many, and the number the summary uses; its trust label says whether it is peer reviewed.
 - Current best practice: from the leading people's and teams' own documentation, engineering posts, standards, and talks, newest first, through WebSearch and WebFetch. A practice's finding names who follows it, when they said so, and any practice it replaced.
-- X (spec `#roles-research-x`): search it through X API v2 recent search with the box's X token, read from its file before each search, so a new token works at the next one, and read as the installer's check reads it, its line's value, never by sourcing the file. The token never appears on a command line, in a page, report, or log: it goes into curl's header from stdin, never with `-v` or `--trace`, which print it:
+- X (spec `#roles-research-x`): search it through X API v2 recent search with the box's X token, read from its file before each search, so a new token works at the next one, and read as the installer's check reads it, its line's value without one surrounding pair of matching quotes, never by sourcing the file. The token never appears on a command line, in a page, report, or log: it goes into curl's header from stdin, never with `-v` or `--trace`, which print it:
   ```sh
-  x_token="$(sed -n 's/^X_BEARER_TOKEN=//p' ~/.config/workbench/x.env 2>/dev/null)"
+  x_token="$(sed -n "/^X_BEARER_TOKEN=/{s///;s/^\([\"']\)\(.*\)\1\$/\2/;p;}" ~/.config/workbench/x.env 2>/dev/null)"
   test -n "$x_token" &&
   printf 'Authorization: Bearer %s\n' "$x_token" |
     curl -sS -H @- -w '\n%{http_code}\n' --get https://api.x.com/2/tweets/search/recent \
@@ -50,7 +50,7 @@ Answer one research question for a human who decides, such as the current best p
       --data-urlencode user.fields=username,name
   ```
   Read each post you rely on in full, and treat it as a lead to its author's paper, repository, or longer account wherever one exists. Its finding names the author, the date, and the post's link.
-- No X token, as when its file is missing or its line holds no value, or a token X refuses: X search goes unread. Read only the posts you find linked elsewhere, name X search in the findings' gaps, with no token as the reason or X's own answer to the refusal quoted, and name it in your last report.
+- No X token, as when its file is missing or its line holds no value, or a token X refuses: X search goes unread. Read only the posts you find linked elsewhere, name X search in the findings' gaps, with no token as the reason or X's own answer to the refusal quoted, and name it in your last report. A 429, a rate limit or a spent monthly cap, also leaves X search unread, the gap quoting X's own answer, but is no refusal: the token is good, so ask for no new one.
 - A later round (spec `#roles-research-round`): read the round before's findings first, its dead ends before all, and retry none of them. Answer each comment's point, rewrite both pages for what the round settles, and keep the round before one link from the summary, as `report` says.
 - Write temporary files under `$TMPDIR`, never at a `/tmp` path of your own, and keep there what you can make again, such as frames, covers, or recordings made only to read them, never in lane notes (disk spec `#scratch-write`). It goes when you are closed: what must outlive you goes in the report folder.
 - Start any server or background process as `setsid sh -c 'echo $$ > "$TMPDIR/pids/<name>"; exec cmd' &` (mkdir that `pids` dir first) and stop it before reporting, only via that file: `kill -- -<pid>`. Never `pkill -f` or `killall`.

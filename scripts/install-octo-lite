@@ -203,7 +203,9 @@ onboard_key() {
 # the fix.
 check_key() {
   local key fix="put the one line $3=<$1> in $2, mode 0600"
-  key="$(sed -n "s/^$3=//p" "$2" 2>/dev/null)" || key=""
+  # The line's value, without one surrounding pair of matching quotes, as a
+  # shell assignment may hold it; never sourced, so nothing in it runs.
+  key="$(sed -n "/^$3=/{s///;s/^\([\"']\)\(.*\)\1\$/\2/;p;}" "$2" 2>/dev/null)" || key=""
   if [[ -n "$key" ]]; then "$4" "$1" "$2" "$key"; return; fi
   [[ -e "$2" ]] || fix+=", or run $install_cmd --onboard"
   problem "missing $1: $2" "$fix"

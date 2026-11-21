@@ -1,15 +1,14 @@
 """The report skill's self-check passes a report folder that keeps the folder and
 page rules and names each fault of one that does not. Spec:
 spec/domains/octo-lite.spec.html#roles-report-folder; criterion
-#acceptance-report-folder. It runs the skill's own snippet, as
-tests/test_lane_record.py runs the researcher's X snippet, in a browser: run
+#acceptance-report-folder. It runs the skill's own self-check.mjs by the command
+its SKILL.md gives, through the installed skill link, in a browser: run
 `npm ci && npx playwright-core install chromium` at the clone root once per
 clone. No fixture links outside the folder, so no test fetches."""
 
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills/report/SKILL.md"
+COMMAND = "node ~/.claude/skills/report/self-check.mjs <report folder>"
 STYLE = "body{font:16px system-ui;margin:1rem}@media (prefers-color-scheme: dark){body{background:#111;color:#eee}}"
 SUMMARY = """<header data-anchor="top" id="top"><h1>Teams ship weekly</h1><p>62% of teams, against 30% a year ago.</p></header>
 <section data-anchor="pick" id="pick" data-answers="Weekly, Monthly">
@@ -45,13 +45,12 @@ def write(folder: Path, files: dict[str, str]) -> Path:
 class ReportSelfCheckTest(unittest.TestCase):
     def setUp(self) -> None:
         text = SKILL.read_text(encoding="utf-8").split("\n## Self-check\n", 1)[1]
-        block = next(b for _, b in re.findall(r"\n( *)```sh\n(.*?)\n\1```", text, flags=re.DOTALL))
-        self.assertIn("<report folder>", block)
-        self.block = block.replace("<report folder>", '"$1"')
+        self.assertIn(f"```sh\n{COMMAND}\n```", text)
+        self.assertTrue((ROOT / "skills/report/self-check.mjs").is_file())
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name).resolve()
-        # The snippet finds the clone through the installed skill link.
+        # The command runs the file through the installed skill link.
         home = self.tmp / "home"
         (home / ".claude/skills").mkdir(parents=True)
         (home / ".claude/skills/report").symlink_to(ROOT / "skills/report")
@@ -62,7 +61,7 @@ class ReportSelfCheckTest(unittest.TestCase):
         self.env = {**os.environ, "HOME": str(home), "TMPDIR": str(self.tmp / "scratch"), "CHROME_PATH": chrome}
 
     def self_check(self, folder: Path) -> list[str]:
-        r = subprocess.run(["bash", "-c", self.block, "bash", str(folder)],
+        r = subprocess.run(["bash", "-c", COMMAND.replace("<report folder>", '"$1"'), "bash", str(folder)],
                            env=self.env, capture_output=True, text=True, timeout=120)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.splitlines()
