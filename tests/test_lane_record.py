@@ -1046,7 +1046,7 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIn(score, finish)
         self.assertLess(finish.index(score), finish.index("Its PR body gives"))
         # A spec-altering keep carries its scientist's edit; the steward sends its review link.
-        self.assertIn("carries that spec's edit in its own commit, written by its scientist", finish_spec)
+        self.assertIn("carries that spec's edit in the keep's commit, written by its scientist", finish_spec)
         self.assertIn("carries that spec's edit in its commit, written by its scientist", finish)
         self.assertIn("send that spec's review link for acceptance before the merge ask", finish)
         scientist = " ".join((ROOT / "agents/scientist.md").read_text(encoding="utf-8").split())
