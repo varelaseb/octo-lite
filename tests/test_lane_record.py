@@ -1014,6 +1014,49 @@ class LaneRecordTests(unittest.TestCase):
         # Before the finish the scientists make every change; the steward writes only keeps.
         self.assertIn("On a self-improvement lane (Steward) the scientists make every change until the finish", owner)
 
+    def test_steward_opens_the_pr_at_the_first_commit_and_scores_held_out_at_the_finish(self) -> None:
+        # spec #self-improvement-finish, -eval, -team, #roles-load,
+        # #acceptance-self-improvement-(merge-ask, spec-change, no-keep): the draft
+        # PR waits for a commit past main, the champion's held-out number is scored
+        # before the PR body, and a spec-altering keep carries its scientist's edit.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        steward = raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0]
+        bullet = lambda name: " ".join(steward.split(f"\n  - {name} (spec ", 1)[1].split("\n  - ", 1)[0].split())
+        html = SPEC.read_text(encoding="utf-8")
+        finish_spec = " ".join(re.search(r'<p data-anchor="self-improvement-finish"[^>]*>(.*?)</p>', html,
+                                         flags=re.DOTALL).group(1).split())
+        # A fresh lane branch has no commit past main, so no PR opens on the eval line alone.
+        self.assertIn("once the branch holds its first commit past main", finish_spec)
+        keeps = bullet("Keeps")
+        self.assertIn("Once the lane branch holds its first commit past main, the check the team writes, "
+                      "else its first keep, push it and open the draft PR, then push at every keep", keeps)
+        self.assertNotIn("Once the log holds its `eval` line, push", keeps)
+        # The push is stated once, under consent.
+        self.assertEqual(keeps.count("as [consent](../skills/octo-lite-github/SKILL.md#consent) allows"), 1)
+        self.assertNotIn("then push, as", keeps)
+        finish = bullet("Finish")
+        self.assertIn("closes its PR unmerged, if one is open", finish_spec)
+        self.assertIn("close the PR unmerged, if one is open", finish)
+        # The held-out split is scored at the finish, by the eval's own command, before the PR body.
+        self.assertIn("at the finish", html.split('data-anchor="self-improvement-eval"', 1)[1].split("</p>", 1)[0])
+        eval_row = re.search(r'<tr data-anchor="self-improvement-log-eval">.*?</tr>', html).group(0)
+        self.assertIn("<code>command</code>", eval_row)
+        score = ("score the lane branch head on the held-out split with the latest `eval` line's `command`, "
+                 "`octo-lite-lock <command>` in the lane worktree")
+        self.assertIn(score, finish)
+        self.assertLess(finish.index(score), finish.index("Its PR body gives"))
+        # A spec-altering keep carries its scientist's edit; the steward sends its review link.
+        self.assertIn("carries that spec's edit in its own commit, written by its scientist", finish_spec)
+        self.assertIn("carries that spec's edit in its commit, written by its scientist", finish)
+        self.assertIn("send that spec's review link for acceptance before the merge ask", finish)
+        scientist = " ".join((ROOT / "agents/scientist.md").read_text(encoding="utf-8").split())
+        self.assertIn("when its change alters a behavior or value a spec of the goal's repository states, "
+                      "amend its commit with that spec's edit, written by you", scientist)
+        # Each scientist is briefed with the spawn name its log lines, ids, and lookup key on.
+        self.assertIn("your pane, and its own spawn name.", bullet("Team"))
+        inputs = scientist.split("## Required inputs", 1)[1].split("## Rules", 1)[0]
+        self.assertIn("your spawn name, which your log lines' `by`, your ids, and your teammate lookup key on", inputs)
+
     def test_steward_writes_the_lane_report_and_links_it(self) -> None:
         # spec #self-improvement-report, -finish, -stop, -log-kinds,
         # #acceptance-self-improvement-(report, no-keep, merge-ask): the steward
