@@ -20,6 +20,9 @@ client, product, or engagement.
 - Research reports: a `researcher` answers a question for a human as an
   executive summary and its research findings, the `report` skill's two pages,
   which any agent loads to answer in writing and Proof publishes for comments.
+- Self-improvement lanes: on a goal the human names, a steward and three
+  `scientist`s set the goal's check, run critiqued experiments from one shared
+  log, and keep only what the check shows better, on one PR.
 - Templates bundled inside skills, not copied as top-level target repo
   template files.
 
