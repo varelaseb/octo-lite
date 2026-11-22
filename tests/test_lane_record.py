@@ -1144,6 +1144,40 @@ class LaneRecordTests(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
 
+    def test_operator_launches_a_self_improvement_lane_only_on_a_named_goal(self) -> None:
+        # spec #self-improvement-what, -goal, -goal-where, -why, -messages (operator
+        # row), #acceptance-self-improvement-(launch, no-goal, workbench-goal,
+        # human-stop): the human names the goal; the operator launches the lane as
+        # any lane, in the goal's repository, asks which goal when none is named,
+        # and relays the human's stop to the steward.
+        raw = OPERATOR.read_text(encoding="utf-8")
+        operator = " ".join(raw.split())
+        launch = " ".join(raw.split("\nSelf-improvement lane (spec `#self-improvement-what`", 1)[1].split("\n\n", 1)[0].split())
+        for phrase in (
+            "only when the human asks you to launch a self improvement lane on a goal it names",
+            "never on your own, never on a goal you choose, and never again when one ends, so none is a standing loop",
+            "by Lane start in the goal's repository",
+            "its brief naming it a self-improvement lane, its goal, and the goal's repository",
+            "one question to the human, before any lane starts, asking which goal",
+            "the goals that repository's `AGENTS.md` declares under `Goals:`",
+            "your pick marked",
+            "The human's stop goes to its steward by `herdr-say <lane name> <stop>`",
+        ):
+            self.assertIn(phrase, launch)
+        # Lane start is the one launch: no second recipe for this lane kind.
+        self.assertEqual(operator.count("octo-lite-start --cwd"), 1)
+        # The goals list it offers is the one the spec places in AGENTS.md.
+        self.assertIn("under <code>Goals:</code>", SPEC.read_text(encoding="utf-8"))
+        # The steward works that goal in that repository, its scientists there too.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        steward = raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0]
+        head = " ".join(steward.split("\n  - ", 1)[0].split())
+        self.assertIn("on a lane your brief names a self-improvement lane, its goal, and the goal's repository", head)
+        self.assertIn("work that goal in that repository and never another (spec `#self-improvement-goal`)", head)
+        team = " ".join(steward.split("\n  - Team (spec ", 1)[1].split("\n  - ", 1)[0].split())
+        self.assertIn("each in its own worktree and branch off the lane branch in the goal's repository", team)
+        self.assertIn("each briefed with your brief's goal and its repository", team)
+
     def test_researcher_hands_the_x_token_to_curl_on_stdin_only(self) -> None:
         # spec #roles-research-x, #acceptance-research-x, #acceptance-research-x-missing:
         # the researcher reads the token from the X credential file at each search
