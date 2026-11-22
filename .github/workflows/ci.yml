@@ -20,7 +20,11 @@ jobs:
       # browser, which tests/test_prototype_video.py records in
       # (spec/domains/install.spec.html #install-peers, #install-recorder,
       # #install-stageshow-browser); then the system libraries those browsers need.
-      - run: |
+      # skillfile's install.sh reads GITHUB_TOKEN for its latest-release API call,
+      # so the runner's token keeps that call off the unauthenticated rate limit.
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           eval "$(grep '^skillfile_install=' scripts/install-octo-lite)" && sh -c "$skillfile_install"
           PATH="$HOME/.local/bin:$PATH" scripts/install-octo-lite --prefix "$RUNNER_TEMP/home"
           npx playwright-core install-deps chromium
