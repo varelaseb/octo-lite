@@ -2774,10 +2774,9 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn("Else install your own with the install command the target `AGENTS.md` names.", rule)
         self.assertIn("is no such step (`#share-scripts`)", rule)
         self.assertIn("other step that writes into installed packages' files, such as a generate step,", rule)
-        # share-scripts: each root script npm runs at both install and ci.
-        for script in ("dependencies", "preinstall", "install", "postinstall", "prepublish", "preprepare", "prepare",
-                       "postprepare"):
-            self.assertIn(f"`{script}`", rule)
+        # share-scripts: each root script npm runs at both install and ci, by npm's own pattern.
+        self.assertIn("no script named `dependencies`, `install`, or `prepare`, each with or without a `pre` or `post`"
+                      " prefix, or `prepublish`,", rule)
         # share-mid-update: an npm working in a subfolder of main's installs into main's folder.
         self.assertIn("process has `$m/$d` or a folder under it as its `readlink /proc/<pid>/cwd`", rule)
         command = {name: re.search(rf"`({re.escape(name)} [^`]*)`", rule).group(1)
