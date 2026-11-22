@@ -419,7 +419,7 @@ class LaneRecordTests(unittest.TestCase):
         # each worker asks itself the one question in its last step and, on yes
         # only, ends its last report with one Annoyed: line; the owner turns that
         # line into one complaint line naming the worker, its session, its sentence.
-        for role in ("implementer", "integrator", "code-reviewer", "researcher"):
+        for role in ("implementer", "integrator", "code-reviewer", "researcher", "scientist"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "Before your last report, answer one question: did anything about the system annoy you? "
@@ -867,7 +867,7 @@ class LaneRecordTests(unittest.TestCase):
         # #transport-native, #acceptance-native-*: natively to a live Claude
         # session; a timed-out native send counts as sent (#acceptance-native-timeout);
         # herdr-say only when undelivered, or a later notice says held, denied, expired.
-        for role in ("implementer", "integrator", "code-reviewer", "researcher"):
+        for role in ("implementer", "integrator", "code-reviewer", "researcher", "scientist"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
@@ -1055,6 +1055,94 @@ class LaneRecordTests(unittest.TestCase):
         finish = bullet("Finish")
         self.assertIn("and the spend, and links the lane's report", finish)
         self.assertIn("your close report linking the lane's report and naming no PR to merge", finish)
+
+    def test_scientist_works_the_goal_from_the_log(self) -> None:
+        # spec #self-improvement-team, -messages (scientist rows), -log,
+        # -log-kinds, -goal, -goal-where, -eval, -hypotheses, -critique,
+        # -experiment, -stop, #roles-load, #acceptance-self-improvement-(critique,
+        # dead-end, shared, retire, reach, headroom, question, noise, one-line,
+        # declared-check, goal-added, live-goal, tests-floor): the scientist contract.
+        raw = (ROOT / "agents/scientist.md").read_text(encoding="utf-8")
+        text = " ".join(raw.split())
+        front = raw.split("---", 2)[1]
+        for name in json.loads(re.search(r"^skills: (\[.*\])$", front, flags=re.MULTILINE).group(1)):
+            self.assertTrue((ROOT / "skills" / name / "SKILL.md").is_file()
+                            or (ROOT / "agents/skills" / name / "SKILL.md").is_file(), name)
+        # Every example log line carries only the fields the spec's log table
+        # names for its kind, and together they write every field of each kind.
+        html = SPEC.read_text(encoding="utf-8")
+        rows = dict(re.findall(r'<tr data-anchor="self-improvement-log-\w+"><td><code>(\w+)</code></td><td>.*?</td>'
+                               r'<td>(.*?)</td></tr>', html))
+        block = re.search(r"```jsonl\n(.*?)\n *```", raw, flags=re.DOTALL).group(1)
+        lines = [json.loads(line) for line in block.splitlines()]
+        written: dict[str, set[str]] = {}
+        for line in lines:
+            self.assertRegex(line["at"], UTC)
+            self.assertRegex(line["by"], r"^scientist\d-[a-z]+-\d+$")
+            fields = set(line) - {"at", "by", "kind"}
+            self.assertLessEqual(fields, set(re.findall(r"<code>(\w+)</code>", rows[line["kind"]])), line)
+            written.setdefault(line["kind"], set()).update(fields)
+        for kind in ("eval", "hypothesis", "proposal", "critique", "result"):
+            self.assertEqual(written[kind], set(re.findall(r"<code>(\w+)</code>", rows[kind])), kind)
+        self.assertNotIn("stop", written)  # the steward's line
+        for line in lines:
+            self.assertIn(line.get("event", "opened"), {"opened", "retired"})
+            self.assertIn(line.get("verdict", "go"), {"go", "no"})
+            self.assertIn(line.get("outcome", "keep"), {"keep", "discard", "crash"})
+        # A teammate's pane is found by its spawn name, by the lookup herdr-say makes.
+        say = (ROOT / "skills/herdr-comms/assets/herdr-say").read_text(encoding="utf-8")
+        self.assertIn("jq -r '.result.agent.pane_id // empty'", say)
+        self.assertIn("`herdr agent get <name> | jq -r '.result.agent.pane_id // empty'`", text)
+        # The stop it obeys is the one the steward sends.
+        stop = re.search(r"(`Stop: [^`]*`)", (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")).group(1)
+        self.assertIn(f"on the steward's {stop}", text)
+        for phrase in (
+            # -goal, -goal-where, #acceptance-self-improvement-(declared-check, goal-added)
+            "the one the goal's repository `AGENTS.md` declares for the goal under `Goals:`",
+            "in the same commit, add its line under `Goals:`",
+            # -eval, #acceptance-self-improvement-live-goal
+            "Never try anything on live traffic",
+            "such as a replay of recorded traffic",
+            "first on a small sample",
+            # -eval, #acceptance-self-improvement-(reach, headroom, question)
+            "Until reach and room both hold, propose no change to the code under improvement",
+            "count each item the code cannot reach, with the input it lacks",
+            "an input only the human can give",
+            "no experiment changes it",
+            "the held-out split only as you set the eval",
+            # -hypotheses, #acceptance-self-improvement-(retire, no-direction)
+            "what result would refute it",
+            "nobody assigns one",
+            "a direction nobody has tried, a follow-up of what made the latest keep win, "
+            "the open hypothesis fewest scientists work",
+            "Never propose under a retired hypothesis",
+            "five results in a row under a hypothesis gain nothing",
+            # -critique, #acceptance-self-improvement-(critique, dead-end)
+            "one scientist whose latest proposal names another hypothesis, else any other",
+            "run it only on that critic's go",
+            "repeats a dead end without saying what differs",
+            "duplicates a running experiment",
+            "changes nothing the eval reaches",
+            "On a no, run nothing and record no result",
+            # -experiment, #roles-load, #acceptance-self-improvement-(one-line, noise, tests-floor)
+            "one `result` line, however many settings it sweeps",
+            "`octo-lite-lock CMD`",
+            "beats the champion's by more than the noise",
+            "every floor holds",
+            "the tests of the code it touched",
+            "its `why` naming that test",
+            "kept only when both beat the champion",
+            "send its commit to the steward",
+            "merge it into your branch and score it again",
+            # -messages, #acceptance-self-improvement-shared
+            "to every other scientist and the steward",
+            # -team: a respawned scientist goes on from the log
+            "go on from the log",
+            # herdr-transport #acceptance-pane-for-life-rule, disk #acceptance-disk-own-only-rule
+            "Spawn, respawn, or close a teammate: the steward does",
+            "never a teammate's or another lane's",
+        ):
+            self.assertIn(phrase, text)
 
     def test_researcher_hands_the_x_token_to_curl_on_stdin_only(self) -> None:
         # spec #roles-research-x, #acceptance-research-x, #acceptance-research-x-missing:
