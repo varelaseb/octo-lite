@@ -75,7 +75,7 @@
 <span data-boundary-scope>Observable scope: the scratch folders in the user's home folder and the packages in a parked agent's worktree.</span>
 </p>
 <p data-modular-boundary data-anchor="boundary-disk-share" id="boundary-disk-share">
-<span data-boundary-responsibility>The orchestrator, implementer, and integrator contracts own each agent's choice, where it installs, to link main's packages or install its own.</span>
+<span data-boundary-responsibility>The role contracts of the agents that work in a lane worktree own each agent's choice, where it installs, to link main's packages or install its own.</span>
 <span data-boundary-seam>The caller-facing seam is the <code>node_modules</code> folder beside each lockfile in the agent's worktree, which every program the repository runs reads as its installed packages.</span>
 <span data-boundary-dependency>Direction is external-provider: the choice reads the main checkout's lockfile and npm's record of its install there, and writes nothing there; nothing depends on which way it went.</span>
 <span data-boundary-scope>Observable scope: the packages in an agent's own worktree.</span>
@@ -114,7 +114,7 @@ Nothing sweeps <code>/tmp</code>: a folder left there before the update stays un
 <p data-anchor="share-link" id="share-link">Before an agent installs packages in a worktree of its own lane, as <a href="#park-own">parking</a> counts one, at its start or once resumed from a park, it decides, for each <code>package-lock.json</code> Git tracks there with no <code>node_modules</code> folder beside it, whether to link main's packages or install its own.
 It links only when the main checkout, its worktree on the main branch, has the same lockfile byte for byte at the same path and a <code>node_modules</code> folder beside it, and no case below makes linking dangerous.
 It links by making the worktree's <code>node_modules</code> a folder of hard links to main's files, so its packages are installed with nothing downloaded and almost no disk taken.
-The decision is the agent's, at the point it installs: no wrapper links packages or checks for it, and the orchestrator, implementer, and integrator contracts carry this recipe where they install.</p>
+The decision is the agent's, at the point it installs: no wrapper links packages or checks for it, and the role contracts of the agents that work in a lane worktree carry this recipe where they install.</p>
 <p data-anchor="share-caches" id="share-caches">Right after linking, the agent removes from the linked folder every folder at its top whose name starts with a dot, but <code>.bin</code>, which takes only its own links: tools keep caches there that they rewrite in place, as a test runner's result cache under <code>.vite</code> is, and through a hard link that write would land in main's.
 A tool then makes its cache afresh, of the worktree's own files.</p>
 <p data-anchor="share-danger" id="share-danger">In each of these cases linking is dangerous, and the agent installs its own packages with its repository's install command, as the target <code>AGENTS.md</code> names it:</p>
@@ -142,7 +142,7 @@ Only installed packages go: every other file, tracked or not, stays.</p>
 A box's main checkouts and its live install clones stay on main and serve every lane and the box's installed tools, so they keep their packages.
 A worktree that a live process other than the parked pane's shell still has as its working folder once the park has ended the agent, such as another live agent or a server the parked agent left running, keeps its packages too, since that process may be using them.</p>
 <p data-anchor="park-resume" id="park-resume">A resumed agent that finds its packages gone links main's again or installs its own, as <a href="#share-link">shared packages</a> decides, before it runs anything that needs them, such as its tests or the prototype.
-The orchestrator, implementer, and integrator contracts say so where they resume, since each works in a worktree its park may free, an integrator in the lane's integration worktree between its rounds.</p>
+The role contracts of the agents that work in a lane worktree say so where they resume, since each works in a worktree its park may free, an integrator in the lane's integration worktree between its rounds.</p>
 <p data-anchor="park-close" id="park-close">Closing an agent removes no packages: a closed worker's worktree goes whole once its commits are integrated, and the lane's own worktree goes at <a href="#lane-close">lane close</a>.</p>
 </section>
 
