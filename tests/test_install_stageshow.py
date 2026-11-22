@@ -41,13 +41,16 @@ PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stage
 # from the cached one, and deploys each file of it missing from agents/skills,
 # applying its patch in .skillfile/patches as git apply does, leaving files it
 # already deployed unchanged, across pin changes too. A patch that no longer
-# applies leaves .skillfile/conflict and the file missing, and fails it. It
-# writes a local skill's tracked files only, so a local skill folder holding a
-# file git does not track fails it.
+# applies records .skillfile/conflict and fails it, leaving the file missing, or
+# on a fresh deploy no Stageshow folder; while that conflict stands, it fails
+# at once. It writes a local skill's tracked files only, so a local skill
+# folder holding a file git does not track fails it.
 SKILLFILE = """#!/usr/bin/env python3
 import json, shutil, subprocess, sys
 from pathlib import Path
 assert sys.argv[1:] == ["install", "-q"], sys.argv
+if Path(".skillfile/conflict").exists():
+    sys.exit("error: pending conflict")
 pin = json.loads(Path("Skillfile.lock").read_text())["github/skill/stageshow"]
 cache, skill = Path(".skillfile/cache/skills/stageshow"), Path("agents/skills/stageshow")
 meta = cache / ".meta"
@@ -55,6 +58,7 @@ if not meta.exists() or json.loads(meta.read_text())["sha"] != pin["sha"]:
     shutil.rmtree(cache, ignore_errors=True)
     shutil.copytree(Path(__file__).parents[1] / "github" / pin["sha"], cache)
     meta.write_text(json.dumps(pin))
+fresh = not skill.exists()
 for upstream in cache.rglob("*"):
     rel = upstream.relative_to(cache)
     if upstream.is_dir() or (skill / rel).exists():
@@ -64,6 +68,8 @@ for upstream in cache.rglob("*"):
     patch = Path(".skillfile/patches/skills/stageshow", f"{rel}.patch").resolve()
     if patch.exists() and subprocess.run(["git", "apply", patch], cwd=skill).returncode:
         (skill / rel).unlink()
+        if fresh:
+            shutil.rmtree(skill)
         Path(".skillfile/conflict").write_text(str(rel))
         sys.exit(f"error: patch for {rel} does not apply")
 for entry in Path("Skillfile").read_text().splitlines():
@@ -321,6 +327,26 @@ class StageshowBrowserTest(CloneCase):
         r = self.run_installer("--check")
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertEqual(r.stderr.splitlines(), [line])
+
+    def test_a_fresh_deploy_the_patch_no_longer_applies_to_fails_naming_the_fix(self):
+        # spec/domains/install.spec.html#install-stageshow-browser and
+        # #acceptance-check-lines: a new clone, or a removed Stageshow, whose pin
+        # the patch no longer applies to, skillfile deploying no Stageshow
+        self.upstream_at("d" * 40, browser="drifted upstream\n")
+        self.bump_pin("d" * 40)
+        for mode in ((), ("--after-pull",), ("--check",)):
+            with self.subTest(mode=mode):
+                r = self.run_installer(*mode)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(r.stderr.splitlines()[-1], self.patch_line())
+        self.assertFalse(self.stageshow.exists(), "the stub must deploy no Stageshow")
+
+    def test_no_stageshow_patch_held_writes_no_error(self):
+        # spec/domains/install.spec.html#acceptance-check-lines
+        shutil.rmtree(self.clone / ".skillfile/patches/skills/stageshow")
+        for mode in ((), ("--check",)):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.install(*mode).stderr, "")
 
     def test_a_pin_bump_deploys_the_new_pin_plus_the_patch(self):
         # spec/domains/install.spec.html#install-peers: a pin change reaches the

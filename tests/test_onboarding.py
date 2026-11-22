@@ -427,11 +427,11 @@ class AfterPullTest(unittest.TestCase):
         base = Path(tmp.name)
         self.prefix = base / "prefix"
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
-        # Stageshow is installed: skillfile finds its pin deployed, and its
-        # filming dependencies are current. So is the recorder: its driver is
-        # current. npm finds each one's browser installed. Herdr is faked, its
-        # Claude started as tests/test_herdr.py starts it; jq is the box's own,
-        # which herdr-spawn and the fake parse with.
+        # Stageshow is installed: skillfile finds its pin fetched and deployed,
+        # and its filming dependencies are current. So is the recorder: its
+        # driver is current. npm finds each one's browser installed. Herdr is
+        # faked, its Claude started as tests/test_herdr.py starts it; jq is the
+        # box's own, which herdr-spawn and the fake parse with.
         self.bin = base / "bin"
         self.bin.mkdir()
         browser = base / "browser"
@@ -462,6 +462,7 @@ class AfterPullTest(unittest.TestCase):
         for deps in (self.clone / "agents/skills/stageshow/node_modules", self.clone / "node_modules"):
             deps.mkdir(parents=True)
             (deps / ".package-lock.json").write_text("{}")
+        (self.clone / ".skillfile/cache/skills/stageshow").mkdir(parents=True)
         self.run_ok([str(self.clone / "scripts/install-octo-lite"), "--prefix", str(self.prefix)])
         # upstream ships a new helper; the host fast-forwards the clone
         helper = self.upstream / "scripts/new-helper"
