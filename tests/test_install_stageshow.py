@@ -19,6 +19,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_install_keys import give_keys
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
 OFFLINE = f"{ROOT / 'tests' / 'offline-bin'}"
@@ -79,6 +81,7 @@ class CloneCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name).resolve()
         self.prefix = base / "prefix"
+        give_keys(self.prefix)
         self.npm_log = base / "npm.log"
         self.bindir = bindir = base / "bin"
         bindir.mkdir()

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  .table-scroll { overflow-x: auto; background: #fff }
+  table { width: 700px; border-collapse: collapse }
+  td { height: 50px; padding: 0 12px }
+  .row.opened { background: #16a34a }
+</style>
+<!-- A plan's row 700 px wide in a table that scrolls sideways, wider than a phone's screen, so on a phone the point
+     inside it but off its words never shows, however the table scrolls. -->
+<div class="table-scroll">
+  <table><tr class="row"><td>Tuesday</td><td>Pitch deck</td><td>Recorded</td><td>Edited</td><td>Posted</td></tr></table>
+</div>
+<script>
+  document.querySelector('.row').addEventListener('click', e => e.currentTarget.classList.add('opened'))
+</script>

@@ -396,7 +396,7 @@ class LaneRecordTests(unittest.TestCase):
         # each worker asks itself the one question in its last step and, on yes
         # only, ends its last report with one Annoyed: line; the owner turns that
         # line into one complaint line naming the worker, its session, its sentence.
-        for role in ("implementer", "integrator", "code-reviewer"):
+        for role in ("implementer", "integrator", "code-reviewer", "researcher"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "Before your last report, answer one question: did anything about the system annoy you? "
@@ -749,7 +749,7 @@ class LaneRecordTests(unittest.TestCase):
         # #transport-native, #acceptance-native-*: natively to a live Claude
         # session; a timed-out native send counts as sent (#acceptance-native-timeout);
         # herdr-say only when undelivered, or a later notice says held, denied, expired.
-        for role in ("implementer", "integrator", "code-reviewer"):
+        for role in ("implementer", "integrator", "code-reviewer", "researcher"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
@@ -892,6 +892,99 @@ class LaneRecordTests(unittest.TestCase):
         self.assertIn(line["reason"], {"no gain", "human"})
         # Before the finish the scientists make every change; the steward writes only keeps.
         self.assertIn("On a self-improvement lane (Steward) the scientists make every change until the finish", owner)
+
+    def test_steward_writes_the_lane_report_and_links_it(self) -> None:
+        # spec #self-improvement-report, -finish, -stop, -log-kinds,
+        # #acceptance-self-improvement-(report, no-keep, merge-ask): the steward
+        # writes the lane's report with the report skill, from the log, and the
+        # merge ask, PR body, and close report link it, a PR by its Proof path only.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        owner = " ".join(raw.split())
+        steward = raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0]
+        bullet = lambda name: " ".join(steward.split(f"\n  - {name} (spec ", 1)[1].split("\n  - ", 1)[0].split())
+        report = bullet("Report")
+        # The skill's lane folder and address, its question the fixed one of the lane's report.
+        skill = " ".join((ROOT / "skills/report/SKILL.md").read_text(encoding="utf-8").split())
+        address = "`<Proof's address>/reports/<lane record name>/<question>/`"
+        self.assertIn(address, skill)
+        self.assertIn(address.replace("<question>", "self-improvement"), report)
+        self.assertIn("`reports/self-improvement/`", report)
+        # Written as the owner-side rule says, never restated: one scope-row recipe in the contract.
+        self.assertIn("as Research says for a report you write yourself", report)
+        self.assertEqual(owner.count("review-host register"), 1)
+        for phrase in ("once the log holds its `eval` line", "at every keep", "before the stop report",
+                       "before the merge ask", "`experiments.jsonl`", "leads with the gain",
+                       "`data-answers=\"Let it run, Stop\"`", "is the human's stop",
+                       "every report and ask you send links its address",
+                       "only its Proof path, `/reports/<lane record name>/self-improvement/`, never the evidence address"):
+            self.assertIn(phrase, report)
+        # Every log kind and field it reads from is one the spec's log table names.
+        html = SPEC.read_text(encoding="utf-8")
+        rows = dict(re.findall(r'<tr data-anchor="self-improvement-log-\w+"><td><code>(\w+)</code></td><td>.*?</td>'
+                               r'<td>(.*?)</td></tr>', html))
+        fields = {f for row in rows.values() for f in re.findall(r"<code>(\w+)</code>", row)}
+        for kind in ("eval", "hypothesis", "proposal", "result"):
+            self.assertIn(kind, rows)
+            self.assertIn(f"`{kind}`", report)
+        for field in ("noise", "taught", "unreached"):
+            self.assertIn(field, fields)
+            self.assertIn(f"`{field}`", report)
+        # The human's stop may come on the report; the PR body and close report link it.
+        self.assertIn("or a hand-off on the lane's report gives", bullet("Stop"))
+        finish = bullet("Finish")
+        self.assertIn("and the spend, and links the lane's report", finish)
+        self.assertIn("your close report linking the lane's report and naming no PR to merge", finish)
+
+    def test_researcher_hands_the_x_token_to_curl_on_stdin_only(self) -> None:
+        # spec #roles-research-x, #acceptance-research-x, #acceptance-research-x-missing:
+        # the researcher reads the token from the X credential file at each search
+        # and no command line holds it; with no file, no search runs.
+        text = (ROOT / "agents/researcher.md").read_text(encoding="utf-8")
+        block = next(b for _, b in re.findall(r"\n( *)```sh\n(.*?)\n\1```", text, flags=re.DOTALL) if "x.env" in b)
+        with tempfile.TemporaryDirectory() as tmp:
+            home, out, bin_ = Path(tmp, "home"), Path(tmp, "out"), Path(tmp, "bin")
+            for d in (home / ".config/workbench", out, bin_):
+                d.mkdir(parents=True)
+            (bin_ / "curl").write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$OUT/argv"\ncat > "$OUT/stdin"\n')
+            (bin_ / "curl").chmod(0o755)
+            env = {**os.environ, "HOME": str(home), "OUT": str(out), "PATH": f"{bin_}:{os.environ['PATH']}"}
+            run = lambda: subprocess.run(["bash", "-c", block], env=env, capture_output=True, text=True)
+            run()
+            self.assertFalse((out / "argv").exists(), "searched with no X credential file")
+            (home / ".config/workbench/x.env").write_text("X_BEARER_TOKEN=AAAA%3Dsecret\n")
+            run()
+            argv = (out / "argv").read_text()
+            self.assertEqual((out / "stdin").read_text(), "Authorization: Bearer AAAA%3Dsecret\n")
+            self.assertNotIn("secret", argv)
+            self.assertIn("https://api.x.com/2/tweets/search/recent", argv)
+        self.assertNotRegex(block, r"\s(-v|--verbose|--trace\S*)\s")  # each prints the header
+
+    def test_report_skill_states_the_folder_other_lanes_read(self) -> None:
+        # spec #roles-report, #boundary-report, #delivery-notes, #store-research:
+        # one folder per question, in the lane's notes or a research folder, its
+        # latest pair on top and earlier rounds under round-<n>; the owner and
+        # the fleet operator load the skill and spawn the researcher; Proof
+        # serves it at /reports/<lane>/<question>/ or /research/<name>/.
+        skill = " ".join((ROOT / "skills/report/SKILL.md").read_text(encoding="utf-8").split())
+        for token in ("`$(octo-lite-state)/lanes/<lane record name>-notes/reports/<question>/`",
+                      "`$(octo-lite-state)/research/<name>/`", "`summary.html`", "`findings.html`",
+                      "`round-<n>/summary.html`", 'data-anchor="<id>"', 'data-answers="A, B, C"',
+                      "`findings.html#<id>`", "no `data-comment-*` attribute", "slug `operator`",
+                      "`<Proof's address>/reports/<lane record name>/<question>/`",
+                      "`<Proof's address>/research/<name>/`", "prefers-color-scheme", "no dotfiles"):
+            self.assertIn(token, skill)
+        researcher = (ROOT / "agents/researcher.md").read_text(encoding="utf-8")
+        skills = json.loads(re.search(r"^skills: (\[.*\])$", researcher, flags=re.MULTILINE).group(1))
+        self.assertIn("report", skills)
+        for name in skills:
+            self.assertTrue((ROOT / "skills" / name / "SKILL.md").is_file(), name)
+        tools = json.loads(re.search(r"^tools: (\[.*\])$", researcher, flags=re.MULTILINE).group(1))
+        self.assertLessEqual({"WebSearch", "WebFetch"}, set(tools))
+        for role in ("orchestrator", "meta-operator"):
+            text = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8")
+            self.assertIn('"report"', text.split("---", 2)[1], role)
+            self.assertIn("researcher", text, role)
+        self.assertIn("--role researcher --cwd <target main checkout>", OPERATOR.read_text(encoding="utf-8"))
 
     def test_operator_launch_example_writes_started_at(self) -> None:
         text = OPERATOR.read_text(encoding="utf-8")

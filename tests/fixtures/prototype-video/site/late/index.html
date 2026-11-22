@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Search</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 16px system-ui, sans-serif; background: #f6f6f4 }
+  button { display: block; width: min(640px, 100%); height: 50px; font: inherit; background: #fff }
+  .result.opened { background: #16a34a }
+</style>
+<!-- A search whose result shows 8 s after its press, as a page slowed by a loaded box draws it. -->
+<button class="search" type="button">Search</button>
+<div class="results"></div>
+<script>
+  const results = document.querySelector('.results')
+  document.querySelector('.search').addEventListener('click', () => setTimeout(() => {
+    results.innerHTML = '<button class="result" type="button">Tuesday</button>'
+    results.firstChild.addEventListener('click', e => e.target.classList.add('opened'))
+  }, 8000))
+</script>

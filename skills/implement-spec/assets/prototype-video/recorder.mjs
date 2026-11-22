@@ -27,8 +27,8 @@ const TRAVEL = [0.45, 0, 0.1, 1]
 const PACE = { open: 1200, reach: 500, rest: 400, press: 90, key: 90, hold: 1400, last: 2200 }
 // How far, in px, a press still down sets off as a drag starts, past the browser's own threshold.
 const LIFT = 12
-// How long, in ms, a part may take to show, and the video to show an action, however loaded the box.
-const WAIT = { part: 5000, video: 10000 }
+// How long, in ms, a part may take to show and take a press, and the video to show an action, however loaded the box.
+const WAIT = { part: 30000, video: 10000 }
 // What acts of its own when pressed, as Spec Chat tells a press through a prototype from a click on nothing that acts
 // (its runtime's PROTOTYPE_ACTS).
 const ACTS = 'a[href],button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],[role=menuitem],'
@@ -123,6 +123,14 @@ async function record(browser, url, steps, viewport, file) {
     await context.exposeBinding('octoLiteRecorder', now)
     await context.addInitScript(overlay, { ARROW, EDGE, MARK, TOUCH, touch })
     const page = await context.newPage()
+    // The fetches the page has sent that have not answered yet, which each step's result may wait on (settle); an event
+    // stream answers for as long as the page reads it, so none counts once it starts, as annotateanything's QA settle
+    // never counts one busy (jev-capture #jc-ac-settle).
+    const pending = new Set()
+    page.on('request', request => ['fetch', 'xhr'].includes(request.resourceType()) && pending.add(request))
+    for (const end of ['requestfinished', 'requestfailed']) page.on(end, request => pending.delete(request))
+    page.on('response', answer => /^text\/event-stream/i.test(answer.headers()['content-type'] ?? '')
+      && pending.delete(answer.request()))
     // A document the action opens asks for the pointer as it starts, so one this misses still draws it.
     const show = () => page.evaluate(state => dispatchEvent(new CustomEvent('octo-lite-recorder', { detail: state })), now())
       .catch(() => {})
@@ -151,41 +159,42 @@ async function record(browser, url, steps, viewport, file) {
       verify(viewport, step.name, [{ action, crops, mark }])
     }
 
-    // The pointer goes to the part `selector` names once it shows, the page first scrolling it into view when a point to
-    // rest on lies off the screen, and rests on it: inside it but off its words (Stageshow motion.md, The cursor), else
-    // its middle. The part shows once a press at such a point lands on it, as Spec Chat's click on it does, however the
-    // page hid it until then; the pointer rests at the first such point, judged again once it rests there, as its hover
-    // may show a part over that point, else at the next. A press still down travels there by `move`, setting off toward
-    // the part before the page scrolls, as a drag starts, so what it lifts goes along. A phone's tap hovers the point
-    // before it presses there, so the mouse hovers it, the finger resting there as the cause of that hover.
+    // The pointer goes to the part `selector` names once it shows, the page first scrolling it into view, once when a
+    // point to rest on lies off the screen, and while no press at either lands on it, as when a scroller holding it
+    // hides it (scroll), and rests on it: inside it but off its words (Stageshow motion.md, The cursor), else its middle.
+    // The part shows once a press at such a point lands on it, as Spec Chat's click on it does, however the page hid it
+    // until then, a point off the screen never; the pointer rests at the first such point, judged again once it rests
+    // there, as its hover may show a part over that point, or the page, still drawing, may have moved the part; else it
+    // goes again to the first point a press lands on then. A press still down travels there by `move`, first setting off
+    // toward where the part lies off the screen before the page scrolls it in, as a drag starts, so what it lifts goes
+    // along; while it waits on the part to show, it stays still. A phone's tap hovers the point before it presses there,
+    // so the mouse hovers it, the finger resting there as the cause of that hover.
     const reach = async (step, selector, doing, move = !touch && mouse) => {
       const target = page.locator(selector).first()
-      const layout = () => target.boundingBox({ timeout: WAIT.part }).catch(() => null)
-      let box = null
-      await until(async () => (box = await layout()), WAIT.part)
-      if (!box) throw new Error(`step "${step.name}": nothing on the route matches "${selector}", or the first part it matches never shows`)
       const { width, height } = page.viewportSize()
-      if (points(box).some(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)) {
-        if (pointer.down !== null) {
-          const [dx, dy] = [box.x + box.width / 2 - pointer.x, box.y + box.height / 2 - pointer.y]
-          const off = LIFT / Math.hypot(dx, dy)
-          await travel(pointer, { x: Math.round(pointer.x + dx * off), y: Math.round(pointer.y + dy * off) }, move)
-        }
-        await target.evaluate(el => new Promise(done => {
-          addEventListener('scrollend', done, { capture: true, once: true })
-          setTimeout(done, 3000) // a page that cannot scroll it ends no scroll
-          el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
-        }))
-      }
-      for (let from = 0; from < 2; from++) { // the two points to rest on
+      let shown = false
+      let centered = false // scrolled once to the middle of the screen from off it
+      for (const by = Date.now() + WAIT.part; Date.now() < by;) {
+        const box = await target.boundingBox({ timeout: Math.max(1, by - Date.now()) }).catch(() => null)
+        shown ||= Boolean(box)
+        const rests = box ? points(box) : []
+        const away = rests.find(({ x, y }) => x < 0 || y < 0 || x >= width || y >= height)
         let point = null
-        await until(async () => {
-          const laid = await layout()
-          const rests = laid ? points(laid) : []
-          for (let n = from; n < rests.length && !point; n++) if (await lands(target, rests[n])) [from, point] = [n, rests[n]]
-          return point
-        }, WAIT.part)
-        if (!point) break
+        for (const rest of rests) if (!point && await lands(target, rest)) point = rest
+        if (box && (!point || (away && !centered))) {
+          if (away && !centered && pointer.down !== null) { // the pointer, on the screen, is never at that point
+            const [dx, dy] = [away.x - pointer.x, away.y - pointer.y]
+            const off = LIFT / Math.hypot(dx, dy)
+            await travel(pointer, { x: Math.round(pointer.x + dx * off), y: Math.round(pointer.y + dy * off) }, move)
+          }
+          await target.evaluate(scroll, { away: Boolean(away), ms: by - Date.now() })
+          centered ||= Boolean(away)
+          continue
+        }
+        if (!point) {
+          await sleep(20)
+          continue
+        }
         if (move) {
           await travel(pointer, point, move)
         } else {
@@ -201,6 +210,7 @@ async function record(browser, url, steps, viewport, file) {
         await sleep(PACE.rest)
         if (await lands(target, point)) return target
       }
+      if (!shown) throw new Error(`step "${step.name}": nothing on the route matches "${selector}", or the first part it matches never shows`)
       throw new Error(`step "${step.name}": ${doing} on "${selector}" never lands on it: it does not show there `
         + 'or lets presses through, or another part lies over it or acts inside it')
     }
@@ -229,7 +239,7 @@ async function record(browser, url, steps, viewport, file) {
       if (!held) return
       await held.up()
       held = null
-      await settle(page)
+      await settle(page, pending)
     }
 
     // One action, as a person does it (#delivery-round-video-actions); then the motion it starts ends, as Spec Chat waits
@@ -250,7 +260,7 @@ async function record(browser, url, steps, viewport, file) {
       } else if (action.kind === 'hold' || (action.kind === 'menu' && touch)) {
         if (!action.to) {
           held = { step, label, up }
-          return settle(page)
+          return settle(page, pending)
         }
         // Held until the part `data-to` names shows, then carried there still down and let go on it.
         await reach(step, action.to, 'letting go', touch ? (x, y) => finger('touchMove', { x, y }) : mouse)
@@ -265,11 +275,11 @@ async function record(browser, url, steps, viewport, file) {
         if (await target.inputValue().catch(() => '')) await page.keyboard.press('ControlOrMeta+A')
         await page.keyboard.type(action.text, { delay: PACE.key })
       }
-      await settle(page)
+      await settle(page, pending)
     }
 
     await page.goto(url)
-    await settle(page)
+    await settle(page, pending)
     if (!touch) await page.mouse.move(pointer.x, pointer.y)
     const cues = []
     await page.screencast.start({ path: file, size, onFrame: frame => {
@@ -282,7 +292,7 @@ async function record(browser, url, steps, viewport, file) {
       if (!n) await sleep(PACE.open)
       await letGo()
       for (const action of step.actions) await act(step, action)
-      await settle(page) // a step the screen reaches on its own plays with the cursor at rest
+      await settle(page, pending) // a step the screen reaches on its own plays with the cursor at rest
       await sleep(n === steps.length - 1 ? PACE.last : PACE.hold)
       if (held) await seen(held.step, held.label, true) // a hold shows down for as long as it is down
       frames = []
@@ -301,6 +311,21 @@ async function record(browser, url, steps, viewport, file) {
 function points(box) {
   return [[box.width > 40 ? 0.85 : 0.5, 0.6], [0.5, 0.5]]
     .map(([across, down]) => ({ x: Math.round(box.x + box.width * across), y: Math.round(box.y + box.height * down) }))
+}
+
+// The page scrolls `part` into view, every scroller holding it: to the middle of the screen when it lies `away` from
+// it, else only as far as it then shows. It ends as the scroll ends, at once when nothing scrolls, as for a part the
+// page hides or covers where it already shows, and at the latest in `ms`.
+function scroll(part, { away, ms }) {
+  return new Promise(done => {
+    let moving = false
+    addEventListener('scroll', () => { moving = true }, { capture: true, once: true })
+    addEventListener('scrollend', done, { capture: true, once: true })
+    setTimeout(done, ms)
+    const to = away ? 'center' : 'nearest'
+    part.scrollIntoView({ block: to, inline: to, behavior: 'smooth' })
+    requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => moving || done())))
+  })
 }
 
 function lands(target, point) {
@@ -347,13 +372,18 @@ function ease(t) {
   return curve(y1, y2, (lo + hi) / 2)
 }
 
-// As Spec Chat's frames settle: a page an action opens loads, fonts arrive, and each finite motion the page started ends.
-async function settle(page) {
+// As Spec Chat's frames settle: a page an action opens loads, the fetches still `pending` answer, fonts arrive, and each
+// finite motion the page started ends; then again while an answer, once drawn, sent another, as a step's result comes
+// back over several slow answers, until all have answered or the wait a part has ends.
+async function settle(page, pending) {
   await sleep(50)
-  for (let tries = 0; ; tries++) {
+  const by = Date.now() + WAIT.part
+  const answered = () => pending.size === 0
+  for (let tries = 0; ;) {
+    await until(answered, by - Date.now())
     try {
       await page.waitForLoadState()
-      return await page.evaluate(async () => {
+      await page.evaluate(async () => {
         await document.fonts.ready
         await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))
         const moving = document.getAnimations()
@@ -361,8 +391,10 @@ async function settle(page) {
         await Promise.race([Promise.all(moving.map(a => a.finished.catch(() => {}))), new Promise(done => setTimeout(done, 5000))])
       })
     } catch (e) {
-      if (tries) throw e // the page the action opened replaced the one asked; asked once more
+      if (tries++) throw e // the page the action opened replaced the one asked; asked once more
+      continue
     }
+    if (answered() || Date.now() >= by) return
   }
 }
 
