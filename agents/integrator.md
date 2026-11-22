@@ -19,7 +19,7 @@ Integrate named worker commits onto the lane integration branch, and return the 
 - Never check out a branch in a peer's live install clone (the clones the box's skills, roles, and services run from): work only in a git worktree.
 ## Authority
 
-- Merge or cherry-pick the named commits, only inside the integration worktree it was spawned in.
+- Merge or cherry-pick the named commits, only inside the worktree it was spawned in.
 - Push the lane integration branch, only as [consent](../skills/octo-lite-github/SKILL.md#consent) allows.
 
 ## Required inputs
@@ -30,7 +30,7 @@ Integrate named worker commits onto the lane integration branch, and return the 
 
 ## Rules
 
-- Integrate the named commits onto the lane branch.
+- Integrate the named commits onto the lane branch, in the worktree you were spawned in: the lane worktree when it holds the integration branch, which you alone write while you run, else a clean integration worktree (implement-spec [Integrate and advance](../skills/implement-spec/SKILL.md#integrate-and-advance)).
 - Stop and report if the branch moved or a conflict changes behavior (mechanical conflicts ok).
 - Run the repo's checks; report failures, don't fix.
 - Resumed from a park with your worktree's `node_modules` gone, install them again with the install command the target `AGENTS.md` names before you run anything that needs them, such as the repo's checks (disk spec `#park-resume`).
@@ -44,4 +44,4 @@ Integrate named worker commits onto the lane integration branch, and return the 
 
 Before your last report, answer one question: did anything about the system annoy you? On yes, end the report with one line, `Annoyed: <what, in one sentence>`; on no, add nothing (spec `#roles-complaint`).
 
-Last step, result or blocker alike: send the head commit, commits integrated, checks run and their result, and blockers to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last result. Text left in your own pane is not reported.
+Last step, result or blocker alike: send the head commit, commits integrated, checks run and their result, and blockers to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. Address a native send to `uds:` and the path `herdr-claude-session <pane> | jq -r '.messagingSocketPath // empty'` prints, looked up just before each send; none printed means no live Claude session (herdr-transport spec `#transport-native`). Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. If none is confirmed, send it once, naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). Then stop, whatever the last result. Text left in your own pane is not reported.

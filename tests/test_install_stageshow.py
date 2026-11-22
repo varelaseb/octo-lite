@@ -43,8 +43,7 @@ PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stage
 # already deployed unchanged, across pin changes too. A patch that no longer
 # applies records .skillfile/conflict and fails it, leaving the file missing, or
 # on a fresh deploy no Stageshow folder; while that conflict stands, it fails
-# at once. It writes a local skill's tracked files only, so a local skill
-# folder holding a file git does not track fails it.
+# at once.
 SKILLFILE = """#!/usr/bin/env python3
 import json, shutil, subprocess, sys
 from pathlib import Path
@@ -72,17 +71,6 @@ for upstream in cache.rglob("*"):
             shutil.rmtree(skill)
         Path(".skillfile/conflict").write_text(str(rel))
         sys.exit(f"error: patch for {rel} does not apply")
-for entry in Path("Skillfile").read_text().splitlines():
-    field = entry.split()
-    if field[:2] != ["local", "skill"] or not Path(field[3]).is_dir():
-        continue
-    name, folder = field[2:4]
-    files = sum(f.is_file() for f in Path(folder).rglob("*"))
-    written = len(subprocess.run(["git", "ls-files", "--", folder], capture_output=True,
-                                 text=True, check=True).stdout.splitlines())
-    if written < files:
-        sys.exit(f"error: failed to install '{name}' to octo-lite skill (agents/skills):"
-                 f" only {written} of {files} expected file(s) were written")
 """
 # npm ci installs the lockfile's packages and records them in node_modules;
 # npm exec runs a driver's browser install, a Chromium named for the folder it
