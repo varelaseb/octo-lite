@@ -40,9 +40,11 @@ own skills.
 
 tdd and Stageshow are third-party skills pinned in `Skillfile`. tdd is
 committed; Stageshow never is: the installer fetches it at its pin with
-`skillfile install` and its filming dependencies with `npm ci`. When the fetch
-fails it links everything else, then exits non-zero, its last line
-`Stageshow not installed` naming why and the step that fixes it.
+`skillfile install`, its filming dependencies with `npm ci`, and the Chromium
+its browser driver installs, which octo-lite's one patch to it films in on a
+box without Chrome. When the fetch fails it links everything else, then exits
+non-zero, its last line `Stageshow not installed` naming why and the step that
+fixes it.
 
 The round video recorder, `prototype-video`, installs the same way: `npm ci`
 at the clone root, never inside a skill folder, fetches the browser driver it

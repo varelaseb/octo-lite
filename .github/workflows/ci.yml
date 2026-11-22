@@ -13,8 +13,19 @@ jobs:
         # (tests/test_box_lock.py UpdateTest)
         with:
           fetch-depth: 0
-      # The recorder reads mockup files and records in a browser, which its tests
-      # drive (tests/test_prototype_video.py): its pinned driver and browser, as
-      # the installer adds them (spec/domains/install.spec.html #install-recorder).
-      - run: npm ci --no-audit --no-fund && npx playwright-core install --with-deps chromium
+      # The suite runs in a clone installed as a box's is: skillfile by the command
+      # the installer names, then the installer, into a throwaway prefix, fetches
+      # Stageshow with its filming dependencies and Chromium, which
+      # tests/test_stageshow_film.py films in, and adds the recorder's driver and
+      # browser, which tests/test_prototype_video.py records in
+      # (spec/domains/install.spec.html #install-peers, #install-recorder,
+      # #install-stageshow-browser); then the system libraries those browsers need.
+      # skillfile's install.sh reads GITHUB_TOKEN for its latest-release API call,
+      # so the runner's token keeps that call off the unauthenticated rate limit.
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          eval "$(grep '^skillfile_install=' scripts/install-octo-lite)" && sh -c "$skillfile_install"
+          PATH="$HOME/.local/bin:$PATH" scripts/install-octo-lite --prefix "$RUNNER_TEMP/home"
+          npx playwright-core install-deps chromium
       - run: python3 -m unittest discover -s tests -v

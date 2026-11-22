@@ -425,11 +425,12 @@ done
 # ignores. It and the round video recorder (#install-recorder) get the
 # dependencies their lockfiles name by npm ci, rerun only when that lockfile is
 # newer than npm's record of the last install, which is also what --check takes
-# as installed; the recorder's pinned driver then installs its browser, a no-op
-# once there. The recorder's lockfile sits at this clone's root, where Node finds
-# its dependencies from the recorder's folder, so none lands in a skill folder;
-# each run but --check removes those an earlier install left in the recorder's
-# folder.
+# as installed; each one's pinned driver then installs its Chromium, a no-op
+# once there, which for Stageshow --check also takes as installed
+# (#install-stageshow-browser). The recorder's lockfile sits at this clone's
+# root, where Node finds its dependencies from the recorder's folder, so none
+# lands in a skill folder; each run but --check removes those an earlier
+# install left in the recorder's folder.
 # A failed step leaves Stageshow out, leaves the recorder linked, and
 # everything else still links; every mode then fails naming why, last.
 # Only --check skips the fetch, so only a fetch failure is install's alone.
@@ -441,21 +442,63 @@ deps_current() {
      ! "$1/package-lock.json" -nt "$1/node_modules/.package-lock.json" ]]
 }
 npm_deps() { deps_current "$1" || (cd "$1" && npm ci --no-audit --no-fund --loglevel=error); }
+# Every browser install keeps the browsers already on the box: another lane's
+# agent may use one no installed driver names.
+playwright_chromium() { (cd "$1" && PLAYWRIGHT_SKIP_BROWSER_GC=1 npm exec -- playwright-core install "${@:2}" chromium); }
+# Each browser the driver installs for chromium, as it lists them, finished.
+has_chromium() {
+  local dirs dir
+  dirs="$(playwright_chromium "$1" --dry-run 2>/dev/null | sed -n 's/^ *Install location: *//p')" && [[ -n "$dirs" ]] || return 1
+  while IFS= read -r dir; do [[ -e "$dir/INSTALLATION_COMPLETE" ]] || return 1; done <<<"$dirs"
+}
 if command -v skillfile >/dev/null; then why="" stageshow_fix="run $install_cmd"
 else why="skillfile not found" stageshow_fix="$skillfile_install, then run $install_cmd"
 fi
+# Each file of Stageshow's pin in skillfile's cache deploys with octo-lite's
+# patches applied. skillfile deploys only files missing from agents/skills,
+# across pin changes too, so after the fetch each deployed file of the pin that
+# differs from the pin with the patches applied, all or none, is removed, and
+# skillfile deploys it again, keeping the skill's dependencies. A failed fetch
+# removes nothing. tdd's patched file is committed, so a pull brings it.
+pinned="$root/.skillfile/cache/skills/stageshow"
+patches="$root/.skillfile/patches/skills/stageshow"
+redeploy_changed() {
+  local want f
+  want="$(mktemp -d)"
+  cp -r "$pinned/." "$want"
+  (cd "$want" && find "$patches" -name '*.patch' -exec git apply {} +) 2>/dev/null
+  while IFS= read -r f; do cmp -s "$want/$f" "$stageshow/$f" || rm -f "$stageshow/$f"; done < <(cd "$want" && find . -type f)
+  rm -r "$want"
+}
 if [[ "$check" != true && -z "$why" ]]; then
-  if ! (cd "$root" && skillfile install -q); then why="skillfile install failed"
+  if ! (cd "$root" && skillfile install -q && redeploy_changed && skillfile install -q); then
+    why="skillfile install failed"
   elif ! npm_deps "$stageshow"; then why="npm ci failed"
+  elif ! playwright_chromium "$stageshow"; then why="browser install failed"
   fi
   [[ -z "$why" ]] || stageshow_fix="resolve its error above, then $stageshow_fix"
 fi
+# skillfile records a patch that no longer applies as its conflict, and
+# ignores one naming a file its pin lacks, so every mode reads both.
+patch_gone() {
+  local patch
+  [[ -e "$root/.skillfile/conflict" ]] && return
+  [[ -d "$pinned" && -d "$patches" ]] || return 1
+  while IFS= read -r patch; do
+    [[ -e "$pinned/${patch%.patch}" ]] || return 0
+  done < <(cd "$patches" && find . -name '*.patch')
+  return 1
+}
+if patch_gone; then
+  why="octo-lite's patch no longer applies to its pin"
+  stageshow_fix="pull a fixed octo-lite, run skillfile resolve --abort in $root, then run $install_cmd"
+fi
 [[ -n "$why" ]] || deps_current "$stageshow" || why="filming dependencies not installed"
+[[ -n "$why" ]] || has_chromium "$stageshow" || why="no browser, its Chromium not installed"
 recorder_why="" recorder_fix="run $install_cmd"
 if [[ "$check" != true ]]; then
   if ! npm_deps "$root"; then recorder_why="npm ci failed"
-  elif ! (cd "$root" && npm exec -- playwright-core install chromium); then
-    recorder_why="browser install failed"
+  elif ! playwright_chromium "$root"; then recorder_why="browser install failed"
   fi
   [[ -z "$recorder_why" ]] || recorder_fix="resolve its error above, then $recorder_fix"
 fi
