@@ -180,8 +180,9 @@ that is a Git linked worktree, off its repository's main branch (the one
 `origin/HEAD` names, else `main`), that no live process but the pane's shell
 works in once the agent has ended. A main checkout, an install clone, and a
 worktree another agent or a server the parked one left running works in keep
-theirs, and every other file stays. The resumed agent installs them again with
-its repository's install command (`spec/domains/disk.spec.html#park`).
+theirs, and every other file stays. The resumed agent links main's again or
+installs its own, as its role contract's Packages rule says
+(`spec/domains/disk.spec.html#park-resume`).
 
 ## Reload an agent
 
