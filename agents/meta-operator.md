@@ -89,6 +89,11 @@ brief pointing to the finish order. Code-level conditions go in the brief only.
 For a spec that changes a product's screens, the brief names the prototype, its round videos, and its route table as shaping's deliverable (spec `#delivery-prototype`).
 Shared surface (spec `#roles-shared-surface`), such as a design system: lanes that edit one form a line in the order they join, each waiting on the open lane just before it, if any, so a merge wakes one. A lane joins by starting on it (`waiting_on` that lane's issue key, its brief saying it waits on that lane) or by its owner telling you its spec turns out to edit one (tell it to wait on that lane; it sets `waiting_on`); a waiting lane is parked (Behavior) until that PR merges, its wake saying merge main and go on. With two lanes open on one, or the human's cap, file any further one unstarted, record it held as a `note` line in `operator.handoffs.jsonl` naming its issue and the surface, and tell the human it is held until one merges; on each merge there, start the oldest held one (Lane start, its filed issue the primary), joining at the end.
 
+Self-improvement lane (spec `#self-improvement-what`, `#self-improvement-goal`, `#self-improvement-why`): start one only when the human asks you to launch a self improvement lane on a goal it names: never on your own, never on a goal you choose, and never again when one ends, so none is a standing loop.
+Start it by Lane start in the goal's repository, as any lane, its brief naming it a self-improvement lane, its goal, and the goal's repository; its owner is its steward.
+An ask naming no goal gets one question to the human, before any lane starts, asking which goal, its answers offered, such as the goals that repository's `AGENTS.md` declares under `Goals:` (spec `#self-improvement-goal-where`), and your pick marked.
+The human's stop goes to its steward by `herdr-say <lane name> <stop>` (spec `#self-improvement-messages`).
+
 Bootstrap adoption: on taking over as operator, message every live orchestrator
 with your pane id ("Operator is now <pane>. Report gates and completion here.")
 and create any missing lane records. An orchestrator without an operator pane

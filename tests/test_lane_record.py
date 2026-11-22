@@ -419,7 +419,7 @@ class LaneRecordTests(unittest.TestCase):
         # each worker asks itself the one question in its last step and, on yes
         # only, ends its last report with one Annoyed: line; the owner turns that
         # line into one complaint line naming the worker, its session, its sentence.
-        for role in ("implementer", "integrator", "code-reviewer", "researcher"):
+        for role in ("implementer", "integrator", "code-reviewer", "researcher", "scientist"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "Before your last report, answer one question: did anything about the system annoy you? "
@@ -867,7 +867,7 @@ class LaneRecordTests(unittest.TestCase):
         # #transport-native, #acceptance-native-*: natively to a live Claude
         # session; a timed-out native send counts as sent (#acceptance-native-timeout);
         # herdr-say only when undelivered, or a later notice says held, denied, expired.
-        for role in ("implementer", "integrator", "code-reviewer", "researcher"):
+        for role in ("implementer", "integrator", "code-reviewer", "researcher", "scientist"):
             output = (ROOT / f"agents/{role}.md").read_text(encoding="utf-8").split("## Output", 1)[1]
             self.assertIn(
                 "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
@@ -972,6 +972,254 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIn("on Claude run in the background", " ".join(callers[path].split()), path)
         for path, text in {**callers, "herdr-comms": recipe}.items():
             self.assertNotIn("--notice", text, path)
+
+    def test_steward_owns_a_self_improvement_lane_and_directs_no_research(self) -> None:
+        # spec #self-improvement-steward, -team, -messages (steward and operator
+        # rows), -spend, -cap, -stop, -finish, #acceptance-self-improvement-(owner,
+        # no-direction, no-gain, human-stop, status, ask-spend, merge-ask,
+        # spec-change, no-keep): the lane owner's steward rule.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        owner = " ".join(raw.split())
+        steward = " ".join(raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0].split())
+        for phrase in (
+            "shape no spec, file no ticket graph, run no experiment, and never name a hypothesis or an experiment "
+            "to a scientist",
+            "spawn three scientists, `--role scientist`",
+            "`scientist1-<issue key>` to `scientist3-<issue key>` lowercase",
+            "each in its own worktree and branch off the lane branch",
+            # herdr-transport spec #acceptance-pane-for-life-rule: a live pane is recovered in place.
+            "one whose pane is still open you recover in that pane, never a new one",
+            "`git merge --ff-only <commit>`",
+            "worklane-provider.spec.html#spend)",
+            "`GET <the box's evidence address>/lanes`",
+            "name the spend so far in every report and every ask you send",
+            "No budget caps it",
+            "a round ending with no keep",
+            "the human's stop the operator relays",
+            "`Stop: record the running experiment and start none.`",
+            "[Review and finish](../skills/implement-spec/SKILL.md#review-and-finish)",
+            "the main number at the baseline and at the champion on the dev and held-out splits, each keep with its "
+            "gain and what made it win, and the spend",
+            "before the merge ask",
+            "close the PR unmerged",
+            "naming no PR to merge",
+        ):
+            self.assertIn(phrase, steward)
+        # The stop line it appends carries the spec's stop fields and nothing else.
+        line = json.loads(re.search(r'`(\{"at": [^`]*"kind": "stop"[^`]*\})`', steward).group(1))
+        row = re.search(r'<tr data-anchor="self-improvement-log-stop">.*?</td><td>.*?</td><td>(.*?)</td></tr>',
+                        SPEC.read_text(encoding="utf-8")).group(1)
+        self.assertEqual(set(line) - {"at", "by", "kind"}, set(re.findall(r"<code>(\w+)</code>", row)))
+        self.assertIn(line["reason"], {"no gain", "human"})
+        # Before the finish the scientists make every change; the steward writes only keeps.
+        self.assertIn("On a self-improvement lane (Steward) the scientists make every change until the finish", owner)
+
+    def test_steward_opens_the_pr_at_the_first_commit_and_scores_held_out_at_the_finish(self) -> None:
+        # spec #self-improvement-finish, -eval, -team, #roles-load,
+        # #acceptance-self-improvement-(merge-ask, spec-change, no-keep): the draft
+        # PR waits for a commit past main, the champion's held-out number is scored
+        # before the PR body, and a spec-altering keep carries its scientist's edit.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        steward = raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0]
+        bullet = lambda name: " ".join(steward.split(f"\n  - {name} (spec ", 1)[1].split("\n  - ", 1)[0].split())
+        html = SPEC.read_text(encoding="utf-8")
+        finish_spec = " ".join(re.search(r'<p data-anchor="self-improvement-finish"[^>]*>(.*?)</p>', html,
+                                         flags=re.DOTALL).group(1).split())
+        # A fresh lane branch has no commit past main, so no PR opens on the eval line alone.
+        self.assertIn("once the branch holds its first commit past main", finish_spec)
+        keeps = bullet("Keeps")
+        self.assertIn("Once the lane branch holds its first commit past main, the check the team writes, "
+                      "else its first keep, push it and open the draft PR, then push at every keep", keeps)
+        self.assertNotIn("Once the log holds its `eval` line, push", keeps)
+        # The push is stated once, under consent.
+        self.assertEqual(keeps.count("as [consent](../skills/octo-lite-github/SKILL.md#consent) allows"), 1)
+        self.assertNotIn("then push, as", keeps)
+        finish = bullet("Finish")
+        self.assertIn("closes its PR unmerged, if one is open", finish_spec)
+        self.assertIn("close the PR unmerged, if one is open", finish)
+        # The held-out split is scored at the finish, by the eval's own command, before the PR body.
+        self.assertIn("at the finish", html.split('data-anchor="self-improvement-eval"', 1)[1].split("</p>", 1)[0])
+        eval_row = re.search(r'<tr data-anchor="self-improvement-log-eval">.*?</tr>', html).group(0)
+        self.assertIn("<code>command</code>", eval_row)
+        score = ("score the lane branch head on the held-out split with the latest `eval` line's `command`, "
+                 "`octo-lite-lock <command>` in the lane worktree")
+        self.assertIn(score, finish)
+        self.assertLess(finish.index(score), finish.index("Its PR body gives"))
+        # A spec-altering keep carries its scientist's edit; the steward sends its review link.
+        self.assertIn("carries that spec's edit in the keep's commit, written by its scientist", finish_spec)
+        self.assertIn("carries that spec's edit in its commit, written by its scientist", finish)
+        self.assertIn("send that spec's review link for acceptance before the merge ask", finish)
+        scientist = " ".join((ROOT / "agents/scientist.md").read_text(encoding="utf-8").split())
+        self.assertIn("when its change alters a behavior or value a spec of the goal's repository states, "
+                      "amend its commit with that spec's edit, written by you", scientist)
+        # Each scientist is briefed with the spawn name its log lines, ids, and lookup key on.
+        self.assertIn("your pane, and its own spawn name.", bullet("Team"))
+        inputs = scientist.split("## Required inputs", 1)[1].split("## Rules", 1)[0]
+        self.assertIn("your spawn name, which your log lines' `by`, your ids, and your teammate lookup key on", inputs)
+
+    def test_steward_writes_the_lane_report_and_links_it(self) -> None:
+        # spec #self-improvement-report, -finish, -stop, -log-kinds,
+        # #acceptance-self-improvement-(report, no-keep, merge-ask): the steward
+        # writes the lane's report with the report skill, from the log, and the
+        # merge ask, PR body, and close report link it, a PR by its Proof path only.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        owner = " ".join(raw.split())
+        steward = raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0]
+        bullet = lambda name: " ".join(steward.split(f"\n  - {name} (spec ", 1)[1].split("\n  - ", 1)[0].split())
+        report = bullet("Report")
+        # The skill's lane folder and address, its question the fixed one of the lane's report.
+        skill = " ".join((ROOT / "skills/report/SKILL.md").read_text(encoding="utf-8").split())
+        address = "`<Proof's address>/reports/<lane record name>/<question>/`"
+        self.assertIn(address, skill)
+        self.assertIn(address.replace("<question>", "self-improvement"), report)
+        self.assertIn("`reports/self-improvement/`", report)
+        # Written as the owner-side rule says, never restated: one scope-row recipe in the contract.
+        self.assertIn("as Research says for a report you write yourself", report)
+        self.assertEqual(owner.count("review-host register"), 1)
+        for phrase in ("once the log holds its `eval` line", "at every keep", "before the stop report",
+                       "before the merge ask", "`experiments.jsonl`", "leads with the gain",
+                       "`data-answers=\"Let it run, Stop\"`", "is the human's stop",
+                       "every report and ask you send links its address",
+                       "only its Proof path, `/reports/<lane record name>/self-improvement/`, never the evidence address"):
+            self.assertIn(phrase, report)
+        # Every log kind and field it reads from is one the spec's log table names.
+        html = SPEC.read_text(encoding="utf-8")
+        rows = dict(re.findall(r'<tr data-anchor="self-improvement-log-\w+"><td><code>(\w+)</code></td><td>.*?</td>'
+                               r'<td>(.*?)</td></tr>', html))
+        fields = {f for row in rows.values() for f in re.findall(r"<code>(\w+)</code>", row)}
+        for kind in ("eval", "hypothesis", "proposal", "result"):
+            self.assertIn(kind, rows)
+            self.assertIn(f"`{kind}`", report)
+        for field in ("noise", "taught", "unreached"):
+            self.assertIn(field, fields)
+            self.assertIn(f"`{field}`", report)
+        # The human's stop may come on the report; the PR body and close report link it.
+        self.assertIn("or a hand-off on the lane's report gives", bullet("Stop"))
+        finish = bullet("Finish")
+        self.assertIn("and the spend, and links the lane's report", finish)
+        self.assertIn("your close report linking the lane's report and naming no PR to merge", finish)
+
+    def test_scientist_works_the_goal_from_the_log(self) -> None:
+        # spec #self-improvement-team, -messages (scientist rows), -log,
+        # -log-kinds, -goal, -goal-where, -eval, -hypotheses, -critique,
+        # -experiment, -stop, #roles-load, #acceptance-self-improvement-(critique,
+        # dead-end, shared, retire, reach, headroom, question, noise, one-line,
+        # declared-check, goal-added, live-goal, tests-floor): the scientist contract.
+        raw = (ROOT / "agents/scientist.md").read_text(encoding="utf-8")
+        text = " ".join(raw.split())
+        front = raw.split("---", 2)[1]
+        for name in json.loads(re.search(r"^skills: (\[.*\])$", front, flags=re.MULTILINE).group(1)):
+            self.assertTrue((ROOT / "skills" / name / "SKILL.md").is_file()
+                            or (ROOT / "agents/skills" / name / "SKILL.md").is_file(), name)
+        # Every example log line carries only the fields the spec's log table
+        # names for its kind, and together they write every field of each kind.
+        html = SPEC.read_text(encoding="utf-8")
+        rows = dict(re.findall(r'<tr data-anchor="self-improvement-log-\w+"><td><code>(\w+)</code></td><td>.*?</td>'
+                               r'<td>(.*?)</td></tr>', html))
+        block = re.search(r"```jsonl\n(.*?)\n *```", raw, flags=re.DOTALL).group(1)
+        lines = [json.loads(line) for line in block.splitlines()]
+        written: dict[str, set[str]] = {}
+        for line in lines:
+            self.assertRegex(line["at"], UTC)
+            self.assertRegex(line["by"], r"^scientist\d-[a-z]+-\d+$")
+            fields = set(line) - {"at", "by", "kind"}
+            self.assertLessEqual(fields, set(re.findall(r"<code>(\w+)</code>", rows[line["kind"]])), line)
+            written.setdefault(line["kind"], set()).update(fields)
+        for kind in ("eval", "hypothesis", "proposal", "critique", "result"):
+            self.assertEqual(written[kind], set(re.findall(r"<code>(\w+)</code>", rows[kind])), kind)
+        self.assertNotIn("stop", written)  # the steward's line
+        for line in lines:
+            self.assertIn(line.get("event", "opened"), {"opened", "retired"})
+            self.assertIn(line.get("verdict", "go"), {"go", "no"})
+            self.assertIn(line.get("outcome", "keep"), {"keep", "discard", "crash"})
+        # A teammate's pane is found by its spawn name, by the lookup herdr-say makes.
+        say = (ROOT / "skills/herdr-comms/assets/herdr-say").read_text(encoding="utf-8")
+        self.assertIn("jq -r '.result.agent.pane_id // empty'", say)
+        self.assertIn("`herdr agent get <name> | jq -r '.result.agent.pane_id // empty'`", text)
+        # The stop it obeys is the one the steward sends.
+        stop = re.search(r"(`Stop: [^`]*`)", (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")).group(1)
+        self.assertIn(f"on the steward's {stop}", text)
+        for phrase in (
+            # -goal, -goal-where, #acceptance-self-improvement-(declared-check, goal-added)
+            "the one the goal's repository `AGENTS.md` declares for the goal under `Goals:`",
+            "in the same commit, add its line under `Goals:`",
+            # -eval, #acceptance-self-improvement-live-goal
+            "Never try anything on live traffic",
+            "such as a replay of recorded traffic",
+            "first on a small sample",
+            # -eval, #acceptance-self-improvement-(reach, headroom, question)
+            "Until reach and room both hold, propose no change to the code under improvement",
+            "count each item the code cannot reach, with the input it lacks",
+            "an input only the human can give",
+            "no experiment changes it",
+            "the held-out split only as you set the eval",
+            # -hypotheses, #acceptance-self-improvement-(retire, no-direction)
+            "what result would refute it",
+            "nobody assigns one",
+            "a direction nobody has tried, a follow-up of what made the latest keep win, "
+            "the open hypothesis fewest scientists work",
+            "Never propose under a retired hypothesis",
+            "five results in a row under a hypothesis gain nothing",
+            # -critique, #acceptance-self-improvement-(critique, dead-end)
+            "one scientist whose latest proposal names another hypothesis, else any other",
+            "run it only on that critic's go",
+            "repeats a dead end without saying what differs",
+            "duplicates a running experiment",
+            "changes nothing the eval reaches",
+            "On a no, run nothing and record no result",
+            # -experiment, #roles-load, #acceptance-self-improvement-(one-line, noise, tests-floor)
+            "one `result` line, however many settings it sweeps",
+            "`octo-lite-lock CMD`",
+            "beats the champion's by more than the noise",
+            "every floor holds",
+            "the tests of the code it touched",
+            "its `why` naming that test",
+            "kept only when both beat the champion",
+            "send its commit to the steward",
+            "merge it into your branch and score it again",
+            # -messages, #acceptance-self-improvement-shared
+            "to every other scientist and the steward",
+            # -team: a respawned scientist goes on from the log
+            "go on from the log",
+            # herdr-transport #acceptance-pane-for-life-rule, disk #acceptance-disk-own-only-rule
+            "Spawn, respawn, or close a teammate: the steward does",
+            "never a teammate's or another lane's",
+        ):
+            self.assertIn(phrase, text)
+
+    def test_operator_launches_a_self_improvement_lane_only_on_a_named_goal(self) -> None:
+        # spec #self-improvement-what, -goal, -goal-where, -why, -messages (operator
+        # row), #acceptance-self-improvement-(launch, no-goal, workbench-goal,
+        # human-stop): the human names the goal; the operator launches the lane as
+        # any lane, in the goal's repository, asks which goal when none is named,
+        # and relays the human's stop to the steward.
+        raw = OPERATOR.read_text(encoding="utf-8")
+        operator = " ".join(raw.split())
+        launch = " ".join(raw.split("\nSelf-improvement lane (spec `#self-improvement-what`", 1)[1].split("\n\n", 1)[0].split())
+        for phrase in (
+            "only when the human asks you to launch a self improvement lane on a goal it names",
+            "never on your own, never on a goal you choose, and never again when one ends, so none is a standing loop",
+            "by Lane start in the goal's repository",
+            "its brief naming it a self-improvement lane, its goal, and the goal's repository",
+            "one question to the human, before any lane starts, asking which goal",
+            "the goals that repository's `AGENTS.md` declares under `Goals:`",
+            "your pick marked",
+            "The human's stop goes to its steward by `herdr-say <lane name> <stop>`",
+        ):
+            self.assertIn(phrase, launch)
+        # Lane start is the one launch: no second recipe for this lane kind.
+        self.assertEqual(operator.count("octo-lite-start --cwd"), 1)
+        # The goals list it offers is the one the spec places in AGENTS.md.
+        self.assertIn("under <code>Goals:</code>", SPEC.read_text(encoding="utf-8"))
+        # The steward works that goal in that repository, its scientists there too.
+        raw = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8")
+        steward = raw.split("\n- Steward (spec `#self-improvement-steward`", 1)[1].split("\n- ", 1)[0]
+        head = " ".join(steward.split("\n  - ", 1)[0].split())
+        self.assertIn("on a lane your brief names a self-improvement lane, its goal, and the goal's repository", head)
+        self.assertIn("work that goal in that repository and never another (spec `#self-improvement-goal`)", head)
+        team = " ".join(steward.split("\n  - Team (spec ", 1)[1].split("\n  - ", 1)[0].split())
+        self.assertIn("each in its own worktree and branch off the lane branch in the goal's repository", team)
+        self.assertIn("each briefed with your brief's goal and its repository", team)
 
     def test_researcher_hands_the_x_token_to_curl_on_stdin_only(self) -> None:
         # spec #roles-research-x, #acceptance-research-x, #acceptance-research-x-missing:
