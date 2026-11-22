@@ -27,6 +27,13 @@ REPORT_CONFIRM = (
     "on exit 69, which `herdr-say` already re-sent for hours, send it no more; "
     "on any other exit, send it again, 3 sends in all."
 )
+# The one step from a pane id to its native address, stated where each Claude
+# role reports (#transport-native): a pane id is no address.
+REPORT_ADDRESS = (
+    "Address a native send to `uds:` and the path "
+    "`herdr-claude-session <pane> | jq -r '.messagingSocketPath // empty'` prints, looked up just before each send; "
+    "none printed means no live Claude session (herdr-transport spec `#transport-native`)."
+)
 
 
 class LaneRecordTests(unittest.TestCase):
@@ -543,6 +550,101 @@ class LaneRecordTests(unittest.TestCase):
                       "the prototype from the lane worktree", owner)
         self.assertIn("restarted through that file after each merge", owner)
 
+    def test_reviewer_runs_what_it_judges_from_a_throwaway_clone(self) -> None:
+        # spec #delivery-review, #acceptance-review-ran, #acceptance-review-fix-test,
+        # #acceptance-review-checkout: the reviewer runs each check itself, never
+        # through a review it forks, from a clone of its own in its TMPDIR that
+        # adds no worktree or branch, and proves each fix test fails on the last
+        # reviewed head and passes on the batch head.
+        reviewer = " ".join((ROOT / "agents/code-reviewer.md").read_text(encoding="utf-8").split())
+        for phrase in ("run what you check from a throwaway clone of your own at the commit you check, never a "
+                       "worktree or branch of the repo (spec `#delivery-review`)",
+                       "Run in that clone, yourself, in this session, the changed behavior and the failing case behind "
+                       "each finding, leaving the rest to the full suite that runs beside you; never through a review "
+                       "you fork, such as `/code-review`",
+                       "with the failing case you ran",
+                       "name both runs in your verdict"):
+            self.assertIn(phrase, reviewer)
+        skill = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
+        self.assertNotRegex(skill, r"/code-review\b")
+        self.assertIn("take no worktree: each runs its checks from a throwaway clone in its `$TMPDIR`",
+                      (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"))
+        clone = re.search(r"`(git clone [^`]*)`", reviewer).group(1)
+        swap = re.search(r"`(git checkout <batch head> -- <test file>)`", reviewer).group(1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, lane, scratch = (Path(tmp, name) for name in ("repo", "lane", "scratch"))
+            scratch.mkdir()
+
+            def git(cwd: Path, *args: str) -> str:
+                return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def run(cwd: Path, command: str) -> int:
+                return subprocess.run(command, shell=True, cwd=cwd, capture_output=True,
+                                      env={**os.environ, "TMPDIR": str(scratch)}).returncode
+
+            subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+            (repo / "f").write_text("1\n", encoding="utf-8")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", "reviewed head")
+            git(repo, "worktree", "add", "-q", "-b", "lane", str(lane))
+            reviewed = git(lane, "rev-parse", "HEAD")
+            (lane / "f").write_text("2\n", encoding="utf-8")
+            (lane / "t.sh").write_text('test "$(cat f)" = 2\n', encoding="utf-8")
+            git(lane, "add", "-A")
+            git(lane, "commit", "-qm", "fix batch")
+            batch = git(lane, "rev-parse", "HEAD")
+            before = (git(repo, "worktree", "list", "--porcelain"), git(repo, "branch", "-a"),
+                      git(lane, "status", "--porcelain"))
+            self.assertEqual(run(repo, clone.replace("<any checkout of the repo>", str(lane))
+                                 .replace("<name>", "review").replace("<commit>", reviewed)), 0)
+            review = scratch / "review"
+            self.assertEqual(git(review, "rev-parse", "HEAD"), reviewed)
+            self.assertEqual(run(review, swap.replace("<batch head>", batch).replace("<test file>", "t.sh")), 0)
+            self.assertNotEqual(run(review, "sh t.sh"), 0)
+            git(review, "checkout", "-q", "--detach", batch)
+            self.assertEqual(run(review, "sh t.sh"), 0)
+            self.assertEqual((git(repo, "worktree", "list", "--porcelain"), git(repo, "branch", "-a"),
+                              git(lane, "status", "--porcelain")), before)
+
+    def test_reviewer_blocks_a_part_its_design_system_shares(self) -> None:
+        # spec #roles-design-system, #delivery-review, #acceptance-design-review-hand,
+        # #acceptance-design-review-copy, #acceptance-design-review-new-part.
+        reviewer = " ".join((ROOT / "agents/code-reviewer.md").read_text(encoding="utf-8").split())
+        self.assertIn("Read the design system's one source the target root `AGENTS.md` names (spec "
+                      "`#roles-design-system`). A part the diff draws by hand, or as a near copy, where a shared part "
+                      "draws it is a blocker naming that shared part; a shared part the diff adds without its entry in "
+                      "that source stating its convention, or without its code check, is a blocker naming what is "
+                      "missing.", reviewer)
+
+    def test_prototype_worker_imports_shared_parts_and_passes_design_checks(self) -> None:
+        # spec #delivery-prototype, #delivery-implement, #acceptance-design-prototype-checks.
+        worker = " ".join((ROOT / "agents/implementer.md").read_text(encoding="utf-8").split())
+        self.assertIn("imported or copied, never redrawn, a shared part of the design system the target root "
+                      "`AGENTS.md` names always imported, never copied", worker)
+        checks = ("Before each commit you send the owner, run the code checks that design system names and fix in "
+                  "the prototype what they fail (spec `#delivery-prototype`).")
+        self.assertIn(checks, worker)
+        self.assertLess(worker.index(checks), worker.index("Then commit, and before you record"))
+        self.assertIn("Repo tests run in delivery, never during shaping, but for the design system's checks a "
+                      "prototype round runs (spec `#delivery-implement`).",
+                      " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split()))
+
+    def test_integrator_works_in_the_lane_worktree_holding_its_branch(self) -> None:
+        # ANN-2144 item 5: a branch is checked out in one worktree, so the
+        # integrator works where the lane worktree holds it, and the owner writes
+        # nothing there while it runs.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        self.assertIn("1. Spawn an integrator through `herdr-comms` with `--role integrator` in the lane worktree "
+                      "when it holds the integration branch, else in a clean integration worktree. While it runs, "
+                      "write nothing in its worktree.", skill)
+        self.assertIn("Each writer has a distinct worktree, the integrator the lane worktree when it holds the "
+                      "integration branch (step 1)", skill)
+        self.assertIn("in the worktree you were spawned in: the lane worktree when it holds the integration branch, "
+                      "which you alone write while you run, else a clean integration worktree",
+                      " ".join((ROOT / "agents/integrator.md").read_text(encoding="utf-8").split()))
+
     def test_owner_reports_each_box_problem_to_operator_once(self) -> None:
         # spec #roles-box-problem, #acceptance-box-problem-owner: the owner reports
         # each problem of the box once, apart from the review link that also says it.
@@ -770,7 +872,7 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIn(
                 "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
                 "natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. "
-                + REPORT_CONFIRM + " If none is confirmed, send it once, "
+                + REPORT_ADDRESS + " " + REPORT_CONFIRM + " If none is confirmed, send it once, "
                 "naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). "
                 "Then stop, whatever the last result.",
                 output,
@@ -792,11 +894,12 @@ class LaneRecordTests(unittest.TestCase):
         output = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split("\n## Output\n", 1)[1]
         self.assertIn(
             "sent to its recipient as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on "
-            "Claude and the recipient's pane has a live Claude session, else with `herdr-say`. " + REPORT_CONFIRM,
+            "Claude and the recipient's pane has a live Claude session, else with `herdr-say`. " + REPORT_ADDRESS + " "
+            + REPORT_CONFIRM,
             output)
         self.assertIn(
             "Send an owner your own reports the same way, natively when you run on Claude and that owner's pane has a "
-            "live Claude session, else with `herdr-say`: " + REPORT_CONFIRM[0].lower() + REPORT_CONFIRM[1:],
+            "live Claude session, else with `herdr-say`. " + REPORT_ADDRESS + " " + REPORT_CONFIRM,
             OPERATOR.read_text(encoding="utf-8"))
         for path in ROOT.glob("agents/*.md"):
             self.assertNotIn("natively or by", path.read_text(encoding="utf-8"), path.name)
@@ -822,9 +925,11 @@ class LaneRecordTests(unittest.TestCase):
         # falling back to herdr-say; every report line points at that recipe.
         # #acceptance-native-timeout: a timed-out send counts as sent, never sent
         # again; its backstop (#roles-goal) is the sender's pane, read when the wait ends.
+        # Each states, where it reports, the one step from the target's pane id to that address.
         for path in ROOT.glob("agents/*.md"):
             tools = re.search(r"^tools: (\[.*\])$", path.read_text(encoding="utf-8"), flags=re.MULTILINE)
             self.assertIn("SendMessage", json.loads(tools.group(1)), path.name)
+            self.assertIn(REPORT_ADDRESS, path.read_text(encoding="utf-8"), path.name)
         recipe = (ROOT / "skills/herdr-comms/SKILL.md").read_text(encoding="utf-8")
         recipe = recipe.split("\n## Send a report\n", 1)[1].split("\n## ", 1)[0]
         for token in ("herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'", "`uds:<that path>`", "`herdr-say PANE REPORT`",

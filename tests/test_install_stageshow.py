@@ -32,10 +32,9 @@ PIN = re.search(r"^github\s+skill\s+stageshow\s+benjitaylor/skills@(\w+)\s+stage
 
 # skillfile's observable contract: `skillfile install` deploys each pin in
 # Skillfile.lock into agents/skills, with its cache in .skillfile/cache, and
-# leaves files it already deployed unchanged. It writes a local skill's tracked
-# files only, so a local skill folder holding a file git does not track fails it.
+# leaves files it already deployed unchanged.
 SKILLFILE = """#!/usr/bin/env python3
-import json, subprocess, sys
+import json, sys
 from pathlib import Path
 assert sys.argv[1:] == ["install", "-q"], sys.argv
 pin = json.loads(Path("Skillfile.lock").read_text())["github/skill/stageshow"]
@@ -47,17 +46,6 @@ if not skill.exists():
         (skill / name).write_text("{}")
     Path(".skillfile/cache/stageshow").mkdir(parents=True)
     Path(".skillfile/cache/stageshow/SKILL.md").write_text("{}")
-for entry in Path("Skillfile").read_text().splitlines():
-    field = entry.split()
-    if field[:2] != ["local", "skill"] or not Path(field[3]).is_dir():
-        continue
-    name, folder = field[2:4]
-    files = sum(f.is_file() for f in Path(folder).rglob("*"))
-    written = len(subprocess.run(["git", "ls-files", "--", folder], capture_output=True,
-                                 text=True, check=True).stdout.splitlines())
-    if written < files:
-        sys.exit(f"error: failed to install '{name}' to octo-lite skill (agents/skills):"
-                 f" only {written} of {files} expected file(s) were written")
 """
 # npm ci installs the lockfile's packages and records them in node_modules;
 # npm exec runs the recorder driver's browser install.
