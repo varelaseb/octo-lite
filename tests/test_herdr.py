@@ -1083,6 +1083,16 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["role"], "code-reviewer")
 
+    def test_park_drops_the_number_a_numbered_spawn_name_carries(self):
+        # spec/domains/herdr-transport.spec.html#acceptance-park-role-numbered,
+        # transport-spawn-name: one of several workers of a role on one issue
+        # is <role><n>-<ticket>; its role is the role with the number dropped.
+        for name, role in (("scientist1-ann-64", "scientist"), ("scientist12-ann-64", "scientist"),
+                           ("code-reviewer2-ann-7", "code-reviewer")):
+            p, r, *_ = self.park(name=name, agent=None)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads(r.stdout)["role"], role, name)
+
     def test_park_takes_no_role_from_a_name_not_of_spawn_form(self):
         # spec/domains/herdr-transport.spec.html#transport-spawn-name: a name
         # not <role>-<ticket> carries no role.
@@ -2729,7 +2739,7 @@ class HerdrWrapperTest(unittest.TestCase):
     def test_writers_keep_temporary_files_and_media_in_their_scratch_never_notes(self):
         # acceptance-disk-notes-media, scratch-write: every role that writes is
         # told so where it writes; none removes a /tmp scratch by hand.
-        for role in ("orchestrator", "implementer", "integrator", "code-reviewer"):
+        for role in ("orchestrator", "implementer", "integrator", "code-reviewer", "researcher", "scientist"):
             self.assertRegex(
                 self.contract(role),
                 r"Write temporary files under `\$TMPDIR`, never at a `/tmp` path of your own, and keep there what "

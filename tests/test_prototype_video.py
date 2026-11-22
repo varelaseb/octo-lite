@@ -3,7 +3,7 @@ records real use of a prototype, each step action as a person does it. Spec: spe
 #delivery-round-video, #delivery-round-video-actions; criteria #acceptance-video-unknown-action, -check, -drag, -hold,
 -hold-slide, -menu, -hover, -select, -busy, and -length. The recorder reads a mockup file in its browser, so these
 tests need its pinned driver and browser, as the installer adds them (install.spec.html #install-recorder): run
-`npm ci && npx playwright-core install chromium` at the clone root once per clone. The check reads crops of frames the
+`npm ci && PLAYWRIGHT_SKIP_BROWSER_GC=1 npx playwright-core install chromium` at the clone root once per clone. The check reads crops of frames the
 recorder recorded, kept as fixtures."""
 
 from __future__ import annotations

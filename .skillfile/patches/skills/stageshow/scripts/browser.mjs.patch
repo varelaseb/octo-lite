@@ -1,0 +1,23 @@
+--- a/scripts/browser.mjs
++++ b/scripts/browser.mjs
+@@ -1,7 +1,8 @@
+ // The headless browser the filming scripts share. playwright-core is the one
+ // dependency filming needs and the kit doesn't, so a missing install says how
+ // to fix it rather than failing on the import. Chrome is the installed one
+-// (CHROME_PATH overrides), found on macOS, Windows and Linux alike.
++// (CHROME_PATH overrides), found on macOS, Windows and Linux alike; with no
++// Chrome, the Chromium this playwright-core installs.
+ export async function launch() {
+   let chromium
+   try {
+@@ -14,6 +15,10 @@
+   try {
+     return await chromium.launch(path ? { executablePath: path } : { channel: 'chrome' })
+   } catch {
++    if (!path) try { return await chromium.launch() } catch (e) {
++      console.error(`Couldn't start Chrome or its Chromium (${e.message.split('\n')[0]}). Install Google Chrome, run install-octo-lite to install its Chromium, or set CHROME_PATH to a Chrome or Chromium binary.`)
++      process.exit(2)
++    }
+     console.error(`Couldn't start Chrome${path ? ` at ${path}` : ''}. Install Google Chrome, or set CHROME_PATH to a Chrome or Chromium binary.`)
+     process.exit(2)
+   }

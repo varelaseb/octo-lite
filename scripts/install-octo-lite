@@ -166,9 +166,77 @@ sys.exit(failed)
 PY
 }
 
+# Keys (install.spec.html#install-keys): each key or account a feature of
+# octo-lite needs, as NAME:FILE under the prefix's home:VARIABLE:CHECK. A new
+# key is one more entry and its CHECK. --onboard asks for each once and keeps
+# it; --check proves each works; --after-pull leaves keys out, since no install
+# run writes one; --undo leaves each file, the box owner's, so nothing records
+# what onboarding wrote.
+keys=(
+  "X token:.config/workbench/x.env:X_BEARER_TOKEN:x_check"
+)
+each_key() {
+  local key name file variable key_check
+  for key in "${keys[@]}"; do
+    IFS=: read -r name file variable key_check <<<"$key"
+    "$1" "$name" "$prefix/$file" "$variable" "$key_check"
+  done
+}
+# A file there is adopted, never overwritten. Else the key comes from its
+# variable, else from a question asked only at a terminal, so piped consent
+# answers are never read as a key. Skipping writes nothing. The file, the
+# box user's alone from creation, holds only VARIABLE=key; no output names
+# the key.
+onboard_key() {
+  local key="${!3:-}"
+  if [[ -e "$2" ]]; then echo "$1 adopted: $2"; return; fi
+  if [[ -z "$key" && -t 0 ]]; then
+    read -rs -p "$1 for $2 (Enter skips): " key || key=""
+    echo >&2
+  fi
+  if [[ -z "$key" ]]; then echo "$1 not given, nothing written: $2"; return; fi
+  (umask 077 && mkdir -p "$(dirname "$2")" && printf '%s=%s\n' "$3" "$key" >"$2")
+  echo "$1 written: $2"
+}
+# Every reader of a key's file takes its value as this sed does, never by
+# sourcing the file. --onboard writes only an absent file, so only then is it
+# the fix.
+check_key() {
+  local key fix="put the one line $3=<$1> in $2, mode 0600"
+  # The line's value, without one surrounding pair of matching quotes, as a
+  # shell assignment may hold it; never sourced, so nothing in it runs.
+  key="$(sed -n "/^$3=/{s///;s/^\([\"']\)\(.*\)\1\$/\2/;p;}" "$2" 2>/dev/null)" || key=""
+  if [[ -n "$key" ]]; then "$4" "$1" "$2" "$key"; return; fi
+  [[ -e "$2" ]] || fix+=", or run $install_cmd --onboard"
+  problem "missing $1: $2" "$fix"
+}
+keep_key() { [[ ! -e "$2" ]] || echo "kept $1: $2 (the box owner's to delete)"; }
+# The cheapest call the X token makes: one recent search for a word no post
+# contains, so it reads no post against the token's cap. The token reaches
+# curl on its standard input, never its command line. A 2xx proves it; a 429
+# (a rate limit, or a spent monthly cap until its reset), a 5xx, or no answer
+# means nothing on the box is wrong; any other answer is X refusing it. A 429
+# and a refusal are named with X's own answer.
+x_check() {
+  local out status answer=""
+  out="$(curl -s --max-time 10 -w '\n%{http_code}' -H @- \
+    'https://api.x.com/2/tweets/search/recent?query=octolitekeycheck7f3a9c2e&max_results=10' \
+    <<<"Authorization: Bearer $3" 2>/dev/null)" || true
+  status="${out##*$'\n'}" status="${status#000}" # curl's 000: no answer
+  [[ "${out%$'\n'*}" =~ \"(title|detail)\":\ ?\"([^\"]*)\" ]] && answer="${BASH_REMATCH[2]}"
+  case "$status" in
+    2??) echo "$1 proved by X: $2" ;;
+    429) echo "$1 not proved, X answered ($status${answer:+ $answer}): $2" ;;
+    ""|5??) echo "$1 not proved, X did not answer${status:+ ($status)}: $2" ;;
+    *) problem "$1 refused by X ($status${answer:+ $answer}): $2" \
+         "get a new token, or a plan with recent search, and put it in $2" ;;
+  esac
+}
+
 if [[ "$undo" == true ]]; then
   hook_settings undo
   [[ -f "$wake_file" ]] && echo "kept wake provider: $wake_file (spec-chat depends on it)"
+  each_key keep_key
   exit 0
 fi
 
@@ -209,6 +277,7 @@ if [[ "$check" != true ]]; then
     "https://github.com/varelaseb/octo-lite/blob/main/README.md#onboarding" \
     "$(argv --after-pull)" "$(argv --check)" "$commit" "$model" "$consent" >"$onboarding"
   echo "onboarding $status: $onboarding"
+  [[ "$onboard" != true ]] || each_key onboard_key
 fi
 
 # Canonical owner/repo from a git remote URL so SSH and HTTPS match:
@@ -330,7 +399,7 @@ done
 # dangling link is reported, not a problem, so on standard output, and left
 # untouched (install.spec.html#install-check). The prune walks every directory
 # the installer links into or a legacy link lies in.
-prune() { rm -f "$1"; echo "pruned: $1"; }
+prune() { rm -rf "$1"; echo "pruned: $1"; }
 for d in "$prefix/.claude/skills" "$prefix/.codex/skills" "$prefix/.agents/skills" \
          "$prefix/.claude/agents" "$prefix/.codex/agents" "$prefix/.local/bin" \
          "$prefix/.claude/octo-lite" "$prefix/.codex/octo-lite" "$prefix/.codex"; do
@@ -356,10 +425,11 @@ done
 # ignores. It and the round video recorder (#install-recorder) get the
 # dependencies their lockfiles name by npm ci, rerun only when that lockfile is
 # newer than npm's record of the last install, which is also what --check takes
-# as installed; the recorder's pinned driver then installs its browser, a no-op
-# once there. The recorder's lockfile sits at this clone's root, where Node finds
-# its dependencies from the recorder's folder, so none lands in a skill folder,
-# which skillfile copies whole; each run but --check removes those an earlier
+# as installed; each one's pinned driver then installs its Chromium, a no-op
+# once there, which for Stageshow --check also takes as installed
+# (#install-stageshow-browser). The recorder's lockfile sits at this clone's
+# root, where Node finds its dependencies from the recorder's folder, so none
+# lands in a skill folder; each run but --check removes those an earlier
 # install left in the recorder's folder.
 # A failed step leaves Stageshow out, leaves the recorder linked, and
 # everything else still links; every mode then fails naming why, last.
@@ -372,40 +442,82 @@ deps_current() {
      ! "$1/package-lock.json" -nt "$1/node_modules/.package-lock.json" ]]
 }
 npm_deps() { deps_current "$1" || (cd "$1" && npm ci --no-audit --no-fund --loglevel=error); }
+# Every browser install keeps the browsers already on the box: another lane's
+# agent may use one no installed driver names.
+playwright_chromium() { (cd "$1" && PLAYWRIGHT_SKIP_BROWSER_GC=1 npm exec -- playwright-core install "${@:2}" chromium); }
+# Each browser the driver installs for chromium, as it lists them, finished.
+has_chromium() {
+  local dirs dir
+  dirs="$(playwright_chromium "$1" --dry-run 2>/dev/null | sed -n 's/^ *Install location: *//p')" && [[ -n "$dirs" ]] || return 1
+  while IFS= read -r dir; do [[ -e "$dir/INSTALLATION_COMPLETE" ]] || return 1; done <<<"$dirs"
+}
 if command -v skillfile >/dev/null; then why="" stageshow_fix="run $install_cmd"
 else why="skillfile not found" stageshow_fix="$skillfile_install, then run $install_cmd"
 fi
+# Each file of Stageshow's pin in skillfile's cache deploys with octo-lite's
+# patches applied. skillfile deploys only files missing from agents/skills,
+# across pin changes too, so after the fetch each deployed file of the pin that
+# differs from the pin with the patches applied, all or none, is removed, and
+# skillfile deploys it again, keeping the skill's dependencies. A failed fetch
+# removes nothing. tdd's patched file is committed, so a pull brings it.
+pinned="$root/.skillfile/cache/skills/stageshow"
+patches="$root/.skillfile/patches/skills/stageshow"
+redeploy_changed() {
+  local want f
+  want="$(mktemp -d)"
+  cp -r "$pinned/." "$want"
+  (cd "$want" && find "$patches" -name '*.patch' -exec git apply {} +) 2>/dev/null
+  while IFS= read -r f; do cmp -s "$want/$f" "$stageshow/$f" || rm -f "$stageshow/$f"; done < <(cd "$want" && find . -type f)
+  rm -r "$want"
+}
 if [[ "$check" != true && -z "$why" ]]; then
-  if ! (cd "$root" && skillfile install -q); then why="skillfile install failed"
+  if ! (cd "$root" && skillfile install -q && redeploy_changed && skillfile install -q); then
+    why="skillfile install failed"
   elif ! npm_deps "$stageshow"; then why="npm ci failed"
+  elif ! playwright_chromium "$stageshow"; then why="browser install failed"
   fi
   [[ -z "$why" ]] || stageshow_fix="resolve its error above, then $stageshow_fix"
 fi
+# skillfile records a patch that no longer applies as its conflict, and
+# ignores one naming a file its pin lacks, so every mode reads both.
+patch_gone() {
+  local patch
+  [[ -e "$root/.skillfile/conflict" ]] && return
+  [[ -d "$pinned" && -d "$patches" ]] || return 1
+  while IFS= read -r patch; do
+    [[ -e "$pinned/${patch%.patch}" ]] || return 0
+  done < <(cd "$patches" && find . -name '*.patch')
+  return 1
+}
+if patch_gone; then
+  why="octo-lite's patch no longer applies to its pin"
+  stageshow_fix="pull a fixed octo-lite, run skillfile resolve --abort in $root, then run $install_cmd"
+fi
 [[ -n "$why" ]] || deps_current "$stageshow" || why="filming dependencies not installed"
+[[ -n "$why" ]] || has_chromium "$stageshow" || why="no browser, its Chromium not installed"
 recorder_why="" recorder_fix="run $install_cmd"
 if [[ "$check" != true ]]; then
   if ! npm_deps "$root"; then recorder_why="npm ci failed"
-  elif ! (cd "$root" && npm exec -- playwright-core install chromium); then
-    recorder_why="browser install failed"
+  elif ! playwright_chromium "$root"; then recorder_why="browser install failed"
   fi
   [[ -z "$recorder_why" ]] || recorder_fix="resolve its error above, then $recorder_fix"
 fi
 [[ -n "$recorder_why" ]] || deps_current "$root" || recorder_why="browser driver not installed"
 
-# Managed skills live in the skillfile install target agents/skills (ADR 0002).
-# They mirror into every platform skills dir. Locally authored skills/ skills
-# that a managed entry does not shadow install alongside them.
-#
-# skillfile also materializes this repo's OWN skills into agents/skills, and
-# that copy goes stale the moment the source is edited. So a materialized entry
-# that shadows a directory in skills/ is skipped: the live source wins, and only
-# genuinely upstream pins are linked from agents/skills.
+# agents/skills holds only the pins skillfile installs (install.spec.html
+# #install-peers), each mirrored into every platform skills dir; octo-lite's own
+# skills link from skills/ alone. An earlier install's skillfile also copied
+# each own skill there and never prunes the copy, which goes stale the moment
+# the source is edited: each run but --check removes it, --check names it.
 managed_skills=""
 if [[ -d "$root/agents/skills" ]]; then
   for source in "$root"/agents/skills/*; do
     [[ -d "$source" ]] || continue
     name="$(basename "$source")"
-    [[ -d "$root/skills/$name" ]] && continue
+    if [[ -d "$root/skills/$name" ]]; then
+      act "leftover copy of an own skill: $source" prune "$source"
+      continue
+    fi
     managed_skills+=" $name"
     link_one "$source" "$prefix/.codex/skills/$name"
     link_one "$source" "$prefix/.agents/skills/$name"
@@ -416,7 +528,6 @@ fi
 for source in "$root"/skills/*; do
   [[ -d "$source" ]] || continue
   name="$(basename "$source")"
-  [[ " $managed_skills " == *" $name "* ]] && continue
   link_one "$source" "$prefix/.codex/skills/$name"
   link_one "$source" "$prefix/.agents/skills/$name"
   link_one "$source" "$prefix/.claude/skills/$name"
@@ -571,6 +682,7 @@ if [[ "$verify" == true ]]; then
   echo "version floors:"
   check_floors
 fi
+[[ "$check" != true ]] || each_key check_key
 # Last, so it is the line an operator sees: a pinned skill or the recorder not
 # installed fails every mode alike (install.spec.html#install-peers,
 # #install-recorder). Any problem this run named fails it.
