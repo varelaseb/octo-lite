@@ -112,13 +112,22 @@ class KeysTest(unittest.TestCase):
         self.assertIn(f"X token not given, nothing written: {self.x_env}", r.stdout)
 
     def test_check_names_a_missing_x_token_with_its_fix(self) -> None:
-        # spec/domains/install.spec.html#acceptance-x-token-missing
+        # spec/domains/install.spec.html#acceptance-x-token-missing,
+        # octo-lite.spec.html#roles-research-x (mode 0600)
         self.run_installer()
+        fix = f"put the one line X_BEARER_TOKEN=<X token> in {self.x_env}, mode 0600"
         r = self.run_installer("--check")
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertEqual(problems(r), [
-            f"missing X token: {self.x_env}; fix: put the one line X_BEARER_TOKEN=<X token>"
-            f" in {self.x_env}, or {self.fix} --onboard"])
+        self.assertEqual(problems(r), [f"missing X token: {self.x_env}; fix: {fix}, or {self.fix} --onboard"])
+        # a file without the line: --onboard adopts it and changes nothing, so
+        # the fix is the line alone
+        self.x_env.parent.mkdir(parents=True)
+        for held in ("", "X_BEARER_TOKEN=\n", "TOKEN=kept\n"):
+            with self.subTest(held=held):
+                self.x_env.write_text(held)
+                r = self.run_installer("--check")
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(problems(r), [f"missing X token: {self.x_env}; fix: {fix}"])
 
     def test_check_names_a_refused_x_token_with_x_answer_and_its_fix(self) -> None:
         # spec/domains/install.spec.html#acceptance-x-token-refused
@@ -132,16 +141,44 @@ class KeysTest(unittest.TestCase):
             f" or a plan with recent search, and put it in {self.x_env}"])
         self.assertNotIn("refused-token", r.stdout + r.stderr)
 
-    def test_check_says_x_did_not_answer_and_names_no_problem(self) -> None:
-        # spec/domains/install.spec.html#acceptance-x-token-offline
+    def test_check_proves_a_quoted_x_token_unquoted_and_never_runs_it(self) -> None:
+        # spec/domains/install.spec.html#acceptance-x-token-quoted, #install-x-token:
+        # the line's value, one pair of matching quotes around it dropped, as a
+        # shell assignment holds it, reaches X; the file is never sourced, so a
+        # planted command never runs
         self.run_installer()
         self.x_env.parent.mkdir(parents=True)
-        for token, said in (("unreachable-token", ""), ("unavailable-token", " (503)")):
+        ran = self.prefix / "ran"
+        for held in ("'proved-token'", '"proved-token"', f'"$(touch {ran})proved"'):
+            with self.subTest(held):
+                self.x_env.write_text(f"X_BEARER_TOKEN={held}\n")
+                r = self.run_installer("--check")
+                self.assertEqual(problems(r), [], r.stderr)
+                self.assertIn(f"X token proved by X: {self.x_env}", r.stdout)
+                self.assertFalse(ran.exists(), "ran the X credential file")
+
+    def assert_not_proved_and_no_problem(self, *answers: tuple[str, str]) -> None:
+        self.run_installer()
+        self.x_env.parent.mkdir(parents=True)
+        for token, said in answers:
             with self.subTest(token):
                 self.x_env.write_text(f"X_BEARER_TOKEN={token}\n")
                 r = self.run_installer("--check")
                 self.assertEqual(problems(r), [])
-                self.assertIn(f"X token not proved, X did not answer{said}: {self.x_env}", r.stdout)
+                self.assertIn(f"X token not proved, {said}: {self.x_env}", r.stdout)
+
+    def test_check_says_x_did_not_answer_and_names_no_problem(self) -> None:
+        # spec/domains/install.spec.html#acceptance-x-token-offline
+        self.assert_not_proved_and_no_problem(("unreachable-token", "X did not answer"),
+                                              ("unavailable-token", "X did not answer (503)"))
+
+    def test_check_says_x_answered_429_and_names_no_problem(self) -> None:
+        # spec/domains/install.spec.html#acceptance-x-token-limited, #install-keys:
+        # a key the service may not use right now, such as X's 429 for a rate
+        # limit or a spent monthly cap, is a line on standard output naming its
+        # answer and no problem
+        self.assert_not_proved_and_no_problem(("limited-token", "X answered (429 Too Many Requests)"),
+                                              ("capped-token", "X answered (429 UsageCapExceeded)"))
 
     def test_undo_leaves_the_x_credential_file_onboarding_wrote(self) -> None:
         # spec/domains/install.spec.html#acceptance-x-token-undo

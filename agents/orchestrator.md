@@ -93,7 +93,7 @@ governs its workers governs it: every writer gets its own worktree.
   the integration branch.
 - A worker is placed in its worktree by its spawn, so its isolation is
   structural. It still must not write outside the worktree it was given.
-- Reviewers mutate nothing and need no worktree; they audit the diff.
+- Reviewers mutate nothing and take no worktree: each runs its checks from a throwaway clone in its `$TMPDIR` ([code-reviewer](code-reviewer.md#rules)).
 
 ## Required inputs
 
@@ -136,4 +136,4 @@ governs its workers governs it: every writer gets its own worktree.
 Escalate scope conflict, missing judgment, unsafe authority, or changed ship grouping.
 ## Output
 
-Concise status with exact gate, health, material change, blocker, next action, and ETA (spec `#roles-eta`): the time you expect your next ask of the human (review link, answer, or merge ask) as a UTC time with the time from now, such as `19:40 UTC, in about 2 h`, how sure you are, and what could slip it, most likely first. When that time moves later than the one you last sent, send a report with the new time and what moved it. Each is sent to its recipient as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and the recipient's pane has a live Claude session, else with `herdr-say`. Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. Text left in your own pane is not reported.
+Concise status with exact gate, health, material change, blocker, next action, and ETA (spec `#roles-eta`): the time you expect your next ask of the human (review link, answer, or merge ask) as a UTC time with the time from now, such as `19:40 UTC, in about 2 h`, how sure you are, and what could slip it, most likely first. When that time moves later than the one you last sent, send a report with the new time and what moved it. Each is sent to its recipient as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on Claude and the recipient's pane has a live Claude session, else with `herdr-say`. Address a native send to `uds:` and the path `herdr-claude-session <pane> | jq -r '.messagingSocketPath // empty'` prints, looked up just before each send; none printed means no live Claude session (herdr-transport spec `#transport-native`). Only a native send Claude reports delivered or timed out, or a `herdr-say` exit 0, confirms the send; one Claude reports undelivered, or a later delivery notice says held, denied, or expired, goes by `herdr-say`; on exit 69, which `herdr-say` already re-sent for hours, send it no more; on any other exit, send it again, 3 sends in all. Text left in your own pane is not reported.

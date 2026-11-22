@@ -27,6 +27,13 @@ REPORT_CONFIRM = (
     "on exit 69, which `herdr-say` already re-sent for hours, send it no more; "
     "on any other exit, send it again, 3 sends in all."
 )
+# The one step from a pane id to its native address, stated where each Claude
+# role reports (#transport-native): a pane id is no address.
+REPORT_ADDRESS = (
+    "Address a native send to `uds:` and the path "
+    "`herdr-claude-session <pane> | jq -r '.messagingSocketPath // empty'` prints, looked up just before each send; "
+    "none printed means no live Claude session (herdr-transport spec `#transport-native`)."
+)
 
 
 class LaneRecordTests(unittest.TestCase):
@@ -339,6 +346,22 @@ class LaneRecordTests(unittest.TestCase):
                       "and the PR body's validation names the run on the merge ask's head", skill)
         self.assertNotIn("full suite once", skill)
 
+    def test_candidate_head_jobs_take_the_lock_as_merge_path_on_the_head_as_they_start(self) -> None:
+        # spec #roles-load-merge (#acceptance-box-lock-merge-first,
+        # #acceptance-box-lock-head-moves): the recipe asks merge-path for a
+        # candidate head's heavy jobs only, read at start, never restarted.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        validation = skill[skill.index("## Validation"):skill.index("## Review and finish")]
+        for phrase in ("A heavy job on a candidate head, its full suite or a capture its merge ask needs, "
+                       "adds `--merge`, so it runs ahead of every waiting job that is not; every other heavy "
+                       "job takes the lock without it (spec `#roles-load-merge`)",
+                       "Such a job reads the lane's head only as it starts, never a commit fixed as it lined up, "
+                       "and names the head it ran",
+                       "`octo-lite-lock --merge sh -c 'git rev-parse HEAD && SUITE'`",
+                       "A fix batch that moves the head while it waits leaves it in line, to run on the new head, "
+                       "so never stop it to line up again"):
+            self.assertIn(phrase, validation)
+
     def test_every_finding_on_one_head_goes_in_one_fix_batch(self) -> None:
         # spec #delivery-path, #delivery-review, #health-notes: one batch per
         # head, two rounds over the whole PR, notes in one last batch with no
@@ -526,6 +549,101 @@ class LaneRecordTests(unittest.TestCase):
                       "the worker records, then the final commit its last report names (spec `#delivery-path`); run "
                       "the prototype from the lane worktree", owner)
         self.assertIn("restarted through that file after each merge", owner)
+
+    def test_reviewer_runs_what_it_judges_from_a_throwaway_clone(self) -> None:
+        # spec #delivery-review, #acceptance-review-ran, #acceptance-review-fix-test,
+        # #acceptance-review-checkout: the reviewer runs each check itself, never
+        # through a review it forks, from a clone of its own in its TMPDIR that
+        # adds no worktree or branch, and proves each fix test fails on the last
+        # reviewed head and passes on the batch head.
+        reviewer = " ".join((ROOT / "agents/code-reviewer.md").read_text(encoding="utf-8").split())
+        for phrase in ("run what you check from a throwaway clone of your own at the commit you check, never a "
+                       "worktree or branch of the repo (spec `#delivery-review`)",
+                       "Run in that clone, yourself, in this session, the changed behavior and the failing case behind "
+                       "each finding, leaving the rest to the full suite that runs beside you; never through a review "
+                       "you fork, such as `/code-review`",
+                       "with the failing case you ran",
+                       "name both runs in your verdict"):
+            self.assertIn(phrase, reviewer)
+        skill = (ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8")
+        self.assertNotRegex(skill, r"/code-review\b")
+        self.assertIn("take no worktree: each runs its checks from a throwaway clone in its `$TMPDIR`",
+                      (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8"))
+        clone = re.search(r"`(git clone [^`]*)`", reviewer).group(1)
+        swap = re.search(r"`(git checkout <batch head> -- <test file>)`", reviewer).group(1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, lane, scratch = (Path(tmp, name) for name in ("repo", "lane", "scratch"))
+            scratch.mkdir()
+
+            def git(cwd: Path, *args: str) -> str:
+                return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def run(cwd: Path, command: str) -> int:
+                return subprocess.run(command, shell=True, cwd=cwd, capture_output=True,
+                                      env={**os.environ, "TMPDIR": str(scratch)}).returncode
+
+            subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+            (repo / "f").write_text("1\n", encoding="utf-8")
+            git(repo, "add", "-A")
+            git(repo, "commit", "-qm", "reviewed head")
+            git(repo, "worktree", "add", "-q", "-b", "lane", str(lane))
+            reviewed = git(lane, "rev-parse", "HEAD")
+            (lane / "f").write_text("2\n", encoding="utf-8")
+            (lane / "t.sh").write_text('test "$(cat f)" = 2\n', encoding="utf-8")
+            git(lane, "add", "-A")
+            git(lane, "commit", "-qm", "fix batch")
+            batch = git(lane, "rev-parse", "HEAD")
+            before = (git(repo, "worktree", "list", "--porcelain"), git(repo, "branch", "-a"),
+                      git(lane, "status", "--porcelain"))
+            self.assertEqual(run(repo, clone.replace("<any checkout of the repo>", str(lane))
+                                 .replace("<name>", "review").replace("<commit>", reviewed)), 0)
+            review = scratch / "review"
+            self.assertEqual(git(review, "rev-parse", "HEAD"), reviewed)
+            self.assertEqual(run(review, swap.replace("<batch head>", batch).replace("<test file>", "t.sh")), 0)
+            self.assertNotEqual(run(review, "sh t.sh"), 0)
+            git(review, "checkout", "-q", "--detach", batch)
+            self.assertEqual(run(review, "sh t.sh"), 0)
+            self.assertEqual((git(repo, "worktree", "list", "--porcelain"), git(repo, "branch", "-a"),
+                              git(lane, "status", "--porcelain")), before)
+
+    def test_reviewer_blocks_a_part_its_design_system_shares(self) -> None:
+        # spec #roles-design-system, #delivery-review, #acceptance-design-review-hand,
+        # #acceptance-design-review-copy, #acceptance-design-review-new-part.
+        reviewer = " ".join((ROOT / "agents/code-reviewer.md").read_text(encoding="utf-8").split())
+        self.assertIn("Read the design system's one source the target root `AGENTS.md` names (spec "
+                      "`#roles-design-system`). A part the diff draws by hand, or as a near copy, where a shared part "
+                      "draws it is a blocker naming that shared part; a shared part the diff adds without its entry in "
+                      "that source stating its convention, or without its code check, is a blocker naming what is "
+                      "missing.", reviewer)
+
+    def test_prototype_worker_imports_shared_parts_and_passes_design_checks(self) -> None:
+        # spec #delivery-prototype, #delivery-implement, #acceptance-design-prototype-checks.
+        worker = " ".join((ROOT / "agents/implementer.md").read_text(encoding="utf-8").split())
+        self.assertIn("imported or copied, never redrawn, a shared part of the design system the target root "
+                      "`AGENTS.md` names always imported, never copied", worker)
+        checks = ("Before each commit you send the owner, run the code checks that design system names and fix in "
+                  "the prototype what they fail (spec `#delivery-prototype`).")
+        self.assertIn(checks, worker)
+        self.assertLess(worker.index(checks), worker.index("Then commit, and before you record"))
+        self.assertIn("Repo tests run in delivery, never during shaping, but for the design system's checks a "
+                      "prototype round runs (spec `#delivery-implement`).",
+                      " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split()))
+
+    def test_integrator_works_in_the_lane_worktree_holding_its_branch(self) -> None:
+        # ANN-2144 item 5: a branch is checked out in one worktree, so the
+        # integrator works where the lane worktree holds it, and the owner writes
+        # nothing there while it runs.
+        skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
+        self.assertIn("1. Spawn an integrator through `herdr-comms` with `--role integrator` in the lane worktree "
+                      "when it holds the integration branch, else in a clean integration worktree. While it runs, "
+                      "write nothing in its worktree.", skill)
+        self.assertIn("Each writer has a distinct worktree, the integrator the lane worktree when it holds the "
+                      "integration branch (step 1)", skill)
+        self.assertIn("in the worktree you were spawned in: the lane worktree when it holds the integration branch, "
+                      "which you alone write while you run, else a clean integration worktree",
+                      " ".join((ROOT / "agents/integrator.md").read_text(encoding="utf-8").split()))
 
     def test_owner_reports_each_box_problem_to_operator_once(self) -> None:
         # spec #roles-box-problem, #acceptance-box-problem-owner: the owner reports
@@ -754,7 +872,7 @@ class LaneRecordTests(unittest.TestCase):
             self.assertIn(
                 "to the owner pane your brief names as a [report](../skills/herdr-comms/SKILL.md#send-a-report), "
                 "natively when you run on Claude and that pane has a live Claude session, else with `herdr-say`. "
-                + REPORT_CONFIRM + " If none is confirmed, send it once, "
+                + REPORT_ADDRESS + " " + REPORT_CONFIRM + " If none is confirmed, send it once, "
                 "naming the owner pane, as a report to the operator pane (`pane` in `$(octo-lite-state)/operator.toml`). "
                 "Then stop, whatever the last result.",
                 output,
@@ -776,11 +894,12 @@ class LaneRecordTests(unittest.TestCase):
         output = (ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split("\n## Output\n", 1)[1]
         self.assertIn(
             "sent to its recipient as a [report](../skills/herdr-comms/SKILL.md#send-a-report), natively when you run on "
-            "Claude and the recipient's pane has a live Claude session, else with `herdr-say`. " + REPORT_CONFIRM,
+            "Claude and the recipient's pane has a live Claude session, else with `herdr-say`. " + REPORT_ADDRESS + " "
+            + REPORT_CONFIRM,
             output)
         self.assertIn(
             "Send an owner your own reports the same way, natively when you run on Claude and that owner's pane has a "
-            "live Claude session, else with `herdr-say`: " + REPORT_CONFIRM[0].lower() + REPORT_CONFIRM[1:],
+            "live Claude session, else with `herdr-say`. " + REPORT_ADDRESS + " " + REPORT_CONFIRM,
             OPERATOR.read_text(encoding="utf-8"))
         for path in ROOT.glob("agents/*.md"):
             self.assertNotIn("natively or by", path.read_text(encoding="utf-8"), path.name)
@@ -806,9 +925,11 @@ class LaneRecordTests(unittest.TestCase):
         # falling back to herdr-say; every report line points at that recipe.
         # #acceptance-native-timeout: a timed-out send counts as sent, never sent
         # again; its backstop (#roles-goal) is the sender's pane, read when the wait ends.
+        # Each states, where it reports, the one step from the target's pane id to that address.
         for path in ROOT.glob("agents/*.md"):
             tools = re.search(r"^tools: (\[.*\])$", path.read_text(encoding="utf-8"), flags=re.MULTILINE)
             self.assertIn("SendMessage", json.loads(tools.group(1)), path.name)
+            self.assertIn(REPORT_ADDRESS, path.read_text(encoding="utf-8"), path.name)
         recipe = (ROOT / "skills/herdr-comms/SKILL.md").read_text(encoding="utf-8")
         recipe = recipe.split("\n## Send a report\n", 1)[1].split("\n## ", 1)[0]
         for token in ("herdr-claude-session PANE | jq -r '.messagingSocketPath // empty'", "`uds:<that path>`", "`herdr-say PANE REPORT`",
@@ -938,7 +1059,11 @@ class LaneRecordTests(unittest.TestCase):
     def test_researcher_hands_the_x_token_to_curl_on_stdin_only(self) -> None:
         # spec #roles-research-x, #acceptance-research-x, #acceptance-research-x-missing:
         # the researcher reads the token from the X credential file at each search
-        # and no command line holds it; with no file, no search runs.
+        # and no command line holds it; with no file, or one whose line holds no
+        # value, no search runs. It takes the line's value as the installer's
+        # check does, one pair of matching quotes around it dropped, never
+        # running the file (spec/domains/install.spec.html#acceptance-x-token-quoted,
+        # #install-x-token).
         text = (ROOT / "agents/researcher.md").read_text(encoding="utf-8")
         block = next(b for _, b in re.findall(r"\n( *)```sh\n(.*?)\n\1```", text, flags=re.DOTALL) if "x.env" in b)
         with tempfile.TemporaryDirectory() as tmp:
@@ -951,12 +1076,24 @@ class LaneRecordTests(unittest.TestCase):
             run = lambda: subprocess.run(["bash", "-c", block], env=env, capture_output=True, text=True)
             run()
             self.assertFalse((out / "argv").exists(), "searched with no X credential file")
-            (home / ".config/workbench/x.env").write_text("X_BEARER_TOKEN=AAAA%3Dsecret\n")
-            run()
-            argv = (out / "argv").read_text()
-            self.assertEqual((out / "stdin").read_text(), "Authorization: Bearer AAAA%3Dsecret\n")
-            self.assertNotIn("secret", argv)
-            self.assertIn("https://api.x.com/2/tweets/search/recent", argv)
+            for held in ("", "X_BEARER_TOKEN=\n", "TOKEN=kept\n"):
+                (home / ".config/workbench/x.env").write_text(held)
+                run()
+                self.assertFalse((out / "argv").exists(), f"searched with no X token: {held!r}")
+            # One pair of matching quotes around the value is dropped, as a shell
+            # assignment holds it; sourcing would run the planted command.
+            for n, quote in enumerate(("'", '"', "")):
+                with self.subTest(quote=quote):
+                    for f in ("argv", "stdin"):
+                        (out / f).unlink(missing_ok=True)
+                    token = f"AAAA%3D{n}$(touch {out}/ran)secret"
+                    (home / ".config/workbench/x.env").write_text(f"X_BEARER_TOKEN={quote}{token}{quote}\n")
+                    run()
+                    argv = (out / "argv").read_text()
+                    self.assertEqual((out / "stdin").read_text(), f"Authorization: Bearer {token}\n")
+                    self.assertFalse((out / "ran").exists(), "ran the X credential file")
+                    self.assertNotIn("secret", argv)
+                    self.assertIn("https://api.x.com/2/tweets/search/recent", argv)
         self.assertNotRegex(block, r"\s(-v|--verbose|--trace\S*)\s")  # each prints the header
 
     def test_report_skill_states_the_folder_other_lanes_read(self) -> None:

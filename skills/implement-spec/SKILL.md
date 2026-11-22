@@ -79,7 +79,7 @@ The lane owner keeps its lane record current as the lane-record hook in `agents/
    or `Changelog: none: <reason>` when the lane makes no change the
    convention logs or the target declares no convention.
 5. Before dispatch, run the spec validator, backslash-artifact scan, and
-   tag-balance scan. Repo tests run in delivery, never during shaping. Run one short cross-source conflict check: does the spec
+   tag-balance scan. Repo tests run in delivery, never during shaping, but for the design system's checks a prototype round runs (spec `#delivery-implement`). Run one short cross-source conflict check: does the spec
    contradict another canonical spec, merged main, or an open PR?
 
 ## Herdr workers
@@ -135,8 +135,9 @@ Keep messages sparse. A status pointer or commit is better than a recap.
 
 When an implementer completes:
 
-1. Spawn an integrator through `herdr-comms` with `--role integrator` in a clean
-   integration worktree.
+1. Spawn an integrator through `herdr-comms` with `--role integrator` in the
+   lane worktree when it holds the integration branch, else in a clean
+   integration worktree. While it runs, write nothing in its worktree.
 2. Give it the ticket, worker commit, integration branch, and spec pointers.
 3. Have it merge or cherry-pick the worker commit, resolve only integration
    conflicts, run proportionate validation, push the integration branch as
@@ -149,8 +150,9 @@ When an implementer completes:
 
 One integrator writes the integration branch at a time. Implementers may continue
 in parallel on independent frontier tickets.
-Each writer has a distinct worktree, including the integrator; a separate tab in
-the same checkout is not isolation. Read-only explorers may share source only
+Each writer has a distinct worktree, the integrator the lane worktree when it
+holds the integration branch (step 1); a separate tab in the same checkout is
+not isolation. Read-only explorers may share source only
 when they do not install dependencies, change branches or generate files there.
 
 Consume completed results at the next owner wake, before optional status work,
@@ -173,6 +175,14 @@ waits for N CPUs (4 by default), prints its wait, runs the job on them, and ends
 as the job did. Where the target `AGENTS.md` names, beside the job's command,
 a resource, its number, and the CPUs the job asks for, run
 `octo-lite-lock --cores C --cap RESOURCE=N CMD`.
+A heavy job on a candidate head, its full suite or a capture its merge ask
+needs, adds `--merge`, so it runs ahead of every waiting job that is not; every
+other heavy job takes the lock without it (spec `#roles-load-merge`). Such a
+job reads the lane's head only as it starts, never a commit fixed as it lined
+up, and names the head it ran: run it in the lane's worktree as
+`octo-lite-lock --merge sh -c 'git rev-parse HEAD && SUITE'`. A fix batch that
+moves the head while it waits leaves it in line, to run on the new head, so
+never stop it to line up again.
 A head before the lane's candidate ([Review and finish](#review-and-finish))
 gets only the tests for what it touched; those are no heavy job and never take
 the lock. The lane runs the full suite only on a candidate head, beside its
@@ -204,14 +214,12 @@ The merge ask lists, in its PR body, each failed criterion as judged at the merg
    the box lock and the target's other required validation
    ([Validation](#validation)), any capture the target requires before a merge
    ask, and a fresh reviewer through `herdr-comms` with `--role code-reviewer`,
-   briefed to run `/code-review` on the integration branch, the lane's one
-   full review, naming each changed screen's accepted mockup and prototype
-   components as the implementer briefs do, then send its verdict to the
-   owner pane as a [report](../herdr-comms/SKILL.md#send-a-report), since `/code-review` ends in its own pane. The verdict policy
-   is the `agents/code-reviewer.md` contract. If unsupported,
-   use the available independent review mechanism with the provided diff, base,
-   spec and scope. Verify acknowledgment and actual review work once;
-   do not retry an unrecognized slash command or count pasted text as review.
+   the lane's one full review, briefed with the integration branch, its base,
+   the spec and scope, and each changed screen's accepted mockup and prototype
+   components as the implementer briefs name them, to send its verdict to the
+   owner pane as a [report](../herdr-comms/SKILL.md#send-a-report). The
+   verdict policy, and how it runs what it judges, is the
+   `agents/code-reviewer.md` contract.
    A one-shot run (full suite, QA capture, recording, production-size proof)
    never runs on a head before a candidate.
 2. Every finding on one head, the verdict's blockers and its notes marked
