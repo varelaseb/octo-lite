@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_herdr import FAKE_HERDR, fake_herdr_env
+from tests.test_install_keys import give_keys
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts/install-octo-lite"
@@ -41,6 +42,7 @@ class OnboardingTest(unittest.TestCase):
                     "XDG_CONFIG_HOME": str(self.sentinel / "config")}
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
         self.installer = INSTALLER
+        give_keys(self.prefix)
 
     def run_installer(self, *extra, answers=""):
         r = subprocess.run([str(self.installer), "--prefix", str(self.prefix), *extra],
@@ -358,6 +360,7 @@ class OnboardingTest(unittest.TestCase):
         (p / ".claude/settings.json").write_text("not json\n")
         (p / ".claude/skills/ui-rules").unlink()
         (p / ".claude/skills/ui-rules").symlink_to(other / "skills/ui-rules")
+        (p / ".config/workbench/x.env").unlink()
         (checkout / "AGENTS.md").write_text("- Repo skills: skills/ui-rules, skills/gone\n")
         foreign = p / ".claude/skills/someone-elses"
         foreign.symlink_to(p.parent / "gone")
@@ -369,8 +372,8 @@ class OnboardingTest(unittest.TestCase):
         self.assertCountEqual([line.split(":")[0].split(" (")[0] for line in lines], [
             "missing link", "bad link", "leftover legacy link", "dangling legacy link",
             "missing source", "stale link", "hook settings not readable as settings, left untouched",
-            "missing command-time hook", "herdr missing", "prototype-video not installed",
-            "Stageshow not installed"], r.stderr)
+            "missing command-time hook", "herdr missing", "missing X token",
+            "prototype-video not installed", "Stageshow not installed"], r.stderr)
         self.assertIn(f"dangling link (not ours): {foreign}", r.stdout)
 
     def test_a_project_checkout_gone_or_without_agents_md_is_one_problem_and_the_check_goes_on(self):
@@ -398,6 +401,7 @@ class OnboardingTest(unittest.TestCase):
 
     def test_check_at_a_missing_prefix_creates_nothing(self):
         # spec/domains/install.spec.html#install-check: reads the box, changes nothing
+        shutil.rmtree(self.prefix)
         r = self.check()
         self.assertIn(f"missing link: {self.prefix}/", r.stderr)
         self.assertFalse(os.path.lexists(self.prefix), "check created the prefix")
@@ -423,14 +427,18 @@ class AfterPullTest(unittest.TestCase):
         base = Path(tmp.name)
         self.prefix = base / "prefix"
         self.onboarding = self.prefix / ".local/state/octo-lite/onboarding.toml"
-        # Stageshow is installed: skillfile finds its pin deployed, and its
-        # filming dependencies are current. So is the recorder: its driver is
-        # current, and npm finds its browser installed. Herdr is faked, its
-        # Claude started as tests/test_herdr.py starts it; jq is the box's own,
-        # which herdr-spawn and the fake parse with.
+        # Stageshow is installed: skillfile finds its pin fetched and deployed,
+        # and its filming dependencies are current. So is the recorder: its
+        # driver is current. npm finds each one's browser installed. Herdr is
+        # faked, its Claude started as tests/test_herdr.py starts it; jq is the
+        # box's own, which herdr-spawn and the fake parse with.
         self.bin = base / "bin"
         self.bin.mkdir()
-        for name, body in (("skillfile", "#!/bin/sh\n"), ("npm", "#!/bin/sh\n"), ("herdr", FAKE_HERDR)):
+        browser = base / "browser"
+        browser.mkdir()
+        (browser / "INSTALLATION_COMPLETE").touch()
+        npm = f"#!/bin/sh\necho '  Install location:    {browser}'\n"
+        for name, body in (("skillfile", "#!/bin/sh\n"), ("npm", npm), ("herdr", FAKE_HERDR)):
             (self.bin / name).write_text(body)
             (self.bin / name).chmod(0o755)
         (self.bin / "jq").symlink_to(shutil.which("jq"))
@@ -450,9 +458,11 @@ class AfterPullTest(unittest.TestCase):
         self.commit("installer")
         self.clone = base / "clone"
         self.git(base, "clone", "-q", str(self.upstream), str(self.clone))
+        give_keys(self.prefix)
         for deps in (self.clone / "agents/skills/stageshow/node_modules", self.clone / "node_modules"):
             deps.mkdir(parents=True)
             (deps / ".package-lock.json").write_text("{}")
+        (self.clone / ".skillfile/cache/skills/stageshow").mkdir(parents=True)
         self.run_ok([str(self.clone / "scripts/install-octo-lite"), "--prefix", str(self.prefix)])
         # upstream ships a new helper; the host fast-forwards the clone
         helper = self.upstream / "scripts/new-helper"
@@ -529,6 +539,13 @@ class AfterPullTest(unittest.TestCase):
         r = self.after_pull()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.linked.resolve(), (self.clone / "scripts/new-helper").resolve())
+
+    def test_after_pull_passes_on_a_box_without_a_key(self):
+        # spec/domains/install.spec.html#acceptance-x-token-after-pull
+        (self.prefix / ".config/workbench/x.env").unlink()
+        r = self.after_pull()
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertNotIn("X token", r.stdout)
 
     def test_after_pull_fails_naming_the_failed_check_with_its_fix(self):
         self.plant_leftover()

@@ -30,10 +30,11 @@
 # terminal, as the role contracts' server rule starts a server (setsid, so no
 # longer under the shell once its starter exits), runs on until the tab
 # closes. The role is the record's, else the one a worker's spawn name
-# <role>-<ticket> carries; a name not of that form, none. An agent Herdr does
-# not report idle or done (Herdr 0.9.0 reports a Claude agent waiting at its
-# prompt as done), or one with no Claude session file (Codex, pi), is refused
-# with nothing ended.
+# <role>-<ticket> carries, a numbered one's (scientist1-ann-64) with its number
+# dropped; a name not of that form, none. An agent Herdr does not report idle
+# or done (Herdr 0.9.0 reports a Claude agent waiting at its prompt as done),
+# or one with no Claude session file (Codex, pi), is refused with nothing
+# ended.
 #
 # Once the processes it ended have exited, or at 5s, a close removes the
 # scratch folder of each agent in what it closed, a parked one's included: the
@@ -94,7 +95,7 @@ exited() {
 # is its own lane's, a Git linked worktree off its repository's main branch
 # (the one origin/HEAD names, else main) that no live process but the pane's
 # shell, process $2, works in, as another agent or a server the parked one
-# left running may. Its install command restores them.
+# left running may. Its resume links main's again or installs its own.
 packages() {
   local top main dir pid
   top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 0
@@ -123,7 +124,7 @@ if [[ "${1:-}" == --park ]]; then
   agents="$name"$'\n'"$pane"
   line="$(jq -c --arg at "$(date -u +%FT%TZ)" --arg pane "$pane" --arg name "$name" \
     '{at: $at, kind: "parked", pane: $pane, name: $name,
-      role: (.agent // ($name | capture("^(?<r>.+)-[a-z0-9]+-[0-9]+$").r) // null), cwd, session: .sessionId}' <<<"$session")"
+      role: (.agent // ($name | capture("^(?<r>.+?)[0-9]*-[a-z0-9]+-[0-9]+$").r) // null), cwd, session: .sessionId}' <<<"$session")"
   # The processes under process $1: the agent's Claude, what it runs, theirs.
   under() { local c; for c in $(cat /proc/"$1"/task/*/children 2>/dev/null); do echo "$c"; under "$c"; done; }
   # The caller's own waits on the agent end first, so none sees it gone.

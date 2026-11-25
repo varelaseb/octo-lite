@@ -12,6 +12,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_install_keys import give_keys
+from tests.test_install_stageshow import CloneCase
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "scripts" / "install-octo-lite"
 # skillfile and npm stubbed unreachable: installer runs never fetch.
@@ -34,6 +37,7 @@ class InstallSkillMirrorTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.prefix = Path(self._tmp.name) / "prefix"
+        give_keys(self.prefix)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -163,6 +167,67 @@ class VendoredSkillLocationTest(unittest.TestCase):
             "tdd must no longer live under skills/",
         )
         self.assertTrue((ROOT / "agents" / "skills" / MANAGED_SKILLS[0] / "SKILL.md").is_file())
+
+
+class OwnSkillCopyTest(CloneCase):
+    """A copy of one of octo-lite's own skills an earlier install's skillfile
+    left in agents/skills, beside the pins (install.spec.html#install-peers)."""
+
+    def setUp(self):
+        super().setUp()
+        self.copy = self.clone / "agents/skills/implement-spec"
+        self.pins = [self.clone / "agents/skills/tdd", self.clone / "agents/skills/stageshow"]
+
+    def plant_copy(self):
+        (self.copy / "assets").mkdir(parents=True)
+        (self.copy / "SKILL.md").write_text("stale\n")
+        (self.copy / "assets/prototype-video").write_text("#!/bin/sh\n")
+
+    def tree(self, root):
+        return {str(f.relative_to(root)): f.read_bytes() for f in sorted(root.rglob("*")) if f.is_file()}
+
+    def test_install_keeps_an_own_skill_only_in_skills_and_keeps_the_rest(self):
+        # spec/domains/install.spec.html#acceptance-own-skills-once, and project
+        # rule spec/domains/disk.spec.html#acceptance-disk-own-only-rule: another
+        # lane's worktree of this clone has its own copy and work in use.
+        self.assertEqual(self.run_installer().returncode, 0)
+        self.pins[0].mkdir()
+        (self.pins[0] / "SKILL.md").write_text("tdd\n")
+        self.plant_copy()
+        pins = [self.tree(pin) for pin in self.pins]
+        theirs = self.clone.parent / "other-lane"
+        subprocess.run(["git", "-C", str(self.clone), "worktree", "add", "-q", str(theirs)],
+                       check=True, env=self.env)
+        for folder in ("agents/skills/implement-spec", "skills/implement-spec/work"):
+            (theirs / folder).mkdir(parents=True)
+            (theirs / folder / "SKILL.md").write_text("theirs\n")
+        busy = subprocess.Popen(["sleep", "600"], cwd=theirs / "skills/implement-spec/work",
+                                start_new_session=True)
+        self.addCleanup(lambda: (busy.kill(), busy.wait()))
+        before = self.tree(theirs)
+
+        r = self.run_installer()
+
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"pruned: {self.copy}", r.stdout.splitlines())
+        self.assertFalse(self.copy.exists(), "the copy must be gone from agents/skills")
+        for skill_dir in (".claude/skills", ".codex/skills", ".agents/skills"):
+            with self.subTest(skill_dir=skill_dir):
+                self.assertEqual(os.path.realpath(self.prefix / skill_dir / "implement-spec"),
+                                 str(self.clone / "skills/implement-spec"))
+        self.assertEqual([self.tree(pin) for pin in self.pins], pins)
+        self.assertEqual(self.tree(theirs), before)
+        self.assertIsNone(busy.poll())
+        self.assertEqual(self.run_installer("--check").returncode, 0)
+
+    def test_check_names_the_copy_with_its_fix_and_keeps_it(self):
+        # spec/domains/install.spec.html#acceptance-check-lines: installing fixes it.
+        self.assertEqual(self.run_installer().returncode, 0)
+        self.plant_copy()
+        r = self.run_installer("--check")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stderr.splitlines(), [f"leftover copy of an own skill: {self.copy}; fix: {self.fix}"])
+        self.assertTrue((self.copy / "SKILL.md").is_file(), "--check changes nothing")
 
 
 if __name__ == "__main__":

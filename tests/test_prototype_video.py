@@ -3,7 +3,7 @@ records real use of a prototype, each step action as a person does it. Spec: spe
 #delivery-round-video, #delivery-round-video-actions; criteria #acceptance-video-unknown-action, -check, -drag, -hold,
 -hold-slide, -menu, -hover, -select, -busy, and -length. The recorder reads a mockup file in its browser, so these
 tests need its pinned driver and browser, as the installer adds them (install.spec.html #install-recorder): run
-`npm ci && npx playwright-core install chromium` at the clone root once per clone. The check reads crops of frames the
+`npm ci && PLAYWRIGHT_SKIP_BROWSER_GC=1 npx playwright-core install chromium` at the clone root once per clone. The check reads crops of frames the
 recorder recorded, kept as fixtures."""
 
 from __future__ import annotations
@@ -14,9 +14,11 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 RECORDER = ROOT / "skills" / "implement-spec" / "assets" / "prototype-video"
@@ -180,11 +182,31 @@ console.log(JSON.stringify({
 """
 
 class Site(ThreadingHTTPServer):
-    """The fixture prototype, served on a free port."""
+    """The fixture prototype, served on a free port; /answer?ms=N answers after N ms, as a slow fixture does, and
+    /stream is an event stream that sends a message every 0.5 s until the page leaves."""
 
     class Handler(SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def do_GET(self):
+            url = urlsplit(self.path)
+            if url.path == "/stream":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                try:
+                    while True:
+                        self.wfile.write(b"data: tick\n\n")
+                        time.sleep(0.5)
+                except OSError:
+                    return
+            if url.path != "/answer":
+                return super().do_GET()
+            time.sleep(int(parse_qs(url.query)["ms"][0]) / 1000)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
     def __init__(self):
         super().__init__(("127.0.0.1", 0), functools.partial(self.Handler, directory=FIXTURES / "site"))
@@ -272,7 +294,7 @@ class RecordingTest(unittest.TestCase):
         (self.repo / "screen.mockup.html").write_text(mockup)
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
                "GIT_COMMITTER_EMAIL": "t@t"}
-        for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "screen"]):
+        for argv in (["init", "-q"], ["add", "-A"], ["commit", "-q", "--allow-empty", "-m", "screen"]):
             subprocess.run(["git", "-C", str(self.repo), *argv], check=True, env=env)
         recorder = ["node", "--input-type=module", "-e", program, str(RECORDER)] if program else [
             str(RECORDER / "prototype-video")]
@@ -403,7 +425,7 @@ const starts = of('touchStart')
 const [end] = of('touchEnd')
 const slides = of('touchMove')
 console.log(JSON.stringify({
-  heldUntilOpen: slides.length > 0 && slides[0].at - starts[0].at >= 500,
+  heldUntilOpen: slides.length > 0 && slides[0].at - starts[0].at >= 500 && slides[0].at - starts[0].at < 2500,
   stillDown: starts.length === 1 && slides.every(slide => slide.at < end.at),
   picked: like(color(frames.at(-1), { x: 180, y: 450 }), '#16a34a'),
 }))
@@ -495,6 +517,75 @@ const next = of('move').find(move => move.at > up.at)
 console.log(JSON.stringify(next.at - up.at))
 """)
         self.assertLess(seen, 1400 + 2000)
+
+    def test_part_that_shows_long_after_its_press_is_waited_for(self):
+        """#delivery-round-video: a loaded box can take a page seconds to draw what a press shows, so a working step
+        never fails on it: the result that shows 8 s after its search is still reached and pressed."""
+        result = self.record(mockup("/late/", ("search", "The search", ""),
+                                    ("searched", "Searched", '<li data-press=".search">'),
+                                    ("opened", "Its result, shown late &rarr; opened", '<li data-press=".result">')),
+                             "desktop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_press_on_a_part_the_page_still_moves_lands_where_it_ends(self):
+        """#delivery-round-video: the week's days arrive in pieces for 6 s after Load, each pushing Tuesday down while
+        the pointer travels and rests on it, as a loaded box commits a render late; the pointer goes again to where
+        Tuesday is until it rests on it, so its press opens Tuesday."""
+        for viewport in ("desktop", "phone"):
+            with self.subTest(viewport=viewport):
+                seen = self.probe(mockup("/arriving/", ("week", "The week, not loaded", ""),
+                                         ("loading", "Loading its days", '<li data-press=".load">'),
+                                         ("opened", "Tuesday, once its days arrived &rarr; opened",
+                                          '<li data-press=".tuesday">')), viewport, """
+const press = [...of('down'), ...of('touchStart')].at(-1)
+console.log(JSON.stringify(like(color(frames.at(-1), { x: press.x - 150, y: press.y }), '#16a34a')))
+""")
+                self.assertTrue(seen)
+
+    def test_last_step_holds_its_result_that_slow_answers_bring(self):
+        """#delivery-round-video: the last step's search runs again and its counts come back only after three slow
+        answers, each read once the one before has drawn, 5.3 s after the press, longer than the last step holds; the
+        video holds until they have, so its last frame shows the counts back."""
+        seen = self.probe(mockup("/counts/", ("results", "The results", ""),
+                                 ("again", "Searched again &rarr; its counts back", '<li data-press=".again">')),
+                          "desktop", """
+const press = of('down').at(-1)
+console.log(JSON.stringify(like(color(frames.at(-1), { x: press.x - 150, y: press.y }), '#16a34a')))
+""")
+        self.assertTrue(seen)
+
+    def test_phone_tab_a_track_clips_is_scrolled_into_view_and_tapped(self):
+        """#delivery-round-video: the board's tab track, narrower than the screen, clips Edited where the screen
+        would still show it; the track first scrolls it into view, so the touch rests on it and taps it."""
+        result = self.record(mockup("/tabs/", ("ready", "The board on Ready", ""),
+                                    ("edited", "Edited", '<li data-press="[role=tab][data-column=edited]">')), "phone")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_phone_row_wider_than_the_screen_is_pressed_where_it_shows(self):
+        """#delivery-round-video: the plan's row, wider than a phone's screen in a table that scrolls sideways, never
+        shows the point off its words, however the table scrolls; once scrolled into view, the touch presses it where
+        it shows, its middle."""
+        result = self.record(mockup("/wide/", ("plan", "The plan", ""),
+                                    ("opened", "Tuesday's row opened", '<li data-press=".row">')), "phone")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_hold_at_the_middle_of_a_part_off_the_screen_reaches_it(self):
+        """#delivery-round-video: the pointer holds the meeting's grip, resting at the exact middle of its day, which
+        lies taller than the screen, and lets go on it."""
+        result = self.record(mockup("/column/", ("day", "The day", ""),
+                                    ("moved", "The meeting held &rarr; let go on its day",
+                                     '<li data-hold=".grip" data-to=".day">')), "desktop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_event_stream_kept_open_holds_no_step(self):
+        """#delivery-round-video: the chat reads an event stream by fetch that never ends, so a step's result waits on
+        no answer from it, as annotateanything's QA settle never counts one busy (jev-capture #jc-ac-settle): the
+        recording ends well within the 30 s a step's wait may last, where waiting on the stream would cost it that at
+        every step."""
+        started = time.monotonic()
+        result = self.record(mockup("/stream/", ("chat", "The chat", "")), "desktop")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertLess(time.monotonic() - started, 30)
 
     def test_part_no_press_reaches_fails_naming_its_step(self):
         result = self.record(COVERED, "desktop")
