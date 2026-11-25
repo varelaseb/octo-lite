@@ -95,7 +95,7 @@ exited() {
 # is its own lane's, a Git linked worktree off its repository's main branch
 # (the one origin/HEAD names, else main) that no live process but the pane's
 # shell, process $2, works in, as another agent or a server the parked one
-# left running may. Its install command restores them.
+# left running may. Its resume links main's again or installs its own.
 packages() {
   local top main dir pid
   top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 0

@@ -2755,16 +2755,93 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertNotRegex(path.read_text(encoding="utf-8"),
                                 r"/tmp/octo-lite|octo-lite/scratch|\.cache/octo-lite|/\.ol\b|--scratch", path)
 
-    def test_a_resumed_agent_reinstalls_packages_its_park_removed(self):
-        # acceptance-disk-park-resume, acceptance-disk-park-resume-integrator,
-        # park-resume: each role whose worktree its park may free.
+    def test_each_worktree_role_links_main_packages_or_installs_its_own(self):
+        # acceptance-disk-share-*, acceptance-disk-park-resume(-integrator),
+        # share-link, park-resume: each role whose worktree its park may free
+        # carries the one recipe, fresh and resumed.
+        rules = {}
         for role, needs in (("orchestrator", "tests or the prototype"), ("implementer", "tests or the prototype"),
-                            ("integrator", "the repo's checks")):
-            self.assertRegex(
-                self.contract(role),
-                r"Resumed from a park with your worktree's `node_modules` gone, install them again with the "
-                r"install command the target `AGENTS.md` names before you run anything that needs them, such as "
-                + re.escape(needs) + r" \(disk spec `#park-resume`\)\.", role)
+                            ("integrator", "the repo's checks"), ("scientist", "the eval or tests")):
+            rule = re.search(r"^- Packages \(disk spec `#share-link`, `#park-resume`\): .*$", self.contract(role), re.M)
+            self.assertIsNotNone(rule, role)
+            self.assertIn(f"such as {needs},", rule.group(0), role)
+            rules[role] = rule.group(0).replace(f"such as {needs},", "such as <needs>,")
+        self.assertEqual(len(set(rules.values())), 1, "the roles' recipes differ")
+        rule = rules["implementer"]
+        for anchor in ("share-stale", "share-mid-update", "share-scripts", "share-caches", "share-hard-links",
+                       "share-own", "share-change"):
+            self.assertIn(f"`#{anchor}`", rule)
+        self.assertIn("Else install your own with the install command the target `AGENTS.md` names.", rule)
+        self.assertIn("is no such step (`#share-scripts`)", rule)
+        self.assertIn("other step that writes into installed packages' files, such as a generate step,", rule)
+        # share-scripts: each root script npm runs at both install and ci, by npm's own pattern.
+        self.assertIn("no script named `dependencies`, `install`, or `prepare`, each with or without a `pre` or `post`"
+                      " prefix, or `prepublish`,", rule)
+        # share-mid-update: an npm working in a subfolder of main's installs into main's folder.
+        self.assertIn("process has `$m/$d` or a folder under it as its `readlink /proc/<pid>/cwd`", rule)
+        command = {name: re.search(rf"`({re.escape(name)} [^`]*)`", rule).group(1)
+                   for name in ("git ls-files", "cmp", "[", "cp", "find", "rm")}
+
+        # acceptance-disk-main-rule, share-hard-links: the recipe's commands,
+        # run as written, on a main checkout with packages fresh from its lockfiles.
+        main = self.checkout()
+        for lock in ("package-lock.json", "web/package-lock.json"):
+            (main / lock).write_text(lock)
+            os.utime(main / lock, (1, 1))
+        self.git(main, "add", "-A")
+        self.git(main, "commit", "-qm", "lockfiles")
+        tree = Path(self.tmp.name) / "lane"
+        self.git(main, "worktree", "add", "-q", "-b", "ann1", str(tree))
+        self.install(main)
+        for record in ("node_modules/.package-lock.json", "web/node_modules/.package-lock.json"):
+            (main / record).write_text("record")
+        # acceptance-disk-share-caches: a test runner's result cache, beside the packages' commands.
+        (main / "node_modules/.vite/vitest").mkdir(parents=True)
+        (main / "node_modules/.vite/vitest/results.json").write_text("main's results")
+        (main / "node_modules/.bin").mkdir()
+        (main / "node_modules/.bin/a").symlink_to("../a/index.js")
+        before = self.tree(main)
+
+        def run(name, d):
+            return subprocess.run(["sh", "-c", command[name]], cwd=tree, capture_output=True, text=True,
+                                  env={**self.env, "m": str(main), "d": d})
+
+        self.assertEqual(run("git ls-files", ".").stdout.split(), ["package-lock.json", "web/package-lock.json"])
+        for d, package in ((".", "a"), ("web", "b")):
+            self.assertEqual([run(name, d).returncode for name in ("cmp", "[", "cp", "find")], [0, 0, 0, 0], d)
+            linked = tree / d / "node_modules"
+            self.assertTrue(linked.is_dir() and not linked.is_symlink(), d)
+            self.assertEqual((linked / package / "index.js").stat().st_ino,
+                             (main / d / "node_modules" / package / "index.js").stat().st_ino, d)
+        self.assertEqual(self.git(tree, "status", "--porcelain"), "", "Git sees the linked packages")
+        self.assertFalse((tree / "node_modules/.vite").exists())
+        self.assertEqual(os.readlink(tree / "node_modules/.bin/a"), "../a/index.js")
+        self.assertEqual((tree / "node_modules/.package-lock.json").read_text(), "record")
+        # The lane's tests write their cache in place, as vitest's fs.writeFile does.
+        (tree / "node_modules/.vite/vitest").mkdir(parents=True)
+        with open(tree / "node_modules/.vite/vitest/results.json", "w") as cache:
+            cache.write("lane's results")
+        self.assertEqual(self.tree(main), before)
+
+        # acceptance-disk-share-main-moves: main installs again; the lane keeps its files.
+        shutil.rmtree(main / "node_modules")
+        self.install(main)
+        (main / "node_modules/.package-lock.json").write_text("new")
+        self.assertEqual((tree / "node_modules/.package-lock.json").read_text(), "record")
+        before = self.tree(main)
+
+        # share-change: the removal takes only the lane's links.
+        self.assertEqual(run("rm", ".").returncode, 0)
+        self.assertFalse((tree / "node_modules").exists())
+        self.assertEqual(self.tree(main), before)
+
+        # share-danger: a lockfile the lane changed, main's install stale or unrecorded.
+        (tree / "package-lock.json").write_text("changed")
+        self.assertNotEqual(run("cmp", ".").returncode, 0)
+        os.utime(main / "web/package-lock.json")
+        self.assertNotEqual(run("[", "web").returncode, 0)
+        (main / "node_modules/.package-lock.json").unlink()
+        self.assertNotEqual(run("[", ".").returncode, 0)
 
     def test_operator_removes_the_lane_worktree_keeping_one_with_work(self):
         # acceptance-disk-lane-worktree, acceptance-disk-lane-worktree-kept,
