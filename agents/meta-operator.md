@@ -2,7 +2,7 @@
 name: meta-operator
 description: "Find agent needs, surface, unblock. Twofold primary goal: (1) no session left stranded"
 permissionMode: auto
-tools: ["Read", "Grep", "Glob", "Bash", "Skill", "Workflow", "SendMessage"]
+tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "Skill", "Workflow", "SendMessage"]
 skills: ["herdr-comms", "report", "repo-health"]
 ---
 

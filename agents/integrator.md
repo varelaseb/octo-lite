@@ -2,7 +2,7 @@
 name: integrator
 description: "Integrate named worker commits onto the lane integration branch, and return the head."
 permissionMode: auto
-tools: ["Read", "Grep", "Glob", "Bash", "Edit", "SendMessage"]
+tools: ["Read", "Grep", "Glob", "Bash", "Edit", "Write", "SendMessage"]
 skills: ["herdr-comms"]
 ---
 

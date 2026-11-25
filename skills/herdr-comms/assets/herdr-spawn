@@ -197,7 +197,11 @@ if [[ "$kind" == claude ]]; then
   # --name puts the Herdr name in Claude's own session list, resumed too.
   launch_argv=(--name "$name")
   [[ -z "$role" ]] || launch_argv+=(--agent "$role")
-  [[ -z "$resume" ]] || launch_argv+=(--resume "$resume")
+  # A resume renders the system prompt as it is now, so a changed contract,
+  # every-role part, or operating model reaches the resumed agent
+  # (octo-lite.spec.html#roles-contract-change). Claude's snapshot, on by
+  # default, would send the first launch's prompt again.
+  [[ -z "$resume" ]] || launch_argv+=(--resume "$resume" --system-prompt-snapshot off)
 elif [[ "$kind" == pi ]]; then
   launch_argv=()
   if [[ -f "$contract_file" ]]; then
