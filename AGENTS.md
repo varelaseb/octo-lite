@@ -25,6 +25,10 @@ model (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
 - `README.md` explains the product and install shape.
 - `agents/*.md` are the sole canonical role contracts. They are hand-written,
   and pin no model so each CLI applies its own default.
+- `agents/parts/every-role.md` is the every-role part, the rules every role
+  follows, which `herdr-spawn` hands every agent
+  (`spec/domains/herdr-transport.spec.html#roles-every-role`). It sits outside
+  `agents/*.md`, which the installer links as agents.
 - `skills/implement-spec/` owns post-shaping delivery. Its Herdr workers run
   under the `implementer`, `integrator`, and `code-reviewer` contracts, which
   declare the skills available to them, so no prose list has to be kept in

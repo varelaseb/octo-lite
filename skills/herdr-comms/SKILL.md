@@ -55,6 +55,13 @@ as a prompt is worked as a task. Pi has neither, so it gets the contract file
 through `--append-system-prompt FILE`. The output reports `contract=` so a
 silent miss is visible.
 
+Every start, resume, and reload, under any role or none, also hands the agent
+octo-lite's every-role part, `agents/parts/every-role.md` in the clone
+`herdr-spawn` runs from (`spec/domains/herdr-transport.spec.html#roles-every-role`),
+ahead of any operating model and by the same hand-over: Claude gets it as one
+line of `--append-system-prompt` text, Codex first in `developer_instructions`,
+pi as the first `--append-system-prompt FILE`.
+
 `--operating-model FILE` is optional. It hands that file to the agent at start,
 so no global instruction file is needed: Claude gets
 `--append-system-prompt-file FILE`, Codex gets it ahead of the contract in

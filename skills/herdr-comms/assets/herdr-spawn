@@ -218,16 +218,22 @@ else
   fi
 fi
 
-# An optional operating model, handed over at start so the agent needs no global
-# instruction file. Claude and pi append it to their system prompt, pi ahead of
-# the contract. Codex takes it ahead of the contract in the one
-# developer_instructions string.
+# octo-lite's every-role part (herdr-transport.spec.html#roles-every-role) and
+# an optional operating model, handed over at every start, resume, and reload,
+# so the agent needs no global instruction file. Claude and pi append them to
+# their system prompt, pi ahead of the contract. Claude keeps only the last
+# appended file, which the model takes, and Herdr refuses a newline in an agent
+# argument, so Claude gets the part as one line of text. Codex takes both ahead
+# of the contract in the one developer_instructions string.
+part="$(readlink -f "$here/../../../agents/parts/every-role.md")"
 if [[ "$kind" == claude ]]; then
   [[ -z "$model" ]] || launch_argv=(--append-system-prompt-file "$model" "${launch_argv[@]}")
+  launch_argv=(--append-system-prompt "$(tr -s '\n' ' ' <"$part")" "${launch_argv[@]}")
 elif [[ "$kind" == pi ]]; then
   [[ -z "$model" ]] || launch_argv=(--append-system-prompt "$model" "${launch_argv[@]}")
-elif [[ -n "$model" || -f "$contract_file" ]]; then
-  instructions="$({ [[ -z "$model" ]] || { cat "$model"; echo; }; [[ ! -f "$contract_file" ]] || cat "$contract_file"; } | jq -Rs .)"
+  launch_argv=(--append-system-prompt "$part" "${launch_argv[@]}")
+else
+  instructions="$({ cat "$part"; echo; [[ -z "$model" ]] || { cat "$model"; echo; }; [[ ! -f "$contract_file" ]] || cat "$contract_file"; } | jq -Rs .)"
   launch_argv=(-c "developer_instructions=$instructions" "${launch_argv[@]}")
 fi
 

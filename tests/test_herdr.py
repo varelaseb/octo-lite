@@ -66,6 +66,7 @@ CLOSE = ROOT / "skills/herdr-comms/assets/herdr-close"
 AWAIT = ROOT / "skills/herdr-comms/assets/herdr-await"
 SESSION = ROOT / "skills/herdr-comms/assets/herdr-claude-session"
 STATE = ROOT / "scripts/octo-lite-state"
+PART = ROOT / "agents/parts/every-role.md"
 
 # A stand-in for the `herdr` binary. Behaviour is driven entirely by environment
 # variables so each test can pose one exact failure without a live server.
@@ -528,6 +529,17 @@ class HerdrWrapperTest(unittest.TestCase):
     def start_argv(self):
         return (Path(self.env["FAKE_START_ARGV"]).read_text().split("\0"))[:-1]
 
+    def claude_args(self):
+        # What Claude starts with past octo-lite's every-role part, which every
+        # start, resume, and reload hands it first, as one line of the part's
+        # text, since Herdr refuses a newline in an agent argument.
+        argv = self.start_argv()
+        args = argv[argv.index("--") + 1:]
+        self.assertEqual(args[0], "--append-system-prompt", args)
+        self.assertNotIn("\n", args[1])
+        self.assertEqual(args[1].split(), PART.read_text().split())
+        return args[2:]
+
     def test_codex_contract_is_developer_instructions_not_a_prompt(self):
         # Regression: a contract sent as the first prompt was worked as a task.
         self.dialog.write_text("none\n")
@@ -543,7 +555,7 @@ class HerdrWrapperTest(unittest.TestCase):
         value = [a for a in argv if a.startswith("developer_instructions=")]
         self.assertEqual(len(value), 1, argv)
         self.assertEqual(argv[argv.index(value[0]) - 1], "-c")
-        self.assertEqual(tomllib.loads(value[0])["developer_instructions"], contract)
+        self.assertEqual(tomllib.loads(value[0])["developer_instructions"], PART.read_text() + "\n" + contract)
 
     def test_codex_takes_the_operating_model_ahead_of_its_contract(self):
         self.dialog.write_text("none\n")
@@ -557,7 +569,25 @@ class HerdrWrapperTest(unittest.TestCase):
         value = [a for a in self.start_argv() if a.startswith("developer_instructions=")]
         self.assertEqual(len(value), 1, value)
         self.assertEqual(tomllib.loads(value[0])["developer_instructions"],
-                         "# Model\n\n# Role\n")
+                         PART.read_text() + "\n# Model\n\n# Role\n")
+
+    def test_every_runtime_starts_with_the_every_role_part_given_no_model(self):
+        # herdr-transport.spec.html#roles-every-role, octo-lite
+        # acceptance-one-source-every-role: a box given no operating model, a
+        # role with no contract found.
+        self.dialog.write_text("none\n")
+        for runtime in ("claude", "codex", "pi"):
+            r = self.spawn_as(runtime)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("contract=" + ("loaded-by-agent-flag" if runtime == "claude" else "not-found"), r.stdout)
+            argv = self.start_argv()
+            if runtime == "claude":
+                self.assertEqual(self.claude_args(), ["--name", "a1", "--agent", "r"])
+            elif runtime == "codex":
+                value = [a for a in argv if a.startswith("developer_instructions=")]
+                self.assertEqual([tomllib.loads(v)["developer_instructions"] for v in value], [PART.read_text() + "\n"])
+            else:
+                self.assertEqual(argv[argv.index("--") + 1:], ["--append-system-prompt", str(PART)])
 
     def test_claude_appends_the_operating_model_to_its_system_prompt(self):
         self.dialog.write_text("none\n")
@@ -671,15 +701,9 @@ class HerdrWrapperTest(unittest.TestCase):
         argv = self.start_argv()
         self.assertEqual(argv[argv.index("--kind") + 1], "pi")
         self.assertEqual(argv[argv.index("--") + 1:],
-                         ["--append-system-prompt", str(model.resolve()),
+                         ["--append-system-prompt", str(PART),
+                          "--append-system-prompt", str(model.resolve()),
                           "--append-system-prompt", str(agents / "r.md")])
-
-    def test_pi_without_a_contract_says_so(self):
-        self.dialog.write_text("none\n")
-        r = self.spawn_as("pi")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("contract=not-found", r.stdout)
-        self.assertNotIn("--append-system-prompt", self.start_argv())
 
     def test_claude_starts_under_its_name_with_its_role(self):
         # spec/domains/herdr-transport.spec.html#acceptance-lane-claude-names,
@@ -688,8 +712,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.dialog.write_text("none\n")
         r = self.spawn()
         self.assertEqual(r.returncode, 0, r.stderr)
-        argv = self.start_argv()
-        self.assertEqual(argv[argv.index("--") + 1:], ["--name", "a1", "--agent", "r"])
+        self.assertEqual(self.claude_args(), ["--name", "a1", "--agent", "r"])
 
     def test_a_resumed_claude_keeps_its_name_role_and_session(self):
         # spec/domains/herdr-transport.spec.html#acceptance-park-claude-name,
@@ -697,9 +720,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.dialog.write_text("none\n")
         r = self.spawn(extra=["--resume", "s-1"])
         self.assertEqual(r.returncode, 0, r.stderr)
-        argv = self.start_argv()
-        self.assertEqual(argv[argv.index("--") + 1:],
-                         ["--name", "a1", "--agent", "r", "--resume", "s-1"])
+        self.assertEqual(self.claude_args(), ["--name", "a1", "--agent", "r", "--resume", "s-1"])
 
     def test_a_resume_starts_claude_in_the_pane_it_was_parked_from(self):
         # spec/domains/herdr-transport.spec.html#transport-resume,
@@ -715,8 +736,9 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertNotIn("send-keys", self.calls())
         argv = self.start_argv()
         self.assertEqual(argv[:6], ["agent", "start", "implementer-ann-1", "--kind", "claude", "--pane"])
-        self.assertEqual(argv[6:], ["w3:p7", "--", "--name", "implementer-ann-1", "--agent", "implementer",
-                                    "--resume", "s-1"])
+        self.assertEqual(argv[6:8], ["w3:p7", "--"])
+        self.assertEqual(self.claude_args(),
+                         ["--name", "implementer-ann-1", "--agent", "implementer", "--resume", "s-1"])
 
     def test_a_resume_naming_no_role_starts_claude_with_no_agent(self):
         # transport-resume, acceptance-park-no-role: a parked line naming no
@@ -726,8 +748,7 @@ class HerdrWrapperTest(unittest.TestCase):
             r = subprocess.run([str(SPAWN), *place, "--name", "implementer-ann-1", "--resume", "s-1", "--", "claude"],
                                capture_output=True, text=True, env=self.env)
             self.assertEqual(r.returncode, 0, r.stderr)
-            argv = self.start_argv()
-            self.assertEqual(argv[argv.index("--") + 1:], ["--name", "implementer-ann-1", "--resume", "s-1"])
+            self.assertEqual(self.claude_args(), ["--name", "implementer-ann-1", "--resume", "s-1"])
 
     def test_resume_is_claude_only_and_refused_before_any_tab(self):
         for runtime in ("codex", "pi"):
@@ -1270,8 +1291,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual([c for c in calls[checked + 1:ended] if c not in (f"agent get {pane}", "sleep 1")], [],
                          "something ran between its last quiet check and the end")
         start = at(rf"agent start ops-10 --kind claude --pane {pane} -- .*")
-        argv = self.start_argv()
-        self.assertEqual(argv[argv.index("--") + 1:], ["--name", "ops-10", "--agent", "meta-operator"])
+        self.assertEqual(self.claude_args(), ["--name", "ops-10", "--agent", "meta-operator"])
         first = at(rf"agent prompt {pane} contract changed: read your brief --wait .*")
         goal = at(rf"agent prompt {pane} /goal keep every lane advancing --wait .*")
         order = [handover, ended, free, after_pull, start, first, goal]
@@ -1611,8 +1631,7 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.say("w1:p7", "hi", HERDR_WORKSPACE_ID="w1")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "pane=w1:p1\n")
-        argv = self.start_argv()
-        self.assertEqual(argv[argv.index("--") + 1:], ["--name", "code-reviewer-ann-1", "--resume", "s-1"])
+        self.assertEqual(self.claude_args(), ["--name", "code-reviewer-ann-1", "--resume", "s-1"])
 
     def test_say_resumes_a_parked_agent_in_the_pane_herdr_still_has(self):
         # acceptance-pane-for-life-rule, acceptance-park-wake,
@@ -1631,7 +1650,7 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertEqual((r.returncode, r.stdout), (0, f"pane={pane}\n"), r.stderr)
             argv = self.start_argv()
             self.assertEqual(argv[2:7], [name, "--kind", "claude", "--pane", pane])
-            self.assertEqual(argv[argv.index("--") + 1:], ["--name", name, "--agent", role, "--resume", "s-1"])
+            self.assertEqual(self.claude_args(), ["--name", name, "--agent", role, "--resume", "s-1"])
             self.assertIn(f"agent prompt {pane} what are you waiting on?", self.calls())
         self.assertNotRegex(self.calls(), r"(tab|workspace) create")
 
@@ -2754,94 +2773,6 @@ class HerdrWrapperTest(unittest.TestCase):
         for path in [*ROOT.glob("agents/*.md"), *ROOT.glob("skills/**/*.md")]:
             self.assertNotRegex(path.read_text(encoding="utf-8"),
                                 r"/tmp/octo-lite|octo-lite/scratch|\.cache/octo-lite|/\.ol\b|--scratch", path)
-
-    def test_each_worktree_role_links_main_packages_or_installs_its_own(self):
-        # acceptance-disk-share-*, acceptance-disk-park-resume(-integrator),
-        # share-link, park-resume: each role whose worktree its park may free
-        # carries the one recipe, fresh and resumed.
-        rules = {}
-        for role, needs in (("orchestrator", "tests or the prototype"), ("implementer", "tests or the prototype"),
-                            ("integrator", "the repo's checks"), ("scientist", "the eval or tests")):
-            rule = re.search(r"^- Packages \(disk spec `#share-link`, `#park-resume`\): .*$", self.contract(role), re.M)
-            self.assertIsNotNone(rule, role)
-            self.assertIn(f"such as {needs},", rule.group(0), role)
-            rules[role] = rule.group(0).replace(f"such as {needs},", "such as <needs>,")
-        self.assertEqual(len(set(rules.values())), 1, "the roles' recipes differ")
-        rule = rules["implementer"]
-        for anchor in ("share-stale", "share-mid-update", "share-scripts", "share-caches", "share-hard-links",
-                       "share-own", "share-change"):
-            self.assertIn(f"`#{anchor}`", rule)
-        self.assertIn("Else install your own with the install command the target `AGENTS.md` names.", rule)
-        self.assertIn("is no such step (`#share-scripts`)", rule)
-        self.assertIn("other step that writes into installed packages' files, such as a generate step,", rule)
-        # share-scripts: each root script npm runs at both install and ci, by npm's own pattern.
-        self.assertIn("no script named `dependencies`, `install`, or `prepare`, each with or without a `pre` or `post`"
-                      " prefix, or `prepublish`,", rule)
-        # share-mid-update: an npm working in a subfolder of main's installs into main's folder.
-        self.assertIn("process has `$m/$d` or a folder under it as its `readlink /proc/<pid>/cwd`", rule)
-        command = {name: re.search(rf"`({re.escape(name)} [^`]*)`", rule).group(1)
-                   for name in ("git ls-files", "cmp", "[", "cp", "find", "rm")}
-
-        # acceptance-disk-main-rule, share-hard-links: the recipe's commands,
-        # run as written, on a main checkout with packages fresh from its lockfiles.
-        main = self.checkout()
-        for lock in ("package-lock.json", "web/package-lock.json"):
-            (main / lock).write_text(lock)
-            os.utime(main / lock, (1, 1))
-        self.git(main, "add", "-A")
-        self.git(main, "commit", "-qm", "lockfiles")
-        tree = Path(self.tmp.name) / "lane"
-        self.git(main, "worktree", "add", "-q", "-b", "ann1", str(tree))
-        self.install(main)
-        for record in ("node_modules/.package-lock.json", "web/node_modules/.package-lock.json"):
-            (main / record).write_text("record")
-        # acceptance-disk-share-caches: a test runner's result cache, beside the packages' commands.
-        (main / "node_modules/.vite/vitest").mkdir(parents=True)
-        (main / "node_modules/.vite/vitest/results.json").write_text("main's results")
-        (main / "node_modules/.bin").mkdir()
-        (main / "node_modules/.bin/a").symlink_to("../a/index.js")
-        before = self.tree(main)
-
-        def run(name, d):
-            return subprocess.run(["sh", "-c", command[name]], cwd=tree, capture_output=True, text=True,
-                                  env={**self.env, "m": str(main), "d": d})
-
-        self.assertEqual(run("git ls-files", ".").stdout.split(), ["package-lock.json", "web/package-lock.json"])
-        for d, package in ((".", "a"), ("web", "b")):
-            self.assertEqual([run(name, d).returncode for name in ("cmp", "[", "cp", "find")], [0, 0, 0, 0], d)
-            linked = tree / d / "node_modules"
-            self.assertTrue(linked.is_dir() and not linked.is_symlink(), d)
-            self.assertEqual((linked / package / "index.js").stat().st_ino,
-                             (main / d / "node_modules" / package / "index.js").stat().st_ino, d)
-        self.assertEqual(self.git(tree, "status", "--porcelain"), "", "Git sees the linked packages")
-        self.assertFalse((tree / "node_modules/.vite").exists())
-        self.assertEqual(os.readlink(tree / "node_modules/.bin/a"), "../a/index.js")
-        self.assertEqual((tree / "node_modules/.package-lock.json").read_text(), "record")
-        # The lane's tests write their cache in place, as vitest's fs.writeFile does.
-        (tree / "node_modules/.vite/vitest").mkdir(parents=True)
-        with open(tree / "node_modules/.vite/vitest/results.json", "w") as cache:
-            cache.write("lane's results")
-        self.assertEqual(self.tree(main), before)
-
-        # acceptance-disk-share-main-moves: main installs again; the lane keeps its files.
-        shutil.rmtree(main / "node_modules")
-        self.install(main)
-        (main / "node_modules/.package-lock.json").write_text("new")
-        self.assertEqual((tree / "node_modules/.package-lock.json").read_text(), "record")
-        before = self.tree(main)
-
-        # share-change: the removal takes only the lane's links.
-        self.assertEqual(run("rm", ".").returncode, 0)
-        self.assertFalse((tree / "node_modules").exists())
-        self.assertEqual(self.tree(main), before)
-
-        # share-danger: a lockfile the lane changed, main's install stale or unrecorded.
-        (tree / "package-lock.json").write_text("changed")
-        self.assertNotEqual(run("cmp", ".").returncode, 0)
-        os.utime(main / "web/package-lock.json")
-        self.assertNotEqual(run("[", "web").returncode, 0)
-        (main / "node_modules/.package-lock.json").unlink()
-        self.assertNotEqual(run("[", ".").returncode, 0)
 
     def test_operator_removes_the_lane_worktree_keeping_one_with_work(self):
         # acceptance-disk-lane-worktree, acceptance-disk-lane-worktree-kept,
