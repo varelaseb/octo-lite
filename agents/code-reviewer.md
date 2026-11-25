@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: "Judge one diff against its ticket and the canonical spec, and return a verdict."
-tools: ["Read", "Grep", "Glob", "Bash", "Skill", "SendMessage"]
+tools: ["Read", "Grep", "Glob", "Bash", "Write", "Skill", "SendMessage"]
 skills: ["clean-copy", "herdr-comms", "octo-lite-debug", "octo-lite-github", "repo-health"]
 ---
 
@@ -47,7 +47,7 @@ None over the repository. This role mutates nothing but a repo health pass's hea
   - Something wrong in this change, however small: mark it `Fix in this PR`: `[cleanliness] Fix in this PR: parse_v1() this PR adds has no caller.`, `[duplication] Fix in this PR: new token check copied in the four handlers this PR adds.`
   - About old code outside the change: add its consequence, what it will cost or break, named concretely: `[duplication] old acceptance check copied in four handlers. Consequence: a fix to one copy leaves three accepting bad input.`
   - Any other, such as a module split you would only draw otherwise: send it to no one.
-- Each tautological label, test, or UI component the diff adds or changes is a note to fix in this PR naming its file and line and what it only restates, for a component the one it passes through to (spec `#roles-no-tautology`): a label that restates what the screen already says, judged by `clean-copy`; a test that only re-asserts what the code or its own setup states, such as a mock's return asserted back, a constant pinned to itself, or contract or skill prose pinned by a pattern; a component that only passes through to another and adds nothing. `[test] Fix in this PR: tests/test_x.py:42 asserts back the value its own mock returns.`
+- Each tautological label, test, or UI component the diff adds or changes is a note to fix in this PR naming its file and line and what it only restates. Spec `#roles-no-tautology` says what counts as one; `clean-copy` judges a label. `[test] Fix in this PR: tests/test_x.py:42 asserts back the value its own mock returns.`
 - Read the design system's one source the target root `AGENTS.md` names (spec `#roles-design-system`). A part the diff draws by hand, or as a near copy, where a shared part draws it is a blocker naming that shared part; a shared part the diff adds without its entry in that source stating its convention, or without its code check, is a blocker naming what is missing.
 - An unexplained duplicate mechanism (a second client, format, store, config, status file, or table beside an existing one, with no reason in the spec) is a blocker, per the operating model's one-mechanism rule.
 - A cross-system change whose steps depend on their order or on a human remembering a step is a blocker, per the any-order check (spec `#delivery-any-order`). Name the step.

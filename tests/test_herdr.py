@@ -720,7 +720,19 @@ class HerdrWrapperTest(unittest.TestCase):
         self.dialog.write_text("none\n")
         r = self.spawn(extra=["--resume", "s-1"])
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.claude_args(), ["--name", "a1", "--agent", "r", "--resume", "s-1"])
+        self.assertEqual(self.claude_args(), ["--name", "a1", "--agent", "r", "--resume", "s-1", "--system-prompt-snapshot", "off"])
+
+    def test_a_resumed_claude_renders_its_system_prompt_as_it_is_now(self):
+        # spec/domains/octo-lite.spec.html#roles-contract-change: a resume starts
+        # the agent with its contract, the every-role part, and the operating
+        # model as they are then. Claude's system prompt snapshot, on by
+        # default, would send its first launch's prompt again on resume.
+        self.dialog.write_text("none\n")
+        r = self.spawn(extra=["--resume", "s-1"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        args = self.claude_args()
+        self.assertIn("--system-prompt-snapshot", args)
+        self.assertEqual(args[args.index("--system-prompt-snapshot") + 1], "off")
 
     def test_a_resume_starts_claude_in_the_pane_it_was_parked_from(self):
         # spec/domains/herdr-transport.spec.html#transport-resume,
@@ -738,7 +750,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(argv[:6], ["agent", "start", "implementer-ann-1", "--kind", "claude", "--pane"])
         self.assertEqual(argv[6:8], ["w3:p7", "--"])
         self.assertEqual(self.claude_args(),
-                         ["--name", "implementer-ann-1", "--agent", "implementer", "--resume", "s-1"])
+                         ["--name", "implementer-ann-1", "--agent", "implementer", "--resume", "s-1", "--system-prompt-snapshot", "off"])
 
     def test_a_resume_naming_no_role_starts_claude_with_no_agent(self):
         # transport-resume, acceptance-park-no-role: a parked line naming no
@@ -748,7 +760,7 @@ class HerdrWrapperTest(unittest.TestCase):
             r = subprocess.run([str(SPAWN), *place, "--name", "implementer-ann-1", "--resume", "s-1", "--", "claude"],
                                capture_output=True, text=True, env=self.env)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(self.claude_args(), ["--name", "implementer-ann-1", "--resume", "s-1"])
+            self.assertEqual(self.claude_args(), ["--name", "implementer-ann-1", "--resume", "s-1", "--system-prompt-snapshot", "off"])
 
     def test_resume_is_claude_only_and_refused_before_any_tab(self):
         for runtime in ("codex", "pi"):
@@ -1554,7 +1566,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.stdout, "pane=w1:p1\n")
         argv = self.start_argv()
         self.assertEqual(argv[2:7], ["implementer-ann-1", "--kind", "claude", "--pane", "w1:p1"])
-        self.assertEqual(argv[-4:], ["--agent", "implementer", "--resume", "s-1"])
+        self.assertEqual(argv[-6:], ["--agent", "implementer", "--resume", "s-1", "--system-prompt-snapshot", "off"])
         self.assertNotIn("tab create", self.calls())
         self.assertEqual((self.sends("implementer-ann-1"), self.sends("w1:p1")), (2, 1))
 
@@ -1582,7 +1594,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.stdout, "pane=w1:p1\n")
         argv = self.start_argv()
         self.assertEqual(argv[2], "implementer-ann-1")
-        self.assertEqual(argv[-4:], ["--agent", "implementer", "--resume", "s-1"])
+        self.assertEqual(argv[-6:], ["--agent", "implementer", "--resume", "s-1", "--system-prompt-snapshot", "off"])
         self.assertIn("tab create --workspace w3 ", self.calls())
         self.assertIn("agent prompt w1:p1 hi", self.calls())
 
@@ -1605,7 +1617,7 @@ class HerdrWrapperTest(unittest.TestCase):
                                    f"herdr-say: {bad}: line 3 is not a JSON object; skipped\n")
         argv = self.start_argv()
         self.assertEqual(argv[2], "implementer-ann-1")
-        self.assertEqual(argv[-4:], ["--agent", "implementer", "--resume", "s-1"])
+        self.assertEqual(argv[-6:], ["--agent", "implementer", "--resume", "s-1", "--system-prompt-snapshot", "off"])
 
     def test_parked_lookup_numbers_a_cut_off_last_line_in_its_own_log(self):
         # handoff-lines-json: a log's last line cut off before its newline is
@@ -1631,7 +1643,7 @@ class HerdrWrapperTest(unittest.TestCase):
         r = self.say("w1:p7", "hi", HERDR_WORKSPACE_ID="w1")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout, "pane=w1:p1\n")
-        self.assertEqual(self.claude_args(), ["--name", "code-reviewer-ann-1", "--resume", "s-1"])
+        self.assertEqual(self.claude_args(), ["--name", "code-reviewer-ann-1", "--resume", "s-1", "--system-prompt-snapshot", "off"])
 
     def test_say_resumes_a_parked_agent_in_the_pane_herdr_still_has(self):
         # acceptance-pane-for-life-rule, acceptance-park-wake,
@@ -1650,7 +1662,7 @@ class HerdrWrapperTest(unittest.TestCase):
             self.assertEqual((r.returncode, r.stdout), (0, f"pane={pane}\n"), r.stderr)
             argv = self.start_argv()
             self.assertEqual(argv[2:7], [name, "--kind", "claude", "--pane", pane])
-            self.assertEqual(self.claude_args(), ["--name", name, "--agent", role, "--resume", "s-1"])
+            self.assertEqual(self.claude_args(), ["--name", name, "--agent", role, "--resume", "s-1", "--system-prompt-snapshot", "off"])
             self.assertIn(f"agent prompt {pane} what are you waiting on?", self.calls())
         self.assertNotRegex(self.calls(), r"(tab|workspace) create")
 
@@ -1678,7 +1690,7 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertIn(f"workspace create --label ann45 --cwd {self.cwd} --no-focus", self.calls())
         argv = self.start_argv()
         self.assertEqual(argv[2], "ann45")
-        self.assertEqual(argv[-4:], ["--agent", "orchestrator", "--resume", "s-1"])
+        self.assertEqual(argv[-6:], ["--agent", "orchestrator", "--resume", "s-1", "--system-prompt-snapshot", "off"])
         self.assertIn("agent prompt w1:p1 what are you waiting on?", self.calls())
 
     def test_say_sends_to_a_resumed_owner_once_its_claude_takes_input(self):
