@@ -116,12 +116,15 @@ Do not create extra workflow labels unless the operator explicitly asks.
   queue takes the merge as a queue entry. Every receipt the merge needs, an
   addendum receipt included, is on the PR first. Run them as one chain, so a
   receipt that cannot be recorded, or a head that moved, means no merge;
-  report why:
+  report why. Write the receipt first with your file tool to
+  `<receipt file>` in your scratch folder:
+
+```text
+Acceptance receipt: human "<words>" (<date>) accepts and merges PR #<pr> at <accepted sha>. Recorded by <agent name>.
+```
 
 ```sh
-gh pr comment <pr> --body-file - <<'EOF' && gh pr merge <pr> --merge --match-head-commit <accepted sha>
-Acceptance receipt: human "<words>" (<date>) accepts and merges PR #<pr> at <accepted sha>. Recorded by <agent name>.
-EOF
+gh pr comment <pr> --body-file <receipt file> && gh pr merge <pr> --merge --match-head-commit <accepted sha>
 ```
 
 - `<accepted sha>` is the full sha. A merge set to run once checks pass is

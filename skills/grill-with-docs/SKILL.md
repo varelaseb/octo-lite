@@ -135,7 +135,6 @@ stating it applies to every feature, marked `data-project-rule`; a
 design-system convention lives in the design system instead, under at most one
 project rule that UI uses its shared parts (octo-lite spec
 `#roles-design-system`). An ADR links
-that criterion (e.g. see `<home-spec>#<rule-anchor>`), never
-restates it: why in the ADR, what in the
+that criterion (e.g. see `<home-spec>#<rule-anchor>`): why in the ADR, what in the
 criterion, mechanics in code and the PR. Mechanics no caller depends on
 (tables, retry counts, internal keys, timeouts) appear in neither spec nor ADR.

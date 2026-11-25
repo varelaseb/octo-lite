@@ -47,8 +47,8 @@ live traffic.
 The tickets are a task graph, not ordered steps. The ready frontier contains
 every incomplete ticket whose blockers are complete. Keep Linear titles,
 descriptions, relations, assignees, and states aligned with reality throughout.
-Do not copy ticket or spec prose into agent messages. Send essential absolute
-source paths in the message body; artifact metadata alone is insufficient.
+Send essential absolute source paths in the message body; artifact metadata
+alone is insufficient.
 
 The lane owner keeps its lane record current as the lane-record hook in `agents/orchestrator.md` and `spec/domains/octo-lite.spec.html#lane-record` define.
 
@@ -113,10 +113,9 @@ For each ready ticket:
    and anchor (spec `#roles-repo-wide-rule`); an `AGENTS.md` line is only a
    pointer to it. The brief of the ticket that owns the changelog entry names
    the convention's file, so its implementer writes the entry in the same PR.
-4. The contract declares the skills available to it and the bounds it works in,
-   so neither has to be restated here or kept in step by hand. A Claude worker
-   loads it with `--agent implementer`; a Codex worker gets it as developer
-   instructions from `herdr-spawn --role implementer`.
+4. The contract declares the skills available to it and the bounds it works in.
+   A Claude worker loads it with `--agent implementer`; a Codex worker gets it
+   as developer instructions from `herdr-spawn --role implementer`.
 
 The worker owns only that ticket, validates it, commits it, and returns the
 commit plus terse evidence. It does not merge, push, or update unrelated
