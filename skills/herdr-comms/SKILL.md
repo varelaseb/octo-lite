@@ -103,10 +103,9 @@ those leave to the caller:
 
 Any failure closes the tab, so a failed spawn never leaves an orphan.
 
-`--resume SESSION` (Claude only) starts a parked agent as it was launched,
-keeping its conversation, in the pane it was parked from. The argv Claude gets
-is `assets/herdr-spawn`'s, for the rule
-`spec/domains/herdr-transport.spec.html#transport-resume` states:
+`--resume SESSION` (Claude only) resumes a parked agent by
+`spec/domains/herdr-transport.spec.html#transport-resume`; its argv is
+`assets/herdr-spawn`'s:
 
 ```
 herdr-spawn --pane PANE --name NAME [--role ROLE] --resume SESSION -- claude
