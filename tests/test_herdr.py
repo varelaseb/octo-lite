@@ -722,18 +722,6 @@ class HerdrWrapperTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.claude_args(), ["--name", "a1", "--agent", "r", "--resume", "s-1", "--system-prompt-snapshot", "off"])
 
-    def test_a_resumed_claude_renders_its_system_prompt_as_it_is_now(self):
-        # spec/domains/octo-lite.spec.html#roles-contract-change: a resume starts
-        # the agent with its contract, the every-role part, and the operating
-        # model as they are then. Claude's system prompt snapshot, on by
-        # default, would send its first launch's prompt again on resume.
-        self.dialog.write_text("none\n")
-        r = self.spawn(extra=["--resume", "s-1"])
-        self.assertEqual(r.returncode, 0, r.stderr)
-        args = self.claude_args()
-        self.assertIn("--system-prompt-snapshot", args)
-        self.assertEqual(args[args.index("--system-prompt-snapshot") + 1], "off")
-
     def test_a_resume_starts_claude_in_the_pane_it_was_parked_from(self):
         # spec/domains/herdr-transport.spec.html#transport-resume,
         # acceptance-pane-for-life-rule: no tab is created, so the pane keeps
