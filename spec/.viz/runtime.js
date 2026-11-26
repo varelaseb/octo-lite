@@ -1,5 +1,5 @@
 // spec-chat runtime v0.1 — hydrates semantic islands and mounts the annotation layer.
-// spec-chat-capabilities: address-browser answer-buttons box-picture changed-root-focus conversation custom-style-focus design-set diff-visibility-control error-overlay finish-review fit-settles git-focus keys-icons manual-resume-status mobile-handoff mobile-pre-wrap mobile-review mockup-chips mockup-directions mockup-questions mockup-review mockup-walkthrough next-screen next-tbd one-surface prototype-frame-id prototype-mockup prototype-origin reopen-thread reply-lane round-video screen-index semantic-islands served-storage shared-style-ownership shell-held spec-acceptance stage-tag tbd-later typed-kept video-moment wake-reason
+// spec-chat-capabilities: address-browser answer-buttons box-picture changed-root-focus conversation custom-style-focus design-set diff-visibility-control error-overlay finish-review fit-settles git-focus keys-icons manual-resume-status mobile-handoff mobile-pre-wrap mobile-review mockup-chips mockup-directions mockup-questions mockup-review mockup-walkthrough next-screen next-tbd one-surface prototype-frame-id prototype-mockup prototype-origin reopen-thread reply-lane round-video screen-index semantic-islands served-storage shared-style-ownership shell-held spec-acceptance stage-tag step-actions tbd-later typed-kept video-moment wake-reason
 // Transports: FSA (file://, primary) | HTTP review-serve (http(s)://, secondary).
 // Same spools, same event schema either way. See DESIGN.md.
 // Classic script, NOT a module: browsers CORS-block module scripts on file:// pages,
@@ -98,7 +98,8 @@ const state = {
   eventsRendered: false,
   lastTbd: null,         // open TBD marker focused by the last TBD open or Next TBD activation
   range: { baseline: null, loaded: null, loading: false, pickerOpen: false }, // loaded: anchor signatures of the page as served
-  jev: { status: 'idle', items: [], levels: {}, base: null, request: 0 }, // levels: the server's mark kind -> level table
+  // levels: the server's mark kind -> level table; read: the base and view of the read its items came from
+  jev: { status: 'idle', items: [], levels: {}, base: null, read: null, request: 0 },
   evidence: { criteria: null, levels: {} }, // criteria: anchor -> entry once /api/evidence answers, null shows nothing
   readingView: false,
   movingOrphans: new Set(),
@@ -145,10 +146,13 @@ const proto = {
 };
 // A prototype route its mockup page holds (shell #shell-setting-own, #shell-msg-prototype): the id its page knows it by,
 // the frame it is, its regions, and the marks its page last sent; its viewport's height and the size it last read; the
-// actions it does, the act doing them, and the next step's, as a reviewer pressing through does them.
+// actions it does, the act doing them, and the next step's, as a reviewer pressing through does them; where the actions'
+// pointer rests, the press they hold down, and the events of theirs going (fire).
 const protoHeld = { on: false, id: '', frame: '', regions: [], pointing: false, marks: null, view: 0, past: null, sizes: null,
   reading: 0, telling: false, acts: Promise.resolve(), acting: null, pressing: { next: [], done: 0 }, leaving: false,
-  staying: 0, stayed: () => {} };
+  staying: 0, stayed: () => {}, pointer: null, held: null, downAt: -Infinity, firing: 0 };
+// Every step action a prototype mockup's walkthrough may name (mockups #prototype-step-actions).
+const STEP_ACTIONS = ['press', 'type', 'hold', 'menu', 'hover'];
 const mockup = {
   stage: null,           // the frames' row, or column on a phone (#review-fit)
   slots: [],             // [{viewport, slot, fit, frame}], desktop first
@@ -168,6 +172,7 @@ const mockup = {
   pager: '',             // what the drawn Previous and Next show, so a read that changes nothing redraws none
   dirs: null,            // the first round's directions, in its file's order, while its page shows them (#directions-page)
   view: null,            // the viewport the reviewer toggled the directions to; null follows the screen's width
+  arrival: null,         // the arrival asking a prototype's frames (showInFrames), and the viewport it found, until it ends
 };
 
 // shell #shell: a page this runtime runs is alone until a shell holds it (#shell-roles); the comment UI page
@@ -193,6 +198,7 @@ const ui = {
   sent: '',              // the marks last sent to that frame
   lastTbd: null,         // the question Next TBD last showed
   picked: null,          // the thread a pin picked before its page's threads were read, focused once they are
+  base: null,            // {page, base}: the base a held spec page at that address reads, once resolved (heldBase)
 };
 const SHELL_PAGE = { hello: (origin, data) => shellHello(origin, data), message: data => shellMessage(data) };
 
@@ -244,7 +250,9 @@ function httpTransport() {
       const timer = setTimeout(() => abort.abort(), POST_TIMEOUT_MS);
       let r;
       try {
-        r = await fetch(apiPath('events?dir=' + encodeURIComponent(entry.dir || REVIEW_DIR) + '&actor=human&name=' + encodeURIComponent(entry.name)), { method: 'POST', body: JSON.stringify(entry.body), signal: abort.signal });
+        // Accept spec's post names the Jev read its page shows, as /api/jev takes it, for the service's trace alone.
+        const read = entry.jev ? '&' + new URLSearchParams({ base: entry.jev.base, view: entry.jev.view }) : '';
+        r = await fetch(apiPath('events?dir=' + encodeURIComponent(entry.dir || REVIEW_DIR) + '&actor=human&name=' + encodeURIComponent(entry.name) + read), { method: 'POST', body: JSON.stringify(entry.body), signal: abort.signal });
       } finally { clearTimeout(timer); }
       if (r.ok) return 'stored';
       if (r.status === 400 || r.status === 403 || r.status === 409) return 'refused';
@@ -312,8 +320,8 @@ function rangeBarText(baseline) {
   return 'Changes from ' + short(base) + (baseDate ? ' ' + baseDate : '') + ' to ' + headLabel + (headDate ? ' ' + headDate : '');
 }
 
-function baselineParams(base) {
-  const params = new URLSearchParams({ path: OWN_ADDRESS.pathname.replace(/^\//, '') });
+function baselineParams(base, path = OWN_ADDRESS.pathname.replace(/^\//, '')) {
+  const params = new URLSearchParams({ path });
   if (base) params.set('base', base);
   return params;
 }
@@ -331,7 +339,8 @@ function jevParams(base) {
 }
 
 async function fetchJev(base, signal) {
-  const response = await fetch('/api/jev?' + jevParams(base), { signal });
+  const params = jevParams(base);
+  const response = await fetch('/api/jev?' + params, { signal });
   if (!response.ok) throw new Error('Jev unavailable');
   const result = await response.json();
   return {
@@ -355,6 +364,7 @@ async function fetchJev(base, signal) {
       escalated: item.escalated === true,
     })) : [],
     levels: result ? result.levels : null, // the server's levels table (#markers-levels-source); markLevel reads it
+    read: { base: params.get('base'), view: params.get('view') || '' },
   };
 }
 
@@ -425,6 +435,7 @@ async function requestJev(base, refresh = false) {
     const result = await fetchJev(base, controller.signal);
     if (request !== state.jev.request) return;
     const status = result.jev === 'off' ? 'off' : 'on';
+    state.jev.read = result.read;
     // An unchanged answer keeps the shown items, so each note shown is of an item the page holds.
     if (refresh && status === state.jev.status
       && JSON.stringify([result.items, result.levels]) === JSON.stringify([state.jev.items, state.jev.levels])) {
@@ -662,8 +673,8 @@ function markIssueFocus(current, baseline) {
   document.body.classList.toggle('hx-focus-active', focused.some(element => element.dataset.hxFocus === 'changed'));
 }
 
-async function fetchBaseline(base, signal) {
-  const response = await fetch('/api/baseline?' + baselineParams(base), { signal });
+async function fetchBaseline(base, signal, path) { // path: the page's own, else its held page's (heldBase)
+  const response = await fetch(apiPath('baseline?' + baselineParams(base, path)), { signal });
   if (!response.ok) throw new Error('Git baseline unavailable');
   return response.json();
 }
@@ -803,6 +814,7 @@ async function selectRangeBase(value) {
     renderRangeBar(baseline);
     // The address names the new base first: a mockup page's spec link takes the base from it (mockups #before-base).
     rewriteAddress(query => { query.set('focus', 'changes'); query.set('base', baseline.base || requested); });
+    if (shell.held) publishPage(); // its own address changed (shell #shell-msg-publish)
     if (MOCKUP_SPEC) showMockupBase(baseline);
     else requestJev(baseline.base || requested);
     openRangePicker(false);
@@ -5092,11 +5104,21 @@ function handoff() {
   if (state.handoffPosting || !action.enabled) return;
   state.handoffPosting = true; // until this hand-off's send settles: a double tap writes one
   // Hand off lists this browser's drafts (#live-handoff); Accept spec writes the existing hand-off without a list, and
-  // accepts the spec's mockup set with it (mockups #accept-set).
+  // accepts the spec's mockup set with it (mockups #accept-set); its post names the Jev read the page shows, whose open
+  // marks the service ends ignored (jev-suggestions #ledger-every).
   const listed = action.finish ? acceptedMockups(state.mockups) : { events: handoffEvents(state.events, state.reviewer.browser) };
-  save(Object.assign({ id: humanId('h'), event: 'handoff', anchorId: '', target: null, quote: null, text: 'batch from ' + state.transport.mode, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 }, listed));
+  save(Object.assign({ id: humanId('h'), event: 'handoff', anchorId: '', target: null, quote: null, text: 'batch from ' + state.transport.mode, actor: 'human', createdAt: new Date().toISOString(), schemaVersion: 1 }, listed),
+    null, action.finish ? shownJevRead() : null);
   toast(action.finish ? 'Spec accepted' : 'Handed off ' + action.drafts + ' comment' + (action.drafts === 1 ? '' : 's') + ', agent notified');
   refresh().finally(() => { state.handoffPosting = false; });
+}
+
+// The Jev read the page shows, its base and view, or null: the comment UI page's is its held page's, at the base that
+// page reads (heldBase), view '': a page in Reading view before a late hello stays in it, which adds only audience
+// questions, none a mark Accept spec ends ignored (jev-suggestions #markers-levels).
+function shownJevRead() {
+  if (COMMENT_UI) return ui.base && ui.base.base && ui.base.page === ui.page.page ? { base: ui.base.base, view: '' } : null;
+  return state.jev.status === 'on' ? state.jev.read : null;
 }
 
 // TBD open and Next TBD share one step and one position (state.lastTbd).
@@ -5240,14 +5262,15 @@ const inContext = entry => !COMMENT_UI || (entry.scope ? uiHost() && layerItems(
   : !uiHost() && entry.dir === ui.dir);
 const outboxEvents = () => outboxEntries().filter(inContext).map(outboxEvent);
 
-function save(body, route) {
+// read: the Jev read Accept spec's post names (shownJevRead), kept with its outbox entry so a resend names it too.
+function save(body, route, read) {
   // mockups #prototype-marks: a comment on a prototype, and an edit repeating it, carries no version, as a host page's
   // does; its hand-off still names the page it was made on, which review-host reviewed reads.
   const mark = PROTOTYPE_ROUTE && ['comment', 'edit'].includes(body.event);
   const event = Object.assign({}, body, { browser: state.reviewer.browser, author: state.reviewer.author }, state.version && !mark ? { version: state.version } : {});
   state.lastStamp = nextStamp(state.lastStamp, Date.now(), Math.random);
   const entry = Object.assign({ name: eventName(event, state.lastStamp), body: event },
-    LAYER_SERVICE || uiHost() ? layerRoute(event, route) : COMMENT_UI ? { dir: ui.dir } : {});
+    LAYER_SERVICE || uiHost() ? layerRoute(event, route) : COMMENT_UI ? { dir: ui.dir } : {}, read ? { jev: read } : {});
   setOutbox(outboxEntries().concat([entry]));
   ingest([outboxEvent(entry)]);
   flushOutbox();
@@ -5898,7 +5921,7 @@ function mountDirections() {
     const button = toggle.appendChild(el('button', 'hx-btn', name));
     button.type = 'button';
     button.dataset.viewport = viewport;
-    button.addEventListener('click', () => { mockup.view = viewport; renderViewport(); });
+    button.addEventListener('click', () => { mockup.view = viewport; mockup.arrival = null; renderViewport(); });
   }
   const row = el('div', 'hx-dir-row');
   for (const d of dirs) {
@@ -5952,22 +5975,26 @@ function offView(el) {
 }
 
 // #directions-page: the toggle's viewport pressed and every column's frame at it; while Before shows, the pick's two frames
-// at the base, side by side as with no directions (CSS). Refitted, with the marks that follow.
+// at the base, side by side as with no directions (CSS). Refitted, with the marks that follow; a frame of the pick it
+// shows anew reaches the step showing, one shown already being there (#prototype-steps).
 function renderViewport() {
   if (!mockup.dirs) return;
   const shown = shownViewport();
+  const hidden = mockup.slots.filter(s => offView(s.slot));
   mockup.stage.querySelectorAll('.hx-dirs-toggle button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.viewport === shown)));
   for (const s of allSlots()) s.slot.toggleAttribute('data-off', !mockup.before && s.viewport !== shown);
   fitMockup();
   renderPins();
   renderThreadHighlight();
-  if (PROTOTYPE_ROUTE && mockup.step >= 0) mockup.reaching = reachStep(mockup.step); // the frame it shows, there (#prototype-steps)
+  if (PROTOTYPE_ROUTE && mockup.step >= 0 && hidden.some(s => !offView(s.slot))) mockup.reaching = reachStep(mockup.step);
 }
 
-// #directions-page: every arrival at a spot (an address, the kept place, a thread, a question, a spot a shell shows) the
-// one way, at the viewport that shows it: a part of a frame the toggle hides, or that frame, switches the toggle to its
-// viewport. The spot, for its caller to bring into view.
+// #directions-page: every arrival at a spot (an address, the kept place, a thread, a question, a spot a shell shows) at
+// the viewport that shows it: a part of a frame the toggle hides, or that frame, switches the toggle to its viewport; a
+// spot in a prototype's frames is asked of them in turn (showInFrames), and an arrival here ends that one, its switch
+// put back first. The spot, for its caller to bring into view.
 function inView(el) {
+  endArrival();
   if (offView(el)) {
     mockup.view = el.closest('.hx-mockup-slot').dataset.viewport;
     renderViewport();
@@ -6043,10 +6070,26 @@ function walkthroughOf(doc) {
     name: (item.getAttribute('data-step') || '').trim(),
     caption: sourceText(item, UNREAD + ',ul,ol'),
     by: (item.getAttribute('data-step-by') || '').split(/\s+/).filter(Boolean),
-    actions: [...item.querySelectorAll('[data-press],[data-type]')].map(action => action.hasAttribute('data-press')
-      ? { press: action.getAttribute('data-press') } : { type: action.getAttribute('data-type'), text: action.getAttribute('data-text') || '' })
-      .filter(action => (action.press || action.type || '').trim()),
+    actions: [...item.querySelectorAll(STEP_ACTIONS.map(kind => `[data-${kind}]`).join())].map(actionOf).filter(Boolean),
   })).filter(step => step.name) : [];
+}
+
+// #prototype-step-actions, #markup-actions: an action as its item names it, the first of the kinds it carries, with the
+// selector of the part it acts on, a type's text, and a hold's data-to; any other the walkthrough skips.
+function actionOf(item) {
+  const kind = STEP_ACTIONS.find(name => item.hasAttribute('data-' + name));
+  return stepAction({ [kind]: item.getAttribute('data-' + kind), text: item.getAttribute('data-text') || '',
+    to: (item.getAttribute('data-to') || '').trim() });
+}
+
+// An action as a message carries it (shell #shell-msg-prototype): {press}, {type, text}, {hold} with an optional `to`,
+// {menu}, or {hover}, each with its selector; null for any other.
+function stepAction(action) {
+  if (!plainObject(action)) return null;
+  const kind = STEP_ACTIONS.find(name => str(action[name], 400).trim());
+  if (!kind) return null;
+  if (kind === 'type') return { type: action.type, text: typeof action.text === 'string' ? action.text : '' };
+  return kind === 'hold' && str(action.to, 400).trim() ? { hold: action.hold, to: action.to } : { [kind]: action[kind] };
 }
 
 // Declarations, not constants: boot mounts the page before the constants below it are set.
@@ -6520,7 +6563,8 @@ function untilHeld(s) {
 // number it did; `next` tells it what a reviewer pressing through does. An act goes to a held document, and again to
 // each document held next until one answers it (frameMessage): a document leaving, or loaded and not yet held, does
 // none, and a route that begins to leave as an action loads a page answers what it did, the rest going to the document
-// held next, or to it again should it stay. False when no route answers.
+// held next, or to it again should it stay. False when no route answers, or a reviewer's press ends the act
+// (pressedThrough).
 async function actInFrame(s, actions, next) {
   let left = actions;
   for (;;) {
@@ -6538,8 +6582,10 @@ async function actInFrame(s, actions, next) {
 
 // #prototype-steps, #walkthrough-press: outside comment mode a reviewer presses through the prototype as through the
 // product: the route says when a press or typing did the actions the next step names, in either frame, and the step bar
-// moves to it as the other frame follows; any other action leaves the step bar on no step until the reviewer picks one.
+// moves to it as the other frame follows; any other action leaves the step bar on no step until the reviewer picks one,
+// and ends there the act it cut short, which the route then leaves unanswered, in every frame (cutActs).
 function pressedThrough(s, reached) {
+  if (!reached) cutActs(s);
   if (state.commentMode || mockup.before) return;
   if (reached && Number.isInteger(s.at) && mockup.steps[s.at + 1]) {
     const at = ++s.at;
@@ -6550,6 +6596,18 @@ function pressedThrough(s, reached) {
   s.at = null;
   stopPlay();
   if (mockup.step >= 0) showStep(-1);
+}
+
+// shell #shell-msg-prototype: a press that reached no step ends the act in every frame: no frame goes on to a later step,
+// and each other frame still acting is loaded again, as it would be for the next step picked, so its route does no more
+// of the actions. The pressed frame's route ended its own.
+function cutActs(pressed) {
+  proto.reach++;
+  for (const s of mockup.slots) {
+    if (!s.act) continue;
+    s.act.answer(-1);
+    if (s !== pressed) s.chain = s.chain.then(() => reloadFrame(s)).catch(() => {});
+  }
 }
 
 // shell #shell-msg-point: each held frame points while comment mode is on, and stops when it turns off.
@@ -6638,9 +6696,13 @@ function prototypeMarks() {
 
 // A spot into view (shell #shell-msg-show), once the frames shown reach the step showing: each held frame in turn is
 // asked, the one the directions' toggle shows before the one it hides, until one shows it, bringing its element into
-// view, its own frame scrolling the page that holds it, and answering. A frame the toggle hides is shown first (inView),
-// then, at the step showing, asked again, so it scrolls the page to where its spot shows.
+// view, its own frame scrolling the page that holds it, and answering. A frame the toggle hides holds no step until
+// shown, so the toggle switches to it, and it reaches the step showing, before it is asked; when no frame shows the
+// spot, the toggle goes back (endArrival). One arrival at a time: a later one, here or at any spot (inView), ends it at
+// its next wait, its switch put back first; the reviewer's press of the toggle ends it as the press leaves it.
 async function showInFrames(anchor, target) {
+  endArrival();
+  const arrival = mockup.arrival = { view: mockup.view }, ours = () => mockup.arrival === arrival;
   await mockup.reaching;
   const ask = s => new Promise(answer => {
     const timer = setTimeout(() => answer(false), 2000);
@@ -6648,15 +6710,26 @@ async function showInFrames(anchor, target) {
     toFrame(s, { type: 'spec-chat-show', anchor, target: target || null });
   });
   for (const s of [...mockup.slots].sort((a, b) => offView(a.frame) - offView(b.frame))) {
+    if (!ours()) return;
     if (!s.held || !s.frame) continue;
-    const hidden = offView(s.frame);
-    if (!(await ask(s))) continue;
-    if (hidden) {
-      inView(s.frame);
+    if (offView(s.frame)) {
+      mockup.view = s.viewport;
+      renderViewport();
       await mockup.reaching; // shown, it reaches the step showing (renderViewport)
-      await ask(s);
+      if (!ours()) return;
     }
-    return;
+    if (await ask(s)) return void (ours() && (mockup.arrival = null)); // the toggle stays where the spot shows
+  }
+  if (ours()) endArrival();
+}
+
+// The arrival in the frames ended (showInFrames), the toggle back at the viewport it found.
+function endArrival() {
+  const arrival = mockup.arrival;
+  mockup.arrival = null;
+  if (arrival && mockup.view !== arrival.view) {
+    mockup.view = arrival.view;
+    renderViewport();
   }
 }
 
@@ -6940,85 +7013,391 @@ function actPrototype(data) {
   protoHeld.acts = protoHeld.acts.then(() => doActions(actions, next)).catch(() => {});
 }
 
-function stepAction(action) {
-  if (!plainObject(action)) return null;
-  if (str(action.press, 400)) return { press: action.press };
-  return str(action.type, 400) ? { type: action.type, text: typeof action.text === 'string' ? action.text : '' } : null;
-}
-
 async function doActions(actions, next) {
+  const acting = protoHeld.acting = { done: 0 }; // the act from its start: a reviewer's press as it waits or lets go ends it
   await stillHere(); // a document leaving does no act: the document held next is asked it again
+  if (protoHeld.acting !== acting) return; // answered as it began to leave, or ended by a reviewer's press
+  await letGo(); // a hold lets go as the next step starts (#prototype-step-actions)
+  if (protoHeld.acting !== acting) return;
   const pressed = protoHeld.pressing;
+  protoHeld.pressing = { next: [], done: 0 }; // pressing through goes on from the step the act reaches
   let done = 0;
   while (done < pressed.done && done < actions.length && JSON.stringify(actions[done]) === JSON.stringify(pressed.next[done])) done++;
-  const acting = protoHeld.acting = { done };
+  acting.done = done;
   for (let i = done; i < actions.length; i++) {
+    await letGo(); // a hold lets go before the next action, and a reviewer's press as it does ends the act
+    if (protoHeld.acting !== acting) return;
     acting.done = i + 1; // an action that loads a page is done as the route leaves, which answers it
-    doAction(actions[i]);
+    await doAction(actions[i]);
     await motionSettles();
-    if (protoHeld.acting !== acting) return; // answered as it began to leave
+    if (protoHeld.acting !== acting) return; // answered as it began to leave, or ended by a reviewer's press
   }
   protoHeld.acting = null;
   protoHeld.pressing = { next, done: 0 };
   toShell({ type: 'spec-chat-acted', done: actions.length });
 }
 
-// One action, as a step's list names it (#markup-actions): press what a selector finds, or type text into it.
-function doAction(action) {
-  let el = null;
-  try { el = action && document.querySelector(action.press || action.type); } catch (_) { /* no such selector */ }
-  if (el && action.press) el.click();
-  else if (el) typeInto(el, action.text);
+// One action, as a step's list names it (#prototype-step-actions), on the part its selector finds, by the events a
+// person's pointer, keys, and touch send: a mouse in a desktop frame, a touch in a phone frame, the pointer first resting
+// on the part as a mouse rests in either, as the recorder's does. A hold stays down until the next action or step lets
+// go (doActions); held to a part, it is carried there once that part shows and lets go on it.
+async function doAction(action) {
+  const kind = action && STEP_ACTIONS.find(name => action[name]);
+  let part = null;
+  try { part = kind && document.querySelector(action[kind]); } catch (_) { /* no such selector */ }
+  if (!part) return;
+  const at = landingOn(part) || { ...pointsOn(part)[0], target: part, blind: true };
+  pointerTo(at);
+  if (kind === 'hover') return;
+  if (kind === 'type' && part.localName === 'select') return pickOption(part, action.text);
+  const touch = protoHeld.frame === 'phone';
+  pressDown(at, kind === 'menu' && !touch ? 2 : 0, touch);
+  if (kind === 'hold' || (kind === 'menu' && touch)) {
+    if (!action.to) return pause(LONG_PRESS); // held as long as a long press, so what holding does shows
+    await carryTo(action.to);
+    return release();
+  }
+  release();
+  if (kind === 'type') typeText(part, action.text);
 }
 
-function typeInto(el, text) {
-  el.focus();
-  if (el.isContentEditable) el.textContent = text;
-  else {
-    // the element's own value setter, which a product's framework follows
-    const own = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
-    if (own && own.set) own.set.call(el, text); else el.value = text;
+// The press a hold keeps down lets go, and the motion that starts ends.
+async function letGo() {
+  if (!protoHeld.held) return;
+  release();
+  await motionSettles();
+}
+
+// A reviewer's own press takes the pointer from a press the actions hold down, cancelling it, and an act doing them ends
+// there, the action it cut short not done, said as a reviewer's press that reached no step. When it went down tells a
+// hold from a press (#walkthrough-press). Pointing, a reviewer's press marks and presses nothing, as a press on the
+// layer's own marks does.
+document.addEventListener('pointerdown', e => {
+  if (!e.isTrusted || protoHeld.pointing || layerOwns(e.target)) return;
+  protoHeld.downAt = e.timeStamp;
+  if (!protoHeld.held) return;
+  release(true);
+  if (protoHeld.acting) pressedOff();
+}, true);
+
+function pause(ms) {
+  return new Promise(done => setTimeout(done, ms));
+}
+
+// How long a touch held still takes to open its part's menu, as a phone's browser holds it, in ms; a hold lasts as long.
+const LONG_PRESS = 500;
+const POINTER = typeof PointerEvent === 'function' ? PointerEvent : MouseEvent;
+
+// Where a pointer rests on a part, as the recorder rests on it: inside it but off its words, else its middle.
+function pointsOn(part) {
+  const box = part.getBoundingClientRect();
+  return [[box.width > 40 ? 0.85 : 0.5, 0.6], [0.5, 0.5]]
+    .map(([across, down]) => ({ x: Math.round(box.left + box.width * across), y: Math.round(box.top + box.height * down) }));
+}
+
+// The first of those points a press would land on the part at, with what lies there: the part or inside it, nothing
+// inside it that acts of its own taking the press; null while the page hides it there.
+function landingOn(part) {
+  for (const point of pointsOn(part)) {
+    const hit = pageAt(point);
+    const own = hit && hit.closest(PROTOTYPE_ACTS);
+    if (hit && part.contains(hit) && (!own || own === part || !part.contains(own))) return { ...point, target: hit };
   }
-  el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return null;
+}
+
+// What lies at a point of the page, the layer's own marks no part of it.
+function pageAt({ x, y }) {
+  return document.elementsFromPoint(x, y).find(el => !layerOwns(el)) || null;
+}
+
+// One event of the actions' pointer at a point, as a person's sends it, by the id a browser's mouse has, which the page
+// may capture; true when the page did not prevent its default.
+function firePointer(target, type, at, init = {}) {
+  const Kind = /^drag|^drop$/.test(type) ? DragEvent : /^pointer|^(click|auxclick|contextmenu)$/.test(type) ? POINTER : MouseEvent;
+  const bubbles = !/^(pointer|mouse)(enter|leave)$/.test(type);
+  return fire(target, new Kind(type, { bubbles, cancelable: bubbles, composed: true, view: window, clientX: at.x,
+    clientY: at.y, pointerId: 1, pointerType: 'mouse', isPrimary: true, width: 1, height: 1, ...init }));
+}
+
+// One event the actions send, true when the page did not prevent its default. What the browser does of it as it goes,
+// such as the input a checkbox's click toggles, or the click a label's passes to its field, is the actions' own, never a
+// reviewer's: the press listener skips every event while one goes.
+function fire(target, event) {
+  protoHeld.firing++;
+  try { return target.dispatchEvent(event); } finally { protoHeld.firing--; }
+}
+
+// One event of a touch at a point on the part it started on; true when the page did not prevent its default.
+function fireTouch(target, type, at) {
+  if (typeof Touch !== 'function' || typeof TouchEvent !== 'function') return true;
+  const touch = new Touch({ identifier: 1, target, clientX: at.x, clientY: at.y, pageX: at.x + scrollX, pageY: at.y + scrollY });
+  const touches = /end|cancel/.test(type) ? [] : [touch];
+  return fire(target, new TouchEvent(type, { bubbles: true, cancelable: true, composed: true, view: window, touches,
+    targetTouches: touches, changedTouches: [touch] }));
+}
+
+// The actions' pointer moves to a point, as a mouse does, `buttons` held: the parts it leaves and enters are told so,
+// then the move.
+function pointerTo(at, buttons = 0) {
+  const was = protoHeld.pointer && protoHeld.pointer.over.isConnected ? protoHeld.pointer.over : null;
+  const over = at.target;
+  const init = { buttons, pressure: buttons ? 0.5 : 0 };
+  protoHeld.pointer = { x: at.x, y: at.y, over };
+  if (was !== over) {
+    const up = el => { const chain = []; for (; el; el = el.parentElement) chain.push(el); return chain; };
+    const left = was ? up(was).filter(el => !el.contains(over)) : [];
+    const entered = up(over).filter(el => !(was && el.contains(was))).reverse();
+    for (const kind of ['pointer', 'mouse']) {
+      if (was) firePointer(was, kind + 'out', at, { ...init, relatedTarget: over });
+      for (const el of left) firePointer(el, kind + 'leave', at, { ...init, relatedTarget: over });
+      firePointer(over, kind + 'over', at, { ...init, relatedTarget: was });
+      for (const el of entered) firePointer(el, kind + 'enter', at, { ...init, relatedTarget: was });
+    }
+  }
+  firePointer(over, 'pointermove', at, init);
+  firePointer(over, 'mousemove', at, init);
+}
+
+// A press goes down where the pointer rests, on what lies there, or on the part where no point of it lands a press,
+// `button` 2 the right one: a mouse's focuses what it lies in, and the right one opens the part's menu; a touch held
+// still as long as a long press opens it. A page preventing the pointer's down gets no mouse events of it, and one
+// preventing its mouse's or touch's starts no drag.
+function pressDown(at, button, touch) {
+  const held = protoHeld.held = { target: at.target, x: at.x, y: at.y, blind: Boolean(at.blind), button, touch, moved: false,
+    long: false, timer: 0 };
+  const down = { pointerType: touch ? 'touch' : 'mouse', button, buttons: button === 2 ? 2 : 1, pressure: 0.5 };
+  held.quiet = !firePointer(at.target, 'pointerdown', at, down);
+  if (touch) {
+    held.prevented = !fireTouch(at.target, 'touchstart', at);
+    held.timer = setTimeout(() => {
+      held.long = true;
+      firePointer(held.target, 'contextmenu', held, { pointerType: 'touch', button: 2, buttons: 0 });
+    }, LONG_PRESS);
+    return;
+  }
+  held.prevented = held.quiet || !firePointer(at.target, 'mousedown', at, down);
+  if (!held.prevented) focusAt(at.target);
+  if (button === 2) firePointer(at.target, 'contextmenu', at, down);
+}
+
+// What a press focuses, as its mousedown does: the part it lies in that takes focus, else none, the focus leaving the
+// part that held it; a field shows its focus as a person's press shows it, any other part none.
+function focusAt(target) {
+  const part = target.closest('a[href],area[href],button,input,select,textarea,iframe,summary,[tabindex],[contenteditable]');
+  if (part) focusPart(part, part.matches('input,textarea,[contenteditable]'));
+  else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+}
+
+// A part focused only in a frame the reviewer is in: focus moved into any other takes the keys from the page holding it.
+function focusPart(part, visible) {
+  if (document.hasFocus()) part.focus({ preventScroll: true, focusVisible: visible });
+}
+
+// The press held down ends, as a browser ends one: cancelled, as a reviewer's own press cancels it, its pointer and a
+// touch's touch told so, and a drag it carries ending where it is, dropping nothing; else let go at its point, on what
+// lies there as it lets go, or on the part it went down on while no point of it lands a press. A drag it carries drops
+// there; a mouse's clicks what both its down and its letting go lie in, the right one auxclick; a touch taps there, its
+// mouse events after it, unless it was held as long as a long press, moved, or prevented.
+function release(cancel = false) {
+  const held = protoHeld.held;
+  if (!held) return;
+  protoHeld.held = null;
+  clearTimeout(held.timer);
+  if (held.drag) return endDrag(held.drag, held, !cancel);
+  if (cancel) return cancelPointer(held, held);
+  const under = (!held.blind && pageAt(held)) || held.target;
+  const up = { pointerType: held.touch ? 'touch' : 'mouse', button: held.button, buttons: 0, pressure: 0 };
+  if (held.touch) {
+    firePointer(held.target, 'pointerup', held, up); // a touch's pointer is its part's until it lets go
+    if (!fireTouch(held.target, 'touchend', held) || held.long || held.moved || held.prevented) return;
+    firePointer(under, 'mousemove', held, { buttons: 0 });
+    if (firePointer(under, 'mousedown', held, { button: 0, buttons: 1 })) focusAt(under);
+    firePointer(under, 'mouseup', held, { button: 0, buttons: 0 });
+    firePointer(under, 'click', held, up);
+    return;
+  }
+  firePointer(under, 'pointerup', held, up);
+  if (!held.quiet) firePointer(under, 'mouseup', held, up);
+  let both = held.target;
+  while (both && !both.contains(under)) both = both.parentElement;
+  if (both) firePointer(both, held.button === 2 ? 'auxclick' : 'click', held, up);
+}
+
+// #prototype-step-actions: held until the part `selector` names shows, as a press at a point inside it lands on it,
+// however the page hid it until then, at most 5 s; then carried there still down, a native drag of a part the browser
+// drags, else the pointer's moves, to let go at that point.
+async function carryTo(selector) {
+  let to = null;
+  for (const end = Date.now() + 5000; protoHeld.held && Date.now() < end; await pause(50)) {
+    let part = null;
+    try { part = document.querySelector(selector); } catch (_) { return; }
+    if (part && (to = landingOn(part))) break;
+  }
+  const held = protoHeld.held;
+  if (!held || !to) return;
+  clearTimeout(held.timer); // a touch that moves opens no menu
+  held.moved = true;
+  let source = held.prevented ? null : held.target;
+  while (source && !source.draggable) source = source.parentElement;
+  const from = { x: held.x, y: held.y }, moves = 10;
+  for (let n = 1; n <= moves && protoHeld.held === held; n++) { // a reviewer's press takes it as it goes
+    const at = { x: Math.round(from.x + (to.x - from.x) * n / moves), y: Math.round(from.y + (to.y - from.y) * n / moves) };
+    Object.assign(held, at, { blind: false }); // at a point of the page from its first move
+    if (source && held.drag === undefined) held.drag = startDrag(held, source, at);
+    if (held.drag) dragOver(held.drag, at);
+    else if (held.touch) {
+      firePointer(held.target, 'pointermove', at, { pointerType: 'touch', buttons: 1, pressure: 0.5 });
+      fireTouch(held.target, 'touchmove', at);
+    } else pointerTo({ ...at, target: pageAt(at) || document.documentElement }, 1);
+    await pause(16);
+  }
+}
+
+// A press carried off a part the browser drags starts its native drag, the press's pointer cancelled; a dragstart the
+// page prevents leaves it a press carried (null).
+function startDrag(held, source, at) {
+  const drag = { source, data: new DataTransfer(), over: null, drops: false };
+  if (!firePointer(source, 'dragstart', at, { dataTransfer: drag.data })) return null;
+  cancelPointer(held, at);
+  return drag;
+}
+
+// A press's pointer, and a touch's touch, cancelled as a browser cancels them, on the part they went down on.
+function cancelPointer(held, at) {
+  firePointer(held.target, 'pointercancel', at, { pointerType: held.touch ? 'touch' : 'mouse', button: held.button, buttons: 0 });
+  if (held.touch) fireTouch(held.target, 'touchcancel', at);
+}
+
+function dragOver(drag, at) {
+  const over = pageAt(at) || document.documentElement;
+  firePointer(drag.source, 'drag', at, { dataTransfer: drag.data });
+  if (over !== drag.over) {
+    firePointer(over, 'dragenter', at, { dataTransfer: drag.data, relatedTarget: drag.over });
+    if (drag.over) firePointer(drag.over, 'dragleave', at, { dataTransfer: drag.data, relatedTarget: over });
+    drag.over = over;
+  }
+  drag.drops = !firePointer(over, 'dragover', at, { dataTransfer: drag.data }); // a part that takes the drop says so
+}
+
+// A drag ends where it is: dropped there when `drops` and the part there takes the drop, else left.
+function endDrag(drag, at, drops) {
+  if (drag.over) firePointer(drag.over, drops && drag.drops ? 'drop' : 'dragleave', at, { dataTransfer: drag.data });
+  firePointer(drag.source, 'dragend', at, { dataTransfer: drag.data });
+}
+
+// A select picks the option its text names, as a person picks it from the list a browser draws apart from the page.
+function pickOption(select, text) {
+  const option = [...select.options].find(o => o.label === text);
+  if (!option || option.selected) return;
+  focusPart(select, false);
+  option.selected = true;
+  fire(select, new Event('input', { bubbles: true, composed: true }));
+  fire(select, new Event('change', { bubbles: true }));
+}
+
+// Text typed into the field it presses, one key at a time as a person's keys send it, replacing what it held as
+// selecting it all first does; a key whose keydown or beforeinput the page prevents types nothing. Then its change, as
+// the field commits it.
+function typeText(el, text) {
+  if (document.activeElement !== el) focusPart(el, true);
+  let first = true;
+  for (const key of text) {
+    const keys = { key, bubbles: true, cancelable: true, composed: true, view: window };
+    if (fire(el, new KeyboardEvent('keydown', keys))) {
+      fire(el, new KeyboardEvent('keypress', { ...keys, charCode: key.codePointAt(0) }));
+      const input = { bubbles: true, composed: true, data: key, inputType: 'insertText' };
+      if (fire(el, new InputEvent('beforeinput', { ...input, cancelable: true }))) {
+        typeKey(el, key, first);
+        first = false;
+        fire(el, new InputEvent('input', input));
+      }
+    }
+    fire(el, new KeyboardEvent('keyup', keys));
+  }
+  fire(el, new Event('change', { bubbles: true }));
+}
+
+// A key's text after what the field holds, where typing leaves its caret, the first in place of all it held; by the
+// field's own value setter, which a product's framework follows.
+function typeKey(el, key, first) {
+  const text = (first ? '' : el.isContentEditable ? el.textContent : el.value) + key;
+  if (el.isContentEditable) return void (el.textContent = text);
+  const own = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+  if (own && own.set) own.set.call(el, text); else el.value = text;
 }
 
 // The motion an action starts, once it ends: each transition and animation that ends, at most 5 s; a page it loads, once
-// it does, the route leaving answering then, or once the route stays.
+// it does, the route leaving answering then, or once the route stays. A frame no browser draws, hidden or scrolled wholly
+// out of view, gets no animation frame and moves no motion on, so the clock stands in for both: for the frame drawn, and
+// for each motion's finish at its own end.
 async function motionSettles() {
   await new Promise(done => setTimeout(done, 50));
   await stillHere();
-  await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
+  await new Promise(done => { setTimeout(done, 100); requestAnimationFrame(() => requestAnimationFrame(done)); });
   const moving = (document.getAnimations ? document.getAnimations() : [])
     .filter(animation => animation.effect && Number.isFinite(animation.effect.getComputedTiming().endTime));
-  await Promise.race([Promise.all(moving.map(animation => animation.finished.catch(() => {}))), new Promise(done => setTimeout(done, 5000))]);
+  const ends = Math.min(5000, Math.max(0, ...moving.map(motionLeft)) + 100);
+  await Promise.race([Promise.all(moving.map(animation => animation.finished.catch(() => {}))), new Promise(done => setTimeout(done, ends))]);
+}
+
+// The milliseconds until an animation ends at its own rate: played forward at its end time, backward at its start; one
+// at no rate, never. A product's reverse() keeps its new rate pending until the animation is ready, which in a frame no
+// browser draws it never is, and no API reads a pending rate: such a motion is timed forward, at most the 5 s cap.
+function motionLeft(animation) {
+  const timing = animation.effect.getComputedTiming();
+  const rate = animation.playbackRate, at = timing.localTime || 0;
+  return rate > 0 ? (timing.endTime - at) / rate : rate < 0 ? at / -rate : Infinity;
 }
 
 // #prototype-steps, #walkthrough-press: with pointing off, a reviewer's press or typing that does the next step's
-// actions says it reached that step; any other action says it did not. A click on nothing that acts is none; typing into
-// the field the next action types in goes on toward its text.
+// actions says it reached that step; any other action says it did not, a hold, as a pointer's click kept down as long as
+// a long press, and a menu or a drop the page takes among them. A click on nothing that acts, nor that the next action
+// presses, is none; typing into the field the next action types in goes on toward its text, and picking in a select
+// toward the option it names. A hover among the next actions counts as done, and none moves the step bar of its own.
 const PROTOTYPE_ACTS = 'a[href],button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=radio],[role=switch],[contenteditable]';
-for (const type of ['click', 'input']) document.addEventListener(type, e => {
+for (const type of ['click', 'input', 'contextmenu', 'drop']) document.addEventListener(type, e => {
   const t = e.target;
-  if (!protoHeld.on || protoHeld.pointing || !e.isTrusted || !(t instanceof Element) || t.closest('[data-spec-chat]')) return;
+  if (!protoHeld.on || protoHeld.pointing || protoHeld.firing || !e.isTrusted || !(t instanceof Element) || t.closest('[data-spec-chat]')) return;
+  if (type === 'contextmenu' || type === 'drop') return void setTimeout(() => e.defaultPrevented && pressedOff()); // once the page has it
   const pressing = protoHeld.pressing;
-  const action = pressing.next[pressing.done];
+  const at = pastHovers(pressing.next, pressing.done);
+  const action = pressing.next[at];
   const hits = selector => { try { return Boolean(selector && t.closest(selector)); } catch (_) { return false; } };
-  if (action && action.press && type === 'click' && hits(action.press)) return pressedOn();
+  const presses = type === 'click' && action && action.press && hits(action.press);
+  const held = type === 'click' && e.detail > 0 && e.timeStamp - protoHeld.downAt >= LONG_PRESS; // keys' clicks have no press behind them
+  if (presses && !held) return pressedOn(at);
   if (action && action.type && hits(action.type)) {
-    if (type === 'input' && (t.isContentEditable ? t.textContent : t.value) === action.text) pressedOn();
+    const typed = t.isContentEditable ? t.textContent : t.localName === 'select' ? (t.selectedOptions[0] || {}).label : t.value;
+    if (type === 'input' && typed === action.text) pressedOn(at);
     return;
   }
-  if (type === 'click' && !hits(PROTOTYPE_ACTS)) return;
-  protoHeld.pressing = { next: [], done: 0 };
-  toShell({ type: 'spec-chat-pressed', reached: false });
+  if (type === 'click' && !presses && !hits(PROTOTYPE_ACTS)) return;
+  pressedOff();
 }, true);
 
-function pressedOn() {
+// The first of the actions from `at` on that is no hover.
+function pastHovers(next, at) {
+  while (next[at] && next[at].hover) at++;
+  return at;
+}
+
+// The reviewer did the next actions up to the one at `at`; with only hovers past it, that reaches the next step.
+function pressedOn(at) {
   const pressing = protoHeld.pressing;
-  if (++pressing.done < pressing.next.length) return;
+  pressing.done = at + 1;
+  if (pastHovers(pressing.next, pressing.done) < pressing.next.length) return;
   protoHeld.pressing = { next: [], done: 0 };
   toShell({ type: 'spec-chat-pressed', reached: true });
+}
+
+// A press or typing that reached no step ends any act the route is doing, its acted unsaid, and cancels the press the
+// actions hold down, so no hold or carry of theirs lets go after (shell #shell-msg-prototype).
+function pressedOff() {
+  release(true);
+  protoHeld.acting = null;
+  protoHeld.pressing = { next: [], done: 0 };
+  toShell({ type: 'spec-chat-pressed', reached: false });
 }
 
 // shell #shell-msg-show: a spot into view, its element, else its region, where the route shows it, answering whether it
@@ -7596,7 +7975,9 @@ function takePublish(data) {
   const page = publishedPage(data);
   if (!page) return;
   ui.frames.set(page.frame, page);
-  const same = ui.page && ui.frame === page.frame && ui.page.page === page.page && Boolean(ui.page.items) === Boolean(page.items);
+  // A spec or mockup page is the same page by its path, its address changing with its base (selectRangeBase).
+  const same = ui.page && ui.frame === page.frame && Boolean(ui.page.items) === Boolean(page.items)
+    && (page.items ? ui.page.page === page.page : ui.page.path === page.path);
   showPage(page, !same);
 }
 
@@ -7620,8 +8001,18 @@ function showPage(page, fresh) {
   mockup.steps = page.steps || [];
   state.version = page.version;
   if (!page.items && (fresh || ui.docVersion !== page.version)) readPage(page);
+  if (!page.items && !ui.mockup && (!ui.base || ui.base.page !== page.page)) heldBase(page);
   renderPanel();
   refresh();
+}
+
+// The base a held spec page at this address reads, resolved as it resolves it (applyIssueFocus): the one its address
+// names, else its service's default; Accept spec's post names it (shownJevRead). A mockup page reads no Jev.
+async function heldBase(page) {
+  const read = ui.base = { page: page.page, base: null };
+  try {
+    read.base = (await fetchBaseline(new URL(page.page).searchParams.get('base'), undefined, page.path)).base || null;
+  } catch (_) { /* unresolved: Accept spec names no read */ }
 }
 
 // The held page as its service serves it, which this page reads only from its own service, at the page's path there:
@@ -7632,7 +8023,7 @@ async function readPage(page) {
   try {
     const r = await fetch(new URL(page.path, SCRIPT_SERVICE).href);
     const doc = r.ok ? new DOMParser().parseFromString(await r.text(), 'text/html') : null;
-    if (ui.page && ui.page.page === page.page) { ui.doc = doc; renderPanel(); sendMarks(); }
+    if (ui.page && ui.page.path === page.path) { ui.doc = doc; renderPanel(); sendMarks(); }
   } catch (_) { /* unreadable: chips name their anchors */ }
 }
 
