@@ -590,6 +590,19 @@ class LightTest(BoxLockCase):
         self.end("one2")
         self.wait_ran("mine")
 
+    def test_a_one_cpu_job_waits_for_its_share_of_memory_while_another_job_runs(self):
+        # #lock-memory: a box of 4 CPUs and 64 GB held by a job of 4, 2 GB
+        # free, a job of 1's share 16 GB; it stands in no line
+        self.start("full", "--cores", "4", cpus=4)
+        self.wait_ran("full")
+        self.set_free(2)
+        self.start("mine", "--cores", "1", cpus=4)
+        memory = re.compile(r"octo-lite-lock: waiting for (\S+ GB) of memory free, (\S+ GB) free\n")
+        self.assertEqual(self.told("mine", line=memory), [("16.0 GB", "2.0 GB")])
+        self.assertEqual(self.ran("mine"), [])
+        self.set_free(17)
+        self.wait_ran("mine")
+
     def test_a_job_in_line_runs_while_one_cpu_jobs_still_run(self):
         # #acceptance-lock-light-turn: a box of 4 CPUs held by a job of 4, a job
         # of 4 first in line, then two jobs of 1, the second starting before the
