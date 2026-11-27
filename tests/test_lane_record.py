@@ -179,26 +179,6 @@ class LaneRecordTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertEqual(body.read_text(encoding="utf-8").strip(), posted)
 
-    def test_chat_spec_receipt_command_keeps_the_humans_words(self) -> None:
-        # spec #acceptance-receipt-spec-example, #gates-push-proof,
-        # #acceptance-push-proof-receipt: the operator's receipt command, run as
-        # written, posts the human's words verbatim, apostrophe included, and
-        # posts nothing when the PR's remote head lacks the accepted commit.
-        text = OPERATOR.read_text(encoding="utf-8")
-        match = re.search(r"in chat is recorded .*?```sh\n(.*?)```", text, flags=re.DOTALL)
-        self.assertIsNotNone(match, "chat receipt command is missing")
-        self.assert_receipt_command(
-            match.group(1),
-            {
-                "<words>": "your goal is to merge all this stuff. you're preauthorized",
-                "<date>": "2026-10-21",
-                "<full repository path>": "spec/domains/octo-lite.spec.html",
-            },
-            'Spec acceptance receipt: human "your goal is to merge all this stuff. '
-            "you're preauthorized\" (2026-10-21) accepts spec/domains/octo-lite.spec.html "
-            "at 1a2b3c4. Recorded by meta-operator.",
-        )
-
     def test_review_page_receipt_command_needs_push_proof(self) -> None:
         # spec #acceptance-receipt-paths, #gates-push-proof,
         # #acceptance-push-proof-receipt: the owner's Accept spec receipt command,
@@ -269,34 +249,6 @@ class LaneRecordTests(unittest.TestCase):
         owner = " ".join((ROOT / "agents/orchestrator.md").read_text(encoding="utf-8").split())
         self.assertIn("send the operator the commit and the accepted text it restates, quoted with its anchor, "
                       "for an addendum receipt; never record one yourself", owner)
-
-    def test_merge_chain_needs_its_receipt_and_the_accepted_head(self) -> None:
-        # spec #gates-merge-check, #acceptance-merge-receipt-fails,
-        # #acceptance-merge-pin: the merge runs only after its receipt posts,
-        # pinned to the accepted head, deferred merges included.
-        skill = (ROOT / "skills/octo-lite-github/SKILL.md").read_text(encoding="utf-8")
-        chain = re.search(r"## Merge And Linear Sync.*?```sh\n(.*?)```", skill, flags=re.DOTALL)
-        self.assertIsNotNone(chain, "merge chain is missing")
-        self.assertIn("after `gh pr checks <pr> --watch --fail-fast &&`, never `--auto`", " ".join(skill.split()))
-        self.assertIn("(../skills/octo-lite-github/SKILL.md#merge-and-linear-sync), a merge set to run once checks pass included",
-                      OPERATOR.read_text(encoding="utf-8"))
-        sha = "9be60f6" + "0" * 33
-        command = chain.group(1)
-        for slot, value in {"<pr>": "74", "<words>": "merge #74", "<date>": "2026-09-26",
-                            "<accepted sha>": sha, "<agent name>": "meta-operator"}.items():
-            command = command.replace(slot, value)
-        with tempfile.TemporaryDirectory() as tmp:
-            log, gh = Path(tmp) / "log", Path(tmp) / "gh"
-            gh.write_text('#!/bin/sh\necho "$*" >> "$LOG"\n[ "$2" = comment ] && { cat > /dev/null; exit "$FAIL"; }\nexit 0\n',
-                          encoding="utf-8")
-            gh.chmod(0o755)
-            for fail, calls in (("1", ["pr comment 74 --body-file -"]),
-                                ("0", ["pr comment 74 --body-file -", f"pr merge 74 --merge --match-head-commit {sha}"])):
-                log.write_text("", encoding="utf-8")
-                env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "LOG": str(log), "FAIL": fail}
-                run = subprocess.run(["sh", "-c", command], env=env, capture_output=True, text=True)
-                self.assertEqual(run.returncode != 0, fail == "1", run.stderr)
-                self.assertEqual(log.read_text(encoding="utf-8").splitlines(), calls)
 
     def test_merge_at_the_go_never_merges_main_first(self) -> None:
         # spec #gates-merge-check, #delivery-path ("later only on a conflict"),

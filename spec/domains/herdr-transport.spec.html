@@ -163,6 +163,11 @@ The <code>herdr-comms</code> skill states these rules once, as its wait recipe, 
 So an agent whose own session started before the box had one, such as an owner spawning workers or one <code>herdr-say</code> resumes, still starts every agent with it, and nothing on the box is set by hand for it.
 A given one always wins over the box's, and a box never given one starts agents without one.
 A box's one whose file is gone counts as none, and the spawn names it on its error output.</p>
+<p data-anchor="roles-every-role" id="roles-every-role">octo-lite's every-role part is one instruction file of its own holding the rules every octo-lite agent follows whatever its role: <a href="./octo-lite.spec.html#roles-one-source">one source</a> as its first rule, then <a href="./octo-lite.spec.html#roles-no-prompt">no prompt</a>.
+<code>herdr-spawn</code> hands it to every agent it starts, resumes, or reloads, under any role or none, beside the operating model and by the same hand-over, so it reaches every role from one file and no contract carries a copy.
+It is octo-lite's own, so a box given no operating model, or another project's, still gives it to every agent.
+A merged change to it reaches running agents as a change to a role contract does (<a href="./octo-lite.spec.html#roles-contract-change">contract change</a>), the fleet operator's reload included.
+It is its own file because nothing else every role loads is octo-lite's: a role contract is one role's, and the operating model is the box's, given by a peer or by nobody.</p>
 </section>
 
 <section data-anchor="session" id="session">

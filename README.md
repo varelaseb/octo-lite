@@ -207,6 +207,9 @@ state and config above under `PATH/.local/state` and `PATH/.config`, ignoring
 `agents/*.md` are hand-written role contracts. Workers load them from
 `herdr-spawn --role ROLE -- claude|codex|pi`: Claude through `--agent ROLE`,
 Codex as developer instructions, pi as an appended system prompt. Spawn bare; the brief follows by `herdr-say`.
+`agents/parts/every-role.md` holds the rules every role follows, which
+`herdr-spawn` hands every agent beside any operating model; it is no agent of
+its own.
 `herdr-close TAB` tears a worker down, detached processes
 included; `herdr-close SPACE` tears down a lane space the lane owns alone, else
 the operator closes only the owner's tab. The meta-operator is a persistent Herdr pane started with `herdr-spawn
@@ -228,8 +231,7 @@ idea or rough Linear/GitHub issue
 ```
 
 Linear remains current for issue and ticket identity, scope, dependencies, and
-state. Specs own detailed behavior. Worker messages point to those sources
-instead of copying them.
+state. Specs own detailed behavior.
 
 ## Target Repositories
 
