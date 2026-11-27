@@ -6,34 +6,47 @@ octo-lite-lock [--cores N] [--cap RESOURCE=N] [--merge] CMD [ARG...] runs CMD
 as a heavy job on N of the box's CPUs, 4 when it names no number and every CPU
 on a box of fewer, the box's CPUs counted each run (#lock-cores). CMD runs on
 those CPUs only and is told their count in BOX_HEAVY_CORES (#lock-share). Jobs
-waiting line up, merge-path jobs (--merge) ahead of every other, each kind in
-the order it asked: the first in line takes CPUs as they come free and keeps
-them until it holds all it asks for (#lock-in-turn), save that a first in line
-not merge-path gives back what it holds while a merge-path job waits, keeping
-its place (#lock-merge). The first in line also waits while under 6 GB is
-free, unless no other heavy job runs; the box's load is never read
+asking for more than one CPU that wait line up, merge-path jobs (--merge) ahead
+of every other, each kind in the order it asked: the first in line takes CPUs
+as they come free and keeps them until it holds all it asks for (#lock-in-turn),
+save that a first in line not merge-path gives back what it holds while a
+merge-path job waits, keeping its place (#lock-merge). A job asking for one CPU
+never lines up: it takes a CPU's one-CPU place, on a CPU no job holds first,
+else beside the job holding it, waiting only while every CPU's is held
+(#lock-light). The first in line, and a one-CPU job, also waits while less of
+the box's memory is free than its share, the part its CPUs are of the box's,
+unless no other job holds a CPU, one-CPU jobs aside, for the first in line, or
+no other heavy job runs, for a one-CPU job; the box's load is never read
 (#lock-memory). A job run under the lock by a job already under it, told by
 BOX_HEAVY_CORES, runs at once on the outer job's CPUs (#lock-nested).
 
-While it waits it names, each time they change, the other jobs holding CPUs,
-by command, folder, and how long they have held them, on a line of its own
-(#lock-holder). It prints its wait as flock --verbose does, on stderr so CMD's
-output stays its own, then ends as CMD ended, with its exit code or killed by
-its signal (#lock-recipe). CMD starts with the signal dispositions this command
-was given, save SIGPIPE and SIGXFSZ, which Python's subprocess resets to their
-defaults; only once it runs does this command ignore SIGINT, so a Ctrl-C is
-CMD's to end on and this command still holds its CPUs until CMD ends.
+While it waits it names, each time they change, on a line of its own, its place
+in line and each job ahead of it, by command and folder, merge-path ones
+marked, and what it waits on: the other jobs holding CPUs, by command, folder,
+and how long they have held them, the memory it needs and the box has free, or
+its named resource (#lock-holder). It prints its wait as flock --verbose does,
+on stderr so CMD's output stays its own, then the commit its folder is at, and
+the one it was at as the job lined up when they differ, read by git alone
+(#lock-head), then ends as CMD ended, with its exit code or killed by its signal
+(#lock-recipe). CMD starts with the signal dispositions this command was given,
+save SIGPIPE and SIGXFSZ, which Python's subprocess resets to their defaults;
+only once it runs does this command ignore SIGINT, so a Ctrl-C is CMD's to end
+on and this command still holds its CPUs until CMD ends.
 
-Each CPU, the line, and each of a named resource's N jobs (#lock-cap) is a lock
-file beside heavy.lock in octo-lite's box state directory, taken whole and held
-by this command alone until it exits, never by CMD (#lock-close); a CPU's file
-holds the record of the job that took it. heavy-line.lock is the first in
-line's, the one job taking CPUs, as in every older octo-lite, so a job that
-lined up before an update never takes CPUs beside one after it (#lock-update);
-jobs not merge-path line up for it on heavy-wait.lock, and each merge-path job
-holds heavy-merge.lock shared while it waits. Each job also holds heavy.lock
-shared, so a job that locks it whole, as flock does by default, waits for an
-empty box and holds all of it (#lock-old).
+Each CPU, each CPU's one-CPU place, each job in line, the line, and each of a
+named resource's N jobs (#lock-cap) is a lock file beside heavy.lock in
+octo-lite's box state directory, taken whole and held by this command alone
+until it exits, never by CMD (#lock-close): heavy-cpu-N.lock, heavy-one-N.lock,
+heavy-in-line-N.lock, heavy-line.lock, and heavy-cap-RESOURCE-N.lock. A CPU's
+file, a one-CPU place's, and an in-line file hold the record of the job that
+took it, live while /proc/locks shows that job holding it. heavy-line.lock is
+the first in line's, the one job taking CPUs, as in every older octo-lite, so a
+job that lined up before an update never takes CPUs beside one after it
+(#lock-update); jobs not merge-path line up for it on heavy-wait.lock, and each
+merge-path job holds heavy-merge.lock shared while it waits. A one-CPU job
+takes no file of the line nor any CPU's, so older jobs run beside it as before.
+Each job also holds heavy.lock shared, so a job that locks it whole, as flock
+does by default, waits for an empty box and holds all of it (#lock-old).
 """
 
 import fcntl
@@ -49,11 +62,13 @@ import time
 from pathlib import Path
 
 CORES = 4  # CPUs a job naming no number gets, what a full suite needs (#lock-cores)
-MEMORY = 6 * 10**9  # bytes free the first in line waits for (#lock-memory)
 MEMINFO = Path("/proc/meminfo")
 POLL = 1  # seconds between tries while what a job waits for is held
 TOLD = "BOX_HEAVY_CORES"
 USAGE = "usage: octo-lite-lock [--cores N] [--cap RESOURCE=N] [--merge] CMD [ARG...]"
+CPU = "heavy-cpu-*.lock"  # the CPUs jobs asking for more than one hold
+ONE = "heavy-one-*.lock"  # the CPUs' one-CPU places (#lock-light)
+IN_LINE = "heavy-in-line-*.lock"  # the jobs in line (#lock-holder)
 
 
 def cpus() -> int:
@@ -61,9 +76,11 @@ def cpus() -> int:
     return os.cpu_count()
 
 
-def free() -> int:
-    """The box's free memory in bytes."""
-    return int(re.search(r"^MemAvailable:\s+(\d+) kB", MEMINFO.read_text(), re.M)[1]) * 1024
+def memory() -> tuple[int, int]:
+    """The box's memory and how much of it is free, in bytes."""
+    info = MEMINFO.read_text()
+    return tuple(int(re.search(rf"^{key}:\s+(\d+) kB", info, re.M)[1]) * 1024
+                 for key in ("MemTotal", "MemAvailable"))
 
 
 def lock(path: Path, how: int = fcntl.LOCK_EX | fcntl.LOCK_NB) -> int | None:
@@ -77,6 +94,12 @@ def lock(path: Path, how: int = fcntl.LOCK_EX | fcntl.LOCK_NB) -> int | None:
     except BlockingIOError:
         os.close(fd)
         return None
+
+
+def note(fd: int, record: dict) -> None:
+    """Write record into the file fd holds, for other jobs to read."""
+    os.ftruncate(fd, 0)
+    os.pwrite(fd, json.dumps(record).encode(), 0)
 
 
 def take(paths: list[Path]) -> None:
@@ -94,20 +117,69 @@ def merging(box: Path) -> bool:
     return fd is None
 
 
-def hold(box: Path, want: int, merge: bool, job: dict) -> list[int]:
+def locked() -> dict[int, int]:
+    """The pid holding each file a lock holds, by inode, as /proc/locks lists
+    it: "1: FLOCK ADVISORY WRITE pid dev:inode 0 EOF", a waiter's "1: -> ..."."""
+    pids = {}
+    for field in map(str.split, Path("/proc/locks").read_text().splitlines()):
+        if field[1] != "->":
+            pids[int(field[-3].rsplit(":", 1)[1])] = int(field[-4])
+    return pids
+
+
+def records(box: Path, family: str) -> list[dict]:
+    """The records in the files of family that the other jobs writing them
+    still hold."""
+    pids, found = locked(), []
+    for path in box.glob(family):
+        try:
+            record = json.loads(path.read_text())
+            ino = path.stat().st_ino
+        except (OSError, ValueError):  # never written, or being written
+            continue
+        if pids.get(ino) == record["pid"] != os.getpid():
+            found.append(record)
+    return found
+
+
+def holders(box: Path, family: str) -> dict[int, dict]:
+    """The other jobs holding CPUs of family, by pid, each one's record since
+    the earliest it took."""
+    jobs: dict[int, dict] = {}
+    for record in records(box, family):
+        job = jobs.setdefault(record["pid"], record)
+        job["since"] = min(job["since"], record["since"])
+    return jobs
+
+
+def alone(box: Path) -> bool:
+    """Whether no other job holds a CPU, the jobs on one-CPU places aside."""
+    pids = locked()
+    return all(pids.get(path.stat().st_ino, os.getpid()) == os.getpid() for path in box.glob(CPU))
+
+
+def hold(box: Path, want: int, merge: bool, job: dict, state: dict) -> list[int]:
     """Line up, behind every merge-path job waiting unless merge, then, first in
     line on heavy-line.lock, take the box's CPUs as they come free, writing job
     into each one's file, until want of them, at most every one, are held and
-    the box has MEMORY free or runs no other heavy job; then hold heavy.lock
-    shared, leave the line, and return the CPUs held. Not merge, while a
-    merge-path job waits it gives back the line and its CPUs, keeping its place
-    on heavy-wait.lock."""
+    the box has the job's share of memory free or no other job holds a CPU;
+    then hold heavy.lock shared, leave the line, and return the CPUs held. Not
+    merge, while a merge-path job waits it gives back the line and its CPUs,
+    keeping its place on heavy-wait.lock. While in line its record is in a
+    file of IN_LINE, which state names."""
+    count = cpus()
+    want = min(want, count)
+    share = memory()[0] * want // count
+    state["line"] = {**job, "since": time.time(), "merge": merge}
+    slot = 0
+    while (waiting := lock(box / f"heavy-in-line-{slot}.lock")) is None:
+        slot += 1
+    note(waiting, state["line"])
+    state["wait"] = ("cpus", CPU)
     place = lock(box / ("heavy-merge.lock" if merge else "heavy-wait.lock"),
                  fcntl.LOCK_SH if merge else fcntl.LOCK_EX)
     line = None
     heavy = os.open(box / "heavy.lock", os.O_RDONLY | os.O_CREAT, 0o666)
-    count = cpus()
-    want = min(want, count)
     held: dict[int, int] = {}
     while True:
         if not merge and merging(box):  # give it the line and every CPU held
@@ -125,63 +197,114 @@ def hold(box: Path, want: int, merge: bool, job: dict) -> list[int]:
                     fd = lock(box / f"heavy-cpu-{cpu}.lock")
                     if fd is not None:
                         held[cpu] = fd
-                        os.ftruncate(fd, 0)
-                        os.write(fd, json.dumps({**job, "since": time.time()}).encode())
+                        note(fd, {**job, "since": time.time()})
             if len(held) == want:
-                if free() >= MEMORY:
+                if memory()[1] >= share or alone(box):
                     break
-                try:  # whole only while no other heavy job holds it
-                    fcntl.flock(heavy, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    pass
+                state["wait"] = ("memory", share)
+            else:
+                state["wait"] = ("cpus", CPU)
         time.sleep(POLL)
     fcntl.flock(heavy, fcntl.LOCK_SH)
-    os.close(line)
-    os.close(place)
+    for fd in (line, place, waiting):
+        os.close(fd)
     return sorted(held)
 
 
-def holders(box: Path) -> dict[int, dict]:
-    """The other jobs holding the box's CPUs, by pid: each one's record in the
-    files of the CPUs /proc/locks shows it holding, since the earliest."""
-    pids = {}  # inode: pid holding it, as "1: FLOCK ADVISORY WRITE pid dev:inode 0 EOF"
-    for field in map(str.split, Path("/proc/locks").read_text().splitlines()):
-        if field[1] != "->":
-            pids[int(field[-3].rsplit(":", 1)[1])] = int(field[-4])
-    jobs: dict[int, dict] = {}
-    for path in box.glob("heavy-cpu-*.lock"):
-        try:
-            record = json.loads(path.read_text())
-            ino = path.stat().st_ino
-        except (OSError, ValueError):  # gone, never written, or being written
-            continue
-        if pids.get(ino) == record["pid"] != os.getpid():
-            job = jobs.setdefault(record["pid"], record)
-            job["since"] = min(job["since"], record["since"])
-    return jobs
+def beside(box: Path, job: dict, state: dict) -> list[int]:
+    """A one-CPU job's CPU: lock the one-CPU place of a CPU no job holds, else
+    of any CPU, trying about once a second while every one is held, write job
+    into it, then wait until the box has the job's share of memory free or runs
+    no other heavy job, and hold heavy.lock shared. It takes no file of the
+    line nor any CPU's, so it holds no job in line from its turn."""
+    count = cpus()
+    share = memory()[0] // count
+    heavy = os.open(box / "heavy.lock", os.O_RDONLY | os.O_CREAT, 0o666)
+    fd = None
+    while fd is None:
+        pids = locked()
+        busy = {int(path.stem.rsplit("-", 1)[1]) for path in box.glob(CPU) if path.stat().st_ino in pids}
+        for cpu in sorted(range(count), key=busy.__contains__):  # free CPUs first
+            if (fd := lock(box / f"heavy-one-{cpu}.lock")) is not None:
+                break
+        else:
+            state["wait"] = ("cpus", ONE)
+            time.sleep(POLL)
+    note(fd, {**job, "since": time.time()})
+    while memory()[1] < share:
+        try:  # whole only while no other heavy job holds it
+            fcntl.flock(heavy, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            state["wait"] = ("memory", share)
+            time.sleep(POLL)
+    fcntl.flock(heavy, fcntl.LOCK_SH)
+    return [cpu]
 
 
-def tell(box: Path, done: threading.Event) -> None:
-    """Until done, each second, name on a line of its own the other jobs
-    holding CPUs when they changed (#lock-holder); never the wait line, so its
-    whitespace, a command's newlines too, is folded to single spaces."""
-    told: set[int] = set()
-    while not done.wait(POLL):
-        jobs = holders(box)
-        if set(jobs) != told:
-            told = set(jobs)
+def standing(box: Path, state: dict) -> tuple[tuple, list[str]]:
+    """Where a waiting job stands, as state and the box's files tell it: what
+    it says, and what of it changing says so again (#lock-holder): nothing
+    while it waits on nothing, as a job about to run does."""
+    key: list = [state["wait"]]
+    said = []
+    match state["wait"]:
+        case ("cpus", family):
+            jobs = holders(box, family)
+            key.append(tuple(sorted(jobs)))
             if jobs:
                 now = time.time()
-                named = "; ".join(f"{shlex.join(j['command'])} in {j['folder']} for {ago(now - j['since'])}"
-                                  for j in sorted(jobs.values(), key=lambda j: j["since"]))
-                print(" ".join(f"octo-lite-lock: waiting on CPUs held by {named}".split()),
-                      file=sys.stderr, flush=True)
+                said.append("waiting on CPUs held by " + "; ".join(
+                    f"{named(job)} for {ago(now - job['since'])}"
+                    for job in sorted(jobs.values(), key=lambda job: job["since"])))
+        case ("memory", share):
+            said.append(f"waiting for {gb(share)} of memory free, {gb(memory()[1])} free")
+        case ("resource", resource, count):
+            said.append(f"waiting for {resource}, which fits {count} jobs at once, all running")
+    if (me := state["line"]) is not None:
+        turn = lambda job: (not job["merge"], job["since"], job["pid"])
+        ahead = sorted((job for job in records(box, IN_LINE) if turn(job) < turn(me)), key=turn)
+        key.append(tuple(job["pid"] for job in ahead))
+        place = f"place {len(ahead) + 1} in line"
+        if ahead:
+            place += ", behind " + "; ".join(named(job) + " (merge-path)" * job["merge"] for job in ahead)
+        if ahead or said:
+            said.insert(0, place)
+    return tuple(key), said
+
+
+def tell(box: Path, state: dict, done: threading.Event) -> None:
+    """Until done, each second, say where the job stands, on a line of its own,
+    when that changed (#lock-holder); never the wait line, so its whitespace, a
+    command's newlines too, is folded to single spaces."""
+    told = None
+    while not done.wait(POLL):
+        key, said = standing(box, state)
+        if key != told:
+            told = key
+            if said:
+                print(" ".join(f"octo-lite-lock: {'; '.join(said)}".split()), file=sys.stderr, flush=True)
+
+
+def named(job: dict) -> str:
+    return f"{shlex.join(job['command'])} in {job['folder']}"
 
 
 def ago(seconds: float) -> str:
     minutes, seconds = divmod(int(seconds), 60)
     return f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
+
+
+def gb(size: int) -> str:
+    return f"{size / 10**9:.1f} GB"
+
+
+def head() -> str | None:
+    """The commit of the folder this command runs in, as git reads it, writing
+    nothing, or None outside a Git repository (#lock-head)."""
+    run = subprocess.run(["git", "rev-parse", "--verify", "-q", "HEAD"],
+                         stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    return run.stdout.strip() if run.returncode == 0 else None
 
 
 def main(argv: list[str]) -> int:
@@ -200,25 +323,36 @@ def main(argv: list[str]) -> int:
         print(USAGE, file=sys.stderr)
         return 64
     start = time.monotonic()
+    lined = head()
     if TOLD in os.environ:  # under a heavy job already: on its CPUs, at once
         held = sorted(os.sched_getaffinity(0))[:int(want[0])]
     else:
         box = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state", "octo-lite")
         box.mkdir(parents=True, exist_ok=True)
-        if cap:  # waiting on it, a job holds no CPU, so is told of none (#lock-cap)
-            resource, count = cap.groups()
-            take([box / f"heavy-cap-{resource}-{i}.lock" for i in range(int(count))])
+        state: dict = {"line": None, "wait": None}
         done = threading.Event()
-        teller = threading.Thread(target=tell, args=(box, done), daemon=True)
+        teller = threading.Thread(target=tell, args=(box, state, done), daemon=True)
         teller.start()
+        if cap:  # waiting on it, a job holds no CPU and no place in line (#lock-cap)
+            resource, count = cap.groups()
+            state["wait"] = ("resource", resource, int(count))
+            take([box / f"heavy-cap-{resource}-{i}.lock" for i in range(int(count))])
+            state["wait"] = None
         # the folder as /proc names it, "<path> (deleted)" once it is gone
-        held = hold(box, int(want[0]), "--merge" in asks,
-                    {"pid": os.getpid(), "command": argv, "folder": os.readlink("/proc/self/cwd")})
+        job = {"pid": os.getpid(), "command": argv, "folder": os.readlink("/proc/self/cwd")}
+        if want[0] == "1":
+            held = beside(box, job, state)
+        else:
+            held = hold(box, int(want[0]), "--merge" in asks, job, state)
         done.set()
         teller.join()
     os.sched_setaffinity(0, held)
     print(f"flock: getting lock took {time.monotonic() - start:.6f} seconds",
           file=sys.stderr, flush=True)
+    if started := head():
+        print(f"octo-lite-lock: runs on commit {started}"
+              + (f", lined up on commit {lined}" if lined not in (None, started) else ""),
+              file=sys.stderr, flush=True)
     # returns once CMD runs, its dispositions its own
     job = subprocess.Popen(argv, env={**os.environ, TOLD: str(len(held))})
     signal.signal(signal.SIGINT, signal.SIG_IGN)

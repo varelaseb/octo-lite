@@ -172,14 +172,19 @@ its `sessions/<name>` in a named one. Lane records, their hand-off logs, and
 onboarding file stays box-wide.
 
 `octo-lite-lock [--cores N] CMD`, also on `PATH` as `box-heavy`, runs a heavy
-job, such as a full test suite, a QA capture, a build, or a recording, under
-the box-wide [box lock](spec/domains/box-lock.spec.html): it waits in line for
-N of the box's CPUs (4 by default, every CPU on a smaller box), and for 6 GB
-free while another heavy job runs, prints its wait on a line of its own, runs
-the job on those CPUs only, telling it their count in `BOX_HEAVY_CORES`, and
-ends as the job did. It holds the CPUs itself, so a server or browser the job
-leaves running holds none. A heavy job inside a heavy job runs at once on the
-outer job's CPUs. `--cap RESOURCE=N` also caps how many jobs naming that
+job, such as a full test suite, a QA capture, a build, an install, or a
+recording, under the box-wide [box lock](spec/domains/box-lock.spec.html): it
+waits in line for N of the box's CPUs (4 by default, every CPU on a smaller
+box), and for its share of the box's memory free, the part its CPUs are of the
+box's, while other heavy jobs hold CPUs, prints its wait on a line of its own,
+names the commit its folder is at as it starts, runs the job on those CPUs
+only, telling it their count in `BOX_HEAVY_CORES`, and ends as the job did.
+While it waits it names its place in line, the jobs ahead of it, and what it
+waits on. A short or light job, such as an install or a build of one package,
+asks `--cores 1` and never lines up: it runs at once beside the jobs holding
+the CPUs, one to a CPU. It holds the CPUs itself, so a server or browser the
+job leaves running holds none. A heavy job inside a heavy job runs at once on
+the outer job's CPUs. `--cap RESOURCE=N` also caps how many jobs naming that
 resource run at once, and `--merge` lines a job a merge waits on up ahead of
 every other waiting job. A ticket's own tests, a server, or a watcher never
 take it.
