@@ -170,18 +170,22 @@ Do not run parallel destructive suites on one shared DB when CI isolates them.
 Every heavy job (full suite, QA capture, build, recording), yours or a
 worker's, runs under the box lock whatever the box's load
 (`spec/domains/box-lock.spec.html`): `octo-lite-lock [--cores N] CMD`, which
-waits for N CPUs (4 by default), prints its wait, runs the job on them, and ends
-as the job did. Where the target `AGENTS.md` names, beside the job's command,
-a resource, its number, and the CPUs the job asks for, run
+waits for N CPUs (4 by default), prints its wait, names the commit it starts
+on, runs the job on them, and ends as the job did. A short or light job, such
+as an install or a build of one package, asks `--cores 1`, so it runs at once
+beside the full suites and captures holding the box (spec `#roles-load`).
+Where the target `AGENTS.md` names, beside the job's command, a resource, its
+number, and the CPUs the job asks for, run
 `octo-lite-lock --cores C --cap RESOURCE=N CMD`.
 A heavy job on a candidate head, its full suite or a capture its merge ask
 needs, adds `--merge`, so it runs ahead of every waiting job that is not; every
 other heavy job takes the lock without it (spec `#roles-load-merge`). Such a
 job reads the lane's head only as it starts, never a commit fixed as it lined
-up, and names the head it ran: run it in the lane's worktree as
-`octo-lite-lock --merge sh -c 'git rev-parse HEAD && SUITE'`. A fix batch that
-moves the head while it waits leaves it in line, to run on the new head, so
-never stop it to line up again.
+up: run it in the lane's worktree as `octo-lite-lock --merge SUITE`, and the
+lock names the head it starts on. A fix batch that moves the head while it
+waits leaves it in line, to run on the new head, so never stop it to line up
+again; a fix batch landing after it started on the head before, as the lock
+named, stops it, and it lines up again, since that head will not merge.
 A head before the lane's candidate ([Review and finish](#review-and-finish))
 gets only the tests for what it touched; those are no heavy job and never take
 the lock. The lane runs the full suite only on a candidate head, beside its

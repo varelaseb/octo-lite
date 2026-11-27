@@ -300,19 +300,26 @@ class LaneRecordTests(unittest.TestCase):
 
     def test_candidate_head_jobs_take_the_lock_as_merge_path_on_the_head_as_they_start(self) -> None:
         # spec #roles-load-merge (#acceptance-box-lock-merge-first,
-        # #acceptance-box-lock-head-moves): the recipe asks merge-path for a
-        # candidate head's heavy jobs only, read at start, never restarted.
+        # #acceptance-box-lock-head-moves), #roles-load: the recipe asks
+        # merge-path for a candidate head's heavy jobs only, read at start,
+        # named by the lock, never restarted while waiting, stopped once a fix
+        # batch lands after it started; a short or light job asks one CPU.
         skill = " ".join((ROOT / "skills/implement-spec/SKILL.md").read_text(encoding="utf-8").split())
         validation = skill[skill.index("## Validation"):skill.index("## Review and finish")]
-        for phrase in ("A heavy job on a candidate head, its full suite or a capture its merge ask needs, "
+        for phrase in ("A short or light job, such as an install or a build of one package, asks `--cores 1`, "
+                       "so it runs at once beside the full suites and captures holding the box (spec `#roles-load`)",
+                       "A heavy job on a candidate head, its full suite or a capture its merge ask needs, "
                        "adds `--merge`, so it runs ahead of every waiting job that is not; every other heavy "
                        "job takes the lock without it (spec `#roles-load-merge`)",
-                       "Such a job reads the lane's head only as it starts, never a commit fixed as it lined up, "
-                       "and names the head it ran",
-                       "`octo-lite-lock --merge sh -c 'git rev-parse HEAD && SUITE'`",
+                       "Such a job reads the lane's head only as it starts, never a commit fixed as it lined up: "
+                       "run it in the lane's worktree as `octo-lite-lock --merge SUITE`, and the lock names the "
+                       "head it starts on",
                        "A fix batch that moves the head while it waits leaves it in line, to run on the new head, "
-                       "so never stop it to line up again"):
+                       "so never stop it to line up again",
+                       "a fix batch landing after it started on the head before, as the lock named, stops it, "
+                       "and it lines up again, since that head will not merge"):
             self.assertIn(phrase, validation)
+        self.assertNotIn("git rev-parse HEAD &&", validation)
 
     def test_every_finding_on_one_head_goes_in_one_fix_batch(self) -> None:
         # spec #delivery-path, #delivery-review, #health-notes: one batch per
